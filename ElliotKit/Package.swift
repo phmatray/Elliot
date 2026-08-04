@@ -9,6 +9,7 @@ let package = Package(
         .library(name: "ElliotStore", targets: ["ElliotStore"]),
         .library(name: "ElliotProcess", targets: ["ElliotProcess"]),
         .library(name: "ElliotEngine", targets: ["ElliotEngine"]),
+        .library(name: "ElliotIPC", targets: ["ElliotIPC"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
@@ -21,6 +22,7 @@ let package = Package(
         ),
         .target(name: "ElliotProcess", dependencies: ["ElliotModel"]),
         .target(name: "ElliotEngine", dependencies: ["ElliotModel", "ElliotStore", "ElliotProcess"]),
+        .target(name: "ElliotIPC", dependencies: ["ElliotModel"]),
         .testTarget(name: "ElliotModelTests", dependencies: ["ElliotModel"]),
         .testTarget(name: "ElliotStoreTests", dependencies: ["ElliotStore"]),
         // Fixtures and the fake `claude` live at the repository root, not in a
@@ -28,6 +30,7 @@ let package = Package(
         // reproducing a run.
         .testTarget(name: "ElliotProcessTests", dependencies: ["ElliotProcess"]),
         .testTarget(name: "ElliotEngineTests", dependencies: ["ElliotEngine"]),
+        .testTarget(name: "ElliotIPCTests", dependencies: ["ElliotIPC"]),
     ],
     swiftLanguageModes: [.v6]
 )

@@ -11,10 +11,14 @@ public final class StreamingProcess: Sendable {
     private let process: Process
     private let state = Locked(State())
 
-    private struct State {
+    private struct State: @unchecked Sendable {
         var buffer = LineBuffer()
         var stderr = Data()
         var finished = false
+        var exit: Exit?
+        /// Whoever is waiting for the exit, parked under the same lock that
+        /// publishes it.
+        var waiter: CheckedContinuation<Exit, Never>?
     }
 
     public struct Exit: Sendable {
@@ -29,7 +33,6 @@ public final class StreamingProcess: Sendable {
     /// finishes when the process exits and the last partial line is flushed.
     public let lines: AsyncStream<Data>
 
-    private let exitContinuation = Locked<CheckedContinuation<Exit, Never>?>(nil)
     private let terminationRequested = Locked(false)
 
     public init(
@@ -75,10 +78,15 @@ public final class StreamingProcess: Sendable {
             state.withLock { $0.stderr.append(chunk) }
         }
 
-        let exitContinuation = self.exitContinuation
         let terminationRequested = self.terminationRequested
         process.terminationHandler = { process in
-            // Drain whatever is still buffered in the pipes before closing.
+            // Detach the handlers *before* draining. They read the same
+            // descriptor on their own queue, and racing them against
+            // `readDataToEndOfFile` intermittently swallows the final events of
+            // a run — which is exactly the tail that carries the result.
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
+
             let rest = outPipe.fileHandleForReading.readDataToEndOfFile()
             if !rest.isEmpty {
                 stdoutMirror?(rest)
@@ -87,29 +95,30 @@ public final class StreamingProcess: Sendable {
             }
             let restErr = errPipe.fileHandleForReading.readDataToEndOfFile()
 
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
-
-            // A process that ended without a trailing newline still has a final
-            // event waiting.
+            // A process that ended without a trailing newline still has one
+            // last event waiting in the buffer.
             let tail = state.withLock { current -> Data? in
                 current.stderr.append(restErr)
-                current.finished = true
                 return current.buffer.flush()
             }
             if let tail, !tail.isEmpty { lineContinuation.yield(tail) }
             lineContinuation.finish()
 
-            let stderr = state.withLock { String(decoding: $0.stderr, as: UTF8.self) }
             let exit = Exit(
                 code: process.terminationStatus,
-                stderr: stderr,
+                stderr: state.withLock { String(decoding: $0.stderr, as: UTF8.self) },
                 wasTerminated: terminationRequested.withLock { $0 }
             )
-            exitContinuation.withLock { pending in
-                pending?.resume(returning: exit)
-                pending = nil
+            // Publishing the exit and handing off any waiter happen under one
+            // lock, so a `waitForExit` arriving at this instant cannot miss it
+            // and hang forever.
+            let waiter = state.withLock { current -> CheckedContinuation<Exit, Never>? in
+                current.finished = true
+                current.exit = exit
+                defer { current.waiter = nil }
+                return current.waiter
             }
+            waiter?.resume(returning: exit)
         }
 
         try process.run()
@@ -121,17 +130,14 @@ public final class StreamingProcess: Sendable {
     /// Waits for the child to exit.
     public func waitForExit() async -> Exit {
         await withCheckedContinuation { continuation in
-            let alreadyDone = state.withLock { $0.finished }
-            if alreadyDone {
-                let stderr = state.withLock { String(decoding: $0.stderr, as: UTF8.self) }
-                continuation.resume(returning: Exit(
-                    code: process.terminationStatus,
-                    stderr: stderr,
-                    wasTerminated: terminationRequested.withLock { $0 }
-                ))
-                return
+            // Checking and parking under one lock: the termination handler
+            // cannot slip between them and leave this waiting forever.
+            let alreadyExited = state.withLock { current -> Exit? in
+                if let exit = current.exit { return exit }
+                current.waiter = continuation
+                return nil
             }
-            exitContinuation.withLock { $0 = continuation }
+            if let alreadyExited { continuation.resume(returning: alreadyExited) }
         }
     }
 
