@@ -1,0 +1,14 @@
+.DS_Store
+.build/
+.swiftpm/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+
+# Worktrees the lifecycle skills create. Discovered at runtime via
+# `git worktree list --porcelain`; this is only the conventional home.
+.claude/worktrees/
+.worktrees/
+
+# Assembled app bundle
+dist/
