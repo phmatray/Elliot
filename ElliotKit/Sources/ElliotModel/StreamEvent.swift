@@ -49,6 +49,11 @@ public struct SystemInit: Sendable, Hashable, Codable {
 public struct PermissionDenial: Sendable, Hashable, Codable {
     public var toolName: String
     public var toolUseID: String?
+
+    public init(toolName: String, toolUseID: String? = nil) {
+        self.toolName = toolName
+        self.toolUseID = toolUseID
+    }
 }
 
 /// The terminal `type: "result"` event: the same object `--output-format json`
@@ -66,6 +71,32 @@ public struct RunResult: Sendable, Hashable, Codable {
     public var terminalReason: String?
     public var permissionDenials: [PermissionDenial]
     public var errors: [String]
+
+    public init(
+        subtype: String,
+        isError: Bool,
+        text: String? = nil,
+        numTurns: Int? = nil,
+        durationMS: Int? = nil,
+        totalCostUSD: Double? = nil,
+        sessionID: String? = nil,
+        stopReason: String? = nil,
+        terminalReason: String? = nil,
+        permissionDenials: [PermissionDenial] = [],
+        errors: [String] = []
+    ) {
+        self.subtype = subtype
+        self.isError = isError
+        self.text = text
+        self.numTurns = numTurns
+        self.durationMS = durationMS
+        self.totalCostUSD = totalCostUSD
+        self.sessionID = sessionID
+        self.stopReason = stopReason
+        self.terminalReason = terminalReason
+        self.permissionDenials = permissionDenials
+        self.errors = errors
+    }
 
     /// `subtype` values that mean the run stopped on a configured ceiling
     /// rather than crashing. Worth separating in the UI.

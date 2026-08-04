@@ -59,6 +59,13 @@ public struct ClaudeRunOutcome: Sendable {
     public var result: RunResult?
     public var stderr: String
 
+    public init(exitCode: Int32, wasTerminated: Bool, result: RunResult?, stderr: String) {
+        self.exitCode = exitCode
+        self.wasTerminated = wasTerminated
+        self.result = result
+        self.stderr = stderr
+    }
+
     /// SIGTERM shutdown. Claude Code documents exit 143 for it.
     public var wasSignalled: Bool { exitCode == 143 || wasTerminated }
 }
