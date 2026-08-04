@@ -5,16 +5,25 @@ let package = Package(
     name: "ElliotKit",
     platforms: [.macOS(.v15)],
     products: [
+        .executable(name: "elliot-mcp", targets: ["elliot-mcp"]),
+        .executable(name: "ElliotApp", targets: ["ElliotApp"]),
         .library(name: "ElliotModel", targets: ["ElliotModel"]),
         .library(name: "ElliotStore", targets: ["ElliotStore"]),
         .library(name: "ElliotProcess", targets: ["ElliotProcess"]),
         .library(name: "ElliotEngine", targets: ["ElliotEngine"]),
         .library(name: "ElliotIPC", targets: ["ElliotIPC"]),
+        .library(name: "ElliotMCPKit", targets: ["ElliotMCPKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.11.0"),
     ],
     targets: [
+        .executableTarget(name: "elliot-mcp", dependencies: ["ElliotMCPKit"]),
+        .executableTarget(
+            name: "ElliotApp",
+            dependencies: ["ElliotEngine", "ElliotIPC", "ElliotStore", "ElliotProcess"]
+        ),
         .target(name: "ElliotModel"),
         .target(
             name: "ElliotStore",
@@ -23,6 +32,13 @@ let package = Package(
         .target(name: "ElliotProcess", dependencies: ["ElliotModel"]),
         .target(name: "ElliotEngine", dependencies: ["ElliotModel", "ElliotStore", "ElliotProcess"]),
         .target(name: "ElliotIPC", dependencies: ["ElliotModel"]),
+        // Deliberately depends on neither ElliotEngine nor ElliotProcess: the
+        // helper never spawns claude and never writes the database. It cannot
+        // diverge from the board because it holds no copy of the rules.
+        .target(
+            name: "ElliotMCPKit",
+            dependencies: ["ElliotModel", "ElliotIPC", "ElliotStore", .product(name: "MCP", package: "swift-sdk")]
+        ),
         .testTarget(name: "ElliotModelTests", dependencies: ["ElliotModel"]),
         .testTarget(name: "ElliotStoreTests", dependencies: ["ElliotStore"]),
         // Fixtures and the fake `claude` live at the repository root, not in a

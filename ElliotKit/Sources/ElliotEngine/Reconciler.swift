@@ -30,6 +30,8 @@ public struct Reconciler: Sendable {
         public var orphanedRuns = 0
         public var requeuedRuns = 0
         public var cardsCorrected = 0
+
+        public init() {}
     }
 
     @discardableResult

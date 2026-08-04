@@ -16,6 +16,22 @@ public struct CheckResult: Sendable, Hashable, Identifiable {
     /// themselves rather than take Elliot's word for it.
     public var command: String?
     public var fixHint: String?
+
+    public init(
+        id: String,
+        title: String,
+        status: CheckStatus,
+        detail: String,
+        command: String? = nil,
+        fixHint: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.status = status
+        self.detail = detail
+        self.command = command
+        self.fixHint = fixHint
+    }
 }
 
 /// Everything that has to be true before a card can be dragged.
