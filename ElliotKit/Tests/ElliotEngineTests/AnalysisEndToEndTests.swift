@@ -45,8 +45,9 @@ private enum TestPaths {
 /// end-to-end suite writes its run logs into the real
 /// `~/Library/Application Support/Elliot/runs`.
 enum TestHome {
-    /// `nonisolated(unsafe)` because it is written exactly once, before any
-    /// test body runs, by the `static let` initialiser itself.
+    /// Swift runs a `static let`'s initialiser at most once, even if two
+    /// suites reach for `root` at the same instant, which is what lets this
+    /// safely `setenv` before either test body can observe `ELLIOT_HOME`.
     static let root: URL = {
         // An operator's own `ELLIOT_HOME`, already exported before `swift
         // test` ran, is adopted rather than clobbered — `StoreLocation`
@@ -128,7 +129,15 @@ struct AnalysisEndToEndTests {
     ///
     /// The database is explicitly per-test: `StoreLocation.databaseURL` is
     /// shared now, and two suites must not open the same file.
-    private func makeStack(extraEnv: [String: String] = [:]) async throws -> Stack {
+    ///
+    /// `gitPath` defaults to a binary that always fails, matching every other
+    /// end-to-end stack: `GitClient.porcelainStatus` swallows a failing `git`
+    /// into `""`, so a caller that wants the sentinel to say anything real —
+    /// rather than compare two swallowed failures and call the coincidence
+    /// "clean" — must pass a working `git` and `git init` the fixture repo.
+    private func makeStack(
+        extraEnv: [String: String] = [:], gitPath: String = "/usr/bin/false"
+    ) async throws -> Stack {
         let home = TestHome.scratch("analysis-e2e")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         try StoreLocation.ensureDirectories()
@@ -149,7 +158,7 @@ struct AnalysisEndToEndTests {
         let config = ToolConfig(
             claudePath: TestPaths.fakeClaude,
             ghPath: "/usr/bin/false",
-            gitPath: "/usr/bin/false",
+            gitPath: gitPath,
             environment: environment
         )
         let scheduler = RunScheduler(
@@ -174,12 +183,25 @@ struct AnalysisEndToEndTests {
 
     @Test("An analysis produces proposals, and accepting one puts a real card in Backlog")
     func theWholePath() async throws {
-        let stack = try await makeStack()
+        // Real git, when available, so the "clean" assertion below checks an
+        // actual `git status` rather than two calls to a failing binary that
+        // happen to agree with each other. `/usr/bin/git` ships with the
+        // Xcode command-line tools this package itself needs to build, so
+        // the fallback is not expected to be exercised in practice.
+        let git = "/usr/bin/git"
+        let gitAvailable = FileManager.default.isExecutableFile(atPath: git)
+        let stack = try await makeStack(gitPath: gitAvailable ? git : "/usr/bin/false")
         defer { stack.cleanUp() }
+        if gitAvailable {
+            _ = try? await ProcessRunner.run(
+                executable: git, arguments: ["init", "-q"], cwd: stack.repo.path,
+                environment: ["PATH": "/usr/bin:/bin"], timeout: .seconds(20)
+            )
+        }
 
         // A card already on the board, so the duplicate hint has something to
         // collide with.
-        _ = try await stack.board.createCard(
+        let existingCard = try await stack.board.createCard(
             repoID: stack.repo.id, title: "Cache the login shell environment"
         )
 
@@ -201,9 +223,15 @@ struct AnalysisEndToEndTests {
             #expect(report.kept == 2)
             // The third story in the fixture is unusable, and says why.
             #expect(report.dropped.contains { $0.contains("benefit") })
-            // Checked-and-clean, not "never checked" — the sentinel actually
-            // ran here and found nothing, which is `false`, not `nil`.
-            #expect(report.workingTreeChanged == false)
+            if gitAvailable {
+                // Checked-and-clean, not "never checked": a real `git status`
+                // was taken before and after, over an actually-initialised
+                // repo, and found nothing — `false`, not `nil`. Neither run
+                // writes inside the repo (the artifact lands under the
+                // shared `TestHome.root`, not `stack.repo.path`), so a
+                // regression that made a run touch the repo would flip this.
+                #expect(report.workingTreeChanged == false)
+            }
         }
 
         // Two angles × two usable stories.
@@ -216,13 +244,22 @@ struct AnalysisEndToEndTests {
         // The cited file exists in this fixture repo; the other one does not.
         #expect(watchdog.evidence.first?.exists == true)
         #expect(watchdog.isGrounded)
+        // Negative control: nothing on the board looks like this one, so the
+        // hint must be absent rather than pointing at whatever card happens
+        // to be first.
+        #expect(watchdog.duplicateOf == nil)
 
         let cached = try #require(proposals.first { $0.title.contains("Cache the login shell") })
         #expect(cached.evidence.first?.exists == false)
-        guard case .card? = cached.duplicateOf else {
+        guard case .card(let duplicateID, let duplicateTitle)? = cached.duplicateOf else {
             Issue.record("expected a duplicate hint against the existing card")
             return
         }
+        // Bound, not just matched on shape: this is the seeded card, not
+        // some other one a matcher that always returns the same hint would
+        // also satisfy.
+        #expect(duplicateID == existingCard.id)
+        #expect(duplicateTitle == existingCard.displayTitle)
 
         // Accept one. It lands in Backlog and fires nothing.
         let cards = try await stack.analysisService.accept(proposalIDs: [watchdog.id])
@@ -247,38 +284,21 @@ struct AnalysisEndToEndTests {
 
     @Test("An analysis that edits the repository is reported, not hidden")
     func theSentinelFires() async throws {
-        let stack = try await makeStack(extraEnv: ["FAKE_CLAUDE_TOUCH": "meddled.txt"])
-        defer { stack.cleanUp() }
-
         // A real git binary is needed for the sentinel to say anything.
         let git = "/usr/bin/git"
         guard FileManager.default.isExecutableFile(atPath: git) else { return }
+
+        let stack = try await makeStack(
+            extraEnv: ["FAKE_CLAUDE_TOUCH": "meddled.txt"], gitPath: git
+        )
+        defer { stack.cleanUp() }
+
         _ = try? await ProcessRunner.run(
             executable: git, arguments: ["init", "-q"], cwd: stack.repo.path,
             environment: ["PATH": "/usr/bin:/bin"], timeout: .seconds(20)
         )
 
-        // Rebuild the stack's scheduler with a working git, keeping everything
-        // else identical.
-        let config = ToolConfig(
-            claudePath: TestPaths.fakeClaude, ghPath: "/usr/bin/false", gitPath: git,
-            environment: [
-                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-                "FAKE_CLAUDE_FIXTURE": TestPaths.streamFixture("analyze-success.ndjson"),
-                "FAKE_CLAUDE_STORIES": TestPaths.analysisFixture("e2e-bugs.json"),
-                "FAKE_CLAUDE_TOUCH": "meddled.txt",
-            ]
-        )
-        let scheduler = RunScheduler(
-            store: stack.store, toolConfig: config, verifier: Verifier(gh: .init(config: config))
-        )
-        let board = BoardService(store: stack.store, launcher: scheduler)
-        await scheduler.setSystemMover(board)
-        let service = AnalysisService(
-            store: stack.store, launcher: scheduler, board: board, gh: GHClient(config: config)
-        )
-
-        let started = try await service.start(
+        let started = try await stack.analysisService.start(
             repoID: stack.repo.id, angles: [.bugs], origin: .manual
         )
         let runs = try await stack.awaitRuns(analysisID: started.analysis.id)
