@@ -33,10 +33,14 @@ struct RepositoriesView: View {
         }
         .safeAreaInset(edge: .top) { header }
         .navigationTitle("Repositories")
-        .task {
+        // Keyed on `isReady`, not bare: the toolbar is live before `start()`
+        // finishes, and a bare `.task` firing then would find no registry, return
+        // silently, and leave the page asserting "nothing found" about a scan
+        // that never ran.
+        .task(id: model.isReady) {
             // Only on first arrival: rebuilding costs one `gh repo list` per
             // owner, and coming back from a fix already refreshed the list.
-            if model.repoRows.isEmpty { await model.refreshRepoRows() }
+            if model.isReady, model.repoRows.isEmpty { await model.refreshRepoRows() }
         }
     }
 
@@ -154,7 +158,7 @@ struct RepositoriesView: View {
         case .register(let path):
             "Let Elliot drive the checkout at \(path)."
         case .forget:
-            "Remove the registration. The clone on disk is untouched."
+            "Remove the registration and this repository's cards. The clone on disk is untouched."
         }
     }
 

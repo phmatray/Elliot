@@ -53,7 +53,7 @@ The same four steps are available over MCP: `board_analyze_repo`,
 ## Build and run
 
 ```bash
-cd ElliotKit && swift test          # 447 tests, no Xcode needed
+cd ElliotKit && swift test          # 448 tests, no Xcode needed
 ./Scripts/build-app.sh              # assembles dist/Elliot.app
 open dist/Elliot.app
 ```
@@ -118,10 +118,12 @@ Four rules hold the page together:
 - **Move names its destination on the button**, refuses an occupied one, and
   repoints the registration in the same step — so the store never points at a
   path that was moved out from under it.
-- **Nothing deletes.** There is no `.delete` case in `RepoFix` and there must
-  never be one. **Forget** removes a registration and leaves the disk alone.
-  Nothing here pushes, commits, stashes, merges, fetches, pulls or switches a
-  branch either; keeping clones up to date is still to come.
+- **Nothing deletes on disk.** There is no `.delete` case in `RepoFix` and there
+  must never be one. **Forget** removes a registration and leaves the checkout
+  alone — though it does drop that repository's cards, because `card.repoID`
+  cascades, and the button says so. Nothing here pushes, commits, stashes,
+  merges, fetches, pulls or switches a branch either; keeping clones up to date
+  is still to come.
 - **The page judges nothing.** Every verdict is computed by `RepoReconciler` in
   `ElliotModel`, which is pure and tested. `ElliotApp` has no test target, so a
   rule written in the view would be unprovable.

@@ -66,6 +66,27 @@ struct RepoRegistryServiceTests {
         #expect(try await store.repo(path: to)?.visibility == .private)
     }
 
+    @Test("A clone GitHub cannot confirm still gets a row, with the fix it allows")
+    func rowsSurviveAnUnreachableGitHub() async throws {
+        let root = makeTree()
+        let path = root + "/phmatray/private/Koine"
+        try FileManager.default.createDirectory(atPath: path + "/.git", withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let layout = RepoTreeLayout(root: root, owners: ["phmatray"])
+        let store = try BoardStore.inMemory()
+        let service = RepoRegistryService(store: store, config: testConfig())
+
+        // `gh` answers nothing here, which is the point: a repository the remote
+        // leg could not confirm must still be listed. Dropping it would read
+        // exactly like a repository that is fine.
+        let rows = await service.rows(layout: layout)
+        #expect(rows.count == 1)
+        #expect(rows.first?.nameWithOwner == "phmatray/Koine")
+        #expect(rows.first?.issue == .notRegistered)
+        #expect(rows.first?.fixes == [.register(path: layout.root + "/phmatray/private/Koine")])
+    }
+
     @Test("A failing fix reports its reason and changes nothing")
     func failureIsPerRow() async throws {
         let store = try BoardStore.inMemory()

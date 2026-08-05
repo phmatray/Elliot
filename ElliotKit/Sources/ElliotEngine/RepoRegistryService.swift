@@ -67,8 +67,14 @@ public struct RepoRegistryService: Sendable {
                 return RepoFixOutcome(succeeded: true, detail: "Moved to \(to).")
 
             case .forget(let repoID):
+                // The disk is untouched, but the *board* is not: `card.repoID`
+                // cascades, so this drops the repository's cards, runs, analyses
+                // and proposals. Saying only "the clone is untouched" would be
+                // true and misleading.
                 try await store.deleteRepo(id: repoID)
-                return RepoFixOutcome(succeeded: true, detail: "Forgotten. The clone is untouched.")
+                return RepoFixOutcome(
+                    succeeded: true,
+                    detail: "Forgotten, with its cards. The clone on disk is untouched.")
             }
         } catch {
             return RepoFixOutcome(succeeded: false, detail: error.localizedDescription)
