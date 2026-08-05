@@ -10,15 +10,31 @@ public struct GHIssue: Codable, Sendable, Hashable {
     public var state: String?
     public var createdAt: Date?
 
-    public init(number: Int, title: String, url: String, state: String? = nil, createdAt: Date? = nil) {
+    /// The issue text. Becomes the imported card's `body`; `nil` when the caller
+    /// asked `gh` for a narrower `--json` set.
+    ///
+    /// Appended last, here and in the memberwise `init`, so every existing call
+    /// site keeps compiling unchanged.
+    public var body: String?
+
+    public init(
+        number: Int, title: String, url: String,
+        state: String? = nil, createdAt: Date? = nil, body: String? = nil
+    ) {
         self.number = number
         self.title = title
         self.url = url
         self.state = state
         self.createdAt = createdAt
+        self.body = body
     }
 
     public var isOpen: Bool { (state ?? "OPEN").uppercased() == "OPEN" }
+
+    /// `gh` omits `state` when it was not requested. An issue Elliot cannot
+    /// classify is treated as open — the state that keeps it on the board
+    /// rather than quietly filing it under Done.
+    public var isClosed: Bool { (state ?? "OPEN").uppercased() == "CLOSED" }
 }
 
 public struct GHPullRequest: Codable, Sendable, Hashable {
