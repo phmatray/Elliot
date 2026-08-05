@@ -231,7 +231,7 @@ public extension GitHubImporter {
         let target = column(for: unit)
         let moveTo = target.boardIndex > owner.column.boardIndex ? target : nil
 
-        if moveTo == nil, matches(fields, owner) { return .unchanged(cardID: owner.id) }
+        if moveTo == nil, fields == AdoptedFields(of: owner) { return .unchanged(cardID: owner.id) }
         return .adopt(cardID: owner.id, fields: fields, moveTo: moveTo)
     }
 
@@ -251,11 +251,18 @@ public extension GitHubImporter {
             branch: unit.pullRequest?.headRefName,
             createdAt: unit.issue?.createdAt ?? unit.pullRequest?.createdAt ?? now)
     }
+}
 
-    private static func matches(_ fields: AdoptedFields, _ card: Card) -> Bool {
-        fields.title == card.title && fields.body == card.body
-            && fields.issueNumber == card.issueNumber && fields.issueURL == card.issueURL
-            && fields.prNumber == card.prNumber && fields.prURL == card.prURL
-            && fields.branch == card.branch
+extension AdoptedFields {
+    /// The same fields, read off a card the adoption would overwrite.
+    ///
+    /// "Has anything changed?" is then `==` rather than a hand-written
+    /// comparison — which is what keeps a field added here later from silently
+    /// falling out of it and reporting a changed card as `unchanged`.
+    init(of card: Card) {
+        self.init(
+            title: card.title, body: card.body,
+            issueNumber: card.issueNumber, issueURL: card.issueURL,
+            prNumber: card.prNumber, prURL: card.prURL, branch: card.branch)
     }
 }

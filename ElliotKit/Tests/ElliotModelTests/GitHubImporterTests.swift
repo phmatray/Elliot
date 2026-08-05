@@ -119,6 +119,12 @@ struct GitHubImporterPlanTests {
             existingCards: [], dismissed: [], now: now)
         #expect(plan.actions.count == 2)
         #expect(plan.actions.allSatisfy { if case .create = $0 { true } else { false } })
+        // The counters the status line is built from, on the plan that has one
+        // of exactly one kind.
+        #expect(plan.created == 2)
+        #expect(plan.adopted == 0)
+        #expect(plan.moved == 0)
+        #expect(plan.unchanged == 0)
     }
 
     @Test("Planning twice is the whole feature: the second pass changes nothing")
@@ -141,6 +147,8 @@ struct GitHubImporterPlanTests {
             repoID: repoID, issues: issues, pullRequests: prs,
             existingCards: cards, dismissed: [], now: now)
         #expect(second.actions.allSatisfy { if case .unchanged = $0 { true } else { false } })
+        #expect(second.unchanged == 2)
+        #expect(second.created == 0)
     }
 
     @Test("A card already carrying the issue is adopted, never duplicated")
@@ -219,6 +227,8 @@ struct GitHubImporterPlanTests {
             return
         }
         #expect(moveTo == .inReview)
+        #expect(plan.adopted == 1)
+        #expect(plan.moved == 1)
     }
 
     @Test("A dismissed issue is skipped and counted")
