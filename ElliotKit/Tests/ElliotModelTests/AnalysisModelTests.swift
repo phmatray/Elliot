@@ -72,4 +72,33 @@ struct AnalysisModelTests {
         #expect(DuplicateHint.issue(number: 12, title: "Idle leak").label.contains("#12"))
         #expect(DuplicateHint.card(id: UUID(), title: "Dark mode").label.contains("Dark mode"))
     }
+
+    @Test("Exactly one of card or analysis owns a run")
+    func aRunBelongsToOneThing() {
+        let cardRun = SkillRun(
+            cardID: UUID(), repoID: UUID(), kind: .createIssue, prompt: "x",
+            cwd: "/tmp", logPath: "/tmp/a.ndjson", stderrPath: "/tmp/a.log", createdAt: Date()
+        )
+        #expect(cardRun.cardID != nil)
+        #expect(cardRun.analysisID == nil)
+        #expect(!cardRun.isAnalysis)
+
+        let analysisRun = SkillRun(
+            cardID: nil, repoID: UUID(), analysisID: UUID(), analysisAngle: .bugs,
+            kind: .analyzeRepo, prompt: "x", cwd: "/tmp",
+            logPath: "/tmp/b.ndjson", stderrPath: "/tmp/b.log", createdAt: Date()
+        )
+        #expect(analysisRun.cardID == nil)
+        #expect(analysisRun.isAnalysis)
+        #expect(analysisRun.analysisAngle == .bugs)
+    }
+
+    @Test("Only the three plugin skills have a slash name")
+    func onlySkillsHaveSlashNames() {
+        #expect(SkillKind.createIssue.slashName == "/ai-migration-kit:create-issue")
+        #expect(SkillKind.implementIssue.slashName == "/ai-migration-kit:implement-issue")
+        #expect(SkillKind.mergePR.slashName == "/ai-migration-kit:merge-pr")
+        // There is no analyze-repo skill; that prompt is Elliot's own.
+        #expect(SkillKind.analyzeRepo.slashName == nil)
+    }
 }

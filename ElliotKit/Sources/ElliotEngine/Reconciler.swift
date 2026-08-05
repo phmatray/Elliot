@@ -54,7 +54,8 @@ public struct Reconciler: Sendable {
                 orphan.endedAt = Date()
                 orphan.resultText = "Elliot stopped while this run was in flight."
 
-                if let card = try? await store.card(id: run.cardID),
+                if let cardID = run.cardID,
+                   let card = try? await store.card(id: cardID),
                    let repo = try? await store.repo(id: run.repoID) {
                     let outcome = await verifier.verify(run: orphan, card: card, repo: repo)
                     orphan.verifiedOutcome = outcome

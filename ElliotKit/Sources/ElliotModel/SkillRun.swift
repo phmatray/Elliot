@@ -43,8 +43,16 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     /// Also passed as `--session-id`, so the CLI transcript path is known
     /// before the process emits anything.
     public var id: UUID
-    public var cardID: UUID
+    /// The card this run works on. `nil` for an analysis run, which has no card
+    /// — exactly one of `cardID` and `analysisID` is set.
+    public var cardID: UUID?
     public var repoID: UUID
+    /// The analysis this run belongs to, when it is one.
+    public var analysisID: UUID?
+    /// Which lens this run reads through. On the run rather than only on the
+    /// analysis because the window lists runs by angle, and because the
+    /// scheduler's dedupe key is `(repoID, angle)`.
+    public var analysisAngle: AnalysisAngle?
     public var kind: SkillKind
     /// The exact `-p` argument.
     public var prompt: String
@@ -64,12 +72,18 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     public var numTurns: Int?
     public var permissionDenials: [String]
     public var verifiedOutcome: VerifiedOutcome?
+    /// What an analysis run had to say about itself: where the stories were
+    /// harvested from, what was dropped, and whether the working tree moved.
+    /// `nil` for a card run.
+    public var analysisReport: AnalysisRunReport?
     public var createdAt: Date
 
     public init(
         id: UUID = UUID(),
-        cardID: UUID,
+        cardID: UUID?,
         repoID: UUID,
+        analysisID: UUID? = nil,
+        analysisAngle: AnalysisAngle? = nil,
         kind: SkillKind,
         prompt: String,
         argv: [String] = [],
@@ -85,11 +99,14 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         numTurns: Int? = nil,
         permissionDenials: [String] = [],
         verifiedOutcome: VerifiedOutcome? = nil,
+        analysisReport: AnalysisRunReport? = nil,
         createdAt: Date
     ) {
         self.id = id
         self.cardID = cardID
         self.repoID = repoID
+        self.analysisID = analysisID
+        self.analysisAngle = analysisAngle
         self.kind = kind
         self.prompt = prompt
         self.argv = argv
@@ -105,8 +122,13 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         self.numTurns = numTurns
         self.permissionDenials = permissionDenials
         self.verifiedOutcome = verifiedOutcome
+        self.analysisReport = analysisReport
         self.createdAt = createdAt
     }
+}
+
+public extension SkillRun {
+    var isAnalysis: Bool { kind == .analyzeRepo }
 }
 
 /// Why a card changed column. Recorded for every move, including the ones that

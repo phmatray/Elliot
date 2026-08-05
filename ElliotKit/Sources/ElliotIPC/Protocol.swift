@@ -136,7 +136,7 @@ public struct MoveDTO: Codable, Sendable, Hashable {
 
 public struct RunDTO: Codable, Sendable, Hashable {
     public var id: UUID
-    public var cardID: UUID
+    public var cardID: UUID?
     public var kind: String
     public var state: String
     public var prompt: String

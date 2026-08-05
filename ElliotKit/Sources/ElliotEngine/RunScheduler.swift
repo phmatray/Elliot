@@ -19,10 +19,10 @@ public protocol SystemMoving: AnyObject, Sendable {
 }
 
 public enum SchedulerUpdate: Sendable {
-    case runStarted(runID: UUID, cardID: UUID)
+    case runStarted(runID: UUID, cardID: UUID?)
     case runOutput(runID: UUID, event: StreamEvent)
     case runStalled(runID: UUID, since: Date)
-    case runFinished(runID: UUID, cardID: UUID, state: RunState, outcome: VerifiedOutcome?)
+    case runFinished(runID: UUID, cardID: UUID?, state: RunState, outcome: VerifiedOutcome?)
 }
 
 /// Runs skills, at most a few at a time, respecting what can safely overlap.
@@ -79,6 +79,8 @@ public actor RunScheduler: RunLaunching {
         case .createIssue:
             return !sameRepo.contains { $0.kind == .createIssue }
         case .implementIssue:
+            return true
+        case .analyzeRepo:
             return true
         }
     }
@@ -191,7 +193,8 @@ public actor RunScheduler: RunLaunching {
         // Verify even a cancelled run: implement-issue may well have opened the
         // pull request before it was stopped, and both skills are resume-safe.
         var verified: VerifiedOutcome?
-        if let card = try? await store.card(id: run.cardID),
+        if let cardID = run.cardID,
+           let card = try? await store.card(id: cardID),
            let repo = try? await store.repo(id: run.repoID) {
             verified = await verifier.verify(run: updated, card: card, repo: repo)
             updated.verifiedOutcome = verified

@@ -15,14 +15,20 @@ public enum SkillKind: String, Codable, CaseIterable, Sendable, Hashable {
     case createIssue
     case implementIssue
     case mergePR
+    /// Reading a repository through one lens. Not a plugin skill — see below.
+    case analyzeRepo
 
-    /// Plugin-qualified slash name. The CLI builds component ids as
-    /// `"\(pluginName):\(name)"`.
-    public var slashName: String {
+    /// Plugin-qualified slash name, for the three kinds that *are* plugin
+    /// skills. The CLI builds component ids as `"\(pluginName):\(name)"`.
+    ///
+    /// `.analyzeRepo` has none: there is no `analyze-repo` skill anywhere, that
+    /// prompt is Elliot's own and is built by `AnalysisPromptBuilder`.
+    public var slashName: String? {
         switch self {
         case .createIssue: "/ai-migration-kit:create-issue"
         case .implementIssue: "/ai-migration-kit:implement-issue"
         case .mergePR: "/ai-migration-kit:merge-pr"
+        case .analyzeRepo: nil
         }
     }
 }
@@ -59,17 +65,22 @@ public enum SlashCommandBuilder {
     }
 
     private static func slashPrompt(for action: TriggerAction) -> String {
+        // A `TriggerAction` is by construction one of the three plugin skills,
+        // so this is never nil on this path. Falling back rather than forcing
+        // keeps the function total if that ever stops being true.
+        guard let name = action.kind.slashName else { return naturalPrompt(for: action) }
+
         switch action {
         case .createIssue(let idea):
             // Free text; the skill infers scope from it. Flattened because the
             // whole prompt is one argv element and one logical line.
-            return "\(SkillKind.createIssue.slashName) \(idea.collapsedToSingleLine())"
+            return "\(name) \(idea.collapsedToSingleLine())"
 
         case .implementIssue(let n):
             // The skill resolves its argument with `grep -oE '[0-9]+' | head -1`.
             // Emit the number and nothing else — no title, no '#', no year.
             // `SlashCommandBuilderTests.firstDigitRunIsTheIssueNumber` guards this.
-            return "\(SkillKind.implementIssue.slashName) \(n)"
+            return "\(name) \(n)"
 
         case .mergePR(let pr, let followUps):
             // The skill parses `--follow-up "<idea>"` out of the text, so quotes
@@ -79,7 +90,7 @@ public enum SlashCommandBuilder {
                 .filter { !$0.isEmpty }
                 .map { #" --follow-up "\#($0)""# }
                 .joined()
-            return "\(SkillKind.mergePR.slashName) \(pr)\(tail)"
+            return "\(name) \(pr)\(tail)"
         }
     }
 

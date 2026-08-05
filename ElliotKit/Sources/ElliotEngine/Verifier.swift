@@ -23,6 +23,10 @@ public struct Verifier: Sendable {
                 return try await verifyImplementIssue(run: run, card: card, repo: repo)
             case .mergePR:
                 return try await verifyMergePR(run: run, card: card, repo: repo)
+            case .analyzeRepo:
+                // Unreachable: analysis runs are completed by ProposalHarvester,
+                // and there is nothing on GitHub to check an opinion against.
+                return .unverified(reason: "An analysis has no GitHub outcome to verify.")
             }
         } catch {
             return .unverified(reason: error.localizedDescription)

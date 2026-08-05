@@ -194,7 +194,7 @@ public final class AppModel {
             var lines = liveLog[runID] ?? []
             lines.append("■ \(state.rawValue)")
             liveLog[runID] = lines
-            Task { await self.refreshRuns(cardID: cardID) }
+            if let cardID { Task { await self.refreshRuns(cardID: cardID) } }
         }
     }
 
