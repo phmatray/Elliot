@@ -5157,7 +5157,7 @@ rejecting and retyping."
 
 **Interfaces:** none — this task ships the feature.
 
-- [ ] **Step 1: Update the README**
+- [x] **Step 1: Update the README**
 
 After the "The board" section, add:
 
@@ -5213,7 +5213,7 @@ than notarised, and the analysis has been proven end to end only against the
 fake `claude` — no real repository has been read yet.
 ```
 
-- [ ] **Step 2: Full verification**
+- [x] **Step 2: Full verification**
 
 ```bash
 cd ElliotKit && swift test && cd ..
@@ -5249,7 +5249,7 @@ gh issue list --repo phmatray/Elliot --limit 5
    - Quit Elliot, ask again → the answer is annotated `offline-db`.
    - Ask to accept one → Elliot relaunches and the card appears.
 
-- [ ] **Step 4: Commit the documentation**
+- [x] **Step 4: Commit the documentation**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-08-05-repo-analysis.md

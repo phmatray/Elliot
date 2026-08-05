@@ -30,10 +30,25 @@ The backlog holds **user stories**, not loose ideas: `role` / `want` / `benefit`
 plus acceptance criteria, kept as separate fields. That is what will let a skill
 *generate* stories from a repository later instead of parsing prose back apart.
 
+## Where stories come from
+
+The backlog holds user stories, and Elliot can write them. *Analyze…* reads a
+registered repository through six lenses — bugs, quick wins, features, tech
+debt, tests, docs & DX — one `claude -p` run each, and comes back with proposed
+stories you go through and accept.
+
+Proposals are **not cards**. They live in their own table and their own window,
+so a 30-story analysis does not drown the board and the five columns keep one
+meaning. Accepting calls the same `BoardService.createCard` the New Card sheet
+uses, and the card lands in Backlog, where nothing runs.
+
+The same four steps are available over MCP: `board_analyze_repo`,
+`board_list_proposals`, `board_accept_proposals`, `board_reject_proposals`.
+
 ## Build and run
 
 ```bash
-cd ElliotKit && swift test          # 155 tests, no Xcode needed
+cd ElliotKit && swift test          # 237 tests, no Xcode needed
 ./Scripts/build-app.sh              # assembles dist/Elliot.app
 open dist/Elliot.app
 ```
@@ -58,7 +73,7 @@ ElliotProcess   —                  tool discovery, environment capture, spawni
 ElliotIPC       —                  wire protocol, unix socket server and client
 ElliotEngine    all of the above   BoardService, RunScheduler, verifiers,
                                    PRWatcher, Reconciler, preflight
-ElliotMCPKit    Model+IPC+Store     the five MCP tools
+ElliotMCPKit    Model+IPC+Store     the MCP tools
 ElliotApp       SwiftUI            the board
 elliot-mcp      stdio              the helper Claude Code spawns
 ```
@@ -108,6 +123,28 @@ is unattended automation, and `acceptEdits` only auto-approves *edits* while
 explicitly register, and every run is logged in full. `permissionMode` is a
 per-repo column if you want to tighten one.
 
+**The artifact is the fact.** There is no `gh` to appeal to about whether a
+story is a good idea — the agent's judgement *is* the deliverable. So the
+analogue of "`gh` is the fact" is a file: each run is told to write
+`stories.json` at a path announced in its own prompt, and Elliot reads that
+rather than the closing message. The path is marked `ELLIOT_OUTPUT=`, and a
+property test asserts every prompt carries exactly one and that it is absolute
+— the same class of invariant as the first digit run of an `implement-issue`
+prompt. If the file is missing, the last fenced JSON block in the reply is
+tried, and which source answered is recorded on the run.
+
+**Evidence, checked.** Every proposed story must cite `file:line`. Elliot
+resolves each citation against the repository and confines it there, so a
+proposal whose files do not exist is shown struck through. It is the only
+objective fact available about an opinion, and it is the fastest way to see a
+story that was invented rather than found.
+
+**An analysis cannot be stopped from writing, so it is watched.** No CLI flag
+expresses "Write, but only under this path". The prompt forbids touching the
+repository, `--add-dir` makes the scratch directory writable, and `git status
+--porcelain` is compared before and after. A run that edited your code is
+reported, not guessed at.
+
 ## Testing
 
 `swift test` runs everything, including an end-to-end suite that drives the real
@@ -128,8 +165,10 @@ Two invariants carry most of the weight:
 
 Proof of concept. What works end to end: the board, the rule engine, the
 streaming runner with live logs and cancellation, `gh` verification, the PR
-watcher, crash reconciliation, preflight, and the MCP server.
+watcher, crash reconciliation, preflight, the MCP server, and the repository
+analysis that proposes stories.
 
 Not done: registering a repository is UI-only (no CLI), the merge path has not
-been exercised against a real pull request, and the `.app` is ad-hoc signed
-rather than notarised.
+been exercised against a real pull request, the `.app` is ad-hoc signed rather
+than notarised, and the analysis has been proven end to end only against the
+fake `claude` — no real repository has been read yet.
