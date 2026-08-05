@@ -89,6 +89,17 @@ enum Migrations {
             try db.create(index: "moveAudit_on_card_at", on: "moveAudit", columns: ["cardID", "at"])
         }
 
+        // Additive only: v1 databases in the field must keep their rows.
+        migrator.registerMigration("v2_repositoryLayout") { db in
+            try db.create(table: "setting") { t in
+                t.primaryKey("key", .text)
+                t.column("value", .text).notNull()
+            }
+            try db.alter(table: "repo") { t in
+                t.add(column: "visibility", .text)
+            }
+        }
+
         return migrator
     }
 }

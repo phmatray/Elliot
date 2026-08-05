@@ -286,4 +286,27 @@ struct BoardStoreTests {
         #expect(try await store.cards().isEmpty)
         #expect(try await store.runs().isEmpty)
     }
+
+    @Test("The tree layout round-trips through the settings table")
+    func layoutRoundTrip() async throws {
+        let store = try BoardStore.inMemory()
+        #expect(try await store.layout() == nil)
+
+        let layout = RepoTreeLayout(root: "/R", owners: ["phmatray", "Atypical-Consulting"])
+        try await store.saveLayout(layout)
+        #expect(try await store.layout() == layout)
+
+        try await store.saveLayout(RepoTreeLayout(root: "/S", owners: ["phmatray"]))
+        #expect(try await store.layout()?.root == "/S", "saving replaces rather than appends")
+    }
+
+    @Test("A repo's visibility round-trips and defaults to nil")
+    func repoVisibility() async throws {
+        let store = try BoardStore.inMemory()
+        var repo = makeRepo()
+        #expect(repo.visibility == nil)
+        repo.visibility = .private
+        try await store.saveRepo(repo)
+        #expect(try await store.repo(id: repo.id)?.visibility == .private)
+    }
 }
