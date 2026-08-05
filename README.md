@@ -85,6 +85,14 @@ elliot-mcp      stdio              the helper Claude Code spawns
 
 ## Decisions worth knowing
 
+**The board adopts, it does not mirror.** Opening a repository pulls its open issues and pull requests
+in as ordinary cards — draggable, and dragging one does the real thing. Placement comes from GitHub (no
+PR → To Do, draft → In Progress, ready → In Review, merged → Done) and never from Backlog, which means
+*not filed*. Adoption goes through `applySystemMove`, so a card landing in In Review cannot fire
+`merge-pr`; and two partial unique indexes on `(repoID, issueNumber)` and `(repoID, prNumber)` make a
+duplicated card impossible in the database rather than merely unlikely in the planner. Deleting an
+imported card dismisses it so a refresh cannot resurrect it — nothing on GitHub is touched.
+
 **One funnel.** `BoardService` is the only thing that changes a card's column. A
 drag and an MCP `board_move_card` reach the same two methods, so they cannot
 drift: one rule engine, one place that runs it, and callers only supply an
@@ -208,10 +216,15 @@ matches nothing prints `warning: No matching test cases were run` and **exits
 
 Proof of concept. What works end to end: the board, the rule engine, the
 streaming runner with live logs and cancellation, `gh` verification, the PR
-watcher, crash reconciliation, preflight, the MCP server, and the repository
-analysis that proposes stories.
+watcher, crash reconciliation, preflight, the MCP server, the repository
+analysis that proposes stories, and the GitHub import — so the board shows the
+work a repository already had, not only what was typed into Elliot after
+installing it.
 
 Not done: registering a repository is UI-only (no CLI), the merge path has not
 been exercised against a real pull request, the `.app` is ad-hoc signed rather
 than notarised, and the analysis has been proven end to end only against the
-fake `claude` — no real repository has been read yet.
+fake `claude` — no real repository has been read yet. The import's two
+properties a screenshot cannot show — a second ⌘R changing nothing, and a
+deleted card staying deleted — are covered at the unit level but have not yet
+been watched by hand against a live repository.

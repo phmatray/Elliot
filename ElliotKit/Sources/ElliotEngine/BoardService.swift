@@ -21,6 +21,7 @@ public enum BoardError: Error, LocalizedError {
     case cardNotFound(UUID)
     case repoNotFound(UUID)
     case cardAlreadyFiled(Int)
+    case cardTracksPullRequest(Int)
     case runNotFound(UUID)
 
     public var errorDescription: String? {
@@ -29,6 +30,8 @@ public enum BoardError: Error, LocalizedError {
         case .repoNotFound(let id): "No repository with id \(id)."
         case .cardAlreadyFiled(let number):
             "This card is filed as issue #\(number); edit the issue on GitHub."
+        case .cardTracksPullRequest(let number):
+            "This card tracks pull request #\(number); edit it on GitHub."
         case .runNotFound(let id): "No run with id \(id)."
         }
     }
@@ -241,6 +244,42 @@ public actor BoardService: SystemMoving {
         return CreatedCard(card: card, alreadyExisted: false)
     }
 
+    /// Creates a card for something that already exists on GitHub.
+    ///
+    /// Deliberately not an argument on `createCard`: that one answers to the
+    /// user's New-story sheet and to `board_create_card`, and always starts in
+    /// Backlog with nothing filed. This one sets the column and the issue/PR
+    /// numbers in the **same write**, so a crash cannot leave a card the next
+    /// refresh would fail to recognise and would therefore duplicate.
+    ///
+    /// Still `BoardService`, so "the only thing that sets a card's column"
+    /// holds. It runs no rule because there is no *move*: the card did not
+    /// exist a moment ago.
+    @discardableResult
+    public func adoptCard(_ seed: CardSeed) async throws -> Card {
+        guard try await store.repo(id: seed.repoID) != nil else {
+            throw BoardError.repoNotFound(seed.repoID)
+        }
+        let now = Date()
+        let card = Card(
+            repoID: seed.repoID,
+            title: seed.title,
+            body: seed.body,
+            story: nil,
+            column: seed.column,
+            orderIndex: try await store.nextOrderIndex(repoID: seed.repoID, column: seed.column),
+            issueNumber: seed.issueNumber,
+            issueURL: seed.issueURL,
+            prNumber: seed.prNumber,
+            prURL: seed.prURL,
+            branch: seed.branch,
+            columnEnteredAt: now,
+            createdAt: seed.createdAt,
+            updatedAt: now)
+        try await store.saveCard(card)
+        return card
+    }
+
     /// A nil key means "no deduplication" — not "look for a card with no key".
     private func existingCard(forKey key: String?) async throws -> Card? {
         guard let key else { return nil }
@@ -264,6 +303,10 @@ public actor BoardService: SystemMoving {
     public func updateCard(id: UUID, title: String, body: String, story: UserStory?) async throws -> Card {
         guard var card = try await store.card(id: id) else { throw BoardError.cardNotFound(id) }
         if let issue = card.issueNumber { throw BoardError.cardAlreadyFiled(issue) }
+        // Once the card points at something on github.com, that is the record.
+        // The pull-request half matters now that a card can be imported from a
+        // pull request which closes no issue.
+        if let pr = card.prNumber { throw BoardError.cardTracksPullRequest(pr) }
         card.title = title
         card.body = body
         card.story = story
@@ -271,7 +314,20 @@ public actor BoardService: SystemMoving {
         return card
     }
 
+    /// Deleting a card that carries an issue or a pull request also **dismisses**
+    /// it, so the next refresh does not put it straight back. Nothing on GitHub
+    /// is touched: the issue stays exactly as it was, Elliot simply stops
+    /// showing it. Undone by `clearDismissals`.
     public func deleteCard(id: UUID) async throws {
+        if let card = try await store.card(id: id) {
+            if let number = card.issueNumber {
+                try? await store.dismiss(ExternalRef(kind: .issue, number: number), repoID: card.repoID)
+            }
+            if let number = card.prNumber {
+                try? await store.dismiss(
+                    ExternalRef(kind: .pullRequest, number: number), repoID: card.repoID)
+            }
+        }
         try await store.deleteCard(id: id)
     }
 

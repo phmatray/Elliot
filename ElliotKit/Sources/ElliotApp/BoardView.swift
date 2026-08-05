@@ -42,6 +42,9 @@ public struct BoardView: View {
         .sheet(isPresented: $model.showingAnalysis) {
             AnalysisWindow()
         }
+        .task(id: model.selectedRepoID) {
+            await model.importIfNeeded(repoID: model.selectedRepoID)
+        }
         // The board keeps focus so a card can be moved without the mouse.
         .focusable()
         .focusEffectDisabled()
@@ -75,6 +78,23 @@ public struct BoardView: View {
             .disabled(model.repos.isEmpty)
             .help("Write a new backlog story (⌘N)")
             .keyboardShortcut("n")
+        }
+
+        ToolbarItem {
+            Menu {
+                Button("Forget dismissed items") {
+                    Task { await model.clearDismissals() }
+                }
+            } label: {
+                Label("Refresh", systemImage: "arrow.clockwise")
+            } primaryAction: {
+                Task { await model.refreshFromGitHub() }
+            }
+            .menuStyle(.button)
+            .fixedSize()
+            .disabled(model.repos.isEmpty || model.isImporting)
+            .keyboardShortcut("r")
+            .help("Bring this repository's GitHub issues and pull requests onto the board.")
         }
 
         ToolbarItem {
@@ -184,7 +204,7 @@ struct StatusBar: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if !model.isReady {
+            if !model.isReady || model.isImporting {
                 ProgressView().controlSize(.small)
             }
             Text(model.status)
