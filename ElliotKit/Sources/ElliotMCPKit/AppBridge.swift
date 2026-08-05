@@ -83,12 +83,17 @@ public struct AppBridge: Sendable, BridgeProviding {
     /// A read: answered live, or from a read-only snapshot of the database.
     public func read(_ request: ElliotRequest) async -> BridgeOutcome {
         let client = client
-        if client.isAppRunning() {
+        // Which of the two snapshot stories is true is decided here and nowhere
+        // else: a socket that fails mid-request also lands in the fallback, and
+        // reporting that as "Elliot is not running" sends the caller to launch
+        // an app that is already up.
+        let wasRunning = client.isAppRunning()
+        if wasRunning {
             let response = await BlockingIO.run { try? client.send(request) }
             if let response { return .live(response) }
         }
         do {
-            return .offline(try BoardStore.openReadOnly())
+            return .offline(try BoardStore.openReadOnly(), wasRunning ? .appUnreachable : .appNotRunning)
         } catch {
             // Caught rather than `try?`. The store distinguishes "this file was
             // written by a newer Elliot than this helper" from "no board has
@@ -157,6 +162,18 @@ public struct AppBridge: Sendable, BridgeProviding {
 
 public enum BridgeOutcome: Sendable {
     case live(ElliotResponse)
-    /// The app is down; answer from the database and say so.
-    case offline(BoardStore)
+    /// The app could not answer; serve the database and say which way it failed.
+    case offline(BoardStore, SnapshotReason)
+}
+
+/// Why a read fell back to the database instead of the running app.
+///
+/// Two different stories, and telling the wrong one is the defect the rest of
+/// this module was audited for: a snapshot labelled "Elliot is not running"
+/// while Elliot *is* running sends an agent to launch an app that is already
+/// up, and buries the socket failure that actually happened.
+public enum SnapshotReason: Sendable {
+    case appNotRunning
+    /// The socket was live at the check and the request still did not complete.
+    case appUnreachable
 }

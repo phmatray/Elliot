@@ -93,10 +93,24 @@ extension Value {
 // different words.
 
 enum ToolOutput {
-    static let offlineNote =
-        "Elliot is not running; this is a snapshot of its database. "
+    /// Why this answer is a snapshot, in the caller's terms.
+    ///
+    /// Takes the reason rather than assuming one: the fallback is reached both
+    /// when Elliot is down and when it is up but did not answer, and the second
+    /// case told as the first costs an agent a pointless launch and hides a
+    /// failing socket.
+    static func offlineNote(_ reason: SnapshotReason) -> String {
+        let opening = switch reason {
+        case .appNotRunning:
+            "Elliot is not running; this is a snapshot of its database. "
+        case .appUnreachable:
+            "Elliot is running but did not answer this request; this is a snapshot of its database. "
+        }
+        return opening
             + "A card held by a run still reports activeRunID, but no run is making progress "
-            + "while Elliot is down, so any state other than a terminal one is frozen rather than live."
+            + "while Elliot is unreachable, so any state other than a terminal one is frozen "
+            + "rather than live."
+    }
 
     static func pageFields(
         total: Int,

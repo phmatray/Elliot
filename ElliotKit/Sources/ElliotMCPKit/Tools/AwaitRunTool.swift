@@ -70,6 +70,16 @@ struct AwaitRunTool: BoardTool {
     func call(_ args: [String: Value], bridge: any BridgeProviding) async throws -> CallTool.Result {
         let id = try args.uuid("run_id")
         let seconds = try args.integer("timeout_seconds") ?? ElliotTimeouts.awaitDefaultSeconds
+        // Refused rather than clamped, for the reason `limit` is: downstream a
+        // non-positive wait becomes a returns-immediately poll, so the caller
+        // that computed `deadline - now` and went negative would be told the
+        // run is not finished, over and over, with nothing naming the argument.
+        guard seconds > 0 else {
+            throw ToolFailure(
+                code: "bad_argument",
+                message: "timeout_seconds must be at least 1."
+            )
+        }
 
         let response = await bridge.write(.awaitRun(id: id, timeoutSeconds: seconds))
         return try .render(response) { payload in

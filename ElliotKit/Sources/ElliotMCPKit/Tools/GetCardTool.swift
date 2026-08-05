@@ -38,7 +38,7 @@ struct GetCardTool: BoardTool {
                 guard case .card(let card) = payload else { return nil }
                 return ["card": try Value.encoding(card), "source": .string("live")]
             }
-        case .offline(let store):
+        case .offline(let store, let reason):
             guard let card = try await store.card(id: id) else {
                 return .failure(code: "card_not_found", message: "No card with id \(id).")
             }
@@ -51,7 +51,7 @@ struct GetCardTool: BoardTool {
                 "card": try Value.encoding(dto),
                 "source": .string("offline-db"),
             ]
-            ToolOutput.attachNote(&fields, ToolOutput.offlineNote)
+            ToolOutput.attachNote(&fields, ToolOutput.offlineNote(reason))
             return try .ok(fields)
         }
     }

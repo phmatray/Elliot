@@ -47,14 +47,14 @@ struct ListReposTool: BoardTool {
                     "source": .string("live"),
                 ]
             }
-        case .offline(let store):
+        case .offline(let store, let reason):
             let repos = try await store.repos().map { RepoDTO(repo: $0) }
             var fields: [String: Value] = [
                 "repos": try Value.encoding(repos),
                 "total": .int(repos.count),
                 "source": .string("offline-db"),
             ]
-            ToolOutput.attachNote(&fields, ToolOutput.offlineNote)
+            ToolOutput.attachNote(&fields, ToolOutput.offlineNote(reason))
             return try .ok(fields)
         }
     }

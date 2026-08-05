@@ -80,7 +80,7 @@ struct ListRunsTool: BoardTool {
                 return fields
             }
 
-        case .offline(let store):
+        case .offline(let store, let reason):
             // The same refusal the running app makes, for the same reason: "this
             // card has no runs" and "there is no such card" are different
             // answers, and only one of them means keep waiting. Filtering on an
@@ -109,7 +109,7 @@ struct ListRunsTool: BoardTool {
             fields["source"] = .string("offline-db")
             ToolOutput.attachNote(
                 &fields,
-                ToolOutput.offlineNote,
+                ToolOutput.offlineNote(reason),
                 ToolOutput.pageNote(
                     shown: page.runs.count, total: page.total,
                     truncated: page.truncated, limit: page.limit, cappedFrom: page.limitCappedFrom

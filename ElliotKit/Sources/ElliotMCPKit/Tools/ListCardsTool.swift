@@ -83,7 +83,7 @@ struct ListCardsTool: BoardTool {
                 return fields
             }
 
-        case .offline(let store):
+        case .offline(let store, let reason):
             let (limit, cappedFrom) = ElliotPaging.clamp(
                 requested,
                 default: ElliotPaging.cardLimitDefault,
@@ -118,7 +118,7 @@ struct ListCardsTool: BoardTool {
             fields["source"] = .string("offline-db")
             ToolOutput.attachNote(
                 &fields,
-                ToolOutput.offlineNote,
+                ToolOutput.offlineNote(reason),
                 ToolOutput.pageNote(
                     shown: page.cards.count, total: page.total,
                     truncated: page.truncated, limit: page.limit, cappedFrom: page.limitCappedFrom

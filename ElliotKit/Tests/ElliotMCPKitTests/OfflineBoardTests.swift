@@ -403,6 +403,23 @@ struct OfflineBoardTests {
         }
     }
 
+    @Test("A snapshot served because the app did not answer does not claim it is down")
+    func unreachableAnswersSayWhichFailure() async throws {
+        // Both stories reach the snapshot through the same branch, and telling
+        // the wrong one sends an agent to launch an app that is already up
+        // while the socket that actually failed goes unmentioned.
+        let repo = makeRepo()
+        let store = try await makeStore(repos: [repo], cards: [makeCard(repoID: repo.id)])
+        let server = ElliotMCPServer(bridge: StubBridge.snapshot(store, reason: .appUnreachable))
+
+        for tool in ["board_list_cards", "board_list_repos", "board_next", "board_list_runs"] {
+            let answer = try await call(server, tool)
+            #expect(answer.source == "offline-db", "\(tool)")
+            #expect(answer.note.contains("did not answer"), "\(tool)")
+            #expect(!answer.note.contains("Elliot is not running"), "\(tool)")
+        }
+    }
+
     @Test("A live answer says it came from the running app")
     func liveAnswersSaySo() async throws {
         let bridge = StubBridge.answering(.cards(CardPage(cards: [], total: 0, limit: 100)))
@@ -440,7 +457,7 @@ struct OfflineBoardTests {
             isAppRunning: false,
             onRead: { request in
                 log.record(request)
-                return .offline(store)
+                return .offline(store, .appNotRunning)
             },
             onWrite: { _ in
                 .failure(code: .appUnavailable, message: "Elliot is not running.", hint: "Open Elliot.app.")

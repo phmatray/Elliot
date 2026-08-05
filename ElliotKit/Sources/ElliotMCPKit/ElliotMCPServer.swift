@@ -139,7 +139,7 @@ public extension ElliotMCPServer {
             default:
                 throw MCPError.internalError("Elliot answered listRuns with an unexpected payload.")
             }
-        case .offline(let store):
+        case .offline(let store, _):
             runs = try await store.runs(limit: ElliotPaging.runLimitDefault).map { RunDTO(run: $0) }
         }
         return ListResources.Result(resources: runs.map(Self.logResource))
@@ -231,7 +231,7 @@ public extension ElliotMCPServer {
             default:
                 throw MCPError.internalError("Elliot answered getCard with an unexpected payload.")
             }
-        case .offline(let store):
+        case .offline(let store, _):
             guard let card = try await store.card(id: id) else {
                 throw MCPError.invalidParams("No card with id \(id).")
             }

@@ -52,10 +52,17 @@ extension StubBridge {
 
     /// Elliot is down: reads fall back to the snapshot, writes are refused —
     /// which is the whole architecture in one stub.
-    static func snapshot(_ store: BoardStore) -> StubBridge {
+    ///
+    /// `reason` defaults to the common case but is a parameter because the
+    /// other one — up, and not answering — has to be reachable from a test:
+    /// it is served by the same branch and must not borrow this one's story.
+    static func snapshot(
+        _ store: BoardStore,
+        reason: SnapshotReason = .appNotRunning
+    ) -> StubBridge {
         StubBridge(
             isAppRunning: false,
-            onRead: { _ in .offline(store) },
+            onRead: { _ in .offline(store, reason) },
             onWrite: { _ in
                 .failure(
                     code: .appUnavailable,

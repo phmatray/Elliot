@@ -123,6 +123,24 @@ struct ToolSurfaceTests {
         #expect(answer["card"] == nil)
     }
 
+    @Test("A wait of zero seconds or less is refused, not read as the default")
+    func nonPositiveAwaitTimeout() async throws {
+        // `deadline - now` going negative is how a caller arrives here, and
+        // clamping it up would answer "still running" forever with nothing
+        // naming the argument that was wrong.
+        for seconds in [0, -30] {
+            let answer = try await call(
+                ElliotMCPServer(bridge: StubBridge()),
+                "board_await_run",
+                ["run_id": .string(UUID().uuidString), "timeout_seconds": .int(seconds)]
+            )
+
+            #expect(answer.isError, "\(seconds)")
+            #expect(answer.error == "bad_argument", "\(seconds)")
+            #expect(answer["run"] == nil, "\(seconds)")
+        }
+    }
+
     @Test("A limit that is not a number is refused rather than quietly defaulted")
     func nonNumericLimit() async throws {
         let answer = try await call(

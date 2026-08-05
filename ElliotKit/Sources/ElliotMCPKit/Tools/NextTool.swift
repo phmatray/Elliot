@@ -80,7 +80,7 @@ struct NextTool: BoardTool {
                 guard case .next(let page) = payload else { return nil }
                 return try ToolOutput.nextFields(page, source: "live", extraNote: nil)
             }
-        case .offline(let store):
+        case .offline(let store, let reason):
             let (limit, cappedFrom) = ElliotPaging.clamp(
                 requested,
                 default: ElliotPaging.nextLimitDefault,
@@ -90,7 +90,7 @@ struct NextTool: BoardTool {
                 store: store, repo: repo, limit: limit, cappedFrom: cappedFrom
             )
             let fields = try ToolOutput.nextFields(
-                page, source: "offline-db", extraNote: ToolOutput.offlineNote
+                page, source: "offline-db", extraNote: ToolOutput.offlineNote(reason)
             )
             return try .ok(fields)
         }
