@@ -25,6 +25,19 @@ public enum ProcessError: Error, LocalizedError {
     }
 }
 
+/// The exit flag and whoever is waiting on it, under one lock.
+///
+/// Both live together for the same reason `StreamingProcess.State` does: a
+/// waiter that checks the flag and parks in two separate steps can be handed
+/// off to *after* the handler has already run, and then waits forever.
+private struct WaitState: @unchecked Sendable {
+    var exited = false
+    /// A list rather than one slot: a second waiter must not overwrite — and so
+    /// orphan — the first. That is the same lost-wakeup this type exists to
+    /// prevent, and a single slot would leave it one call site away.
+    var waiters: [CheckedContinuation<Void, Never>] = []
+}
+
 /// Runs short-lived commands — `gh`, `git`, `zsh -lc` — and collects their
 /// output. Long-running agent runs use `StreamingProcess` instead.
 public enum ProcessRunner {
@@ -52,6 +65,42 @@ public enum ProcessRunner {
         // Never let a child inherit the app's stdin and block waiting on it.
         process.standardInput = FileHandle.nullDevice
 
+        // Foundation's `waitUntilExit()` spins a run loop waiting for a
+        // notification that a concurrently-spawned sibling can consume first.
+        // It then parks forever — and because it is called from a detached
+        // task, it parks a *cooperative-pool* thread, which is how one wedged
+        // `gh` call took `swift test` and the SwiftPM build lock down with it
+        // (issue #7, sampled at this line, with no child process left alive).
+        //
+        // `StreamingProcess` already avoids it: publish the exit from
+        // `terminationHandler` and hand off the waiter under ONE lock, so a
+        // waiter arriving at that exact instant cannot miss it. Same mechanism
+        // here, so the two spawners cannot diverge. Must be installed before
+        // `run()`, or a fast child can exit before the handler exists.
+        let waitState = Locked(WaitState())
+        process.terminationHandler = { _ in
+            let parked = waitState.withLock { current -> [CheckedContinuation<Void, Never>] in
+                current.exited = true
+                defer { current.waiters = [] }
+                return current.waiters
+            }
+            for continuation in parked { continuation.resume() }
+        }
+
+        let waitForExit: @Sendable () async -> Void = {
+            await withCheckedContinuation { continuation in
+                // Checking the flag and parking happen under one lock, so the
+                // handler cannot slip between them and leave this waiting
+                // forever.
+                let alreadyExited = waitState.withLock { current -> Bool in
+                    if current.exited { return true }
+                    current.waiters.append(continuation)
+                    return false
+                }
+                if alreadyExited { continuation.resume() }
+            }
+        }
+
         try process.run()
 
         // Both pipes must be drained concurrently: a child that fills one while
@@ -63,7 +112,7 @@ public enum ProcessRunner {
 
         let timedOut = await withTaskGroup(of: Bool.self) { group in
             group.addTask {
-                await Task.detached { process.waitUntilExit() }.value
+                await waitForExit()
                 return false
             }
             if let timeout {
@@ -80,7 +129,7 @@ public enum ProcessRunner {
         }
 
         // If the timeout fired, wait for the terminate to actually land.
-        if timedOut { await Task.detached { process.waitUntilExit() }.value }
+        if timedOut { await waitForExit() }
 
         return ProcessResult(
             exitCode: process.terminationStatus,
