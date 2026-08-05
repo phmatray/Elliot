@@ -274,26 +274,29 @@ public final class BoardStore: Sendable {
         try await saveProposals([proposal])
     }
 
-    /// Flips a proposal from `.proposed` to `.accepted`, atomically: `true`
-    /// means this call won, `false` means it does not exist or another caller
-    /// already claimed it.
+    /// Flips a proposal from `.proposed` to `status`, atomically: `true` means
+    /// this call won, `false` means it does not exist or another caller
+    /// already decided it first — accepted or rejected, in either direction.
     ///
-    /// `AnalysisService` is a reentrant actor — two concurrent `accept` calls
-    /// for the same id (a double-tap, a retried MCP call) can both be past a
-    /// `fetch → check .proposed` read before either has written. A single
-    /// conditional `UPDATE` is what makes that safe: SQLite serializes the two
-    /// writes, so only one `WHERE status = 'proposed'` can still match by the
-    /// time it runs, and the loser sees zero rows changed rather than a stale
-    /// read it has no way to know is stale.
-    public func claimProposal(id: UUID) async throws -> Bool {
+    /// `AnalysisService` is a reentrant actor — concurrent `accept`/`reject`
+    /// calls for the same id (a double-tap, an MCP retry, or — once Task 13's
+    /// Analysis window ships — an ordinary double-click on *Reject* and
+    /// *→ Backlog* sitting side by side over one multi-selection) can each be
+    /// past a `fetch → check .proposed` read before any of them has written.
+    /// A single conditional `UPDATE` is what makes that safe: SQLite
+    /// serializes every write, so only the first caller whose `UPDATE` still
+    /// finds `status = 'proposed'` changes anything, and every other caller —
+    /// including one deciding the *opposite* way — sees zero rows changed
+    /// rather than a stale read it has no way to know is stale. This is the
+    /// same reason a losing `reject` can never wipe an already-`.accepted`
+    /// row's `acceptedCardID`: it never issues an unconditional write at all.
+    public func claimProposal(id: UUID, to status: ProposalStatus) async throws -> Bool {
         try await requireWriter().write { db in
             try db.execute(
                 sql: #"""
                     UPDATE "storyProposal" SET "status" = ? WHERE "id" = ? AND "status" = ?
                     """#,
-                arguments: [
-                    ProposalStatus.accepted.rawValue, id.databaseKey, ProposalStatus.proposed.rawValue,
-                ]
+                arguments: [status.rawValue, id.databaseKey, ProposalStatus.proposed.rawValue]
             )
             return db.changesCount > 0
         }

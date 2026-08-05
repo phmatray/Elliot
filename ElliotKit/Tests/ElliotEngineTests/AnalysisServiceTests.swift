@@ -190,26 +190,33 @@ struct AnalysisServiceTests {
         #expect(try await fixture.store.cards(repoID: fixture.repo.id).count == 1)
     }
 
-    @Test("Concurrent acceptances of the same proposal create exactly one card")
+    private enum DecisionOutcome: Sendable {
+        case accepted([Card])
+        case rejected
+    }
+
+    @Test("Concurrent decisions on the same proposal are always coherent")
     func acceptRacesToOneCard() async throws {
         let fixture = try await makeFixture()
         let started = try await fixture.service.start(
             repoID: fixture.repo.id, angles: [.bugs], origin: .manual
         )
+        let service = fixture.service
+        let store = fixture.store
+
+        // Part 1: accept vs. accept. `AnalysisService` is a reentrant actor:
+        // `accept` awaits the store and the board more than once, so many
+        // concurrent callers for the same id — a double-tap, a retried MCP
+        // call — can each be scheduled between those suspension points. A
+        // `TaskGroup` of several attempts gives the scheduler real
+        // opportunities to interleave them, rather than hoping two `async
+        // let`s happen to overlap.
         let proposal = StoryProposal(
             analysisID: started.analysis.id, runID: started.runs[0].id, repoID: fixture.repo.id,
             angle: .bugs, title: "Race me",
             story: UserStory(role: "dev", want: "w", benefit: "b"), createdAt: Date()
         )
         try await fixture.store.saveProposals([proposal])
-
-        // `AnalysisService` is a reentrant actor: `accept` awaits the store and
-        // the board more than once, so many concurrent callers for the same id
-        // — a double-tap, a retried MCP call — can each be scheduled between
-        // those suspension points. A `TaskGroup` of several attempts gives the
-        // scheduler real opportunities to interleave them, rather than hoping
-        // two `async let`s happen to overlap.
-        let service = fixture.service
         let proposalID = proposal.id
         let results = try await withThrowingTaskGroup(of: [Card].self) { group in
             for _ in 0..<8 {
@@ -221,7 +228,67 @@ struct AnalysisServiceTests {
         }
 
         #expect(results.reduce(0) { $0 + $1.count } == 1)
-        #expect(try await fixture.store.cards(repoID: fixture.repo.id).count == 1)
+        #expect(try await store.cards(repoID: fixture.repo.id).count == 1)
+
+        // Part 2: accept vs. reject, on the same id. This is precisely the
+        // interleaving Task 13's Analysis window makes reachable by an
+        // ordinary double-click — Reject and → Backlog side by side, acting
+        // on one multi-selection — not only by a contrived MCP retry.
+        // Whichever wins, the result must be coherent: never a card on the
+        // board whose source proposal reads `.rejected`, and never a
+        // `.rejected` proposal that also grew a card.
+        let second = StoryProposal(
+            analysisID: started.analysis.id, runID: started.runs[0].id, repoID: fixture.repo.id,
+            angle: .bugs, title: "Accept or reject me, never both",
+            story: UserStory(role: "dev", want: "w", benefit: "b"), createdAt: Date()
+        )
+        try await store.saveProposals([second])
+        let secondID = second.id
+        let baselineCards = try await store.cards(repoID: fixture.repo.id).count
+
+        // Two `reject`s bracketing one `accept`, `reject` first: `reject`'s
+        // only awaited step between its read and its write is the write
+        // itself, so a `reject` added first tends to win the read race
+        // against `accept`'s claim, then land its unconditional write only
+        // after `accept`'s longer claim-then-createCard-then-save chain has
+        // already committed `.accepted` underneath it. Confirmed empirically
+        // against the unfixed code below (see fix-round-2 report): this exact
+        // shape reproduced the stomp in the high-90s percent of trials, where
+        // a bare 1-vs-1 `async let` essentially never did.
+        let outcomes = try await withThrowingTaskGroup(of: DecisionOutcome.self) { group in
+            group.addTask {
+                try await service.reject(proposalIDs: [secondID])
+                return .rejected
+            }
+            group.addTask { .accepted(try await service.accept(proposalIDs: [secondID])) }
+            group.addTask {
+                try await service.reject(proposalIDs: [secondID])
+                return .rejected
+            }
+            var all: [DecisionOutcome] = []
+            for try await outcome in group { all.append(outcome) }
+            return all
+        }
+
+        let cardsCreated = outcomes.flatMap { outcome -> [Card] in
+            if case .accepted(let cards) = outcome { return cards }
+            return []
+        }
+        let final = try #require(try await store.proposal(id: secondID))
+        let cardsAfter = try await store.cards(repoID: fixture.repo.id).count
+
+        switch final.status {
+        case .accepted:
+            #expect(cardsCreated.count == 1)
+            #expect(final.acceptedCardID == cardsCreated.first?.id)
+            #expect(cardsAfter == baselineCards + 1)
+        case .rejected:
+            #expect(cardsCreated.isEmpty)
+            #expect(final.acceptedCardID == nil)
+            #expect(cardsAfter == baselineCards)
+        case .proposed:
+            Issue.record("a decisive race left the proposal in .proposed")
+        }
     }
 
     @Test("Rejecting marks without deleting, so the analysis stays readable")

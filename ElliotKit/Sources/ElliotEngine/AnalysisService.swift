@@ -189,41 +189,62 @@ public actor AnalysisService {
             // same id (a double-tap, a retried MCP call) both pass the check
             // before either writes, and both create a card. A caller that
             // loses the claim moves on, the same as it used to for an id that
-            // was already decided.
-            guard try await store.claimProposal(id: id) else { continue }
+            // was already decided. The same claim is what stops a concurrent
+            // `reject` on this id from winning either: it is the identical
+            // conditional update, aimed at `.rejected` instead, so whichever
+            // of the two calls SQLite serializes first is the only one that
+            // can still find `.proposed` to act on.
+            guard try await store.claimProposal(id: id, to: .accepted) else { continue }
             guard var proposal = try await store.proposal(id: id) else { continue }
 
+            let card: Card
             do {
-                let card = try await board.createCard(
+                card = try await board.createCard(
                     repoID: proposal.repoID,
                     title: proposal.title,
                     body: proposal.rationale,
                     story: proposal.story,
                     column: .backlog
                 )
-                proposal.acceptedCardID = card.id
-                try await store.saveProposal(proposal)
-                created.append(card)
             } catch {
-                // The claim already flipped this to `.accepted`; card creation
-                // failed after it. Give the proposal back rather than
-                // stranding it accepted with nothing behind it.
+                // No card exists yet, so the claim can safely be given back —
+                // a retry is exactly a fresh `accept` of a `.proposed`
+                // proposal, not a duplicate waiting to happen.
                 proposal.status = .proposed
                 try? await store.saveProposal(proposal)
                 throw error
             }
+
+            // The card exists on the board from here on, regardless of what
+            // happens next — `board.createCard` already committed it. Rolling
+            // the claim back to `.proposed` at this point, the way the failure
+            // path above does, would be the wrong failure mode: a retry would
+            // create a *second* card for a proposal that already has one. If
+            // this write fails, the honest state is the claim's own —
+            // `.accepted`, just possibly missing the `acceptedCardID`
+            // backlink — not a proposal that looks untouched while a card
+            // for it already sits on the board.
+            created.append(card)
+            proposal.acceptedCardID = card.id
+            try await store.saveProposal(proposal)
         }
         return created
     }
 
     public func reject(proposalIDs: [UUID]) async throws {
         for id in proposalIDs {
-            guard var proposal = try await store.proposal(id: id), proposal.status == .proposed
-            else { continue }
-            // Marked, not deleted: an analysis you have been through should
-            // still read as what it found, including what you turned down.
-            proposal.status = .rejected
-            try await store.saveProposal(proposal)
+            // Same atomic claim `accept` uses, aimed the other way. A plain
+            // "fetch, check .proposed, write" here — as this used to be —
+            // reads a snapshot and later writes it back unconditionally: a
+            // `reject` that loses a race against a concurrent `accept` for
+            // the same id can read `.proposed` before the accept commits, and
+            // then overwrite whatever the accept already committed —
+            // including wiping `acceptedCardID` off a card that genuinely
+            // exists. Marked, not deleted, same as before: an analysis you
+            // have been through should still read as what it found, including
+            // what you turned down — just never what you turned down after
+            // someone else had already taken it.
+            _ = try await store.claimProposal(id: id, to: .rejected)
         }
     }
 }
