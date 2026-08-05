@@ -50,7 +50,7 @@ public struct PreflightService: Sendable {
 
     // MARK: - Global
 
-    public func globalChecks() async -> [CheckResult] {
+    public func globalChecks(layout: RepoTreeLayout = .portfolio) async -> [CheckResult] {
         var results: [CheckResult] = []
 
         results.append(CheckResult(
@@ -106,7 +106,25 @@ public struct PreflightService: Sendable {
             statusWhenMissing: .warn
         ))
 
+        results.append(Self.repositoriesRootCheck(layout))
+
         return results
+    }
+
+    /// Static so it is testable without a `PreflightService`, which needs a
+    /// captured shell environment.
+    public static func repositoriesRootCheck(_ layout: RepoTreeLayout) -> CheckResult {
+        let expected = layout.ownerDirectories()
+        let present = expected.filter { FileManager.default.fileExists(atPath: $0) }
+        return CheckResult(
+            id: "repositories.root", title: "Repository tree",
+            status: present.isEmpty ? .fail : (present.count == expected.count ? .pass : .warn),
+            detail: present.isEmpty
+                ? "No owner folder found under \(layout.root)."
+                : "\(present.count) of \(expected.count) owner folders under \(layout.root).",
+            command: "ls -1 \(layout.root)",
+            fixHint: present.count == expected.count
+                ? nil : "Set the tree root on the Repositories page.")
     }
 
     /// The newest installed version of a plugin, and whether it carries the

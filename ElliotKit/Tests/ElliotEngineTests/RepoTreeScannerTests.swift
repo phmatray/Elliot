@@ -39,4 +39,13 @@ struct RepoTreeScannerTests {
         let layout = RepoTreeLayout(root: "/nope/\(UUID().uuidString)", owners: ["phmatray"])
         #expect(RepoTreeScanner(layout: layout).scan().isEmpty)
     }
+
+    @Test("The root check fails when no owner folder exists, and names the command it used")
+    func rootCheck() {
+        let missing = RepoTreeLayout(root: "/nope/\(UUID().uuidString)", owners: ["phmatray"])
+        let result = PreflightService.repositoriesRootCheck(missing)
+        #expect(result.status == .fail)
+        #expect(result.command?.contains(missing.root) == true)
+        #expect(result.fixHint != nil)
+    }
 }
