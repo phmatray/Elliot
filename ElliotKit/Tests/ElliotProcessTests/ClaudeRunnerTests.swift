@@ -1,5 +1,6 @@
 import ElliotModel
 import Foundation
+import TestSupport
 import Testing
 
 @testable import ElliotProcess
@@ -233,6 +234,39 @@ struct ClaudeRunnerTests {
         // Claude Code documents 143 for its own SIGTERM shutdown; the fake
         // reproduces that so the runner is exercised against the real contract.
         #expect(result.exitCode == 143)
+    }
+
+    @Test("A hanging child is still reaped, and readiness is observable")
+    func hangingChildIsReaped() async throws {
+        let dir = try TestPaths.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let ready = dir.appendingPathComponent("ready")
+
+        let run = try ClaudeRun.start(
+            invocation: ClaudeInvocation(runID: UUID(), prompt: "x", cwd: dir.path),
+            config: config(environment: [
+                "FAKE_CLAUDE_MODE": "hang",
+                "FAKE_CLAUDE_READY": ready.path,
+            ]),
+            logURL: dir.appendingPathComponent("run.ndjson")
+        )
+        defer { run.cancel() }
+
+        try await withTimeout(.seconds(5)) {
+            while !FileManager.default.fileExists(atPath: ready.path) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        run.cancel()
+
+        let outcome = try await withTimeout(.seconds(5)) { () -> ClaudeRunOutcome? in
+            var last: ClaudeRunOutcome?
+            for await update in run.updates {
+                if case .finished(let result) = update { last = result }
+            }
+            return last
+        }
+        #expect(try #require(outcome).wasTerminated)
     }
 
     @Test("A crashing run surfaces its stderr")

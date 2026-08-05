@@ -49,7 +49,7 @@ let package = Package(
         // Fixtures and the fake `claude` live at the repository root, not in a
         // resource bundle: the same files are used by hand from a terminal when
         // reproducing a run.
-        .testTarget(name: "ElliotProcessTests", dependencies: ["ElliotProcess"]),
+        .testTarget(name: "ElliotProcessTests", dependencies: ["ElliotProcess", "TestSupport"]),
         .testTarget(name: "ElliotEngineTests", dependencies: ["ElliotEngine"]),
         .testTarget(name: "ElliotIPCTests", dependencies: ["ElliotIPC"]),
     ],
