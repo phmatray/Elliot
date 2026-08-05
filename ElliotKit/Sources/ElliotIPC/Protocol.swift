@@ -9,7 +9,7 @@ import Foundation
 ///     `rejectProposals`.
 public let elliotProtocolVersion = 2
 
-public enum ElliotRequest: Codable, Sendable {
+public enum ElliotRequest: Codable, Sendable, Equatable {
     case hello(protocolVersion: Int, token: String, client: String)
     case listCards(repo: String?, column: ElliotModel.Column?, limit: Int)
     case getCard(id: UUID)
@@ -26,7 +26,7 @@ public enum ElliotRequest: Codable, Sendable {
     /// The three parts of a user story, separately — so a skill generating
     /// stories from a repository can fill them in rather than hand over prose
     /// that would have to be parsed back apart.
-    public struct StoryInput: Codable, Sendable {
+    public struct StoryInput: Codable, Sendable, Equatable {
         public var role: String
         public var want: String
         public var benefit: String
@@ -55,6 +55,8 @@ public enum ElliotErrorCode: String, Codable, Sendable {
     case readOnly = "read_only"
     case internalError = "internal_error"
     case analysisNotFound = "analysis_not_found"
+    /// Reserved for a future single-proposal lookup request; nothing in the
+    /// wire protocol throws this yet.
     case proposalNotFound = "proposal_not_found"
     case unknownAngle = "unknown_angle"
     case analysisRefused = "analysis_refused"
@@ -244,6 +246,12 @@ public struct ProposalDTO: Codable, Sendable, Hashable {
 }
 
 public struct DecisionDTO: Codable, Sendable, Hashable {
+    /// For `acceptProposals`, this is exact: an id lands here only when its
+    /// proposal now links to one of `cards`, so a caller that lost a race
+    /// against a concurrent accept is correctly left out. For
+    /// `rejectProposals` there is no equivalent evidence to check against —
+    /// see `MCPRequestHandler.decide` — so this only means "named a proposal
+    /// that exists," not "this call is the one that rejected it."
     public var decided: [UUID]
     public var skipped: [UUID]
     public var cards: [CardDTO]
@@ -275,12 +283,6 @@ public enum WireCodec {
     public static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        // Foundation's JSONEncoder does not otherwise promise a stable key
-        // order between two calls that encode the same keys — sortedKeys
-        // makes the wire format byte-for-byte reproducible, which the
-        // analysis round-trip tests rely on and which is a reasonable
-        // property for a wire protocol to have regardless.
-        encoder.outputFormatting = .sortedKeys
         return encoder
     }()
 

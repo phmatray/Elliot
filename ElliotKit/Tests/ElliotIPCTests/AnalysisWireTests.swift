@@ -29,9 +29,11 @@ struct AnalysisWireTests {
         let back = try WireCodec.decode(
             Envelope<ElliotRequest>.self, from: line.dropLast()
         )
-        // Re-encoding the decoded value must produce the same bytes: that is
-        // the only cheap way to assert an enum with payloads survived intact.
-        #expect(try WireCodec.encodeLine(Envelope(id: back.id, body: back.body)) == line)
+        // Foundation's JSONEncoder does not promise a stable key order
+        // between two calls, so a byte-for-byte comparison of two separate
+        // encodes is not a safe assertion — `ElliotRequest` is Equatable
+        // precisely so this can compare values instead.
+        #expect(back.body == request)
     }
 
     @Test("A proposal DTO carries what an agent needs to decide")

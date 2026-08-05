@@ -4,10 +4,12 @@ import ElliotModel
 import ElliotStore
 import Foundation
 
-/// Turns an IPC request into the same board calls a drag makes.
+/// Turns an IPC request into the same board and analysis calls a drag, or the
+/// analysis window, would make.
 ///
-/// Nothing here decides anything: it resolves ids, calls `BoardService`, and
-/// translates the answer back. The rules live in one place and this is not it.
+/// Nothing here decides anything: it resolves ids, calls `BoardService` or
+/// `AnalysisService`, and translates the answer back. The rules live in one
+/// place and this is not it.
 public struct MCPRequestHandler: Sendable {
     private let store: BoardStore
     private let board: BoardService
@@ -61,18 +63,42 @@ public struct MCPRequestHandler: Sendable {
                 return .failure(code: .repoNotFound, message: "No repository \(id).", hint: nil)
             case .analysisNotFound(let id):
                 return .failure(code: .analysisNotFound, message: "No analysis \(id).", hint: nil)
-            case .noAngles, .repoDisabled, .angleAlreadyRunning:
+            case .noAngles:
                 return .failure(
                     code: .analysisRefused,
                     message: error.localizedDescription,
-                    hint: error == .noAngles
-                        ? "Pick from: \(AnalysisAngle.allCases.map(\.rawValue).joined(separator: ", "))."
-                        : "Poll board_list_runs and try again when it finishes."
+                    hint: "Pick from: \(AnalysisAngle.allCases.map(\.rawValue).joined(separator: ", "))."
+                )
+            case .repoDisabled:
+                return .failure(
+                    code: .analysisRefused,
+                    message: error.localizedDescription,
+                    hint: "Enable the repository in Elliot's Preflight screen."
+                )
+            case .angleAlreadyRunning:
+                return .failure(
+                    code: .analysisRefused,
+                    message: error.localizedDescription,
+                    hint: "Poll board_list_runs and try again when it finishes."
                 )
             }
         } catch {
             return .failure(code: .internalError, message: error.localizedDescription, hint: nil)
         }
+    }
+
+    /// Matched by `nameWithOwner` or by the local checkout path — both are
+    /// what an agent might plausibly have on hand.
+    private func resolveRepo(_ repo: String, in repos: [Repo]) -> Repo? {
+        repos.first { $0.nameWithOwner == repo || $0.path == repo }
+    }
+
+    private func repoNotFoundFailure(_ repo: String, in repos: [Repo]) -> ElliotResponse {
+        .failure(
+            code: .repoNotFound,
+            message: "No registered repository matches \"\(repo)\".",
+            hint: "Known: \(repos.map(\.nameWithOwner).joined(separator: ", "))"
+        )
     }
 
     private func listCards(
@@ -81,12 +107,8 @@ public struct MCPRequestHandler: Sendable {
         let repos = try await store.repos()
         var repoID: UUID?
         if let repo {
-            guard let match = repos.first(where: { $0.nameWithOwner == repo || $0.path == repo }) else {
-                return .failure(
-                    code: .repoNotFound,
-                    message: "No registered repository matches \"\(repo)\".",
-                    hint: "Known: \(repos.map(\.nameWithOwner).joined(separator: ", "))"
-                )
+            guard let match = resolveRepo(repo, in: repos) else {
+                return repoNotFoundFailure(repo, in: repos)
             }
             repoID = match.id
         }
@@ -123,12 +145,8 @@ public struct MCPRequestHandler: Sendable {
         column: ElliotModel.Column
     ) async throws -> ElliotResponse {
         let repos = try await store.repos()
-        guard let match = repos.first(where: { $0.nameWithOwner == repo || $0.path == repo }) else {
-            return .failure(
-                code: .repoNotFound,
-                message: "No registered repository matches \"\(repo)\".",
-                hint: "Known: \(repos.map(\.nameWithOwner).joined(separator: ", "))"
-            )
+        guard let match = resolveRepo(repo, in: repos) else {
+            return repoNotFoundFailure(repo, in: repos)
         }
         let card = try await board.createCard(
             repoID: match.id, title: title, body: body, story: story?.story, column: column
@@ -192,12 +210,8 @@ public struct MCPRequestHandler: Sendable {
         repo: String, angles: [String], maxStories: Int, instructions: String
     ) async throws -> ElliotResponse {
         let repos = try await store.repos()
-        guard let match = repos.first(where: { $0.nameWithOwner == repo || $0.path == repo }) else {
-            return .failure(
-                code: .repoNotFound,
-                message: "No registered repository matches \"\(repo)\".",
-                hint: "Known: \(repos.map(\.nameWithOwner).joined(separator: ", "))"
-            )
+        guard let match = resolveRepo(repo, in: repos) else {
+            return repoNotFoundFailure(repo, in: repos)
         }
         // An unknown angle is worth its own message: a decoding failure would
         // lose the whole request and say nothing useful about why.
@@ -239,12 +253,8 @@ public struct MCPRequestHandler: Sendable {
         let repos = try await store.repos()
         var repoID: UUID?
         if let repo {
-            guard let match = repos.first(where: { $0.nameWithOwner == repo || $0.path == repo }) else {
-                return .failure(
-                    code: .repoNotFound,
-                    message: "No registered repository matches \"\(repo)\".",
-                    hint: "Known: \(repos.map(\.nameWithOwner).joined(separator: ", "))"
-                )
+            guard let match = resolveRepo(repo, in: repos) else {
+                return repoNotFoundFailure(repo, in: repos)
             }
             repoID = match.id
         }
@@ -262,31 +272,68 @@ public struct MCPRequestHandler: Sendable {
         }))
     }
 
-    /// Which ids exist is settled with a plain sequential loop, not a task
+    /// Ids are checked one at a time with a plain sequential loop, not a task
     /// group: the store call is cheap and the id lists here are short, so the
     /// concurrency would buy nothing but a harder-to-read method.
     private func decide(ids: [UUID], accept: Bool) async throws -> ElliotResponse {
+        guard accept else { return try await rejectProposals(ids: ids) }
+        return try await acceptProposals(ids: ids)
+    }
+
+    /// `AnalysisService.reject` discards each id's atomic claim result
+    /// internally — it always marks the proposal `.rejected` when it can, but
+    /// never says whether *this* call is the one that won the claim, or
+    /// whether it was already `.rejected` from an earlier call, or lost to a
+    /// concurrent `accept`. So `decided` here means only "named a proposal
+    /// that exists," not "this call rejected it" — the summary says so
+    /// explicitly rather than let `decided` overclaim on its own.
+    private func rejectProposals(ids: [UUID]) async throws -> ElliotResponse {
         var known: Set<UUID> = []
         for id in ids where try await store.proposal(id: id) != nil {
             known.insert(id)
         }
-        let skipped = ids.filter { !known.contains($0) }
+        try await analysis.reject(proposalIDs: ids)
+        return .ok(.proposalsDecided(DecisionDTO(
+            decided: ids.filter(known.contains),
+            skipped: ids.filter { !known.contains($0) },
+            cards: [],
+            summary: "Asked to reject \(known.count) proposal(s) that exist. A proposal a "
+                + "concurrent request already decided may not have moved; they stay on the "
+                + "analysis, marked, either way."
+        )))
+    }
 
-        guard accept else {
-            try await analysis.reject(proposalIDs: ids)
-            return .ok(.proposalsDecided(DecisionDTO(
-                decided: ids.filter(known.contains), skipped: skipped, cards: [],
-                summary: "Rejected \(known.count) proposal(s). They stay on the analysis, marked."
-            )))
+    /// `AnalysisService.accept` hands back the cards it actually created,
+    /// each with a freshly generated id no other caller could also be
+    /// holding — so, unlike `reject`, there is proof to check an id against:
+    /// it is truly decided *by this call* only when the proposal's
+    /// `acceptedCardID` now points at one of the cards this call got back.
+    /// An id that lost the claim race to a concurrent accept still ends up
+    /// `.accepted` with a card somewhere, just not one of these — it belongs
+    /// in `skipped`, not `decided`, or the two fields would disagree with
+    /// each other about what this response actually contains.
+    private func acceptProposals(ids: [UUID]) async throws -> ElliotResponse {
+        let cards = try await analysis.accept(proposalIDs: ids)
+        let cardIDs = Set(cards.map(\.id))
+
+        var decided: [UUID] = []
+        var skipped: [UUID] = []
+        for id in ids {
+            if let proposal = try await store.proposal(id: id),
+                let acceptedCardID = proposal.acceptedCardID,
+                cardIDs.contains(acceptedCardID) {
+                decided.append(id)
+            } else {
+                skipped.append(id)
+            }
         }
 
-        let cards = try await analysis.accept(proposalIDs: ids)
         let repos = try await store.repos()
         let dtos = cards.map { card in
             CardDTO(card: card, repoName: repos.first { $0.id == card.repoID }?.nameWithOwner ?? "?")
         }
         return .ok(.proposalsDecided(DecisionDTO(
-            decided: ids.filter(known.contains), skipped: skipped, cards: dtos,
+            decided: decided, skipped: skipped, cards: dtos,
             summary: "Created \(cards.count) Backlog card(s). Nothing was filed on GitHub — "
                 + "moving a card from backlog to todo is what does that."
         )))
