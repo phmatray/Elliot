@@ -18,6 +18,7 @@ public final class AppModel {
     public private(set) var repoChecks: [UUID: [CheckResult]] = [:]
     public private(set) var status: String = "Starting…"
     public private(set) var isReady = false
+    public private(set) var isImporting = false
 
     public var showingAnalysis = false
     /// The analysis the window is showing. `nil` means it is still in setup.
@@ -68,6 +69,10 @@ public final class AppModel {
     private var board: BoardService?
     private var scheduler: RunScheduler?
     private var watcher: PRWatcher?
+    private var importer: GitHubImportService?
+    /// Repositories already imported this session. In memory on purpose: a
+    /// relaunch re-importing costs two `gh` calls and cannot duplicate anything.
+    private var importedThisSession: Set<UUID> = []
     private var ipcServer: IPCServer?
     private var toolConfig: ToolConfig?
     private var analysisService: AnalysisService?
@@ -132,6 +137,8 @@ public final class AppModel {
             let watcher = PRWatcher(store: store, gh: ghClient, mover: board)
             await watcher.start()
             self.watcher = watcher
+
+            importer = GitHubImportService(store: store, gh: ghClient, board: board)
 
             await refreshRepoChecks(using: preflight)
 
@@ -460,6 +467,54 @@ public final class AppModel {
         try? await store.saveRepo(repo)
         selectedRepoID = repo.id
         await refreshRepoChecks()
+        await importIfNeeded(repoID: repo.id)
+    }
+
+    // MARK: - GitHub import
+
+    /// The Refresh button. Imports the selected repository, or every enabled one
+    /// when "All repositories" is chosen.
+    public func refreshFromGitHub() async {
+        guard let importer, !isImporting else { return }
+        let targets = selectedRepoID.flatMap { id in repos.filter { $0.id == id } } ?? repos
+        guard !targets.isEmpty else { return }
+
+        isImporting = true
+        status = targets.count == 1
+            ? "Refreshing \(targets[0].displayName) from GitHub…"
+            : "Refreshing \(targets.count) repositories from GitHub…"
+
+        let summaries = await importer.importAll(targets)
+        targets.forEach { importedThisSession.insert($0.id) }
+        isImporting = false
+        status = summaries.map(\.sentence).joined(separator: "   ")
+    }
+
+    /// The first time a repository is shown, bring in what GitHub already knows.
+    /// Once per repository per session — the button covers the rest.
+    public func importIfNeeded(repoID: UUID?) async {
+        guard let repoID, !importedThisSession.contains(repoID), !isImporting,
+              let repo = repos.first(where: { $0.id == repoID }), repo.isEnabled,
+              let importer
+        else { return }
+
+        importedThisSession.insert(repoID)
+        isImporting = true
+        let summary = await importer.importRepo(repo)
+        isImporting = false
+        status = summary.sentence
+    }
+
+    /// Undoes every dismissal for the repositories in view, so the next refresh
+    /// brings back what was deleted.
+    public func clearDismissals() async {
+        guard let store else { return }
+        let targets = selectedRepoID.flatMap { id in repos.filter { $0.id == id } } ?? repos
+        for repo in targets {
+            try? await store.clearDismissals(repoID: repo.id)
+            importedThisSession.remove(repo.id)
+        }
+        status = "Dismissed items forgotten — refresh to bring them back."
     }
 
     public func setRepoEnabled(_ repo: Repo, enabled: Bool) async {
