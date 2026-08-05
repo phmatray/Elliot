@@ -2,6 +2,7 @@ import ElliotModel
 import ElliotProcess
 import ElliotStore
 import Foundation
+import TestSupport
 import Testing
 
 @testable import ElliotEngine
@@ -67,19 +68,22 @@ private struct Stack {
 
     func cleanUp() { try? FileManager.default.removeItem(at: home) }
 
-    /// Waits for a card's run to reach a terminal state.
+    /// Waits for a card's run to reach a terminal state. On expiry it reports the
+    /// state it actually saw, so a flake names its cause instead of "timedOut".
     func awaitRun(cardID: UUID, timeout: Duration = .seconds(20)) async throws -> SkillRun {
         let deadline = ContinuousClock.now.advanced(by: timeout)
+        var lastSeen = "no run row"
         while ContinuousClock.now < deadline {
-            if let run = try await store.runs(cardID: cardID).first, run.state.isTerminal {
-                return run
+            if let run = try await store.runs(cardID: cardID).first {
+                if run.state.isTerminal { return run }
+                lastSeen = "\(run.state)"
             }
             try await Task.sleep(for: .milliseconds(50))
         }
-        throw StackError.timedOut
+        throw StackError.timedOut(lastSeen: lastSeen)
     }
 
-    enum StackError: Error { case timedOut }
+    enum StackError: Error { case timedOut(lastSeen: String) }
 }
 
 @Suite("End to end", .serialized)
@@ -173,9 +177,13 @@ struct EndToEndTests {
 
     @Test("Cancelling a run stops it and records the cancellation")
     func cancellingARun() async throws {
+        let ready = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("elliot-ready-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: ready) }
+
         let stack = try await Stack.make(
             fixture: "create-issue-success.ndjson",
-            extraEnv: ["FAKE_CLAUDE_MODE": "trap"]
+            extraEnv: ["FAKE_CLAUDE_MODE": "trap", "FAKE_CLAUDE_READY": ready.path]
         )
         defer { stack.cleanUp() }
 
@@ -187,8 +195,14 @@ struct EndToEndTests {
             return
         }
 
-        // Let it actually start before pulling the plug.
-        try await Task.sleep(for: .milliseconds(400))
+        // Wait on the fact that the child is trap-protected, not on a duration:
+        // exit 143 only exists once the trap is installed, and under load a
+        // fixed sleep can expire before bash gets there.
+        try await withTimeout(.seconds(5)) {
+            while !FileManager.default.fileExists(atPath: ready.path) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
         await stack.board.cancelRun(id: runID)
 
         let run = try await stack.awaitRun(cardID: card.id)

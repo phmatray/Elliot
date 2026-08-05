@@ -50,7 +50,7 @@ let package = Package(
         // resource bundle: the same files are used by hand from a terminal when
         // reproducing a run.
         .testTarget(name: "ElliotProcessTests", dependencies: ["ElliotProcess", "TestSupport"]),
-        .testTarget(name: "ElliotEngineTests", dependencies: ["ElliotEngine"]),
+        .testTarget(name: "ElliotEngineTests", dependencies: ["ElliotEngine", "TestSupport"]),
         .testTarget(name: "ElliotIPCTests", dependencies: ["ElliotIPC"]),
     ],
     swiftLanguageModes: [.v6]
