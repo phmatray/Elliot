@@ -202,4 +202,35 @@ public struct GitClient: Sendable {
     public func isTracked(path: String, in cwd: String) async -> Bool {
         (try? await run(["ls-files", "--error-unmatch", path], cwd: cwd)) != nil
     }
+
+    /// Clones through `gh`, so authentication and the ssh/https choice stay the
+    /// user's rather than something Elliot guesses from a URL. Refuses an
+    /// existing path: cloning into a non-empty directory has no sensible meaning
+    /// here, and nothing in Elliot deletes a clone.
+    public func clone(nameWithOwner: String, into path: String) async throws {
+        guard !FileManager.default.fileExists(atPath: path) else {
+            throw ProcessError.failed(
+                command: "gh repo clone", exitCode: 1,
+                stderr: "\(path) already exists.")
+        }
+        try FileManager.default.createDirectory(
+            atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try await ProcessRunner.check(
+            executable: config.ghPath, arguments: ["repo", "clone", nameWithOwner, path],
+            environment: config.environment, timeout: .seconds(600))
+    }
+
+    /// Moves a clone into its expected folder. Refuses an occupied destination:
+    /// there is no merge of two working trees, and nothing here deletes.
+    public func relocate(from source: String, to destination: String) throws {
+        guard !FileManager.default.fileExists(atPath: destination) else {
+            throw ProcessError.failed(
+                command: "mv", exitCode: 1,
+                stderr: "\(destination) already exists.")
+        }
+        try FileManager.default.createDirectory(
+            atPath: (destination as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true)
+        try FileManager.default.moveItem(atPath: source, toPath: destination)
+    }
 }
