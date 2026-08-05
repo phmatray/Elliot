@@ -19,6 +19,9 @@ public struct Repo: Identifiable, Codable, Sendable, Hashable {
     public var extraAllowedTools: [String]
     public var isEnabled: Bool
 
+    /// GitHub's visibility, kept so the expected path is recomputable offline.
+    public var visibility: RepoVisibility?
+
     public init(
         id: UUID = UUID(),
         path: String,
@@ -27,7 +30,8 @@ public struct Repo: Identifiable, Codable, Sendable, Hashable {
         displayName: String,
         permissionMode: PermissionMode = .bypassPermissions,
         extraAllowedTools: [String] = [],
-        isEnabled: Bool = true
+        isEnabled: Bool = true,
+        visibility: RepoVisibility? = nil
     ) {
         self.id = id
         self.path = path
@@ -37,6 +41,7 @@ public struct Repo: Identifiable, Codable, Sendable, Hashable {
         self.permissionMode = permissionMode
         self.extraAllowedTools = extraAllowedTools
         self.isEnabled = isEnabled
+        self.visibility = visibility
     }
 }
 

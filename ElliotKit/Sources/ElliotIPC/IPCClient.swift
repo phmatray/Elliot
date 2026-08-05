@@ -17,23 +17,39 @@ public struct IPCClient: Sendable {
     }
 
     /// Opens a connection, greets, and runs one request.
-    public func send(_ request: ElliotRequest, timeout: TimeInterval = 30) throws -> ElliotResponse {
-        let fd = try UnixSocket.connect(path: socketPath, timeout: timeout)
+    ///
+    /// The deadline comes from the request unless the caller overrides it.
+    /// `awaitRun` holds the connection open for minutes on purpose, and a fixed
+    /// 30-second socket would hang up on it: `readLine` would return nil, the
+    /// caller would read `connectionClosed`, and a run that was still going
+    /// would look like a dead app. Letting the request name its own deadline
+    /// means no call site has to remember which requests are slow.
+    public func send(_ request: ElliotRequest, timeout: TimeInterval? = nil) throws -> ElliotResponse {
+        let fd = try UnixSocket.connect(path: socketPath, timeout: timeout ?? request.socketTimeout)
         defer { close(fd) }
+        // One reader for the connection, not one per exchange: the greeting and
+        // the answer share it, and a buffered read of the first can already hold
+        // the front of the second.
+        let reader = UnixSocket.LineReader(fd: fd)
 
         let greeting = try exchange(
             .hello(protocolVersion: elliotProtocolVersion, token: token, client: clientName),
-            on: fd
+            on: fd,
+            reading: reader
         )
         if case .failure = greeting { return greeting }
 
-        return try exchange(request, on: fd)
+        return try exchange(request, on: fd, reading: reader)
     }
 
-    private func exchange(_ request: ElliotRequest, on fd: Int32) throws -> ElliotResponse {
+    private func exchange(
+        _ request: ElliotRequest,
+        on fd: Int32,
+        reading reader: UnixSocket.LineReader
+    ) throws -> ElliotResponse {
         let envelope = Envelope(body: request)
         try UnixSocket.write(fd: fd, data: WireCodec.encodeLine(envelope))
-        guard let line = UnixSocket.readLine(fd: fd), !line.isEmpty else {
+        guard let line = reader.next(), !line.isEmpty else {
             throw SocketError.connectionClosed
         }
         return try WireCodec.decode(Envelope<ElliotResponse>.self, from: line).body

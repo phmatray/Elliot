@@ -9,9 +9,13 @@ import Testing
 @Suite("Analysis wire format")
 struct AnalysisWireTests {
 
+    /// 3, not 2: this work was written against an unreleased 2, and 2 reached
+    /// `main` first carrying a different set of changes. A helper claiming 2 is
+    /// therefore one that cannot analyse anything, and the handshake has to be
+    /// able to say so.
     @Test("The protocol version moved, so an old helper fails loudly")
     func versionBumped() {
-        #expect(elliotProtocolVersion == 2)
+        #expect(elliotProtocolVersion == 3)
     }
 
     @Test("Every new request round-trips through the wire codec", arguments: [
@@ -158,21 +162,25 @@ struct AnalysisMCPToolTests {
             Repo(path: "/tmp/elliot", nameWithOwner: "phmatray/Elliot", displayName: "Elliot"),
             Repo(path: "/tmp/other", nameWithOwner: "phmatray/Other", displayName: "Other"),
         ]
-        let result = ElliotMCPServer.repoNotFound("no/such-repo", in: repos)
-        #expect(result.isError == true)
-
-        let content = try #require(result.content.first)
-        guard case .text(let text, _, _) = content else {
-            Issue.record("Expected a text content block, got \(content)")
-            return
+        // The refusal every offline branch shares, asserted at its one
+        // implementation: a tool reaching for its own lookup instead is exactly
+        // how the fall-through came back the first time.
+        #expect(throws: ToolFailure.self) {
+            try OfflineBoard.filter("no/such-repo", in: repos)
         }
-        // Decoded, not raw-`contains`ed: JSONEncoder escapes "/" as "\/", which
-        // a plain substring check on the wire text would trip over.
-        let data = try #require(text.data(using: .utf8))
-        let fields = try WireCodec.decoder.decode([String: String].self, from: data)
-        #expect(fields["error"] == "repo_not_found")
-        #expect(fields["message"]?.contains("no/such-repo") == true)
-        #expect(fields["hint"]?.contains("phmatray/Elliot") == true)
-        #expect(fields["hint"]?.contains("phmatray/Other") == true)
+        do {
+            _ = try OfflineBoard.filter("no/such-repo", in: repos)
+            Issue.record("expected an unknown repository to be refused")
+        } catch let failure as ToolFailure {
+            #expect(failure.code == "repo_not_found")
+            #expect(failure.message.contains("no/such-repo"))
+            #expect(failure.hint?.contains("phmatray/Elliot") == true)
+            #expect(failure.hint?.contains("phmatray/Other") == true)
+        }
+
+        // And a name that does match still resolves, so the guard above is
+        // refusing the unknown rather than refusing everything.
+        #expect(try OfflineBoard.filter("phmatray/Other", in: repos).repoID == repos[1].id)
+        #expect(try OfflineBoard.filter(nil, in: repos).repoID == nil)
     }
 }

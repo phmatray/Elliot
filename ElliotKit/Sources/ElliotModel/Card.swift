@@ -33,6 +33,15 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
     public var createdAt: Date
     public var updatedAt: Date
 
+    /// The caller's own key for the request that made this card, when it gave
+    /// one. Unique across the board; `nil` means no guarantee was asked for.
+    ///
+    /// Kept on the row rather than in a table of recent requests: a create that
+    /// times out on the way back is retried against an app that may have
+    /// started up in between, and nothing held in memory would have seen the
+    /// first attempt.
+    public var idempotencyKey: String?
+
     public init(
         id: UUID = UUID(),
         repoID: UUID,
@@ -49,7 +58,8 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
         columnEnteredAt: Date,
         lastError: String? = nil,
         createdAt: Date,
-        updatedAt: Date
+        updatedAt: Date,
+        idempotencyKey: String? = nil
     ) {
         self.id = id
         self.repoID = repoID
@@ -67,6 +77,7 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
         self.lastError = lastError
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.idempotencyKey = idempotencyKey
     }
 }
 

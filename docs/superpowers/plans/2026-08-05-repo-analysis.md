@@ -36,7 +36,7 @@
 - Consumes: `UserStory` from `ElliotModel/UserStory.swift`, and its internal `String.trimmed()` helper.
 - Produces: `AnalysisAngle` (enum, 6 cases, `.title` / `.symbol` / `.briefing`), `Effort.parse(_:)`, `Evidence` with `Evidence.parse(_:)`, `ProposedStory`, `StoryProposal`, `ProposalStatus`, `DuplicateHint`, `Analysis`, `AnalysisOrigin`, `AnalysisRunReport`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ElliotKit/Tests/ElliotModelTests/AnalysisModelTests.swift`:
 
@@ -118,12 +118,12 @@ struct AnalysisModelTests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd ElliotKit && swift test --filter AnalysisModelTests`
 Expected: FAIL — `cannot find 'AnalysisAngle' in scope`.
 
-- [ ] **Step 3: Write `AnalysisAngle.swift`**
+- [x] **Step 3: Write `AnalysisAngle.swift`**
 
 ```swift
 import Foundation
@@ -223,7 +223,7 @@ public enum AnalysisAngle: String, Codable, CaseIterable, Sendable, Hashable {
 }
 ```
 
-- [ ] **Step 4: Write `StoryProposal.swift`**
+- [x] **Step 4: Write `StoryProposal.swift`**
 
 ```swift
 import Foundation
@@ -441,7 +441,7 @@ public struct StoryProposal: Identifiable, Codable, Sendable, Hashable {
 }
 ```
 
-- [ ] **Step 5: Write `Analysis.swift`**
+- [x] **Step 5: Write `Analysis.swift`**
 
 ```swift
 import Foundation
@@ -527,17 +527,17 @@ public struct AnalysisRunReport: Codable, Sendable, Hashable {
 }
 ```
 
-- [ ] **Step 6: Run test to verify it passes**
+- [x] **Step 6: Run test to verify it passes**
 
 Run: `cd ElliotKit && swift test --filter AnalysisModelTests`
 Expected: PASS, all cases.
 
-- [ ] **Step 7: Run the whole suite**
+- [x] **Step 7: Run the whole suite**
 
 Run: `cd ElliotKit && swift test`
 Expected: PASS — 155 existing tests plus the new ones. Nothing else was touched.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add ElliotKit/Sources/ElliotModel/AnalysisAngle.swift \
@@ -568,7 +568,7 @@ actually there."
 - Produces: `TextSimilarity.tokens(_:) -> Set<String>`, `TextSimilarity.overlap(_:_:) -> Double`, `TextSimilarity.duplicateThreshold: Double` (0.6), `TextSimilarity.bestMatch(for:among:threshold:) -> (index: Int, score: Double)?`.
 - `Verifier.tokens` and `Verifier.overlap` stay as thin forwarders so existing call sites and tests do not move.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ElliotKit/Tests/ElliotModelTests/TextSimilarityTests.swift`:
 
@@ -614,12 +614,12 @@ struct TextSimilarityTests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd ElliotKit && swift test --filter TextSimilarityTests`
 Expected: FAIL — `cannot find 'TextSimilarity' in scope`.
 
-- [ ] **Step 3: Write `TextSimilarity.swift`**
+- [x] **Step 3: Write `TextSimilarity.swift`**
 
 ```swift
 import Foundation
@@ -671,7 +671,7 @@ public enum TextSimilarity {
 }
 ```
 
-- [ ] **Step 4: Point `Verifier` at it**
+- [x] **Step 4: Point `Verifier` at it**
 
 In `ElliotKit/Sources/ElliotEngine/Verifier.swift`, replace the two static helpers at the end of the file (lines 127-140) with forwarders:
 
@@ -692,12 +692,12 @@ Replace the literal `0.6` on line 53 with `TextSimilarity.duplicateThreshold`:
                 .filter { $0.1 >= TextSimilarity.duplicateThreshold }
 ```
 
-- [ ] **Step 5: Run the whole suite**
+- [x] **Step 5: Run the whole suite**
 
 Run: `cd ElliotKit && swift test`
 Expected: PASS. The verifier's behaviour is unchanged — this is a move, not a change.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ElliotKit/Sources/ElliotModel/TextSimilarity.swift \
@@ -724,7 +724,7 @@ without anyone noticing."
 
 **Why the marker matters:** `fake-claude.sh` (Task 11) finds the artifact path by grepping the prompt for exactly this marker, and so does the runtime contract. If the prompt ever announced two paths, or a relative one, the artifact would be written somewhere Elliot never looks — the same class of failure as an `implement-issue` prompt carrying a stray number. Hence the property test.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ElliotKit/Tests/ElliotModelTests/AnalysisPromptBuilderTests.swift`:
 
@@ -826,12 +826,12 @@ struct AnalysisPromptBuilderTests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd ElliotKit && swift test --filter AnalysisPromptBuilderTests`
 Expected: FAIL — `cannot find 'AnalysisPromptBuilder' in scope`.
 
-- [ ] **Step 3: Write `AnalysisPromptBuilder.swift`**
+- [x] **Step 3: Write `AnalysisPromptBuilder.swift`**
 
 ```swift
 import Foundation
@@ -947,14 +947,14 @@ public enum AnalysisPromptBuilder {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd ElliotKit && swift test --filter AnalysisPromptBuilderTests`
 Expected: PASS.
 
 If `existingTitlesAreCapped` fails on the `- Existing story ` prefix count, check that the joined list uses `"- "` and that no other section emits lines starting with `- Existing story `.
 
-- [ ] **Step 5: Run the whole suite and commit**
+- [x] **Step 5: Run the whole suite and commit**
 
 ```bash
 cd ElliotKit && swift test && cd ..
@@ -985,7 +985,7 @@ of invariant as the first digit run of an implement-issue prompt."
 
 **Contract:** the same one the stream-json decoder holds — **never throws, never drops silently**. Every discarded story leaves a sentence saying why, and the window shows those sentences.
 
-- [ ] **Step 1: Write the fixtures**
+- [x] **Step 1: Write the fixtures**
 
 Create `Fixtures/analysis/valid.json`:
 
@@ -1045,7 +1045,7 @@ Create `Fixtures/analysis/messy.json` — a wrapped array, an unknown field, a s
 }
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Create `ElliotKit/Tests/ElliotModelTests/ProposalDecoderTests.swift`:
 
@@ -1160,12 +1160,12 @@ struct ProposalDecoderTests {
 }
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `cd ElliotKit && swift test --filter ProposalDecoderTests`
 Expected: FAIL — `cannot find 'ProposalDecoder' in scope`.
 
-- [ ] **Step 4: Write `ProposalDecoder.swift`**
+- [x] **Step 4: Write `ProposalDecoder.swift`**
 
 ```swift
 import Foundation
@@ -1293,12 +1293,12 @@ public enum ProposalDecoder {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `cd ElliotKit && swift test --filter ProposalDecoderTests`
 Expected: PASS, every case.
 
-- [ ] **Step 6: Run the whole suite and commit**
+- [x] **Step 6: Run the whole suite and commit**
 
 ```bash
 cd ElliotKit && swift test && cd ..
@@ -1336,7 +1336,7 @@ the requested schema before answering does not get its example harvested."
 
 **Why this shape:** an analysis run is an ordinary `SkillRun` so it inherits admission, streaming, the durable log, SIGTERM cancellation, the idle timeout and the launch sweep — all already written and tested. The alternative, a parallel `analysisRun` table, avoids the migration and duplicates four subsystems. The angle lives on the run because the window shows it per run ("run bugs · running") and because the dedupe key is `(repoID, angle)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `ElliotKit/Tests/ElliotModelTests/AnalysisModelTests.swift`, inside the `AnalysisModelTests` suite:
 
@@ -1371,12 +1371,12 @@ Append to `ElliotKit/Tests/ElliotModelTests/AnalysisModelTests.swift`, inside th
     }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd ElliotKit && swift test --filter AnalysisModelTests`
 Expected: FAIL — `type 'SkillKind' has no member 'analyzeRepo'`.
 
-- [ ] **Step 3: Widen `SkillKind` in `SlashCommandBuilder.swift`**
+- [x] **Step 3: Widen `SkillKind` in `SlashCommandBuilder.swift`**
 
 Replace the `SkillKind` declaration (lines 14-28) with:
 
@@ -1438,7 +1438,7 @@ Then rewrite `slashPrompt(for:)` (lines 61-84) so the optional is handled once i
     }
 ```
 
-- [ ] **Step 4: Widen `SkillRun` in `SkillRun.swift`**
+- [x] **Step 4: Widen `SkillRun` in `SkillRun.swift`**
 
 Change the four properties and the initialiser. Replace `public var cardID: UUID` with:
 
@@ -1505,7 +1505,7 @@ public extension SkillRun {
 }
 ```
 
-- [ ] **Step 5: Make the call sites exhaustive again**
+- [x] **Step 5: Make the call sites exhaustive again**
 
 `Verifier.swift`, in `verify(run:card:repo:)`, add to the switch:
 
@@ -1563,12 +1563,12 @@ In `finish`, guard the card lookup:
             if let cardID { Task { await self.refreshRuns(cardID: cardID) } }
 ```
 
-- [ ] **Step 6: Build, run the suite**
+- [x] **Step 6: Build, run the suite**
 
 Run: `cd ElliotKit && swift build && swift test`
 Expected: PASS. If the compiler reports a call site this plan did not list, fix it the same way — the change is mechanical, and `cardID` is only ever read to find a card.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add ElliotKit/Sources ElliotKit/Tests
@@ -1603,7 +1603,7 @@ still knows exactly three transitions."
 
 **The one sharp edge:** SQLite cannot relax a `NOT NULL` in place, so `skillRun` is rebuilt. `ALTER TABLE … RENAME` keeps the old indexes attached under their original names, so the new indexes must be created **after** the old table is dropped or the names collide.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ElliotKit/Tests/ElliotStoreTests/AnalysisStoreTests.swift`:
 
@@ -1793,12 +1793,12 @@ struct AnalysisStoreTests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd ElliotKit && swift test --filter AnalysisStoreTests`
 Expected: FAIL — `value of type 'BoardStore' has no member 'saveAnalysis'`, and `Migrations` has no member `v1Initial`.
 
-- [ ] **Step 3: Rewrite `Migrations.swift`**
+- [x] **Step 3: Rewrite `Migrations.swift`**
 
 Extract the existing v1 body into a named function so the test can build a v1 database, then add v2:
 
@@ -1918,7 +1918,7 @@ enum Migrations {
 }
 ```
 
-- [ ] **Step 4: Add the records in `Records.swift`**
+- [x] **Step 4: Add the records in `Records.swift`**
 
 ```swift
 extension Analysis: FetchableRecord, PersistableRecord {
@@ -1954,7 +1954,7 @@ Add `analysisID` to `SkillRun.Columns`:
         public static let analysisID = GRDB.Column("analysisID")
 ```
 
-- [ ] **Step 5: Add the store methods in `BoardStore.swift`**
+- [x] **Step 5: Add the store methods in `BoardStore.swift`**
 
 Insert a new `// MARK: - Analyses` section after the runs section:
 
@@ -2058,7 +2058,7 @@ Insert a new `// MARK: - Analyses` section after the runs section:
     }
 ```
 
-- [ ] **Step 6: Add the artifact path in `StoreLocation.swift`**
+- [x] **Step 6: Add the artifact path in `StoreLocation.swift`**
 
 ```swift
     /// One directory per analysis run, holding the `stories.json` the run was
@@ -2086,14 +2086,14 @@ And add `analysesDirectory` to the loop in `ensureDirectories()`:
         for url in [home, runsDirectory, analysesDirectory] {
 ```
 
-- [ ] **Step 7: Run the tests**
+- [x] **Step 7: Run the tests**
 
 Run: `cd ElliotKit && swift test --filter AnalysisStoreTests`
 Expected: PASS, including `migrationPreservesRows`.
 
 If `activeAnalysisRuns` fails to compile on `!= nil`, use the explicit form: `.filter(sql: #""analysisID" IS NOT NULL"#)`.
 
-- [ ] **Step 8: Run the whole suite and commit**
+- [x] **Step 8: Run the whole suite and commit**
 
 ```bash
 cd ElliotKit && swift test && cd ..
@@ -2124,7 +2124,7 @@ row."
 
 **Note on `artifactURL`:** it is passed in rather than computed, so a test can point at a temp file without setting `ELLIOT_HOME` for the whole process. The scheduler passes `StoreLocation.analysisArtifactURL(analysisID:runID:)` — the same path the prompt announced.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ElliotKit/Tests/ElliotEngineTests/ProposalHarvesterTests.swift`:
 
@@ -2321,12 +2321,12 @@ struct ProposalHarvesterTests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd ElliotKit && swift test --filter ProposalHarvesterTests`
 Expected: FAIL — `cannot find 'ProposalHarvester' in scope`.
 
-- [ ] **Step 3: Add `GHIssue.isOpen` in `GHPayloads.swift`**
+- [x] **Step 3: Add `GHIssue.isOpen` in `GHPayloads.swift`**
 
 Inside `GHIssue`, after the initialiser:
 
@@ -2334,7 +2334,7 @@ Inside `GHIssue`, after the initialiser:
     public var isOpen: Bool { (state ?? "OPEN").uppercased() == "OPEN" }
 ```
 
-- [ ] **Step 4: Write `ProposalHarvester.swift`**
+- [x] **Step 4: Write `ProposalHarvester.swift`**
 
 ```swift
 import ElliotModel
@@ -2492,12 +2492,12 @@ public struct ProposalHarvester: Sendable {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `cd ElliotKit && swift test --filter ProposalHarvesterTests`
 Expected: PASS, all five.
 
-- [ ] **Step 6: Run the whole suite and commit**
+- [x] **Step 6: Run the whole suite and commit**
 
 ```bash
 cd ElliotKit && swift test && cd ..
@@ -2541,7 +2541,7 @@ fastest way to see a story that was invented rather than found."
 
 Analysis runs get **their own lane** (cap 3) because the global cap of 2 exists to keep two *builds* out of one `.build/`, and an analysis compiles nothing. The reverse direction needs no new rule: `mergePR` already requires `sameRepo.isEmpty`, so it waits for a running analysis for free.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ElliotKit/Tests/ElliotEngineTests/AnalysisSchedulingTests.swift`:
 
@@ -2621,12 +2621,12 @@ struct AnalysisSchedulingTests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd ElliotKit && swift test --filter AnalysisSchedulingTests`
 Expected: FAIL — the lane test fails because analyses currently consume `maxConcurrent`.
 
-- [ ] **Step 3: Rewrite admission in `RunScheduler.swift`**
+- [x] **Step 3: Rewrite admission in `RunScheduler.swift`**
 
 Add the stored properties beside `maxConcurrent`:
 
@@ -2703,7 +2703,7 @@ Replace `canStart`:
     }
 ```
 
-- [ ] **Step 4: Take the sentinel baseline in `start(_:)`**
+- [x] **Step 4: Take the sentinel baseline in `start(_:)`**
 
 In `RunScheduler.start(_:)`, immediately before `let claudeRun: ClaudeRun`:
 
@@ -2716,7 +2716,7 @@ In `RunScheduler.start(_:)`, immediately before `let claudeRun: ClaudeRun`:
         }
 ```
 
-- [ ] **Step 5: Split `finish` in two**
+- [x] **Step 5: Split `finish` in two**
 
 Replace the body of `finish(run:outcome:)` from the `var verified` block onwards:
 
@@ -2809,7 +2809,7 @@ saves the run exactly once, at the end — the intermediate save the old code di
 before calling `apply` is gone, which is why `completeCardRun` only mutates its
 `inout` copy.
 
-- [ ] **Step 6: Add `porcelainStatus` to `GitClient`**
+- [x] **Step 6: Add `porcelainStatus` to `GitClient`**
 
 In `ElliotKit/Sources/ElliotProcess/GHClient.swift`, replace `isClean(cwd:)`:
 
@@ -2827,7 +2827,7 @@ In `ElliotKit/Sources/ElliotProcess/GHClient.swift`, replace `isClean(cwd:)`:
     }
 ```
 
-- [ ] **Step 7: Teach the reconciler about analysis runs**
+- [x] **Step 7: Teach the reconciler about analysis runs**
 
 In `Reconciler.sweep()`, replace the orphan branch's verification block:
 
@@ -2849,14 +2849,14 @@ In `Reconciler.sweep()`, replace the orphan branch's verification block:
                 }
 ```
 
-- [ ] **Step 8: Run the tests**
+- [x] **Step 8: Run the tests**
 
 Run: `cd ElliotKit && swift test`
 Expected: PASS, including the existing `EndToEndTests` — the card path is behaviourally unchanged.
 
 If `inFlight.values.count { … }` does not compile, use `inFlight.values.filter { … }.count`.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add ElliotKit/Sources/ElliotEngine ElliotKit/Sources/ElliotProcess/GHClient.swift \
@@ -2891,7 +2891,7 @@ and after. Do not trust the instruction; check the outcome."
 
 **Why the transaction shape matches `commitMove`:** the `analysis` row and its queued runs are written together, and the ids reach the scheduler only afterwards. A crash in between leaves queued runs the launch sweep picks up, not an analysis with nothing behind it.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ElliotKit/Tests/ElliotEngineTests/AnalysisServiceTests.swift`:
 
@@ -3103,12 +3103,12 @@ struct AnalysisServiceTests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd ElliotKit && swift test --filter AnalysisServiceTests`
 Expected: FAIL — `cannot find 'AnalysisService' in scope`.
 
-- [ ] **Step 3: Write `AnalysisService.swift`**
+- [x] **Step 3: Write `AnalysisService.swift`**
 
 ```swift
 import ElliotModel
@@ -3329,14 +3329,14 @@ public actor AnalysisService {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd ElliotKit && swift test --filter AnalysisServiceTests`
 Expected: PASS.
 
 `start` writes into `StoreLocation`'s real home. That is intentional — it is a directory create, not a database write — but if the sandbox forbids it, the `try?` swallows it and the test still passes.
 
-- [ ] **Step 5: Run the whole suite and commit**
+- [x] **Step 5: Run the whole suite and commit**
 
 ```bash
 cd ElliotKit && swift test && cd ..
@@ -3375,7 +3375,7 @@ config, so its agent can see elliot and call board_analyze_repo."
 
 **What this proves:** one test crosses every new seam — prompt → spawn → artifact → harvest → evidence → duplicate hint → accept → Backlog card → drag to To Do → `create-issue` fires — and joins them to the seams that already existed. Without spending a token or touching GitHub.
 
-- [ ] **Step 1: Extend `Scripts/fake-claude.sh`**
+- [x] **Step 1: Extend `Scripts/fake-claude.sh`**
 
 Add to the header comment block:
 
@@ -3414,7 +3414,7 @@ fi
 
 Note the pipeline takes its stdin from `printf`, not from the script, so it cannot repeat the bug where a helper process inside the replay loop ate the unread fixture lines.
 
-- [ ] **Step 2: Verify the fake by hand**
+- [x] **Step 2: Verify the fake by hand**
 
 ```bash
 mkdir -p /tmp/elliot-fake && cat > /tmp/elliot-fake/in.json <<'JSON'
@@ -3427,7 +3427,7 @@ cat /tmp/elliot-fake/out/stories.json
 
 Expected: the JSON is printed. If it is not, the `sed` did not match — check the marker is present and followed by a non-space path.
 
-- [ ] **Step 3: Write the fixtures**
+- [x] **Step 3: Write the fixtures**
 
 Create `Fixtures/analysis/e2e-bugs.json`:
 
@@ -3474,7 +3474,7 @@ Create `Fixtures/stream-json/analyze-success.ndjson` — copy the shape of `crea
 {"type":"result","subtype":"success","is_error":false,"result":"Wrote 3 candidate stories.","num_turns":5,"duration_ms":41000,"total_cost_usd":0.0912,"session_id":"00000000-0000-0000-0000-000000000000","permission_denials":[]}
 ```
 
-- [ ] **Step 4: Write the end-to-end test**
+- [x] **Step 4: Write the end-to-end test**
 
 Create `ElliotKit/Tests/ElliotEngineTests/AnalysisEndToEndTests.swift`:
 
@@ -3746,7 +3746,7 @@ struct AnalysisEndToEndTests {
 }  // extension EndToEndSuites
 ```
 
-- [ ] **Step 4b: Nest the existing end-to-end suite under the same parent**
+- [x] **Step 4b: Nest the existing end-to-end suite under the same parent**
 
 In `ElliotKit/Tests/ElliotEngineTests/EndToEndTests.swift`, wrap the existing
 suite so the two cannot run at the same time — they share one process-global
@@ -3777,14 +3777,14 @@ top of `Stack.make`:
 Its `BoardStore.open(at:)` call already names an explicit path, so nothing else
 in that file changes.
 
-- [ ] **Step 5: Run the end-to-end suite**
+- [x] **Step 5: Run the end-to-end suite**
 
 Run: `cd ElliotKit && swift test --filter AnalysisEndToEndTests`
 Expected: PASS, both tests.
 
 If `theWholePath` times out, check in order: the artifact exists at `$ELLIOT_HOME/analyses/<analysisID>/<runID>/stories.json` after the run; the prompt's `ELLIOT_OUTPUT=` path matches it; `Scripts/fake-claude.sh` is executable (`chmod +x`).
 
-- [ ] **Step 6: Run the whole suite and commit**
+- [x] **Step 6: Run the whole suite and commit**
 
 ```bash
 cd ElliotKit && swift test && cd ..
@@ -3818,7 +3818,7 @@ its proposals, because the sentinel reports, it does not punish."
 
 **Why the version bumps:** a helper embedded in an older app bundle meeting this app must fail loudly on `hello` rather than send a request the app cannot decode. That is what the constant is for.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `ElliotKit/Tests/ElliotIPCTests/AnalysisWireTests.swift`:
 
@@ -3904,12 +3904,12 @@ struct AnalysisWireTests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd ElliotKit && swift test --filter AnalysisWireTests`
 Expected: FAIL — `type 'ElliotRequest' has no member 'analyzeRepo'`.
 
-- [ ] **Step 3: Extend `Protocol.swift`**
+- [x] **Step 3: Extend `Protocol.swift`**
 
 Bump the version, with the reason kept next to it:
 
@@ -4035,7 +4035,7 @@ public struct DecisionDTO: Codable, Sendable, Hashable {
 }
 ```
 
-- [ ] **Step 4: Handle the new requests in `MCPRequestHandler.swift`**
+- [x] **Step 4: Handle the new requests in `MCPRequestHandler.swift`**
 
 Add `analysisService` to the type:
 
@@ -4196,7 +4196,7 @@ And the three methods:
     }
 ```
 
-- [ ] **Step 5: Update the one construction site**
+- [x] **Step 5: Update the one construction site**
 
 In `ElliotKit/Sources/ElliotApp/AppModel.swift`, `startIPC(board:store:)` now needs the service. Change its signature to `startIPC(board:store:analysis:)` and the handler line to:
 
@@ -4216,7 +4216,7 @@ The `AnalysisService` instance is created in `start()` in Task 13; until then, c
 
 and add the stored property `private var analysisService: AnalysisService?`.
 
-- [ ] **Step 6: Run the tests and commit**
+- [x] **Step 6: Run the tests and commit**
 
 ```bash
 cd ElliotKit && swift test && cd ..
@@ -4249,7 +4249,7 @@ checkable, and the per-file detail belongs in the window."
 
 **The read/write split, unchanged:** `board_list_proposals` is a read, so it falls back to the read-only database snapshot when Elliot is down, annotated `offline-db`. The other three are writes and go through the running app. `ElliotMCPKit` still imports neither `ElliotEngine` nor `ElliotProcess`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `AnalysisWireTests.swift` — a new suite in the same file so the wire and its MCP face are read together:
 
@@ -4315,12 +4315,12 @@ The MCP product is named explicitly rather than relied on transitively: the
 test writes `import MCP` to name `Tool`, and a transitive import working is a
 build-system detail, not a guarantee.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd ElliotKit && swift test --filter AnalysisMCPToolTests`
 Expected: FAIL — the four tools are missing.
 
-- [ ] **Step 3: Declare the tools in `ElliotMCPServer.swift`**
+- [x] **Step 3: Declare the tools in `ElliotMCPServer.swift`**
 
 Append to the `tools` array:
 
@@ -4436,7 +4436,7 @@ Append to the `tools` array:
         ),
 ```
 
-- [ ] **Step 4: Dispatch them**
+- [x] **Step 4: Dispatch them**
 
 Add to `call(name:arguments:)`:
 
@@ -4555,7 +4555,7 @@ And the implementations, after `listRuns`:
     }
 ```
 
-- [ ] **Step 5: Run the tests and commit**
+- [x] **Step 5: Run the tests and commit**
 
 ```bash
 cd ElliotKit && swift test && cd ..
@@ -4589,7 +4589,7 @@ holds no analysis logic, exactly as it holds no move rules."
 
 **One window, not two sheets.** It opens in setup and, once running, the *same* window lists the runs at the top and fills in with proposals as each angle lands. That is what makes one run per angle worth its cost: the quick wins are readable and sortable while the bugs angle is still working.
 
-- [ ] **Step 1: Add the state and actions to `AppModel.swift`**
+- [x] **Step 1: Add the state and actions to `AppModel.swift`**
 
 Add the observable properties beside the existing ones:
 
@@ -4712,7 +4712,7 @@ and in the `.runFinished` case, after the existing card refresh:
 
 In `shutdown()`, add `proposalObservation?.cancel()`.
 
-- [ ] **Step 2: Add the toolbar entry in `BoardView.swift`**
+- [x] **Step 2: Add the toolbar entry in `BoardView.swift`**
 
 After the "New story" button, before `Spacer()`:
 
@@ -4748,7 +4748,7 @@ And attach the window as a sheet, beside the two existing ones:
         }
 ```
 
-- [ ] **Step 3: Write `AnalysisWindow.swift`**
+- [x] **Step 3: Write `AnalysisWindow.swift`**
 
 ```swift
 import ElliotEngine
@@ -5117,7 +5117,7 @@ struct ProposalEditor: View {
 }
 ```
 
-- [ ] **Step 4: Build and check the app runs**
+- [x] **Step 4: Build and check the app runs**
 
 ```bash
 cd ElliotKit && swift build --product ElliotApp && cd ..
@@ -5129,7 +5129,7 @@ Expected: the board opens; the *Analyze…* button is enabled once a repository 
 
 If `Evidence` does not satisfy `ForEach(_:id:\.self)`, it is already `Hashable` from Task 1 — check the `import ElliotModel`.
 
-- [ ] **Step 5: Run the suite and commit**
+- [x] **Step 5: Run the suite and commit**
 
 ```bash
 cd ElliotKit && swift test && cd ..

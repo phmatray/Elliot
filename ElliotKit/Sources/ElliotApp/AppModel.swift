@@ -298,6 +298,27 @@ public final class AppModel {
         try? await board?.deleteCard(id: id)
     }
 
+    /// Unlike `createCard` / `deleteCard`, this reports failure: the sheet that
+    /// called it still holds the text the user typed, and silently dropping an
+    /// edit is worse than saying it was refused.
+    public func updateCard(id: UUID, draft: CardDraft) async -> Bool {
+        guard let board else {
+            // The sheet shows `status` as the reason it refused; leaving the
+            // previous one there would blame the wrong thing.
+            status = "The board is not ready yet; the edit was not saved."
+            return false
+        }
+        do {
+            try await board.updateCard(
+                id: id, title: draft.title, body: draft.body, story: draft.story
+            )
+            return true
+        } catch {
+            status = error.localizedDescription
+            return false
+        }
+    }
+
     public func cancelRun(id: UUID) async {
         await board?.cancelRun(id: id)
     }

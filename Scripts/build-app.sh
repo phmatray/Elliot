@@ -17,14 +17,23 @@ swift build -c "$CONFIG" --product ElliotApp
 swift build -c "$CONFIG" --product elliot-mcp
 BIN="$(swift build -c "$CONFIG" --show-bin-path)"
 
-echo "▸ Assembling $APP"
+# Read from the Swift source rather than written twice. A plist that names a
+# version the code does not is worse than no version at all: it is the one thing
+# a bug report from the field is trusted on.
+VERSION="$(sed -n 's/.*marketingVersion = "\(.*\)".*/\1/p' "$ROOT/ElliotKit/Sources/ElliotIPC/Protocol.swift")"
+if [ -z "$VERSION" ]; then
+  echo "✗ Could not read ElliotBuild.marketingVersion from Sources/ElliotIPC/Protocol.swift" >&2
+  exit 1
+fi
+
+echo "▸ Assembling $APP ($VERSION)"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN/ElliotApp" "$APP/Contents/MacOS/Elliot"
 cp "$BIN/elliot-mcp" "$APP/Contents/MacOS/elliot-mcp"
 
-cat >"$APP/Contents/Info.plist" <<'PLIST'
+cat >"$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -34,7 +43,7 @@ cat >"$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key>      <string>Elliot</string>
   <key>CFBundleIdentifier</key>      <string>dev.phmatray.elliot</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
-  <key>CFBundleShortVersionString</key> <string>0.1.0</string>
+  <key>CFBundleShortVersionString</key> <string>$VERSION</string>
   <key>CFBundleVersion</key>         <string>1</string>
   <key>LSMinimumSystemVersion</key>  <string>15.0</string>
   <key>NSHighResolutionCapable</key> <true/>

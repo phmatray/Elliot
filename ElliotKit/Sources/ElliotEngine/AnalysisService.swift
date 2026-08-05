@@ -199,13 +199,18 @@ public actor AnalysisService {
 
             let card: Card
             do {
+                // No idempotency key: the claim above is already the
+                // compare-and-set that makes a double accept impossible, and it
+                // is the stronger guard of the two — it is the proposal's own
+                // status, so it also settles a concurrent `reject`, which a key
+                // on the card would know nothing about.
                 card = try await board.createCard(
                     repoID: proposal.repoID,
                     title: proposal.title,
                     body: proposal.rationale,
                     story: proposal.story,
                     column: .backlog
-                )
+                ).card
             } catch {
                 // No card exists yet, so the claim can safely be given back —
                 // a retry is exactly a fresh `accept` of a `.proposed`

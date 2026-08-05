@@ -20,12 +20,46 @@ public enum MoveResult: Sendable, Equatable {
 public enum BoardError: Error, LocalizedError {
     case cardNotFound(UUID)
     case repoNotFound(UUID)
+    case cardAlreadyFiled(Int)
+    case runNotFound(UUID)
 
     public var errorDescription: String? {
         switch self {
         case .cardNotFound(let id): "No card with id \(id)."
         case .repoNotFound(let id): "No repository with id \(id)."
+        case .cardAlreadyFiled(let number):
+            "This card is filed as issue #\(number); edit the issue on GitHub."
+        case .runNotFound(let id): "No run with id \(id)."
         }
+    }
+}
+
+/// The answer to `createCard`, which may not have created anything.
+public struct CreatedCard: Sendable, Hashable {
+    public var card: Card
+    /// True when an idempotency key matched a card that was already there.
+    public var alreadyExisted: Bool
+
+    public init(card: Card, alreadyExisted: Bool) {
+        self.card = card
+        self.alreadyExisted = alreadyExisted
+    }
+}
+
+/// What the board is waiting for, ranked.
+///
+/// `total` and `readyCount` are counted over every candidate, not over `steps`
+/// — a caller that asked for three rows must still be able to tell "nothing is
+/// ready" from "you asked for too few".
+public struct NextSteps: Sendable, Equatable {
+    public var steps: [NextStep]
+    public var total: Int
+    public var readyCount: Int
+
+    public init(steps: [NextStep], total: Int, readyCount: Int) {
+        self.steps = steps
+        self.total = total
+        self.readyCount = readyCount
     }
 }
 
@@ -147,14 +181,39 @@ public actor BoardService: SystemMoving {
 
     // MARK: - Cards
 
+    /// Files a new card, or hands back the one an earlier attempt already filed.
+    ///
+    /// `idempotencyKey` is the caller's own token for "this request", and it is
+    /// persisted with the card behind a unique index rather than remembered in
+    /// memory. A write that reaches Elliot can spend twenty seconds launching
+    /// the app before it spends thirty on the socket, so the retry of a request
+    /// that timed out on the way back may well arrive at a *different* app
+    /// process than the first one: an in-memory table would never see it.
+    ///
+    /// A key that names a card in another repository still returns that card.
+    /// The index is unique board-wide, so writing a second one is not an option
+    /// on the table — and the answer carries the card, so the caller can see
+    /// where its key landed.
     public func createCard(
         repoID: UUID,
         title: String,
         body: String = "",
         story: UserStory? = nil,
-        column: ElliotModel.Column = .backlog
-    ) async throws -> Card {
+        column: ElliotModel.Column = .backlog,
+        idempotencyKey: String? = nil
+    ) async throws -> CreatedCard {
         guard try await store.repo(id: repoID) != nil else { throw BoardError.repoNotFound(repoID) }
+        // Normalised once, here, so the lookup's idea of "no key" and the
+        // column's are the same value. They were not: the lookup skipped `""`
+        // and the column stored it, and since the unique index counts `""` as a
+        // value rather than a NULL, the first empty-keyed card poisoned every
+        // later create board-wide — a permanent outage of the tool, from an
+        // argument a client emits by templating an optional field.
+        let key = idempotencyKey.flatMap { $0.isEmpty ? nil : $0 }
+        if let existing = try await existingCard(forKey: key) {
+            return CreatedCard(card: existing, alreadyExisted: true)
+        }
+
         let now = Date()
         let card = Card(
             repoID: repoID,
@@ -165,14 +224,51 @@ public actor BoardService: SystemMoving {
             orderIndex: try await store.nextOrderIndex(repoID: repoID, column: column),
             columnEnteredAt: now,
             createdAt: now,
-            updatedAt: now
+            updatedAt: now,
+            idempotencyKey: key
         )
-        try await store.saveCard(card)
-        return card
+        do {
+            try await store.saveCard(card)
+        } catch {
+            // Two retries of the same request, in flight at once: the unique
+            // index is what actually makes "once" true, and the lookup above
+            // only spares the round trip in the common case.
+            if let existing = try await existingCard(forKey: key) {
+                return CreatedCard(card: existing, alreadyExisted: true)
+            }
+            throw error
+        }
+        return CreatedCard(card: card, alreadyExisted: false)
     }
 
-    public func updateCard(_ card: Card) async throws {
+    /// A nil key means "no deduplication" — not "look for a card with no key".
+    private func existingCard(forKey key: String?) async throws -> Card? {
+        guard let key else { return nil }
+        return try await store.card(idempotencyKey: key)
+    }
+
+    /// Corrects what the *user* wrote on a card: its label, its story, its note.
+    ///
+    /// Deliberately not `(_ card: Card)`. The stored card is re-fetched and only
+    /// these three fields are overwritten, so column, order, issue, PR and
+    /// branch keep their one real owner — a whole-`Card` write would be a second
+    /// path that can move a card without firing a rule.
+    ///
+    /// Refused once the card carries an issue number: from that point the issue
+    /// on github.com is the record, and a card edit would silently diverge from it.
+    ///
+    /// Returns the corrected card so a caller over the wire can render what it
+    /// now says without a second round trip. `@discardableResult` because the
+    /// sheet that calls this is looking at the card already.
+    @discardableResult
+    public func updateCard(id: UUID, title: String, body: String, story: UserStory?) async throws -> Card {
+        guard var card = try await store.card(id: id) else { throw BoardError.cardNotFound(id) }
+        if let issue = card.issueNumber { throw BoardError.cardAlreadyFiled(issue) }
+        card.title = title
+        card.body = body
+        card.story = story
         try await store.saveCard(card)
+        return card
     }
 
     public func deleteCard(id: UUID) async throws {
@@ -192,8 +288,112 @@ public actor BoardService: SystemMoving {
         try await store.saveCard(card)
     }
 
+    /// Stops a run the caller is looking at. The UI's path: the run is on
+    /// screen, so whether it exists is not a question worth asking.
     public func cancelRun(id: UUID) async {
         await launcher.cancel(runID: id)
+    }
+
+    /// Stops a run and answers with what it became — `cancelling` while the
+    /// process winds down, `cancelled` once it is gone.
+    ///
+    /// The path for a caller that named the run from memory. `cancelRun(id:)`
+    /// cannot say whether anything was there, and silence reads as success: an
+    /// agent that cancels a run id it invented would be told it worked. The
+    /// check belongs here rather than in the caller, so every caller gets it.
+    ///
+    /// Cancelling a run that already finished is not an error. It returns the
+    /// run, terminal, having done nothing — which is what the caller wanted.
+    @discardableResult
+    public func cancel(runID: UUID) async throws -> SkillRun {
+        guard let run = try await store.run(id: runID) else { throw BoardError.runNotFound(runID) }
+        guard run.state.isActive else { return run }
+        await launcher.cancel(runID: runID)
+        return (try await store.run(id: runID)) ?? run
+    }
+
+    /// Holds until the run reaches a terminal state or the window closes, then
+    /// answers with the run either way.
+    ///
+    /// A timeout is not an error: the run is still going, `isTerminal` says so,
+    /// `pollAfterSeconds` says when to ask again, and the caller asks again.
+    /// Returning an error here would make "still working" indistinguishable
+    /// from "the app died", which is the thing this method exists to fix.
+    ///
+    /// `nonisolated` on purpose. The wait is minutes long and the actor it
+    /// belongs to is the one a drag goes through; every sleep and every re-read
+    /// happens off the actor's executor, so a five-minute await cannot delay a
+    /// card the user is dragging. Nothing here touches the actor's mutable
+    /// state — `store` is an immutable `Sendable` let, which is what makes this
+    /// legal rather than merely convenient.
+    ///
+    /// Polling rather than observing the database. The waiting side is one
+    /// indexed row read every half second — at the 300-second ceiling, 600
+    /// primary-key lookups against a local SQLite file — where an observation
+    /// would buy a fraction of a second of latency for a task group, a
+    /// cancellation path and a dependence on `ValueObservation` firing in a
+    /// process that may have opened the store read-only.
+    public nonisolated func awaitRun(
+        id: UUID,
+        timeoutSeconds: Int,
+        pollEvery interval: TimeInterval = 0.5
+    ) async throws -> SkillRun {
+        guard var run = try await store.run(id: id) else { throw BoardError.runNotFound(id) }
+        guard !run.state.isTerminal else { return run }
+
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+        while Date() < deadline {
+            try await Task.sleep(for: .seconds(interval))
+            // A run that vanished mid-wait — only possible if its card was
+            // deleted — reports the last state we actually saw rather than an
+            // error the caller cannot act on.
+            guard let latest = try await store.run(id: id) else { return run }
+            run = latest
+            if run.state.isTerminal { return run }
+        }
+        return run
+    }
+
+    // MARK: - What to do next
+
+    /// What the board is waiting for, ranked, with the reason for everything
+    /// that is not ready.
+    ///
+    /// Every step is decided by `rankNextSteps`, which decides by calling the
+    /// same `evaluateMove` a real move calls — so this predicts what
+    /// `board_move_card` would do rather than describing it a second time.
+    ///
+    /// Candidates are evaluated with `providedFollowUps: []`, not `nil`. That
+    /// is load-bearing: `nil` means "not collected yet" and would report every
+    /// in-review card as needing input, when the move an agent can actually
+    /// make — merge with no follow-ups — is available to it right now. Reading
+    /// a ready `inReview → done` therefore means "this will merge, filing
+    /// nothing after it".
+    public func nextSteps(repoID: UUID?, limit: Int) async throws -> NextSteps {
+        let repos = try await store.repos()
+        // Unlimited on purpose: the limit cuts the *ranked* answer, and a limit
+        // applied before ranking would hide the one ready card behind ten
+        // blocked ones.
+        let cards = try await store.cards(repoID: repoID)
+        let active = try await store.activeRuns(cardIDs: cards.map(\.id))
+
+        // Assembled by ElliotModel, not here: the helper answers the same
+        // question from a snapshot, and the two must not disagree about what
+        // counts as a candidate.
+        let candidates = nextCandidates(
+            cards: cards,
+            repos: repos,
+            activeRunIDs: active.mapValues(\.id)
+        )
+
+        // `rankNextSteps` drops the cards with nowhere to go, so its count — not
+        // the card count — is the number of candidates.
+        let ranked = rankNextSteps(candidates)
+        return NextSteps(
+            steps: limit > 0 ? Array(ranked.prefix(limit)) : ranked,
+            total: ranked.count,
+            readyCount: ranked.filter(\.isReady).count
+        )
     }
 
     // MARK: - SystemMoving

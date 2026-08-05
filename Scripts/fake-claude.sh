@@ -9,17 +9,29 @@
 #   FAKE_CLAUDE_FIXTURE    path to an .ndjson file to replay line by line
 #   FAKE_CLAUDE_DELAY_MS   milliseconds to wait between lines (default 0)
 #   FAKE_CLAUDE_EXIT       exit code (default 0)
-#   FAKE_CLAUDE_MODE       hang  = emit nothing, sleep forever
-#                          trap  = trap SIGTERM, sleep, exit 143 like Claude Code
+#   FAKE_CLAUDE_MODE       hang  = emit nothing and sleep until signalled
+#                          trap  = same; kept as a separate name because the
+#                                  tests read as documentation of intent
 #                          crash = write to stderr and exit non-zero
 #   FAKE_CLAUDE_ARGV_OUT   file to dump argv into, one argument per line
 #   FAKE_CLAUDE_STDERR     text to emit on stderr
+#   FAKE_CLAUDE_READY      file to touch once the trap is installed, so a test
+#                          can wait on a fact instead of guessing a duration
 #   FAKE_CLAUDE_STORIES    path to a JSON file to drop at the analysis output
 #                          path the prompt announces (ELLIOT_OUTPUT=…)
 #   FAKE_CLAUDE_TOUCH      path, relative to cwd, to write to — used to prove
 #                          the git sentinel notices a run that edits the repo
+#
+# Every mode exits 143 on SIGTERM, as Claude Code documents for its own
+# shutdown. `hang` used not to trap at all, which left orphans holding the
+# runner's stdout pipe open — see issue #7.
 
 set -u
+
+# Trap before anything else: a SIGTERM arriving during the preamble must not
+# leave an orphan holding the runner's stdout pipe open.
+terminated() { exit 143; }
+trap terminated TERM INT
 
 if [ -n "${FAKE_CLAUDE_ARGV_OUT:-}" ]; then
   : >"$FAKE_CLAUDE_ARGV_OUT"
@@ -61,14 +73,15 @@ if [ -n "${FAKE_CLAUDE_TOUCH:-}" ]; then
   printf 'touched by fake-claude\n' >"$FAKE_CLAUDE_TOUCH"
 fi
 
+# Observable readiness, so a test can wait on a fact instead of a duration.
+if [ -n "${FAKE_CLAUDE_READY:-}" ]; then
+  : >"$FAKE_CLAUDE_READY"
+fi
+
 case "${FAKE_CLAUDE_MODE:-replay}" in
-  hang)
-    while true; do sleep 1; done
-    ;;
-  trap)
-    # Claude Code exits 143 on SIGTERM after shutting down its own children.
-    terminated() { exit 143; }
-    trap terminated TERM INT
+  hang|trap)
+    # Short sleeps: bash runs a trap only between commands, so the sleep
+    # interval is the worst-case SIGTERM latency.
     while true; do sleep 0.05; done
     ;;
   crash)

@@ -5,14 +5,56 @@ enum Migrations {
     static var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1_initial", migrate: v1Initial)
+
+        // Additive only: v1 databases in the field must keep their rows.
+        migrator.registerMigration("v2_repositoryLayout") { db in
+            try db.create(table: "setting") { t in
+                t.primaryKey("key", .text)
+                t.column("value", .text).notNull()
+            }
+            try db.alter(table: "repo") { t in
+                t.add(column: "visibility", .text)
+            }
+        }
+
+        // v3 rather than a second v2: `v2_repositoryLayout` above has shipped on
+        // `main`, and a migration's name is its identity in `grdb_migrations`.
+        // Renaming a shipped one makes every database in the field try to run it
+        // again; this one has shipped nowhere, so it is the one that moves.
+        migrator.registerMigration("v3_cardIdempotencyKey") { db in
+            try db.alter(table: "card") { t in
+                t.add(column: "idempotencyKey", .text)
+            }
+            // The retry of a create that timed out on the way back may reach a
+            // different app process than the first attempt, so the "only one
+            // card" guarantee has to be in the schema. SQLite counts NULLs as
+            // distinct here, which is what lets every keyless card — all of the
+            // ones made in the UI — share the column without colliding.
+            //
+            // Unique on the key alone, not on `(repoID, idempotencyKey)`: the
+            // lookup names only the key, and a key that could repeat across
+            // repositories would answer with an arbitrary one of them.
+            try db.create(
+                index: "card_on_idempotencyKey",
+                on: "card",
+                columns: ["idempotencyKey"],
+                unique: true
+            )
+        }
+
+        // v4 for the same reason v3 is v3: this one was written as `v2_analysis`
+        // on a branch that had not landed, and `v2_repositoryLayout` reached
+        // `main` first. The unshipped name is the one that moves.
+        //
         // Deferred because skillRun is rebuilt: its rows reference card and repo
         // while the table is briefly named skillRun_old.
-        migrator.registerMigration("v2_analysis", foreignKeyChecks: .deferred, migrate: v2Analysis)
+        migrator.registerMigration("v4_analysis", foreignKeyChecks: .deferred, migrate: v4Analysis)
+
         return migrator
     }
 
     /// The original schema. Named so a test can build a v1 database and prove
-    /// the upgrade to v2 loses nothing.
+    /// the upgrade to the current schema loses nothing.
     static func v1Initial(_ db: Database) throws {
         try db.create(table: "repo") { t in
             t.primaryKey("id", .text)
@@ -97,7 +139,7 @@ enum Migrations {
         try db.create(index: "moveAudit_on_card_at", on: "moveAudit", columns: ["cardID", "at"])
     }
 
-    static func v2Analysis(_ db: Database) throws {
+    static func v4Analysis(_ db: Database) throws {
         try db.create(table: "analysis") { t in
             t.primaryKey("id", .text)
             t.column("repoID", .text).notNull()

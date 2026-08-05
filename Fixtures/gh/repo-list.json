@@ -1,0 +1,32 @@
+[
+  {
+    "defaultBranchRef": {
+      "name": "dev"
+    },
+    "isArchived": false,
+    "isFork": false,
+    "nameWithOwner": "phmatray/TaLibStandard",
+    "url": "https://github.com/phmatray/TaLibStandard",
+    "visibility": "PUBLIC"
+  },
+  {
+    "defaultBranchRef": {
+      "name": "main"
+    },
+    "isArchived": false,
+    "isFork": false,
+    "nameWithOwner": "phmatray/Elliot",
+    "url": "https://github.com/phmatray/Elliot",
+    "visibility": "PRIVATE"
+  },
+  {
+    "defaultBranchRef": {
+      "name": "dev"
+    },
+    "isArchived": true,
+    "isFork": true,
+    "nameWithOwner": "phmatray/ValueOf",
+    "url": "https://github.com/phmatray/ValueOf",
+    "visibility": "PUBLIC"
+  }
+]

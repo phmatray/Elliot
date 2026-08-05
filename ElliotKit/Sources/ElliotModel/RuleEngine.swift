@@ -129,3 +129,143 @@ public func evaluateMove(
         return .noAction
     }
 }
+
+// MARK: - What to do next
+
+/// One card, and everything outside it the decision depends on.
+///
+/// Plain data, gathered by whoever has a database — so the ranking itself needs
+/// none.
+public struct NextCandidate: Sendable, Hashable {
+    public var card: Card
+    public var repoName: String
+    public var context: MoveContext
+
+    public init(card: Card, repoName: String, context: MoveContext) {
+        self.card = card
+        self.repoName = repoName
+        self.context = context
+    }
+}
+
+/// A card's next move and what the rule engine says would come of it.
+public struct NextStep: Sendable, Hashable {
+    public var card: Card
+    public var repoName: String
+    public var to: Column
+    public var outcome: MoveOutcome
+
+    public init(card: Card, repoName: String, to: Column, outcome: MoveOutcome) {
+        self.card = card
+        self.repoName = repoName
+        self.to = to
+        self.outcome = outcome
+    }
+}
+
+public extension NextStep {
+    /// Whether moving this card now would actually start work.
+    ///
+    /// Only `.action` counts. `.noAction` moves the card and fires nothing — a
+    /// card in progress advances when Elliot notices its pull request went
+    /// ready, and there is no gesture for an agent to make there.
+    var isReady: Bool {
+        switch outcome {
+        case .action: true
+        case .noAction, .needsInput, .blocked: false
+        }
+    }
+
+    var triggers: TriggerAction? {
+        switch outcome {
+        case .action(let action): action
+        case .noAction, .needsInput, .blocked: nil
+        }
+    }
+
+    var block: MoveBlock? {
+        switch outcome {
+        case .blocked(let block): block
+        case .action, .noAction, .needsInput: nil
+        }
+    }
+}
+
+/// Turns a board's rows into the candidates `rankNextSteps` grades.
+///
+/// Shared because two callers assemble them — `BoardService` in the app and the
+/// helper reading a snapshot — and a disagreement between the two is invisible:
+/// they answer the same question about the same board. They had one already. A
+/// card whose repository row is gone was dropped by the app and kept by the
+/// helper under the name "?", so the same board answered `total: 0` live and
+/// `total: 1` from the file. Dropping is the defensible half: a card with no
+/// repository has no checkout to run in and no permission mode to run under.
+///
+/// Pure, like everything else here. Whoever holds a database does the reading
+/// and hands the rows over.
+///
+/// `activeRunIDs` maps a card to the run holding it; a card absent from it is
+/// held by nothing.
+public func nextCandidates(
+    cards: [Card],
+    repos: [Repo],
+    activeRunIDs: [UUID: UUID]
+) -> [NextCandidate] {
+    let byID = Dictionary(repos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    return cards.compactMap { card in
+        guard let repo = byID[card.repoID] else { return nil }
+        return NextCandidate(
+            card: card,
+            repoName: repo.nameWithOwner,
+            context: MoveContext(
+                repoIsEnabled: repo.isEnabled,
+                activeRunID: activeRunIDs[card.id],
+                allowSideEffects: true,
+                // `[]` and not nil. Nil means "not collected yet" and would
+                // report every inReview card as needing input, when the move an
+                // agent can actually make — merge, filing nothing after it — is
+                // available to it right now.
+                providedFollowUps: []
+            )
+        )
+    }
+}
+
+/// Ranks cards by what the board is waiting for. Pure: no I/O, no clock, no
+/// randomness — the same contract as `evaluateMove`, and for the same reason.
+///
+/// Every step is decided by calling `evaluateMove` on the card's natural next
+/// column, so this answers with what a real move *would* do rather than with a
+/// second opinion about it. That is the whole point: a board that predicts its
+/// own behaviour, not a second copy of the rules that can drift from them.
+///
+/// The order, first difference winning: ready before blocked; then furthest
+/// along the board first, because finishing work already in flight beats
+/// starting more; then repository, position in column, and id. The last key
+/// makes the order total, so the answer does not depend on the order the
+/// candidates arrived in.
+public func rankNextSteps(_ candidates: [NextCandidate]) -> [NextStep] {
+    candidates
+        .compactMap { candidate -> NextStep? in
+            guard let to = candidate.card.column.naturalNext else { return nil }
+            return NextStep(
+                card: candidate.card,
+                repoName: candidate.repoName,
+                to: to,
+                outcome: evaluateMove(
+                    from: candidate.card.column,
+                    to: to,
+                    card: candidate.card,
+                    context: candidate.context
+                )
+            )
+        }
+        .sorted { first, second in
+            if first.isReady != second.isReady { return first.isReady }
+            let a = first.card, b = second.card
+            if a.column != b.column { return a.column.boardIndex > b.column.boardIndex }
+            if first.repoName != second.repoName { return first.repoName < second.repoName }
+            if a.orderIndex != b.orderIndex { return a.orderIndex < b.orderIndex }
+            return a.id.uuidString < b.id.uuidString
+        }
+}

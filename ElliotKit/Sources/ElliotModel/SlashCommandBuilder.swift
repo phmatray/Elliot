@@ -18,6 +18,25 @@ public enum SkillKind: String, Codable, CaseIterable, Sendable, Hashable {
     /// Reading a repository through one lens. Not a plugin skill — see below.
     case analyzeRepo
 
+    /// The bare skill name, and the one word every layer uses for this skill:
+    /// `RunDTO.kind`, `MoveDTO.triggered` and `NextDTO.wouldTrigger` all read
+    /// the same string, so an agent correlating them needs no table.
+    ///
+    /// Not the raw value, which is persisted and therefore stuck with
+    /// `createIssue`. Decoupling the two is what makes this rename free.
+    ///
+    /// `.analyzeRepo` is named here even though it is no plugin skill: an
+    /// analysis run reaches `RunDTO` like any other, and a run whose kind
+    /// rendered as empty would be the one an agent could not correlate.
+    public var skillName: String {
+        switch self {
+        case .createIssue: "create-issue"
+        case .implementIssue: "implement-issue"
+        case .mergePR: "merge-pr"
+        case .analyzeRepo: "analyze-repo"
+        }
+    }
+
     /// Plugin-qualified slash name, for the three kinds that *are* plugin
     /// skills. The CLI builds component ids as `"\(pluginName):\(name)"`.
     ///

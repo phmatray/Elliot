@@ -2,6 +2,7 @@ import ElliotModel
 import ElliotProcess
 import ElliotStore
 import Foundation
+import TestSupport
 import Testing
 
 @testable import ElliotEngine
@@ -70,32 +71,37 @@ private struct Stack {
 
     func cleanUp() { try? FileManager.default.removeItem(at: home) }
 
-    /// Waits for a card's run to reach a terminal state.
+    /// Waits for a card's run to reach a terminal state. On expiry it reports the
+    /// state it actually saw, so a flake names its cause instead of "timedOut".
     func awaitRun(cardID: UUID, timeout: Duration = .seconds(20)) async throws -> SkillRun {
         let deadline = ContinuousClock.now.advanced(by: timeout)
+        var lastSeen = "no run row"
         while ContinuousClock.now < deadline {
-            if let run = try await store.runs(cardID: cardID).first, run.state.isTerminal {
-                return run
+            if let run = try await store.runs(cardID: cardID).first {
+                if run.state.isTerminal { return run }
+                lastSeen = "\(run.state)"
             }
             try await Task.sleep(for: .milliseconds(50))
         }
-        throw StackError.timedOut
+        throw StackError.timedOut(lastSeen: lastSeen)
     }
 
     /// Waits for an analysis run to reach a terminal state — it has no card to
     /// look it up by.
     func awaitRun(id: UUID, timeout: Duration = .seconds(20)) async throws -> SkillRun {
         let deadline = ContinuousClock.now.advanced(by: timeout)
+        var lastSeen = "no run row"
         while ContinuousClock.now < deadline {
-            if let run = try await store.run(id: id), run.state.isTerminal {
-                return run
+            if let run = try await store.run(id: id) {
+                if run.state.isTerminal { return run }
+                lastSeen = "\(run.state)"
             }
             try await Task.sleep(for: .milliseconds(50))
         }
-        throw StackError.timedOut
+        throw StackError.timedOut(lastSeen: lastSeen)
     }
 
-    enum StackError: Error { case timedOut }
+    enum StackError: Error { case timedOut(lastSeen: String) }
 }
 
 /// Nested under the shared parent from `AnalysisEndToEndTests.swift`: both
@@ -121,7 +127,7 @@ struct EndToEndTests {
                 benefit: "I can diagnose without a terminal",
                 acceptanceCriteria: ["the log streams live"]
             )
-        )
+        ).card
 
         let result = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
         guard case .moved(let runID?) = result else {
@@ -166,7 +172,7 @@ struct EndToEndTests {
         let stack = try await Stack.make(fixture: "denied.ndjson")
         defer { stack.cleanUp() }
 
-        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Push something")
+        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Push something").card
         _ = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
 
         let run = try await stack.awaitRun(cardID: card.id)
@@ -184,7 +190,7 @@ struct EndToEndTests {
         )
         defer { stack.cleanUp() }
 
-        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Anything")
+        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Anything").card
         _ = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
 
         let run = try await stack.awaitRun(cardID: card.id)
@@ -195,13 +201,17 @@ struct EndToEndTests {
 
     @Test("Cancelling a run stops it and records the cancellation")
     func cancellingARun() async throws {
+        let ready = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("elliot-ready-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: ready) }
+
         let stack = try await Stack.make(
             fixture: "create-issue-success.ndjson",
-            extraEnv: ["FAKE_CLAUDE_MODE": "trap"]
+            extraEnv: ["FAKE_CLAUDE_MODE": "trap", "FAKE_CLAUDE_READY": ready.path]
         )
         defer { stack.cleanUp() }
 
-        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Long one")
+        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Long one").card
         guard case .moved(let runID?) = try await stack.board.move(
             cardID: card.id, to: .todo, origin: .userDrag
         ) else {
@@ -209,8 +219,14 @@ struct EndToEndTests {
             return
         }
 
-        // Let it actually start before pulling the plug.
-        try await Task.sleep(for: .milliseconds(400))
+        // Wait on the fact that the child is trap-protected, not on a duration:
+        // exit 143 only exists once the trap is installed, and under load a
+        // fixed sleep can expire before bash gets there.
+        try await withTimeout(.seconds(5)) {
+            while !FileManager.default.fileExists(atPath: ready.path) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
         await stack.board.cancelRun(id: runID)
 
         let run = try await stack.awaitRun(cardID: card.id)
@@ -223,7 +239,7 @@ struct EndToEndTests {
         let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
         defer { stack.cleanUp() }
 
-        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Already running")
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Already running").card
         card.column = .inProgress
         card.issueNumber = 47
         card.prNumber = 279
@@ -240,7 +256,7 @@ struct EndToEndTests {
         let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
         defer { stack.cleanUp() }
 
-        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Interrupted")
+        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Interrupted").card
         var orphan = SkillRun(
             cardID: card.id, repoID: stack.repo.id, kind: .createIssue,
             prompt: "/ai-migration-kit:create-issue x", cwd: stack.repo.path,

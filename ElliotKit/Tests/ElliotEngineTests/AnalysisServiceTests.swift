@@ -2,6 +2,7 @@ import ElliotModel
 import ElliotProcess
 import ElliotStore
 import Foundation
+import TestSupport
 import Testing
 
 @testable import ElliotEngine

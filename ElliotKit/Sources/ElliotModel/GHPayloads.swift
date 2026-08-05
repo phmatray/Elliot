@@ -134,3 +134,30 @@ public struct GHRepoInfo: Codable, Sendable, Hashable {
 
     public var defaultBranch: String { defaultBranchRef?.name ?? "main" }
 }
+
+/// One row of `gh repo list <owner> --json …`.
+public struct GHRepoSummary: Codable, Sendable, Hashable {
+    public var nameWithOwner: String
+    public var visibility: String
+    public var defaultBranchRef: GHRepoInfo.BranchRef?
+    public var isFork: Bool
+    public var isArchived: Bool
+    public var url: String?
+
+    public init(
+        nameWithOwner: String, visibility: String,
+        defaultBranchRef: GHRepoInfo.BranchRef? = nil,
+        isFork: Bool = false, isArchived: Bool = false, url: String? = nil
+    ) {
+        self.nameWithOwner = nameWithOwner
+        self.visibility = visibility
+        self.defaultBranchRef = defaultBranchRef
+        self.isFork = isFork
+        self.isArchived = isArchived
+        self.url = url
+    }
+
+    public var defaultBranch: String { defaultBranchRef?.name ?? "main" }
+    public var repoVisibility: RepoVisibility { RepoVisibility(ghVisibility: visibility) }
+    public var name: String { String(nameWithOwner.split(separator: "/").last ?? "") }
+}

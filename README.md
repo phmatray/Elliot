@@ -30,6 +30,11 @@ The backlog holds **user stories**, not loose ideas: `role` / `want` / `benefit`
 plus acceptance criteria, kept as separate fields. That is what will let a skill
 *generate* stories from a repository later instead of parsing prose back apart.
 
+A card can be corrected — label, story, acceptance criteria — from its detail
+sheet, right up until it is filed. Once it carries an issue number the card stops
+being the record: edit the issue on GitHub instead. Elliot refuses the edit rather
+than letting the two drift.
+
 ## Where stories come from
 
 The backlog holds user stories, and Elliot can write them. *Analyze…* reads a
@@ -48,7 +53,7 @@ The same four steps are available over MCP: `board_analyze_repo`,
 ## Build and run
 
 ```bash
-cd ElliotKit && swift test          # 237 tests, no Xcode needed
+cd ElliotKit && swift test          # 408 tests, no Xcode needed
 ./Scripts/build-app.sh              # assembles dist/Elliot.app
 open dist/Elliot.app
 ```
@@ -168,6 +173,36 @@ Two invariants carry most of the weight:
   because the skill resolves its argument with `grep -oE '[0-9]+' | head -1`;
 - a system-originated move never triggers a skill, since the state it reacts to
   was produced by one.
+
+### Running the tests
+
+`swift test` is expected to be **deterministic and always-terminating**. Three
+rules in the suites keep it that way; breaking any of them reintroduces the bug
+where a wedged child held the SwiftPM build lock for a quarter of an hour and
+presented as a broken toolchain rather than as a stuck test.
+
+- **Every async wait is bounded**, through `withTimeout` in the test-only
+  `TestSupport` target. An unbounded `for await …` is how one hung child stopped
+  `swift test` from ever exiting.
+- **`Scripts/fake-claude.sh` traps in every mode**, and installs its trap before
+  anything else, so no child outlives its parent holding the runner's stdout
+  pipe open. It touches `FAKE_CLAUDE_READY` once it is trap-protected.
+- **No assertion measures an absolute duration**, and no test sleeps a fixed
+  interval waiting for the child to be ready — it waits on that file. Wall-clock
+  assertions fail under load while the code under test behaved perfectly.
+
+The matching rule in production code: **nothing waits on
+`Process.waitUntilExit()`**. Both spawners publish the exit from
+`terminationHandler`, handing the waiter off under one lock
+(`StreamingProcess.waitForExit`, `ProcessRunner.run`). `waitUntilExit()` spins a
+run loop waiting for a notification that a concurrently-spawned sibling can
+consume first — and it was doing so on a cooperative-pool thread, so one lost
+notification took the whole test process with it.
+
+`swift test --filter` matches the **type** name, not the `@Suite` display name:
+`--filter ClaudeRunnerTests`, not `--filter "Claude runner"`. A filter that
+matches nothing prints `warning: No matching test cases were run` and **exits
+0**, which is indistinguishable from success.
 
 ## Status
 

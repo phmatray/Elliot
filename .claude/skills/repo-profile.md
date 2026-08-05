@@ -16,7 +16,7 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (~237 tests; needs no Xcode, no API token, no network —
+- **Full test:** `cd ElliotKit && swift test` (408 tests; needs no Xcode, no API token, no network —
   the end-to-end suite drives `Scripts/fake-claude.sh` instead of the real `claude`)
 - **Single-suite filter (per-task, fast):** `cd ElliotKit && swift test --filter <Suite>` — e.g.
   `--filter ElliotModelTests`, or a single suite/test name (**swift-testing**, `@Test`/`@Suite`, not XCTest)
@@ -25,8 +25,9 @@
 - **Format/lint apply:** <!-- TODO: none configured. No `.swiftformat`, `.swiftlint.yml` or `.editorconfig`
   is committed. The toolchain here ships `swift format` 6.3.0 (`swift format --recursive -i Sources Tests`)
   — adopt it deliberately and record it here rather than assuming it. -->
-- **Format/lint verify (the gate):** <!-- TODO: no formatting gate exists. Candidate once adopted:
-  `cd ElliotKit && swift format lint --recursive --strict Sources Tests` -->
+- **Format/lint verify (the gate):** <!-- TODO: no formatting gate exists, and no CI enforces one.
+  Candidate once adopted: `cd ElliotKit && swift format lint --recursive --strict Sources Tests`.
+  Confirm with Philippe whether formatting is a gate at all before failing a PR on it. -->
 - **Prerequisites / caveats:** macOS 15+ and Swift 6.1+ toolchain (`swiftLanguageModes: [.v6]` — strict
   concurrency is on, so data-race errors are build failures, not warnings). `ElliotApp` is a SwiftUI GUI
   target: it builds headlessly but cannot be exercised from a terminal — launch the assembled bundle
@@ -35,24 +36,22 @@
 
 ## CI gates (the exact commands CI fails on — satisfy these locally before ready/merge)
 <!-- TODO: there is no `.github/workflows/` directory — this repo has no CI at all, and branch
-protection is disabled (`"enabled": false`, no required status checks). Nothing is enforced remotely.
-Until CI exists, treat these as the self-imposed gates, run locally before flipping a PR ready: -->
+protection is disabled (no required status checks). Nothing is enforced remotely, so "green CI" is not
+something merge-pr can wait for. Until CI exists, treat these as the self-imposed gates, run locally
+before flipping a PR ready: -->
 - `cd ElliotKit && swift build`
 - `cd ElliotKit && swift test`
 
 ## Integration style
-- **Merge mode:** squash
-  <!-- TODO: inferred, not proven. `main` is 9 linear commits with no merge commits and no `(#N)`
-  subjects — but they are all direct pushes by the sole author, so *no PR has ever landed here*. Squash
-  is recorded because it is what `merge-pr` does and it matches the one-conventional-commit-per-change
-  shape of the existing history. Confirm on the first real merge and correct this line if wrong. -->
+- **Merge mode:** squash — `main` is linear and the landed subjects end in `(#N)`
+  (`feat(app): … (#5) (#6)`, `feat(mcp): ship the fact, not the prose (#20)`).
 - **PR title convention:** Conventional Commits with an optional scope — `<type>(scope): subject` —
-  as used throughout `main` (`feat(app):`, `fix(engine):`, `fix(mcp):`, `docs:`, `test:`). **Not
-  CI-enforced** (no semantic-pull-request workflow); it is a convention held by hand. No `(#issue)`
-  suffix is used in the existing history; a squash merge will append `(#PR)` itself.
-- **Branch naming:** `feat/<issue>-<slug>` — required, not cosmetic. `PRMatcher` finds a PR by
-  anchoring on `^<issue>-` *with* the trailing hyphen after the prefix, so a branch that omits the
-  leading issue number is invisible to the board's verification
+  where the scope is the layer/target touched (`model`, `store`, `process`, `engine`, `ipc`, `mcp`,
+  `app`). Used throughout `main`. **Not CI-enforced** (no semantic-pull-request workflow); it is a
+  convention held by hand. Squash appends the PR number itself, so do not write it into the title.
+- **Branch naming:** `feat/<issue>-<slug>` · `fix/<issue>-<slug>` — required, not cosmetic. `PRMatcher`
+  finds a PR by anchoring on `^<issue>-` *with* the trailing hyphen after the prefix, so a branch that
+  omits the leading issue number is invisible to the board's verification
   (`ElliotKit/Sources/ElliotModel/PRMatcher.swift:61`).
 
 ## Labels (apply verbatim; read live before use, this is a snapshot)
@@ -61,27 +60,30 @@ Until CI exists, treat these as the self-imposed gates, run locally before flipp
   no `priority: *` axis. Either create one (`gh label create "priority: high" …`) or expect the
   lifecycle skills to skip priority. -->
 - **Effort sizes:** <!-- TODO: none exist — no `effort: *` labels. Same choice as above. -->
-- **Scope/area:** <!-- TODO: none exist — no `area: *` labels. The natural axis is the target layout:
-  `model`, `store`, `process`, `ipc`, `engine`, `mcp`, `app` — which is already what the commit scopes
-  use. Create them to match the scopes if you want the axis. -->
+- **Scope/area:** none as labels. The repo's convention is an **`## Area` section in the issue body**
+  naming the SwiftPM target(s) — `model` · `store` · `process` · `engine` · `ipc` · `mcp` · `app`
+  (see #11 → `model`, #12 → `app`). Keep using that section rather than inventing labels.
 - **Other stock labels present:** `duplicate`, `good first issue`, `help wanted`, `invalid`, `wontfix`
 
 ## Issue templates
-- **Location:** <!-- TODO: `.github/ISSUE_TEMPLATE/` does not exist — there are no issue forms, and no
-  `.github/` directory at all. `create-issue` will have to file free-form issues until one is added. -->
-- **Forms:** none
-- **Default for ideas:** free-form · **for defects:** free-form
+- **Location:** none — there is no `.github/ISSUE_TEMPLATE/`, and no `.github/` directory at all.
+- **Forms:** none. The repo has a **de-facto template** set by #11/#12/#13, and new issues must match it:
+  `## User story` → `## Acceptance criteria` (numbered) → `## Problem` → `## Proposed solution` →
+  `## Area` → collapsible `🧠 Brainstorm` / `📋 Spec` → visible `## 🛠️ Implementation plan`
+- **Default for ideas:** the section set above · **for defects:** the same, with `## Problem` first and
+  a reproduction (see #9)
 - **Note:** the repo has an opinion about what an idea *is* — the backlog holds **user stories**
   (`role` / `want` / `benefit` + acceptance criteria as separate fields, see
-  `ElliotKit/Sources/ElliotModel/UserStory.swift`). A future `feature_request.yml` should mirror those
-  fields rather than invent new ones.
+  `ElliotKit/Sources/ElliotModel/UserStory.swift`). A `feature_request.yml`, if one is ever added,
+  should mirror those fields rather than invent new ones.
 
 ## Conflict hot-spots (merge-with-main resolutions)
 | File | Why it collides | Resolution |
 |------|-----------------|------------|
-| `ElliotKit/Package.swift` | every feature adds a target/product/dependency | **union** the arrays; keep the dependency edges each side declared |
-| `ElliotKit/Package.resolved` | pinned dependency churn | **regenerate** (`cd ElliotKit && swift package resolve`) — never hand-merge |
-| `ElliotKit/Sources/ElliotStore/Migrations.swift` | both sides append a migration | **union**, appending both `registerMigration` calls in landing order. **Never renumber or edit a migration that already shipped** — a v1 database must still upgrade; there is a test that proves it |
+| `ElliotKit/Package.swift` | every feature adds a target/product/dependency | **union** the arrays; keep the dependency edges each side declared, and keep `ElliotMCPKit`'s deps free of `ElliotEngine`/`ElliotProcess` |
+| `ElliotKit/Package.resolved` | Renovate bumps it constantly | **regenerate** (`cd ElliotKit && swift package resolve`) — never hand-merge |
+| `ElliotKit/Sources/ElliotStore/Migrations.swift` | both sides append a migration | **union**, appending both `registerMigration` calls in landing order. **Never renumber or edit a migration that already shipped** — a v1 database must still upgrade, and there is a test that proves it |
+| `ElliotKit/Sources/ElliotApp/AppModel.swift` | the single wiring point every feature touches | **union** — new stored properties and methods are additive |
 | `Scripts/build-app.sh` (`CFBundleShortVersionString`) | the only version string in the repo | take the **higher** |
 | `README.md` | parallel features document themselves | **union** |
 | `ElliotKit/Tests/**` | both append tests | **union** |
@@ -91,6 +93,13 @@ Until CI exists, treat these as the self-imposed gates, run locally before flipp
   same-logic-both-sides is a real semantic conflict — understand both intents or stop.
 
 ## Architecture grain / invariants (shape implementation plans to these)
+- **Dependency order of the targets** (touch them in this order): `ElliotModel` (no dependencies —
+  value types, rule engine, prompt builder, decoders) → `ElliotStore` (GRDB, schema, the one atomic
+  move) → `ElliotProcess` (spawning, tool discovery) / `ElliotIPC` (wire) → `ElliotEngine` (services,
+  scheduler, watchers) → `ElliotMCPKit` / `ElliotApp`. Keep `ElliotModel` dependency-free.
+- **`ElliotApp` is an `executableTarget` with no test target.** Any *rule* written in a SwiftUI view is
+  unprovable by `swift test`. Push decisions down into `ElliotModel` (pure, no I/O, no clock) — this is
+  what #5 did for `CardDraft` and #11 does for the reconciler. Views render and dispatch; they do not judge.
 - **One funnel.** `BoardService` is the *only* thing that changes a card's column. A drag and an MCP
   `board_move_card` must reach the same two methods; callers supply only an origin. Never add a second
   path that mutates a column.
@@ -101,33 +110,38 @@ Until CI exists, treat these as the self-imposed gates, run locally before flipp
 - **The app is the sole writer.** The MCP helper opens the store read-only and routes every mutation
   back over the unix socket. Reads may fall back offline (labelled `source: offline-db`); a **write
   never falls back** — writing a column change straight to SQLite would move a card without firing its rule.
-- **Dependency order of the targets** (touch them in this order): `ElliotModel` (no dependencies —
-  value types, rule engine, prompt builder, decoders) → `ElliotStore` (GRDB, schema, the one atomic
-  move) → `ElliotProcess` (spawning, tool discovery) / `ElliotIPC` (wire) → `ElliotEngine` (services,
-  scheduler, watchers) → `ElliotMCPKit` / `ElliotApp`. Keep `ElliotModel` dependency-free.
 - **`gh` is the fact; the agent's prose is a hint.** Nothing written back to a card may be parsed out
-  of a run's closing summary. Issue/PR numbers come from `gh … --json`; for an analysis, the fact is
-  the `stories.json` file at the `ELLIOT_OUTPUT=` path, not the closing message.
+  of a run's closing summary. Issue/PR numbers come from `gh … --json` through `GHClient`/`Verifier`;
+  for an analysis, the fact is the `stories.json` file at the `ELLIOT_OUTPUT=` path, not the closing message.
 - **A run is clean only when `permission_denials` is empty too** — `is_error: false` /
   `subtype: "success"` alone is not enough.
-- **A system-originated move never triggers a skill** (it reacts to state a skill produced) — one of
-  the two invariants the test suite leans on. The other: the first digit run of an `implement-issue`
-  prompt must be the issue number, because the skill resolves its argument with
-  `grep -oE '[0-9]+' | head -1`.
+- **A system-originated move never triggers a skill** (`MoveContext.allowSideEffects == false` →
+  `.noAction`): it reacts to state a skill produced. One of the two invariants the test suite leans on.
+  The other: the first digit run of an `implement-issue` prompt must be the issue number, because the
+  skill resolves its argument with `grep -oE '[0-9]+' | head -1`.
+- Strict Swift 6 concurrency: `swiftLanguageModes: [.v6]`. New model types are `Codable, Sendable, Hashable`.
 
 ## Worktree home
-- `.claude/worktrees/` (git-ignored; `.worktrees/` is ignored too)
+- `.claude/worktrees/` (git-ignored, alongside `.worktrees/`) — discovered at runtime via
+  `git worktree list --porcelain`, so this is the convention rather than a hardcoded path
 
 ## Environment gotchas
 - **All `swift` commands run from `ElliotKit/`**, not the repo root — but `./Scripts/build-app.sh` runs
   from the root (it anchors itself). Use `git -C <path>` rather than `cd` when working across worktrees.
 - **No token, no network needed for tests.** The end-to-end suite spawns `Scripts/fake-claude.sh`,
   driven by `FAKE_CLAUDE_FIXTURE`, `FAKE_CLAUDE_DELAY_MS`, `FAKE_CLAUDE_MODE=hang|trap|crash`,
-  `FAKE_CLAUDE_ARGV_OUT`. The fake is equally usable by hand from a terminal when reproducing a run.
-- **Strict Swift 6 concurrency** (`swiftLanguageModes: [.v6]`): sendability mistakes are hard build
-  errors. Budget for them when a plan crosses an actor boundary.
-- **The `.app` is ad-hoc signed, not notarised**, and deliberately **not sandboxed** (a sandboxed
-  `claude` could not reach `~/.claude` or your repositories). Hardened Runtime is on.
+  `FAKE_CLAUDE_ARGV_OUT`, and — for an analysis — `FAKE_CLAUDE_STORIES` / `FAKE_CLAUDE_TOUCH`. The fake
+  is equally usable by hand from a terminal when reproducing a run.
+- Launched from the Finder the process sees only `/usr/bin:/bin:/usr/sbin:/sbin` — the login-shell
+  environment is **captured**, never inherited (`LoginShellEnvironment.capture()`), and `claude`/`gh`/`git`
+  are located through `ToolLocator`. Anything spawning a tool must go through `ToolConfig`.
+- A registered repo path must be the **main checkout**, never a linked worktree (`merge-pr` tears down the
+  PR's worktree and cannot do so from inside it) — `GitClient.isMainCheckout` enforces this in Preflight.
+- **The app is not sandboxed** (Hardened Runtime on, ad-hoc signed rather than notarised): child processes
+  inherit the sandbox and security-scoped access does not extend to them, so a sandboxed `claude` could
+  not reach `~/.claude` or the repositories.
+- Several agent worktrees share this repo's `.git`; re-read `git rev-parse --abbrev-ref HEAD` immediately
+  before committing and after pushing.
 - **Project status is proof-of-concept.** Not yet exercised for real: the merge path against a live PR,
   repository registration outside the UI, and the analysis against a real repository (only the fake
   `claude` so far). Plans touching those paths are writing the first real exercise of them.

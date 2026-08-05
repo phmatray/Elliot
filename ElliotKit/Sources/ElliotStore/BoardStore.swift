@@ -30,13 +30,31 @@ public final class BoardStore: Sendable {
     /// Opens the store read-only, for the MCP helper when the app is down.
     ///
     /// Never migrates: an old helper meeting a newer schema must fail loudly
-    /// rather than rewrite a database it does not own.
+    /// rather than rewrite a database it does not own. That refusal is now
+    /// checked rather than only intended — until there was a second migration
+    /// it could not happen, and the door was never actually shut.
+    ///
+    /// The opposite direction is left open on purpose. A helper that knows a
+    /// migration the file has not run reads the added columns as absent, and
+    /// GRDB decodes an absent optional as `nil` — which is the truth, since
+    /// nothing could have written a value the column does not exist to hold.
+    /// Refusing there would blank the board for the whole window between an
+    /// upgrade and the next launch of the app, and answer "Elliot is not
+    /// running" to a question the file can answer correctly.
     public static func openReadOnly(at url: URL? = nil) throws -> BoardStore {
         let path = (url ?? StoreLocation.databaseURL).path
         var config = Configuration()
         config.busyMode = .timeout(5)
         config.readonly = true
         let queue = try DatabaseQueue(path: path, configuration: config)
+
+        let migrator = Migrations.migrator
+        let applied = try queue.read { db in try migrator.appliedIdentifiers(db) }
+        // A readable file that no migration ever touched is not this board.
+        // Saying so at the door beats "no such table: card" from inside a tool.
+        guard !applied.isEmpty else { throw StoreError.schemaMissing }
+        guard applied.isSubset(of: Set(migrator.migrations)) else { throw StoreError.schemaTooNew }
+
         return BoardStore(reader: queue)
     }
 
@@ -90,6 +108,32 @@ public final class BoardStore: Sendable {
         }
     }
 
+    // MARK: - Settings
+
+    private static let layoutKey = "repositoryLayout"
+
+    public func layout() async throws -> RepoTreeLayout? {
+        let json = try await reader.read { db in
+            try String.fetchOne(
+                db, sql: #"SELECT "value" FROM "setting" WHERE "key" = ?"#,
+                arguments: [Self.layoutKey])
+        }
+        guard let data = json?.data(using: .utf8) else { return nil }
+        return try JSONDecoder().decode(RepoTreeLayout.self, from: data)
+    }
+
+    public func saveLayout(_ layout: RepoTreeLayout) async throws {
+        let json = String(decoding: try JSONEncoder().encode(layout), as: UTF8.self)
+        try await requireWriter().write { db in
+            try db.execute(
+                sql: #"""
+                    INSERT INTO "setting" ("key", "value") VALUES (?, ?)
+                    ON CONFLICT("key") DO UPDATE SET "value" = excluded."value"
+                    """#,
+                arguments: [Self.layoutKey, json])
+        }
+    }
+
     // MARK: - Cards
 
     public func saveCard(_ card: Card) async throws {
@@ -106,11 +150,43 @@ public final class BoardStore: Sendable {
         try await reader.read { db in try Card.fetchOne(db, key: id.databaseKey) }
     }
 
-    public func cards(repoID: UUID? = nil, column: ElliotModel.Column? = nil) async throws -> [Card] {
-        try await reader.read { db in try Self.cardQuery(repoID: repoID, column: column).fetchAll(db) }
+    /// The card an idempotency key already produced, if any.
+    ///
+    /// Keys are unique board-wide rather than per repository, because this
+    /// lookup names only the key: one that could repeat across repositories
+    /// would answer with an arbitrary one of them, and the second create the
+    /// key exists to prevent would go through half the time.
+    public func card(idempotencyKey: String) async throws -> Card? {
+        try await reader.read { db in
+            try Card.filter(Card.Columns.idempotencyKey == idempotencyKey).fetchOne(db)
+        }
     }
 
-    private static func cardQuery(repoID: UUID?, column: ElliotModel.Column?) -> QueryInterfaceRequest<Card> {
+    public func cards(
+        repoID: UUID? = nil,
+        column: ElliotModel.Column? = nil,
+        limit: Int? = nil
+    ) async throws -> [Card] {
+        try await reader.read { db in
+            try Self.cardQuery(repoID: repoID, column: column, limit: limit).fetchAll(db)
+        }
+    }
+
+    /// How many cards the same filter matches, before any limit.
+    ///
+    /// Counted by SQL over the very request the page is cut from, so a page
+    /// cannot be wrong about how much it left out. Fetching the rows to count
+    /// them would also defeat the limit that made the count necessary.
+    public func cardCount(repoID: UUID? = nil, column: ElliotModel.Column? = nil) async throws -> Int {
+        try await reader.read { db in
+            try Self.cardFilter(repoID: repoID, column: column).fetchCount(db)
+        }
+    }
+
+    private static func cardFilter(
+        repoID: UUID?,
+        column: ElliotModel.Column?
+    ) -> QueryInterfaceRequest<Card> {
         var request = Card.all()
         if let repoID {
             request = request.filter(Card.Columns.repoID == repoID.databaseKey)
@@ -118,13 +194,58 @@ public final class BoardStore: Sendable {
         if let column {
             request = request.filter(Card.Columns.column == column.rawValue)
         }
-        return request.order(Card.Columns.orderIndex)
+        return request
     }
+
+    /// The filter, ordered and cut in SQL.
+    ///
+    /// `orderIndex` restarts at 1024 in every (repo, column) pair, so ordering
+    /// by it alone leaves any listing spanning more than one of them in
+    /// whatever order SQLite finds convenient — and a limit then cuts an
+    /// arbitrary set out of that. Repository name, board order, position, id;
+    /// the last key is there so no two rows can tie and no two calls against an
+    /// unchanged board can disagree.
+    ///
+    /// `card_on_repo_column_order` no longer serves this: the subquery and the
+    /// CASE make it a scan and a sort. Deliberate, and measured against what a
+    /// personal board holds — a few hundred rows. Past that, denormalise the
+    /// repository name onto the card row rather than giving the order up.
+    private static func cardQuery(
+        repoID: UUID?,
+        column: ElliotModel.Column?,
+        limit: Int?
+    ) -> QueryInterfaceRequest<Card> {
+        let request = cardFilter(repoID: repoID, column: column)
+            .order(repoDisplayName, boardOrder, Card.Columns.orderIndex, Card.Columns.id)
+        guard let limit else { return request }
+        return request.limit(limit)
+    }
+
+    /// Sorted on the repository's name, not its id: an id is stable but says
+    /// nothing to whoever reads a page spanning several repositories. A
+    /// correlated subquery rather than a join, so the request stays a plain
+    /// `Card` query that `observeCards` can go on sharing.
+    private static let repoDisplayName = SQL(
+        sql: #"(SELECT "repo"."displayName" FROM "repo" WHERE "repo"."id" = "card"."repoID")"#
+    )
+
+    /// Board order, not alphabetical — sorted on the raw value, `done` comes
+    /// first. Derived from `Column.allCases` so a sixth column cannot be added
+    /// without taking its place in the ranking too.
+    private static let boardOrder: SQL = {
+        let cases = ElliotModel.Column.allCases
+        let whens = cases.enumerated()
+            .map { rank, column in #"WHEN '\#(column.rawValue)' THEN \#(rank)"# }
+            .joined(separator: " ")
+        return SQL(sql: #"CASE "card"."column" \#(whens) ELSE \#(cases.count) END"#)
+    }()
 
     /// Live cards for the board. Only fires on an actual change.
     public func observeCards(repoID: UUID? = nil) -> AsyncValueObservation<[Card]> {
         ValueObservation
-            .tracking { db in try Self.cardQuery(repoID: repoID, column: nil).fetchAll(db) }
+            .tracking { db in
+                try Self.cardQuery(repoID: repoID, column: nil, limit: nil).fetchAll(db)
+            }
             .removeDuplicates()
             .values(in: reader)
     }
@@ -156,15 +277,32 @@ public final class BoardStore: Sendable {
 
     public func runs(cardID: UUID? = nil, repoID: UUID? = nil, limit: Int = 100) async throws -> [SkillRun] {
         try await reader.read { db in
-            var request = SkillRun.all()
-            if let cardID {
-                request = request.filter(SkillRun.Columns.cardID == cardID.databaseKey)
-            }
-            if let repoID {
-                request = request.filter(SkillRun.Columns.repoID == repoID.databaseKey)
-            }
-            return try request.order(SkillRun.Columns.createdAt.desc).limit(limit).fetchAll(db)
+            try Self.runFilter(cardID: cardID, repoID: repoID)
+                // Two runs of the same card can share a timestamp — a move that
+                // triggers one is quick. The id breaks the tie so the page a
+                // limit cuts is the same page twice running.
+                .order(SkillRun.Columns.createdAt.desc, SkillRun.Columns.id)
+                .limit(limit)
+                .fetchAll(db)
         }
+    }
+
+    /// How many runs the same filter matches, before any limit.
+    public func runCount(cardID: UUID? = nil, repoID: UUID? = nil) async throws -> Int {
+        try await reader.read { db in
+            try Self.runFilter(cardID: cardID, repoID: repoID).fetchCount(db)
+        }
+    }
+
+    private static func runFilter(cardID: UUID?, repoID: UUID?) -> QueryInterfaceRequest<SkillRun> {
+        var request = SkillRun.all()
+        if let cardID {
+            request = request.filter(SkillRun.Columns.cardID == cardID.databaseKey)
+        }
+        if let repoID {
+            request = request.filter(SkillRun.Columns.repoID == repoID.databaseKey)
+        }
+        return request
     }
 
     public func saveRun(_ run: SkillRun) async throws {
@@ -180,6 +318,35 @@ public final class BoardStore: Sendable {
                 .order(SkillRun.Columns.createdAt.desc)
                 .fetchOne(db)
         }
+    }
+
+    /// The run holding each of these cards, for a whole page in one query.
+    ///
+    /// A card missing from the answer has no run holding it — that is the only
+    /// thing its absence may be read to mean. Asked one card at a time this is
+    /// a round trip per row, and the caller that skips it altogether reports
+    /// every held card as movable, which is the more expensive mistake.
+    public func activeRuns(cardIDs: [UUID]) async throws -> [UUID: SkillRun] {
+        guard !cardIDs.isEmpty else { return [:] }
+        let keys = cardIDs.map(\.databaseKey)
+        let runs = try await reader.read { db in
+            try SkillRun
+                .filter(keys.contains(SkillRun.Columns.cardID))
+                .filter(Self.activeStates.contains(SkillRun.Columns.state))
+                .order(SkillRun.Columns.createdAt.desc)
+                .fetchAll(db)
+        }
+        // Newest first, so the first row for a card wins — the same run
+        // `activeRun(cardID:)` answers with on its own.
+        //
+        // `compactMap` rather than a force-unwrap: `cardID` is nullable since an
+        // analysis run has no card. The `contains` filter above already excludes
+        // those rows in SQL, so nothing is dropped here in practice — this is
+        // the type admitting what the query already guarantees.
+        return Dictionary(
+            runs.compactMap { run in run.cardID.map { ($0, run) } },
+            uniquingKeysWith: { newest, _ in newest }
+        )
     }
 
     /// Every run that was mid-flight when the app stopped. The launch sweep
@@ -402,11 +569,22 @@ public final class BoardStore: Sendable {
 
 public enum StoreError: Error, LocalizedError {
     case readOnly
+    /// Opened read-only, and no migration has ever run on the file.
+    case schemaMissing
+    /// Opened read-only, and the file names migrations this build does not have.
+    case schemaTooNew
 
     public var errorDescription: String? {
         switch self {
         case .readOnly:
             "Elliot is not running, so the board cannot be changed from here."
+        case .schemaMissing:
+            "Elliot's database has not been set up yet. Open Elliot.app once."
+        case .schemaTooNew:
+            """
+            Elliot's database was written by a newer version of Elliot than this \
+            helper. Update the helper rather than reading the board with it.
+            """
         }
     }
 }

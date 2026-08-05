@@ -5,17 +5,90 @@ import Foundation
 /// bundle meeting a newer app fails loudly on `hello` rather than misbehaving
 /// halfway through a move.
 ///
-/// 2 — repository analysis: `analyzeRepo`, `listProposals`, `acceptProposals`,
-///     `rejectProposals`.
-public let elliotProtocolVersion = 2
+/// **2** — runs now carry the verified outcome, the exit code and their terminal
+/// flags; list answers are pages that say when they were cut; the agent can
+/// update a card, cancel a run, list repositories, wait on a run and ask what to
+/// do next. Version 1 shipped the agent prose where it needed facts, and a
+/// silent slice where it needed a count. Neither is fixable in a compatible way,
+/// so the number moves and an old helper is turned away at the handshake.
+///
+/// **3** — repository analysis: `analyzeRepo`, `listProposals`,
+/// `acceptProposals`, `rejectProposals`. Written against 2 while 2 was still
+/// unreleased, and renumbered on the way in: 2 reached `main` first, so a
+/// helper claiming 2 is one that cannot analyse anything. Additive to the app,
+/// but not to the helper — a 3 helper meeting a 2 app would send a request that
+/// app cannot decode, which is precisely what the handshake exists to refuse.
+public let elliotProtocolVersion = 3
+
+/// The build that answered, for `hello` and for the MCP server's own version.
+///
+/// Deliberately not a literal. A hardcoded `"1.0.0"` in a handshake names
+/// nothing, and the one moment the version matters is a bug report from the
+/// field describing behaviour that no longer exists in the source.
+public enum ElliotBuild {
+    /// The marketing version, and the one place it is written.
+    ///
+    /// `Scripts/build-app.sh` reads this line to stamp
+    /// `CFBundleShortVersionString`, so the bundle cannot claim a version the
+    /// source does not. Bump it here, nowhere else.
+    public static let marketingVersion = "0.1.0"
+
+    /// `"0.1.0 (34)"` inside the app bundle, which both shipped binaries get:
+    /// `elliot-mcp` lives in `Elliot.app/Contents/MacOS` beside the app, so
+    /// `Bundle.main` finds the app's `Info.plist` for it too.
+    ///
+    /// `"0.1.0+dev"` from `swift build`, which produces no bundle. Marked as
+    /// such rather than passed off as a release: a bug report naming `+dev` says
+    /// "built from a working tree", which is exactly what it was.
+    public static let version: String = {
+        let info = Bundle.main.infoDictionary
+        return describe(
+            short: info?["CFBundleShortVersionString"] as? String,
+            build: info?["CFBundleVersion"] as? String
+        )
+    }()
+
+    /// Split out from the bundle lookup so it can be tested: `Bundle.main`
+    /// answers differently in an app, in a bare binary and under a test runner,
+    /// and a version string is exactly the sort of thing that is only ever read
+    /// once something has already gone wrong.
+    static func describe(short: String?, build: String?) -> String {
+        switch (short, build) {
+        case (let short?, let build?): "\(short) (\(build))"
+        case (let short?, nil): short
+        case (nil, let build?): "\(marketingVersion) (\(build))"
+        case (nil, nil): "\(marketingVersion)+dev"
+        }
+    }
+}
+
+// MARK: - Requests
 
 public enum ElliotRequest: Codable, Sendable, Equatable {
     case hello(protocolVersion: Int, token: String, client: String)
     case listCards(repo: String?, column: ElliotModel.Column?, limit: Int)
     case getCard(id: UUID)
-    case createCard(repo: String, title: String, body: String, story: StoryInput?, column: ElliotModel.Column)
+    case createCard(
+        repo: String,
+        title: String,
+        body: String,
+        story: StoryInput?,
+        column: ElliotModel.Column,
+        idempotencyKey: String?
+    )
+    /// Corrects what the user wrote: label, note, story. Refused once the card
+    /// carries an issue number — from then on github.com is the record.
+    case updateCard(id: UUID, title: String, body: String, story: StoryInput?)
     case moveCard(id: UUID, to: ElliotModel.Column, followUps: [String])
     case listRuns(cardID: UUID?, limit: Int)
+    /// Holds the connection until the run reaches a terminal state or the window
+    /// closes. See `ElliotTimeouts`.
+    case awaitRun(id: UUID, timeoutSeconds: Int)
+    case cancelRun(id: UUID)
+    case listRepos
+    /// What to do next, ranked. The one request that answers a question rather
+    /// than fetching a row.
+    case next(repo: String?, limit: Int)
     /// Angles arrive as strings so an unknown one is a clear error message
     /// rather than a decoding failure that loses the whole request.
     case analyzeRepo(repo: String, angles: [String], maxStories: Int, instructions: String)
@@ -26,7 +99,7 @@ public enum ElliotRequest: Codable, Sendable, Equatable {
     /// The three parts of a user story, separately — so a skill generating
     /// stories from a repository can fill them in rather than hand over prose
     /// that would have to be parsed back apart.
-    public struct StoryInput: Codable, Sendable, Equatable {
+    public struct StoryInput: Codable, Sendable, Hashable {
         public var role: String
         public var want: String
         public var benefit: String
@@ -45,13 +118,43 @@ public enum ElliotRequest: Codable, Sendable, Equatable {
     }
 }
 
+public extension ElliotRequest {
+    /// How long the socket must be willing to wait for this request.
+    ///
+    /// `awaitRun` is the only request that is slow on purpose, and the socket
+    /// deadline has to outlive the server's own window. Get that backwards and
+    /// the client hangs up on an answer that was already on its way, which the
+    /// caller reads as a dead app rather than as a run still going.
+    ///
+    /// Derived from the request instead of passed by the caller so no call site
+    /// can forget it.
+    var socketTimeout: TimeInterval {
+        switch self {
+        case .awaitRun(_, let seconds):
+            TimeInterval(ElliotTimeouts.clampAwaitSeconds(seconds)) + ElliotTimeouts.awaitGrace
+        default:
+            ElliotTimeouts.request
+        }
+    }
+}
+
+// MARK: - Errors
+
 public enum ElliotErrorCode: String, Codable, Sendable {
     case appUnavailable = "app_unavailable"
     case protocolMismatch = "protocol_mismatch"
     case unauthorized
     case cardNotFound = "card_not_found"
+    case runNotFound = "run_not_found"
     case repoNotFound = "repo_not_found"
     case moveBlocked = "move_blocked"
+    /// The card is filed as a GitHub issue, so its text belongs to the issue now.
+    ///
+    /// Its own code rather than `readOnly`: an agent that hears "read only"
+    /// retries when Elliot comes up, and this refusal is permanent. It is also
+    /// the most interesting thing `updateCard` can say.
+    case cardAlreadyFiled = "card_already_filed"
+    /// The database was opened read-only because Elliot is not running.
     case readOnly = "read_only"
     case internalError = "internal_error"
     case analysisNotFound = "analysis_not_found"
@@ -69,19 +172,85 @@ public enum ElliotResponse: Codable, Sendable {
 
 public enum ElliotPayload: Codable, Sendable {
     case hello(serverVersion: String)
-    case cards([CardDTO])
+    case cards(CardPage)
     case card(CardDTO)
+    case created(CardCreatedDTO)
     case moved(MoveDTO)
-    case runs([RunDTO])
+    case runs(RunPage)
+    case run(RunDTO)
+    case repos([RepoDTO])
+    case next(NextPage)
     case analysisStarted(AnalysisDTO)
     case proposals([ProposalDTO])
     case proposalsDecided(DecisionDTO)
+}
+
+// MARK: - Limits
+
+/// Server-side limits on how much one answer may carry.
+///
+/// A cap exists so a caller cannot ask for the whole board and get an arbitrary
+/// slice of it; the pages then say when the cap bit. Silence about truncation
+/// reads exactly like complete coverage, which is the failure this closes.
+public enum ElliotPaging {
+    public static let cardLimitDefault = 100
+    public static let cardLimitMax = 500
+    public static let runLimitDefault = 20
+    public static let runLimitMax = 200
+    public static let nextLimitDefault = 10
+    public static let nextLimitMax = 50
+
+    /// Clamps a caller's limit, and reports what they originally asked for when
+    /// the cap applied. A non-positive limit means "you decide", not "none".
+    public static func clamp(
+        _ requested: Int,
+        default fallback: Int,
+        max cap: Int
+    ) -> (limit: Int, cappedFrom: Int?) {
+        guard requested > 0 else { return (fallback, nil) }
+        guard requested > cap else { return (requested, nil) }
+        return (cap, requested)
+    }
+}
+
+/// How long each side is prepared to wait.
+public enum ElliotTimeouts {
+    /// Every request except `awaitRun` is a database read behind an actor.
+    public static let request: TimeInterval = 30
+
+    /// The window `awaitRun` uses when the caller does not name one.
+    public static let awaitDefaultSeconds = 60
+
+    /// The hard ceiling on one `awaitRun`. A caller asking for more is clamped
+    /// rather than refused: the answer is still the run, just an earlier
+    /// snapshot of it, and they can ask again. An MCP client has its own
+    /// patience and a connection held for an hour is a connection nobody
+    /// notices dying.
+    public static let awaitMaxSeconds = 300
+
+    /// How often the server re-reads the run while waiting.
+    public static let awaitPollInterval: TimeInterval = 0.5
+
+    /// Added to the window before the socket gives up, so the server's timeout
+    /// is always the one that fires.
+    public static let awaitGrace: TimeInterval = 15
+
+    public static func clampAwaitSeconds(_ requested: Int) -> Int {
+        guard requested > 0 else { return awaitDefaultSeconds }
+        return min(requested, awaitMaxSeconds)
+    }
 }
 
 // MARK: - Wire shapes
 //
 // Deliberately not the model types: what an agent reads should stay stable and
 // self-describing even as the storage schema moves.
+//
+// Keys are camelCase throughout — Swift's synthesised `Codable` with no
+// `CodingKeys` anywhere, so a property and its wire name cannot drift apart.
+// String *values* that name a thing are snake_case (`ElliotErrorCode`,
+// `VerifiedOutcomeDTO.kind`, `MoveBlock.code`), which is the convention this
+// file already had.
 
 public struct CardDTO: Codable, Sendable, Hashable {
     public var id: UUID
@@ -97,6 +266,11 @@ public struct CardDTO: Codable, Sendable, Hashable {
     public var branch: String?
     public var lastError: String?
     /// Set when the card is held by a run, which is why a move would be refused.
+    ///
+    /// Absent means "no run holds this card" and nothing else. A reader that
+    /// cannot establish that — an offline snapshot that skipped the lookup —
+    /// must say so in its own note rather than leave this nil, or every held
+    /// card reads as movable.
     public var activeRunID: UUID?
 
     public struct StoryDTO: Codable, Sendable, Hashable {
@@ -112,6 +286,20 @@ public struct CardDTO: Codable, Sendable, Hashable {
             benefit = story.benefit
             acceptanceCriteria = story.acceptanceCriteria
             narrative = story.narrative
+        }
+
+        public init(
+            role: String,
+            want: String,
+            benefit: String,
+            acceptanceCriteria: [String],
+            narrative: String
+        ) {
+            self.role = role
+            self.want = want
+            self.benefit = benefit
+            self.acceptanceCriteria = acceptanceCriteria
+            self.narrative = narrative
         }
     }
 
@@ -130,6 +318,94 @@ public struct CardDTO: Codable, Sendable, Hashable {
         lastError = card.lastError
         self.activeRunID = activeRunID
     }
+
+    /// Field by field, so a test can state the shape it expects without
+    /// building a `Card` and a repository to get there.
+    public init(
+        id: UUID,
+        title: String,
+        column: String,
+        repo: String,
+        story: StoryDTO? = nil,
+        body: String? = nil,
+        issueNumber: Int? = nil,
+        issueURL: String? = nil,
+        prNumber: Int? = nil,
+        prURL: String? = nil,
+        branch: String? = nil,
+        lastError: String? = nil,
+        activeRunID: UUID? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.column = column
+        self.repo = repo
+        self.story = story
+        self.body = body
+        self.issueNumber = issueNumber
+        self.issueURL = issueURL
+        self.prNumber = prNumber
+        self.prURL = prURL
+        self.branch = branch
+        self.lastError = lastError
+        self.activeRunID = activeRunID
+    }
+}
+
+/// The answer to `createCard`, which may not have created anything.
+public struct CardCreatedDTO: Codable, Sendable, Hashable {
+    public var card: CardDTO
+    /// True when `idempotencyKey` matched a card that already existed. The
+    /// retry of a request that timed out on the way back is not a second card.
+    public var alreadyExisted: Bool
+
+    public init(card: CardDTO, alreadyExisted: Bool) {
+        self.card = card
+        self.alreadyExisted = alreadyExisted
+    }
+}
+
+public struct RepoDTO: Codable, Sendable, Hashable {
+    public var id: UUID
+    public var nameWithOwner: String
+    public var displayName: String
+    public var path: String
+    public var defaultBranch: String
+    /// A disabled repository blocks every triggering move with `repo_disabled`.
+    public var isEnabled: Bool
+    /// The `claude --permission-mode` runs in this repository get. Surfaced
+    /// because `bypassPermissions` is what makes a card move an execution
+    /// primitive, and an agent choosing where to file work should be able to
+    /// see that before it moves anything.
+    public var permissionMode: String
+
+    public init(repo: Repo) {
+        id = repo.id
+        nameWithOwner = repo.nameWithOwner
+        displayName = repo.displayName
+        path = repo.path
+        defaultBranch = repo.defaultBranch
+        isEnabled = repo.isEnabled
+        permissionMode = repo.permissionMode.rawValue
+    }
+
+    public init(
+        id: UUID,
+        nameWithOwner: String,
+        displayName: String,
+        path: String,
+        defaultBranch: String,
+        isEnabled: Bool,
+        permissionMode: String
+    ) {
+        self.id = id
+        self.nameWithOwner = nameWithOwner
+        self.displayName = displayName
+        self.path = path
+        self.defaultBranch = defaultBranch
+        self.isEnabled = isEnabled
+        self.permissionMode = permissionMode
+    }
 }
 
 public struct MoveDTO: Codable, Sendable, Hashable {
@@ -139,44 +415,350 @@ public struct MoveDTO: Codable, Sendable, Hashable {
     /// The run the move started, if it triggered one.
     public var runID: UUID?
     public var triggered: String?
+    /// When a run started: how long to wait before the first check. Answering
+    /// this here is what stops an agent hammering the socket for forty minutes.
+    public var pollAfterSeconds: Int?
     /// Plain-language account of what the move did, for the agent to relay.
     public var summary: String
 
-    public init(cardID: UUID, from: String, to: String, runID: UUID?, triggered: String?, summary: String) {
+    public init(
+        cardID: UUID,
+        from: String,
+        to: String,
+        runID: UUID?,
+        triggered: String?,
+        pollAfterSeconds: Int? = nil,
+        summary: String
+    ) {
         self.cardID = cardID
         self.from = from
         self.to = to
         self.runID = runID
         self.triggered = triggered
+        self.pollAfterSeconds = pollAfterSeconds
         self.summary = summary
+    }
+}
+
+// MARK: - Runs
+
+/// What `gh` established, flattened into one tagged object.
+///
+/// Not `VerifiedOutcome`'s own `Codable`. Swift synthesises
+/// `{"issueCreated":{"number":1,"url":"…"}}` for an enum with associated
+/// values: the shape changes with every case rename, and a model reading it has
+/// to know the case names before it can find the tag. A flat `kind` plus
+/// optional fields is stable under refactoring and readable at a glance.
+///
+/// `kind` is one of `issue_created`, `no_issue_created`, `pr_open`, `merged`,
+/// `not_merged`, `closed_unmerged`, `unverified`.
+public struct VerifiedOutcomeDTO: Codable, Sendable, Hashable {
+    public var kind: String
+    public var number: Int?
+    public var url: String?
+    public var isDraft: Bool?
+    public var branch: String?
+    public var commitSHA: String?
+    /// Why nothing was created, merged or verified. The only field that is
+    /// prose, and the only one where prose is the answer.
+    public var reason: String?
+
+    public init(
+        kind: String,
+        number: Int? = nil,
+        url: String? = nil,
+        isDraft: Bool? = nil,
+        branch: String? = nil,
+        commitSHA: String? = nil,
+        reason: String? = nil
+    ) {
+        self.kind = kind
+        self.number = number
+        self.url = url
+        self.isDraft = isDraft
+        self.branch = branch
+        self.commitSHA = commitSHA
+        self.reason = reason
+    }
+
+    /// Exhaustive by construction: no `default`, so a new `VerifiedOutcome`
+    /// case fails the build here instead of reaching the agent as silence.
+    public init(_ outcome: VerifiedOutcome) {
+        switch outcome {
+        case .issueCreated(let number, let url):
+            self.init(kind: "issue_created", number: number, url: url)
+        case .noIssueCreated(let reason):
+            self.init(kind: "no_issue_created", reason: reason)
+        case .prOpen(let number, let url, let isDraft, let branch):
+            self.init(kind: "pr_open", number: number, url: url, isDraft: isDraft, branch: branch)
+        case .merged(let commitSHA):
+            self.init(kind: "merged", commitSHA: commitSHA)
+        case .notMerged(let reason):
+            self.init(kind: "not_merged", reason: reason)
+        case .closedUnmerged:
+            self.init(kind: "closed_unmerged")
+        case .unverified(let reason):
+            self.init(kind: "unverified", reason: reason)
+        }
     }
 }
 
 public struct RunDTO: Codable, Sendable, Hashable {
     public var id: UUID
+    /// Null for an analysis run, which reads a repository and has no card.
     public var cardID: UUID?
+    /// `create-issue`, `implement-issue`, `merge-pr` or `analyze-repo` — the
+    /// same vocabulary `MoveDTO.triggered` and `NextDTO.wouldTrigger` use, so
+    /// one word means one thing across the whole wire.
     public var kind: String
     public var state: String
+    /// `state` is not enough on its own: `succeeded` is compatible with an
+    /// outcome of `no_issue_created`, `not_merged` and `unverified`. These two
+    /// flags spare the agent a table it would otherwise have to guess at.
+    public var isTerminal: Bool
+    public var isActive: Bool
+    /// What `gh` established, as opposed to what the agent said it did.
+    ///
+    /// This is the field to read. A run can succeed without merging anything;
+    /// `resultText` will still describe a merge, because that is the agent's
+    /// account of its own work and not a fact.
+    public var verifiedOutcome: VerifiedOutcomeDTO?
+    public var exitCode: Int32?
     public var prompt: String
     public var startedAt: Date?
     public var endedAt: Date?
     public var totalCostUSD: Double?
+    public var numTurns: Int?
+    /// The `result` field of the terminal event. Display only — never parse it
+    /// for issue or PR numbers; that is what `verifiedOutcome` is for.
     public var resultText: String?
     public var permissionDenials: [String]
+    /// NDJSON, one Claude Code `stream-json` event per line.
     public var logPath: String
+    public var stderrPath: String
+    /// When to look again, in seconds. `nil` once the run is terminal: there is
+    /// nothing left to poll for, and saying so is what ends the loop.
+    public var pollAfterSeconds: Int?
 
-    public init(run: SkillRun) {
+    /// `now` is injected rather than read, so the backoff is reproducible in a
+    /// test and two DTOs built from the same run compare equal.
+    public init(run: SkillRun, now: Date = Date()) {
         id = run.id
         cardID = run.cardID
-        kind = run.kind.rawValue
+        kind = run.kind.skillName
         state = run.state.rawValue
+        isTerminal = run.state.isTerminal
+        isActive = run.state.isActive
+        verifiedOutcome = run.verifiedOutcome.map(VerifiedOutcomeDTO.init)
+        exitCode = run.exitCode
         prompt = run.prompt
         startedAt = run.startedAt
         endedAt = run.endedAt
         totalCostUSD = run.totalCostUSD
+        numTurns = run.numTurns
         resultText = run.resultText
         permissionDenials = run.permissionDenials
         logPath = run.logPath
+        stderrPath = run.stderrPath
+        pollAfterSeconds = Self.pollAfterSeconds(
+            state: run.state,
+            age: now.timeIntervalSince(run.startedAt ?? run.createdAt)
+        )
+    }
+
+    public init(
+        id: UUID,
+        cardID: UUID,
+        kind: String,
+        state: String,
+        isTerminal: Bool,
+        isActive: Bool,
+        verifiedOutcome: VerifiedOutcomeDTO? = nil,
+        exitCode: Int32? = nil,
+        prompt: String,
+        startedAt: Date? = nil,
+        endedAt: Date? = nil,
+        totalCostUSD: Double? = nil,
+        numTurns: Int? = nil,
+        resultText: String? = nil,
+        permissionDenials: [String] = [],
+        logPath: String,
+        stderrPath: String,
+        pollAfterSeconds: Int? = nil
+    ) {
+        self.id = id
+        self.cardID = cardID
+        self.kind = kind
+        self.state = state
+        self.isTerminal = isTerminal
+        self.isActive = isActive
+        self.verifiedOutcome = verifiedOutcome
+        self.exitCode = exitCode
+        self.prompt = prompt
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.totalCostUSD = totalCostUSD
+        self.numTurns = numTurns
+        self.resultText = resultText
+        self.permissionDenials = permissionDenials
+        self.logPath = logPath
+        self.stderrPath = stderrPath
+        self.pollAfterSeconds = pollAfterSeconds
+    }
+
+    /// Backs off with the run's age. A `merge-pr` waiting on CI can run for
+    /// hours; checking it every second buys nothing and costs a round trip per
+    /// second for the whole of it.
+    public static func pollAfterSeconds(state: RunState, age: TimeInterval) -> Int? {
+        guard !state.isTerminal else { return nil }
+        switch age {
+        case ..<60: return 5
+        case ..<600: return 15
+        case ..<1800: return 30
+        default: return 60
+        }
+    }
+}
+
+// MARK: - Pages
+
+/// Cards matching a filter, and the truth about how many were left out.
+///
+/// `total` counts everything the filter matched, before the limit. `truncated`
+/// is derived from it at construction so no producer can forget to set it —
+/// which is the whole point, since a short list with no count is
+/// indistinguishable from a complete one.
+public struct CardPage: Codable, Sendable, Hashable {
+    public var cards: [CardDTO]
+    public var total: Int
+    /// The limit actually applied.
+    public var limit: Int
+    public var truncated: Bool
+    /// Set when the caller asked for more than `ElliotPaging.cardLimitMax`.
+    public var limitCappedFrom: Int?
+
+    public init(cards: [CardDTO], total: Int, limit: Int, limitCappedFrom: Int? = nil) {
+        self.cards = cards
+        self.total = total
+        self.limit = limit
+        truncated = total > cards.count
+        self.limitCappedFrom = limitCappedFrom
+    }
+}
+
+public struct RunPage: Codable, Sendable, Hashable {
+    public var runs: [RunDTO]
+    public var total: Int
+    public var limit: Int
+    public var truncated: Bool
+    public var limitCappedFrom: Int?
+
+    public init(runs: [RunDTO], total: Int, limit: Int, limitCappedFrom: Int? = nil) {
+        self.runs = runs
+        self.total = total
+        self.limit = limit
+        truncated = total > runs.count
+        self.limitCappedFrom = limitCappedFrom
+    }
+}
+
+// MARK: - What to do next
+
+/// Why a card's next move is not available, when the reason is not a
+/// `MoveBlock`.
+///
+/// Kept apart from `MoveBlock.code` on purpose: those codes are the rule
+/// engine's own vocabulary and `board_move_card` returns them verbatim. These
+/// two describe a card the engine simply has nothing to say about.
+public enum NextBlockCode {
+    /// The move is allowed and triggers nothing. A card in progress advances
+    /// when Elliot notices its pull request went ready — there is no gesture
+    /// for an agent to make here.
+    public static let nothingToTrigger = "nothing_to_trigger"
+    /// The rule engine asked for an argument this request did not carry.
+    public static let needsInput = "needs_input"
+}
+
+/// One card and the move it is waiting for.
+public struct NextDTO: Codable, Sendable, Hashable {
+    public var card: CardDTO
+    /// Where this card goes next. Board order, one step.
+    public var nextColumn: String
+    /// `create-issue`, `implement-issue`, `merge-pr`, or absent when the move
+    /// would trigger nothing.
+    public var wouldTrigger: String?
+    /// Whether moving it right now would actually start that work.
+    public var isReady: Bool
+    /// A `MoveBlock.code`, or one of `NextBlockCode`. Stable, and the same
+    /// string `board_move_card` would return if the move were attempted.
+    public var blockCode: String?
+    public var blockReason: String?
+    public var blockHint: String?
+    /// 1-based position in this answer, so the agent can quote a rank back
+    /// without re-deriving the order.
+    public var rank: Int
+    /// One sentence that stands on its own, for an agent that reads the summary
+    /// and nothing else.
+    public var summary: String
+
+    public init(
+        card: CardDTO,
+        nextColumn: String,
+        wouldTrigger: String? = nil,
+        isReady: Bool,
+        blockCode: String? = nil,
+        blockReason: String? = nil,
+        blockHint: String? = nil,
+        rank: Int,
+        summary: String
+    ) {
+        self.card = card
+        self.nextColumn = nextColumn
+        self.wouldTrigger = wouldTrigger
+        self.isReady = isReady
+        self.blockCode = blockCode
+        self.blockReason = blockReason
+        self.blockHint = blockHint
+        self.rank = rank
+        self.summary = summary
+    }
+}
+
+/// The board's answer to "what should I do next".
+///
+/// Ordered by `rankNextSteps`, which is pure and total: ready before blocked,
+/// then nearest to done first — finishing work that is already in flight beats
+/// starting more — then repository name, position in column, and id. Two calls
+/// against an unchanged board return the same order in the same sequence.
+///
+/// Blocked cards are included rather than filtered out. "Nothing is ready and
+/// here is why" is an answer; an empty list is not.
+public struct NextPage: Codable, Sendable, Hashable {
+    public var items: [NextDTO]
+    /// Cards considered, before the limit. Cards in `done` are not candidates:
+    /// they have nowhere to go.
+    public var total: Int
+    public var limit: Int
+    public var truncated: Bool
+    public var limitCappedFrom: Int?
+    /// How many of the *candidates* are ready, not just of `items`. An agent
+    /// that sees `readyCount: 0` knows the board is waiting on something, not
+    /// that it asked for too few rows.
+    public var readyCount: Int
+
+    public init(
+        items: [NextDTO],
+        total: Int,
+        limit: Int,
+        readyCount: Int,
+        limitCappedFrom: Int? = nil
+    ) {
+        self.items = items
+        self.total = total
+        self.limit = limit
+        truncated = total > items.count
+        self.readyCount = readyCount
+        self.limitCappedFrom = limitCappedFrom
     }
 }
 

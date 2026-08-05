@@ -65,6 +65,22 @@ public struct GHClient: Sendable {
         )
     }
 
+    /// Every repository of an account, archived and forks included.
+    ///
+    /// They are listed rather than filtered so a row can say *why* nothing is
+    /// offered for them; a repository dropped from the listing is
+    /// indistinguishable from one that is fine.
+    public func repos(owner: String, limit: Int = 1000) async throws -> [GHRepoSummary] {
+        try await json(
+            [GHRepoSummary].self,
+            arguments: [
+                "repo", "list", owner, "--limit", String(limit),
+                "--json", "nameWithOwner,visibility,defaultBranchRef,isFork,isArchived,url",
+            ],
+            timeout: .seconds(120)
+        )
+    }
+
     // MARK: - Issues
 
     public func issue(repo: String, number: Int) async throws -> GHIssue {
