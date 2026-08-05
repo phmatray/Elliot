@@ -62,8 +62,7 @@ struct CardFieldsEditor: View {
                     ))
                     .textFieldStyle(.roundedBorder)
                     Button {
-                        draft.criteria.remove(at: index)
-                        if draft.criteria.isEmpty { draft.criteria = [""] }
+                        draft.removeCriterion(at: index)
                     } label: {
                         Image(systemName: "minus.circle")
                     }

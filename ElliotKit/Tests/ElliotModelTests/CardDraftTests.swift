@@ -66,6 +66,27 @@ struct CardDraftTests {
         #expect(draft.isValid)
     }
 
+    @Test("Removing the last criterion leaves one empty row for the editor")
+    func removingLastCriterion() {
+        var draft = CardDraft(title: "Run log", criteria: ["only one"])
+        draft.removeCriterion(at: 0)
+        #expect(draft.criteria == [""], "the editor must always have a row to render")
+    }
+
+    @Test("Removing one of several criteria removes just that one")
+    func removingOneCriterion() {
+        var draft = CardDraft(title: "Run log", criteria: ["a", "b", "c"])
+        draft.removeCriterion(at: 1)
+        #expect(draft.criteria == ["a", "c"])
+    }
+
+    @Test("Removing a stale index is ignored rather than trapping")
+    func removingOutOfRange() {
+        var draft = CardDraft(title: "Run log", criteria: ["a"])
+        draft.removeCriterion(at: 5)
+        #expect(draft.criteria == ["a"])
+    }
+
     @Test("Seeding from a note card picks note mode and keeps one criterion row")
     func seedFromNoteCard() {
         let now = Date()

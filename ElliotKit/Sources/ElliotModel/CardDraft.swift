@@ -53,6 +53,21 @@ public struct CardDraft: Sendable, Hashable {
         )
     }
 
+    /// Drops a criterion row, re-seeding an empty row so the editor always has
+    /// something to render.
+    ///
+    /// One mutation rather than a remove-then-check in the view: the detail
+    /// sheet edits through a derived `Binding`, whose getter still reports the
+    /// pre-removal array until the body re-evaluates — so a second read in the
+    /// same action would see a stale, non-empty list and skip the re-seed. The
+    /// index is checked because `ForEach(indices, id: \.self)` can hand back a
+    /// row that is already gone.
+    public mutating func removeCriterion(at index: Int) {
+        guard criteria.indices.contains(index) else { return }
+        criteria.remove(at: index)
+        if criteria.isEmpty { criteria = [""] }
+    }
+
     /// The story this draft produces, blank criteria dropped. `nil` in note mode.
     public var story: UserStory? {
         guard isStory else { return nil }

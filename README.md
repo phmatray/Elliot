@@ -38,7 +38,7 @@ than letting the two drift.
 ## Build and run
 
 ```bash
-cd ElliotKit && swift test          # 164 tests, no Xcode needed
+cd ElliotKit && swift test          # 167 tests, no Xcode needed
 ./Scripts/build-app.sh              # assembles dist/Elliot.app
 open dist/Elliot.app
 ```

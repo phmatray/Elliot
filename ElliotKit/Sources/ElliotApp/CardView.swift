@@ -126,12 +126,13 @@ struct CardDetailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let draft {
+            // `Binding($draft)` rather than a hand-rolled get/set: a getter that
+            // closed over the unwrapped local would keep reporting the value as
+            // it was when the body was last evaluated, so two mutations in one
+            // action would lose the first.
+            if let editable = Binding($draft) {
                 Text("Editing").font(.title2.bold())
-                CardFieldsEditor(draft: Binding(
-                    get: { draft },
-                    set: { self.draft = $0 }
-                ))
+                CardFieldsEditor(draft: editable)
                 if let saveError {
                     Text(saveError).font(.caption).foregroundStyle(.orange)
                 }
