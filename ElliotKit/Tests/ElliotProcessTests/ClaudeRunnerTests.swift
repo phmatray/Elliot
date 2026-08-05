@@ -281,6 +281,51 @@ struct ClaudeRunnerTests {
         ])
     }
 
+    /// The stream and the durable log must agree, however the run is timed.
+    ///
+    /// A child that writes its whole output and exits at once catches a
+    /// readability handler mid-flight, which used to yield those lines into an
+    /// already-finished stream: the log held all eight events and the card
+    /// showed none. Many at once because a single run hits that window only
+    /// occasionally — this is a race, and the assertion is what is exact, not
+    /// the reproduction.
+    @Test("Every line in the log also reaches the stream")
+    func streamAgreesWithTheLog() async throws {
+        let dir = try TestPaths.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Sustained rather than one big burst: the window opens when a child
+        // exits while a handler is mid-read, and that needs the machine busy
+        // spawning and reaping, not merely many runs started at once.
+        for round in 0..<8 {
+            await withTaskGroup(of: Void.self) { group in
+                for i in (round * 16)..<(round * 16 + 16) {
+                    group.addTask {
+                        let logURL = dir.appendingPathComponent("run-\(i).ndjson")
+                        guard let run = try? ClaudeRun.start(
+                            invocation: ClaudeInvocation(runID: UUID(), prompt: "x", cwd: dir.path),
+                            config: config(environment: [
+                                "FAKE_CLAUDE_FIXTURE": TestPaths.fixture("create-issue-success.ndjson"),
+                            ]),
+                            logURL: logURL
+                        ) else {
+                            Issue.record("run \(i) did not start")
+                            return
+                        }
+                        var events = 0
+                        for await update in run.updates {
+                            if case .event = update { events += 1 }
+                        }
+                        let logged = ((try? String(contentsOf: logURL, encoding: .utf8)) ?? "")
+                            .split(separator: "\n").count
+                        #expect(logged == 8, "run \(i) logged \(logged) lines")
+                        #expect(events == logged, "run \(i) streamed \(events) of \(logged) lines")
+                    }
+                }
+            }
+        }
+    }
+
     @Test("The runner refuses a claude path that is not executable")
     func missingBinary() throws {
         let dir = try TestPaths.temporaryDirectory()

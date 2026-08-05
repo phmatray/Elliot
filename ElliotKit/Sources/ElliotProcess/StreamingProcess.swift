@@ -15,6 +15,9 @@ public final class StreamingProcess: Sendable {
         var buffer = LineBuffer()
         var stderr = Data()
         var finished = false
+        /// Set once the final drain has run. Past this point the descriptors are
+        /// spent and the line stream is closed, so nothing may read or yield.
+        var drained = false
         var exit: Exit?
         /// Whoever is waiting for the exit, parked under the same lock that
         /// publishes it.
@@ -62,47 +65,59 @@ public final class StreamingProcess: Sendable {
         lines = AsyncStream(bufferingPolicy: .unbounded) { continuation = $0 }
         let lineContinuation = continuation!
 
+        // Reading the descriptor, buffering it and yielding it all happen under
+        // one lock, here and in the final drain below. Clearing a
+        // `readabilityHandler` does not wait for one that is already running, so
+        // the lock is the only thing that orders the two: without it a handler
+        // caught mid-flight by the child's exit yields its lines *after* the
+        // drain has finished the stream, and an entire run arrives empty.
         outPipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            // The durable sink gets the raw bytes before anything is parsed, so
-            // a decoding bug can never lose an event.
-            stdoutMirror?(chunk)
-            let complete = state.withLock { $0.buffer.append(chunk) }
-            for line in complete { lineContinuation.yield(line) }
+            state.withLock { current in
+                guard !current.drained else { return }
+                let chunk = handle.availableData
+                guard !chunk.isEmpty else { return }
+                // The durable sink gets the raw bytes before anything is parsed,
+                // so a decoding bug can never lose an event.
+                stdoutMirror?(chunk)
+                for line in current.buffer.append(chunk) { lineContinuation.yield(line) }
+            }
         }
 
         errPipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            state.withLock { $0.stderr.append(chunk) }
+            state.withLock { current in
+                guard !current.drained else { return }
+                let chunk = handle.availableData
+                guard !chunk.isEmpty else { return }
+                current.stderr.append(chunk)
+            }
         }
 
         let terminationRequested = self.terminationRequested
         process.terminationHandler = { process in
-            // Detach the handlers *before* draining. They read the same
-            // descriptor on their own queue, and racing them against
-            // `readDataToEndOfFile` intermittently swallows the final events of
-            // a run — which is exactly the tail that carries the result.
+            // Detach the handlers *before* draining, so no new invocation is
+            // scheduled. One already running is handled by the lock below.
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
 
-            let rest = outPipe.fileHandleForReading.readDataToEndOfFile()
-            if !rest.isEmpty {
-                stdoutMirror?(rest)
-                let complete = state.withLock { $0.buffer.append(rest) }
-                for line in complete { lineContinuation.yield(line) }
-            }
-            let restErr = errPipe.fileHandleForReading.readDataToEndOfFile()
+            state.withLock { current in
+                let rest = outPipe.fileHandleForReading.readDataToEndOfFile()
+                if !rest.isEmpty {
+                    stdoutMirror?(rest)
+                    for line in current.buffer.append(rest) { lineContinuation.yield(line) }
+                }
+                current.stderr.append(errPipe.fileHandleForReading.readDataToEndOfFile())
 
-            // A process that ended without a trailing newline still has one
-            // last event waiting in the buffer.
-            let tail = state.withLock { current -> Data? in
-                current.stderr.append(restErr)
-                return current.buffer.flush()
+                // A process that ended without a trailing newline still has one
+                // last event waiting in the buffer.
+                if let tail = current.buffer.flush(), !tail.isEmpty {
+                    lineContinuation.yield(tail)
+                }
+                // Closing the stream is the last thing done under the lock: a
+                // handler waiting on it will see `drained` and read nothing,
+                // rather than yielding into a stream nobody will ever receive.
+                current.drained = true
+                lineContinuation.finish()
             }
-            if let tail, !tail.isEmpty { lineContinuation.yield(tail) }
-            lineContinuation.finish()
 
             let exit = Exit(
                 code: process.terminationStatus,
