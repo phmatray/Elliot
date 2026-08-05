@@ -90,6 +90,32 @@ public final class BoardStore: Sendable {
         }
     }
 
+    // MARK: - Settings
+
+    private static let layoutKey = "repositoryLayout"
+
+    public func layout() async throws -> RepoTreeLayout? {
+        let json = try await reader.read { db in
+            try String.fetchOne(
+                db, sql: #"SELECT "value" FROM "setting" WHERE "key" = ?"#,
+                arguments: [Self.layoutKey])
+        }
+        guard let data = json?.data(using: .utf8) else { return nil }
+        return try JSONDecoder().decode(RepoTreeLayout.self, from: data)
+    }
+
+    public func saveLayout(_ layout: RepoTreeLayout) async throws {
+        let json = String(decoding: try JSONEncoder().encode(layout), as: UTF8.self)
+        try await requireWriter().write { db in
+            try db.execute(
+                sql: #"""
+                    INSERT INTO "setting" ("key", "value") VALUES (?, ?)
+                    ON CONFLICT("key") DO UPDATE SET "value" = excluded."value"
+                    """#,
+                arguments: [Self.layoutKey, json])
+        }
+    }
+
     // MARK: - Cards
 
     public func saveCard(_ card: Card) async throws {
