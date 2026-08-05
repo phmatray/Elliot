@@ -4,89 +4,149 @@ import SwiftUI
 struct CardView: View {
     @Environment(AppModel.self) private var model
     let card: Card
-    @State private var showingDetail = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top) {
-                Text(card.displayTitle)
-                    .font(.body.weight(.medium))
-                    .lineLimit(2)
-                Spacer(minLength: 4)
-                if let run = activeRun {
-                    ProgressView()
-                        .controlSize(.small)
-                        .help("Run \(run.kind.rawValue) is \(run.state.rawValue)")
-                }
-            }
+            Text(card.displayTitle)
+                .font(Type.cardTitle)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            if let story = card.story {
+            if let story = card.story, activeRun == nil {
                 Text(story.narrative)
-                    .font(.caption)
+                    .font(Type.prose)
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                    .lineLimit(2)
             }
 
-            HStack(spacing: 6) {
-                if let issue = card.issueNumber {
-                    Badge(text: "#\(issue)", systemImage: "circle.dashed", url: card.issueURL)
+            if let run = activeRun {
+                RunningStrip(run: run, lastLine: model.liveLog[run.id]?.last)
+            } else if let receipt = lastReceipt {
+                // What `gh` established, not what the agent said about itself.
+                Label {
+                    Text(receipt.text).font(Type.fact)
+                } icon: {
+                    Image(systemName: receipt.icon).font(.system(size: 10))
                 }
-                if let pr = card.prNumber {
-                    Badge(text: "PR \(pr)", systemImage: "arrow.triangle.pull", url: card.prURL)
-                }
-                if model.repo(for: card).map({ model.isBlocked($0) }) == true {
-                    Badge(text: "blocked", systemImage: "exclamationmark.triangle", tint: .orange)
-                }
-                Spacer()
-                if model.selectedRepoID == nil, let repo = model.repo(for: card) {
-                    Text(repo.displayName)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                .foregroundStyle(receipt.tint)
+                .lineLimit(1)
+            }
+
+            if !facts.isEmpty || repoName != nil {
+                HStack(spacing: 5) {
+                    ForEach(facts, id: \.text) { fact in
+                        LinkBadge(text: fact.text, systemImage: fact.icon, url: fact.url)
+                    }
+                    Spacer(minLength: 0)
+                    if let repoName {
+                        Fact(text: repoName, small: true)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
                 }
             }
 
-            if let error = card.lastError {
+            if isBlockedRepo {
+                Label("Repository blocked — see Preflight", systemImage: "exclamationmark.triangle.fill")
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.attention)
+            }
+
+            if let refusal = model.refusal, refusal.cardID == card.id {
+                RefusalNote(message: refusal.message) { model.dismissRefusal() }
+            } else if let error = card.lastError {
                 Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.refused)
                     .lineLimit(2)
             }
         }
-        .padding(10)
+        .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.background)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(.separator, lineWidth: 1)
-        )
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay {
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(
+                    isSelected ? Palette.armed : Color(nsColor: .separatorColor),
+                    lineWidth: isSelected ? 2 : 1
+                )
+        }
         .contentShape(Rectangle())
-        .onTapGesture { showingDetail = true }
-        .contextMenu {
-            if let run = activeRun {
-                Button("Cancel run", systemImage: "stop.circle") {
-                    Task { await model.cancelRun(id: run.id) }
-                }
-            }
-            if let url = card.issueURL {
-                Button("Open issue", systemImage: "safari") { open(url) }
-            }
-            if let url = card.prURL {
-                Button("Open pull request", systemImage: "safari") { open(url) }
-            }
-            Divider()
-            Button("Delete card", systemImage: "trash", role: .destructive) {
-                Task { await model.deleteCard(id: card.id) }
-            }
-        }
-        .sheet(isPresented: $showingDetail) {
-            CardDetailView(card: card)
-        }
+        .onTapGesture { toggleSelection() }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityHint("Select to see what each column would do with this card.")
+        // Carrying the button trait without an action makes the card look
+        // operable to assistive technology and do nothing when operated. The
+        // tap gesture is invisible to it; this is the same act, exposed.
+        .accessibilityAction { toggleSelection() }
+        .contextMenu { menu }
         .task(id: card.id) { await model.refreshRuns(cardID: card.id) }
     }
 
-    private var activeRun: SkillRun? {
-        model.runsByCard[card.id]?.first { $0.state.isActive }
+    @ViewBuilder
+    private var menu: some View {
+        if let run = activeRun {
+            Button("Cancel run", systemImage: "stop.circle") {
+                Task { await model.cancelRun(id: run.id) }
+            }
+            Divider()
+        }
+        if let url = card.issueURL {
+            Button("Open issue on GitHub", systemImage: "safari") { open(url) }
+        }
+        if let url = card.prURL {
+            Button("Open pull request on GitHub", systemImage: "safari") { open(url) }
+        }
+        if card.issueURL != nil || card.prURL != nil { Divider() }
+        Button("Delete card", systemImage: "trash", role: .destructive) {
+            Task { await model.deleteCard(id: card.id) }
+        }
+    }
+
+    private func toggleSelection() {
+        model.selectedCardID = isSelected ? nil : card.id
+    }
+
+    private var isSelected: Bool { model.selectedCardID == card.id }
+    private var activeRun: SkillRun? { model.activeRuns[card.id] }
+
+    private var isBlockedRepo: Bool {
+        model.repo(for: card).map { model.isBlocked($0) } == true
+    }
+
+    /// The verdict of the most recent finished run.
+    private var lastReceipt: (text: String, tint: Color, icon: String)? {
+        model.runsByCard[card.id]?
+            .first { $0.state.isTerminal && $0.verifiedOutcome != nil }?
+            .verifiedOutcome?
+            .receipt
+    }
+
+    private struct CardFact {
+        var text: String
+        var icon: String
+        var url: String?
+    }
+
+    /// Everything on this row was read back from `gh`, so all of it is set in
+    /// the fact face.
+    private var facts: [CardFact] {
+        var out: [CardFact] = []
+        if let issue = card.issueNumber {
+            out.append(CardFact(text: "#\(issue)", icon: "circle.dashed", url: card.issueURL))
+        }
+        if let pr = card.prNumber {
+            out.append(CardFact(text: "PR \(pr)", icon: "arrow.triangle.pull", url: card.prURL))
+        }
+        return out
+    }
+
+    private var repoName: String? {
+        guard model.selectedRepoID == nil else { return nil }
+        return model.repo(for: card)?.displayName
     }
 
     private func open(_ string: String) {
@@ -95,214 +155,115 @@ struct CardView: View {
     }
 }
 
-struct Badge: View {
+// MARK: - Pieces
+
+/// A run in flight, on the card. Says how long it has been going and what it
+/// last did — a bare spinner cannot distinguish a healthy ten-minute run from a
+/// wedged one.
+struct RunningStrip: View {
+    let run: SkillRun
+    let lastLine: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
+                Text(run.kind.label)
+                    .font(Type.fact)
+                    .foregroundStyle(run.state.tint)
+                Spacer(minLength: 0)
+                if let started = run.startedAt {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Fact(text: elapsed(from: started, to: context.date), small: true)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            if let lastLine, !lastLine.isEmpty {
+                Text(lastLine)
+                    .font(Type.factSmall)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if run.state == .stalled {
+                Text("No output for a while. It may still be thinking.")
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.attention)
+            }
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(run.state.tint.opacity(0.09))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
+
+    private func elapsed(from start: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        return seconds < 60
+            ? "\(seconds)s"
+            : "\(seconds / 60)m \(String(format: "%02d", seconds % 60))s"
+    }
+}
+
+/// A fact that is also a link. A real button, so it can be reached by keyboard
+/// and shows a focus ring — the previous version was a tap gesture on a capsule,
+/// which opened a browser and was invisible to the keyboard.
+struct LinkBadge: View {
     var text: String
     var systemImage: String
     var url: String?
-    var tint: Color = .secondary
+
+    @State private var hovering = false
 
     var body: some View {
-        Label(text, systemImage: systemImage)
-            .font(.caption2)
-            .padding(.horizontal, 6)
+        Button {
+            guard let url, let real = URL(string: url) else { return }
+            NSWorkspace.shared.open(real)
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: systemImage).font(.system(size: 9))
+                Text(text).font(Type.factSmall)
+            }
+            .padding(.horizontal, 5)
             .padding(.vertical, 2)
-            .background(tint.opacity(0.12))
-            .foregroundStyle(tint)
+            .background(Color.secondary.opacity(hovering && url != nil ? 0.22 : 0.12))
+            .foregroundStyle(.secondary)
             .clipShape(Capsule())
-            .onTapGesture {
-                guard let url, let real = URL(string: url) else { return }
-                NSWorkspace.shared.open(real)
-            }
+        }
+        .buttonStyle(.plain)
+        .disabled(url == nil)
+        .onHover { hovering = $0 }
+        .help(url == nil ? text : "Open \(text) on GitHub")
+        .accessibilityLabel(url == nil ? text : "Open \(text) on GitHub")
     }
 }
 
-struct CardDetailView: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    let card: Card
-
-    @State private var editor = CardEditor()
-    @State private var saveError: String?
+/// Why the last gesture did nothing, shown on the card it was refused for.
+struct RefusalNote: View {
+    var message: String
+    var dismiss: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // A flag beside a non-optional draft, rather than `Optional<CardDraft>`
-            // plus `Binding($draft)`: that projection is backed by
-            // `BindingOperations.ForceUnwrapping`, which force-unwraps on every
-            // read, not just where it is built. `CardFieldsEditor` keeps it, so
-            // emptying the optional while the child is still mounted traps on the
-            // next layout pass — every Cancel, every successful Save. Scoping into
-            // `@State` reads through live state just as the projection did, so two
-            // mutations in one action still cannot lose the first.
-            if editor.isEditing {
-                Text("Editing").font(.title2.bold())
-                CardFieldsEditor(draft: $editor.draft)
-                if let saveError {
-                    Text(saveError).font(.caption).foregroundStyle(.orange)
-                }
-            } else {
-                readOnly
+        HStack(alignment: .top, spacing: 5) {
+            Image(systemName: "hand.raised.fill")
+                .font(.system(size: 10))
+            Text(message)
+                .font(Type.prose)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
             }
-
-            Spacer()
-            HStack {
-                if !editor.isEditing, card.issueNumber == nil {
-                    Button("Edit", systemImage: "pencil") { editor.begin(from: card) }
-                }
-                Spacer()
-                if editor.isEditing {
-                    Button("Cancel", role: .cancel) { editor.end(); saveError = nil }
-                    Button("Save") { save(editor.draft) }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(!editor.draft.isValid)
-                } else {
-                    Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
-                }
-            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
         }
-        .padding(16)
-        .frame(width: 620, height: 520)
-        .task { await model.refreshRuns(cardID: card.id) }
-    }
-
-    @ViewBuilder
-    private var readOnly: some View {
-        Text(card.displayTitle).font(.title2.bold())
-
-        if let issue = card.issueNumber {
-            // The card stops being the record the moment the issue exists;
-            // editing here would quietly diverge from what is on github.com.
-            Text("Filed as #\(issue) — edit it on GitHub. From here on the issue is the record.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-
-        if let story = card.story {
-            GroupBox("User story") {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(story.narrative)
-                    if !story.acceptanceCriteria.isEmpty {
-                        Text("Acceptance criteria").font(.caption.bold()).padding(.top, 4)
-                        ForEach(Array(story.acceptanceCriteria.enumerated()), id: \.offset) { index, item in
-                            Text("\(index + 1). \(item)").font(.caption)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        } else if !card.body.isEmpty {
-            GroupBox("Note") {
-                Text(card.body).frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-
-        let runs = model.runsByCard[card.id] ?? []
-        if !runs.isEmpty {
-            GroupBox("Runs") {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(runs) { run in
-                        RunRow(run: run, liveLines: model.liveLog[run.id] ?? [])
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    private func save(_ draft: CardDraft) {
-        Task {
-            if await model.updateCard(id: card.id, draft: draft) {
-                editor.end()
-                saveError = nil
-            } else {
-                // Filed, or deleted, between opening the sheet and saving.
-                // Stay in edit mode — the typed text is still here.
-                saveError = model.status
-            }
-        }
-    }
-}
-
-struct RunRow: View {
-    @Environment(AppModel.self) private var model
-    let run: SkillRun
-    let liveLines: [String]
-    @State private var expanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Image(systemName: icon).foregroundStyle(tint)
-                Text(run.kind.rawValue).font(.callout.weight(.medium))
-                Text(run.state.rawValue).font(.caption).foregroundStyle(.secondary)
-                if let cost = run.totalCostUSD {
-                    Text(String(format: "$%.4f", cost))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                }
-                Spacer()
-                if run.state.isActive {
-                    Button("Cancel") { Task { await model.cancelRun(id: run.id) } }
-                        .controlSize(.small)
-                }
-                Button(expanded ? "Hide log" : "Show log") { expanded.toggle() }
-                    .controlSize(.small)
-            }
-
-            if !run.permissionDenials.isEmpty {
-                // A run can end "success" having been refused a tool and
-                // silently worked around the gap.
-                Text("Refused tools: \(run.permissionDenials.joined(separator: ", "))")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-            }
-
-            if expanded {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(logLines.enumerated()), id: \.offset) { _, line in
-                            Text(line)
-                                .font(.caption.monospaced())
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                        }
-                    }
-                }
-                .frame(height: 180)
-                .background(Color.secondary.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                Text(run.logPath).font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled)
-            }
-        }
-    }
-
-    /// The live tail while it runs; the file on disk once it has finished.
-    private var logLines: [String] {
-        if !liveLines.isEmpty { return liveLines }
-        guard let text = try? String(contentsOfFile: run.logPath, encoding: .utf8) else {
-            return ["(no log)"]
-        }
-        return text.split(separator: "\n").suffix(300).map { String($0.prefix(400)) }
-    }
-
-    private var icon: String {
-        switch run.state {
-        case .queued: "clock"
-        case .running, .cancelling: "play.circle"
-        case .stalled: "hourglass"
-        case .succeeded: "checkmark.circle"
-        case .completedWithDenials: "exclamationmark.circle"
-        case .failed, .timedOut: "xmark.circle"
-        case .cancelled: "stop.circle"
-        }
-    }
-
-    private var tint: Color {
-        switch run.state {
-        case .succeeded: .green
-        case .failed, .timedOut: .red
-        case .completedWithDenials, .stalled: .orange
-        default: .secondary
-        }
+        .foregroundStyle(Palette.refused)
+        .padding(6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.refused.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 }

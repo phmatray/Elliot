@@ -17,12 +17,42 @@ struct ElliotApp: App {
                 BoardView()
             }
             .environment(model)
-            .frame(minWidth: 900, minHeight: 560)
+            .frame(minWidth: 1_000, minHeight: 600)
             .task { await model.start() }
         }
-        .defaultSize(width: 1400, height: 800)
+        // Wide enough that the five columns and the inspector coexist without
+        // the board scrolling — seeing every column's consequence at once is
+        // the point of the layout.
+        .defaultSize(width: 1_640, height: 840)
         .commands {
             CommandGroup(replacing: .newItem) {}
+
+            // Advancing a card is the app's central verb. It should be in the
+            // menus with a shortcut, not reachable only by dragging — which is
+            // slow across four columns and impossible without a pointer.
+            CommandMenu("Card") {
+                Button("Advance") {
+                    Task { await model.nudgeSelection(forward: true) }
+                }
+                .keyboardShortcut(.rightArrow, modifiers: .command)
+                .disabled(model.selectedCard == nil)
+
+                Button("Move back") {
+                    Task { await model.nudgeSelection(forward: false) }
+                }
+                .keyboardShortcut(.leftArrow, modifiers: .command)
+                .disabled(model.selectedCard == nil)
+
+                Divider()
+
+                // No Escape key equivalent here on purpose. A menu shortcut is
+                // matched before the responder chain, so it would take Escape
+                // from whichever sheet is open and deselect behind it instead
+                // of closing it. The board handles Escape itself, where it can
+                // only fire while the board has focus.
+                Button("Deselect") { model.selectedCardID = nil }
+                    .disabled(model.selectedCard == nil)
+            }
         }
     }
 }

@@ -23,9 +23,32 @@ public final class AppModel {
     /// is the complete record.
     public private(set) var liveLog: [UUID: [String]] = [:]
 
+    /// The run currently holding each card, for every card at once.
+    ///
+    /// Batched rather than fetched per card: the board asks "would this move be
+    /// allowed" for every column on every render, and `runAlreadyInFlight` is
+    /// one of the answers.
+    public private(set) var activeRuns: [UUID: SkillRun] = [:]
+
     public var selectedRepoID: UUID?
     public var selectedCardID: UUID?
     public var pendingFollowUps: PendingMerge?
+
+    /// The last refused move, kept against the card it was refused for.
+    ///
+    /// A refusal used to be written into `status`, at the bottom of the window,
+    /// where the next message overwrote it — so the explanation of why nothing
+    /// happened arrived far from the card and left again on its own. This stays
+    /// until the card moves or the user dismisses it.
+    public private(set) var refusal: Refusal?
+
+    public struct Refusal: Identifiable, Sendable, Equatable {
+        public var id: UUID { cardID }
+        public var cardID: UUID
+        public var message: String
+    }
+
+    public func dismissRefusal() { refusal = nil }
 
     public struct PendingMerge: Identifiable, Sendable {
         public var id: UUID { cardID }
@@ -143,6 +166,7 @@ public final class AppModel {
             do {
                 for try await cards in cardObservation {
                     await MainActor.run { self?.cards = cards }
+                    await self?.refreshActiveRuns()
                 }
             } catch {
                 await MainActor.run { self?.status = "Lost track of the board: \(error.localizedDescription)" }
@@ -178,6 +202,7 @@ public final class AppModel {
         switch update {
         case .runStarted(let runID, _):
             liveLog[runID] = ["▸ started"]
+            Task { await self.refreshActiveRuns() }
         case .runOutput(let runID, let event):
             var lines = liveLog[runID] ?? []
             if let rendered = Self.describe(event) {
@@ -194,7 +219,10 @@ public final class AppModel {
             var lines = liveLog[runID] ?? []
             lines.append("■ \(state.rawValue)")
             liveLog[runID] = lines
-            Task { await self.refreshRuns(cardID: cardID) }
+            Task {
+                await self.refreshRuns(cardID: cardID)
+                await self.refreshActiveRuns()
+            }
         }
     }
 
@@ -227,6 +255,36 @@ public final class AppModel {
         repos.first { $0.id == card.repoID }
     }
 
+    public func card(id: UUID?) -> Card? {
+        guard let id else { return nil }
+        return cards.first { $0.id == id }
+    }
+
+    public var selectedCard: Card? { card(id: selectedCardID) }
+
+    /// What moving this card to that column *would* do, decided now, without
+    /// touching the database.
+    ///
+    /// This is the same `evaluateMove` `BoardService` commits with, so the
+    /// caption a column shows and the thing that actually happens cannot come
+    /// apart. Pure by design — the rule engine takes no clock and no I/O
+    /// precisely so a view can ask it during layout.
+    public func preview(_ card: Card, to column: ElliotModel.Column) -> MoveOutcome {
+        evaluateMove(
+            from: card.column,
+            to: column,
+            card: card,
+            context: MoveContext(
+                repoIsEnabled: repo(for: card)?.isEnabled ?? false,
+                activeRunID: activeRuns[card.id]?.id,
+                allowSideEffects: true,
+                // Left uncollected on purpose: the merge really does stop to
+                // ask, and the caption says so.
+                providedFollowUps: nil
+            )
+        )
+    }
+
     /// A drag. Goes through exactly the same two calls the MCP tool uses.
     public func move(cardID: UUID, to column: ElliotModel.Column) async {
         guard let board else { return }
@@ -234,12 +292,59 @@ public final class AppModel {
             let result = try await board.move(cardID: cardID, to: column, origin: .userDrag)
             switch result {
             case .moved(let runID):
+                refusal = nil
                 status = runID == nil ? "Moved." : "Started a run."
+                await refreshActiveRuns()
             case .needsInput(.followUps(let pr)):
+                refusal = nil
                 pendingFollowUps = PendingMerge(cardID: cardID, prNumber: pr)
             case .blocked(let block):
+                // Shown on the card, not only in the status bar: the reason a
+                // gesture did nothing belongs where the gesture was made.
+                refusal = Refusal(cardID: cardID, message: Self.explain(block))
                 status = Self.explain(block)
             }
+        } catch {
+            refusal = Refusal(cardID: cardID, message: error.localizedDescription)
+            status = error.localizedDescription
+        }
+    }
+
+    /// Move the selected card one column along without a mouse.
+    ///
+    /// The board is a drag surface, but dragging is not the only way to mean
+    /// "advance this": it is slow for a card three columns away, and it is the
+    /// only path for someone who cannot drag at all.
+    public func nudgeSelection(forward: Bool) async {
+        guard let card = selectedCard else { return }
+        let order = ElliotModel.Column.allCases
+        guard let index = order.firstIndex(of: card.column) else { return }
+        let target = index + (forward ? 1 : -1)
+        guard order.indices.contains(target) else { return }
+        await move(cardID: card.id, to: order[target])
+    }
+
+    /// Drop a card between two of its new neighbours.
+    ///
+    /// `orderIndex` is a `Double` so an insert is `(prev + next) / 2` rather
+    /// than a renumbering — the store has always supported this, and the board
+    /// simply never offered it.
+    public func reorder(cardID: UUID, in column: ElliotModel.Column, above target: Card?) async {
+        guard let board, let moving = card(id: cardID) else { return }
+        let ordered = cards(in: column).filter { $0.id != cardID }
+
+        let index = target.flatMap { t in ordered.firstIndex { $0.id == t.id } } ?? ordered.count
+        let previous = index > 0 ? ordered[index - 1].orderIndex : nil
+        let next = index < ordered.count ? ordered[index].orderIndex : nil
+
+        do {
+            if moving.column != column {
+                // Crossing columns is a move first — it may file an issue or
+                // merge a pull request — and only then a placement.
+                await move(cardID: cardID, to: column)
+                guard refusal == nil, card(id: cardID)?.column == column else { return }
+            }
+            try await board.reorder(cardID: cardID, between: previous, and: next)
         } catch {
             status = error.localizedDescription
         }
@@ -258,16 +363,14 @@ public final class AppModel {
         }
     }
 
+    /// One sentence per refusal, written once.
+    ///
+    /// This used to be a second switch with its own wording, so a repository
+    /// switched off was "disabled; see Preflight" on the card and "switched off
+    /// in Preflight" in the column caption — the same refusal, named two ways,
+    /// in one window.
     static func explain(_ block: MoveBlock) -> String {
-        switch block {
-        case .sameColumn: "That card is already there."
-        case .emptyIdea: "This card has nothing in it to file as an issue."
-        case .incompleteStory: "The story is missing one of role, want or benefit."
-        case .missingIssueNumber: "No issue yet — move it Backlog → To Do first."
-        case .missingPRNumber: "No pull request yet — move it To Do → In Progress first."
-        case .repoDisabled: "This repository is disabled; see Preflight."
-        case .runAlreadyInFlight: "A run is already working on this card."
-        }
+        Consequence.reason(block)
     }
 
     public func createCard(
@@ -308,6 +411,17 @@ public final class AppModel {
 
     public func refreshRuns(cardID: UUID) async {
         runsByCard[cardID] = (try? await store?.runs(cardID: cardID, limit: 20)) ?? []
+    }
+
+    /// One query for the whole board rather than one per card.
+    public func refreshActiveRuns() async {
+        guard let store else { return }
+        let ids = cards.map(\.id)
+        guard !ids.isEmpty else {
+            activeRuns = [:]
+            return
+        }
+        activeRuns = (try? await store.activeRuns(cardIDs: ids)) ?? [:]
     }
 
     // MARK: - Repos
