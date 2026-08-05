@@ -39,6 +39,11 @@ let package = Package(
             name: "ElliotMCPKit",
             dependencies: ["ElliotModel", "ElliotIPC", "ElliotStore", .product(name: "MCP", package: "swift-sdk")]
         ),
+        // Test-only, and depends on nothing: the suites' bounded waits live
+        // here so a wedged child fails its test in seconds instead of hanging
+        // `swift test` — and with it the SwiftPM build lock — indefinitely.
+        .target(name: "TestSupport", path: "Tests/TestSupport"),
+        .testTarget(name: "TestSupportTests", dependencies: ["TestSupport"]),
         .testTarget(name: "ElliotModelTests", dependencies: ["ElliotModel"]),
         // GRDB is named rather than reached through ElliotStore: the migration
         // tests build a database at the schema an older Elliot left behind, and
@@ -51,8 +56,8 @@ let package = Package(
         // Fixtures and the fake `claude` live at the repository root, not in a
         // resource bundle: the same files are used by hand from a terminal when
         // reproducing a run.
-        .testTarget(name: "ElliotProcessTests", dependencies: ["ElliotProcess"]),
-        .testTarget(name: "ElliotEngineTests", dependencies: ["ElliotEngine"]),
+        .testTarget(name: "ElliotProcessTests", dependencies: ["ElliotProcess", "TestSupport"]),
+        .testTarget(name: "ElliotEngineTests", dependencies: ["ElliotEngine", "TestSupport"]),
         .testTarget(name: "ElliotIPCTests", dependencies: ["ElliotIPC"]),
         // Drives the tools through `BridgeProviding`, so the offline branches —
         // the ones that never run on a machine where Elliot is up — are reached

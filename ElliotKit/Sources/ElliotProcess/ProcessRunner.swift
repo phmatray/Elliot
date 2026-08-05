@@ -25,6 +25,19 @@ public enum ProcessError: Error, LocalizedError {
     }
 }
 
+/// The exit flag and whoever is waiting on it, under one lock.
+///
+/// Both live together for the same reason `StreamingProcess.State` does: a
+/// waiter that checks the flag and parks in two separate steps can be handed
+/// off to *after* the handler has already run, and then waits forever.
+private struct WaitState: @unchecked Sendable {
+    var exited = false
+    /// A list rather than one slot: a second waiter must not overwrite — and so
+    /// orphan — the first. That is the same lost-wakeup this type exists to
+    /// prevent, and a single slot would leave it one call site away.
+    var waiters: [CheckedContinuation<Void, Never>] = []
+}
+
 /// Runs short-lived commands — `gh`, `git`, `zsh -lc` — and collects their
 /// output. Long-running agent runs use `StreamingProcess` instead.
 public enum ProcessRunner {
@@ -52,106 +65,78 @@ public enum ProcessRunner {
         // Never let a child inherit the app's stdin and block waiting on it.
         process.standardInput = FileHandle.nullDevice
 
-        // Collected as it arrives, and published by the termination handler —
-        // the arrangement `StreamingProcess` already uses, for the two reasons
-        // it documents. Both pipes must keep draining *while* the child runs or
-        // a child that fills one deadlocks; and the exit must be reported by
-        // the handler rather than awaited, because `waitUntilExit` spins a run
-        // loop on whatever thread calls it and was observed never returning for
-        // a child that had already gone. That hang wedged the whole test
-        // process roughly one run in three.
+        // Foundation's `waitUntilExit()` spins a run loop waiting for a
+        // notification that a concurrently-spawned sibling can consume first.
+        // It then parks forever — and because it is called from a detached
+        // task, it parks a *cooperative-pool* thread, which is how one wedged
+        // `gh` call took `swift test` and the SwiftPM build lock down with it
+        // (issue #7, sampled at this line, with no child process left alive).
         //
-        // The handler is installed before `run()`, so a child that exits
-        // immediately — the `/usr/bin/false` this is asked for constantly —
-        // cannot finish in the gap and leave nobody listening.
-        let state = Locked(Wait())
-        let outHandle = outPipe.fileHandleForReading
-        let errHandle = errPipe.fileHandleForReading
-
-        outHandle.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            state.withLock { $0.stdout.append(chunk) }
-        }
-        errHandle.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            state.withLock { $0.stderr.append(chunk) }
-        }
-
-        process.terminationHandler = { process in
-            // Detached before the final drain: they read the same descriptor on
-            // their own queue, and racing them against `readDataToEndOfFile`
-            // loses the tail.
-            outHandle.readabilityHandler = nil
-            errHandle.readabilityHandler = nil
-            let restOut = outHandle.readDataToEndOfFile()
-            let restErr = errHandle.readDataToEndOfFile()
-
-            // Publishing the exit and handing off any waiter happen under one
-            // lock, so a caller parking at this instant cannot miss it.
-            let handoff = state.withLock { current -> (CheckedContinuation<Exit, Never>, Exit)? in
-                current.stdout.append(restOut)
-                current.stderr.append(restErr)
-                let exit = Exit(
-                    code: process.terminationStatus,
-                    stdout: current.stdout,
-                    stderr: current.stderr
-                )
-                current.exit = exit
-                defer { current.waiter = nil }
-                return current.waiter.map { ($0, exit) }
+        // `StreamingProcess` already avoids it: publish the exit from
+        // `terminationHandler` and hand off the waiter under ONE lock, so a
+        // waiter arriving at that exact instant cannot miss it. Same mechanism
+        // here, so the two spawners cannot diverge. Must be installed before
+        // `run()`, or a fast child can exit before the handler exists.
+        let waitState = Locked(WaitState())
+        process.terminationHandler = { _ in
+            let parked = waitState.withLock { current -> [CheckedContinuation<Void, Never>] in
+                current.exited = true
+                defer { current.waiters = [] }
+                return current.waiters
             }
-            if let (waiter, exit) = handoff { waiter.resume(returning: exit) }
+            for continuation in parked { continuation.resume() }
+        }
+
+        let waitForExit: @Sendable () async -> Void = {
+            await withCheckedContinuation { continuation in
+                // Checking the flag and parking happen under one lock, so the
+                // handler cannot slip between them and leave this waiting
+                // forever.
+                let alreadyExited = waitState.withLock { current -> Bool in
+                    if current.exited { return true }
+                    current.waiters.append(continuation)
+                    return false
+                }
+                if alreadyExited { continuation.resume() }
+            }
         }
 
         try process.run()
 
-        let timedOut = Locked(false)
-        let watchdog = timeout.map { limit in
-            Task {
-                try? await Task.sleep(for: limit)
-                guard !Task.isCancelled, process.isRunning else { return }
-                timedOut.withLock { $0 = true }
-                // Terminating makes the child exit, which fires the handler
-                // above — so there is nothing further to wait for here.
-                process.terminate()
+        // Both pipes must be drained concurrently: a child that fills one while
+        // we block on the other deadlocks.
+        let outHandle = outPipe.fileHandleForReading
+        let errHandle = errPipe.fileHandleForReading
+        async let outData = Task.detached { outHandle.readDataToEndOfFile() }.value
+        async let errData = Task.detached { errHandle.readDataToEndOfFile() }.value
+
+        let timedOut = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                await waitForExit()
+                return false
             }
-        }
-        let exit = await withCheckedContinuation { continuation in
-            // Checked and parked under one lock: the termination handler cannot
-            // slip between the two and leave this waiting forever.
-            let already = state.withLock { current -> Exit? in
-                if let exit = current.exit { return exit }
-                current.waiter = continuation
-                return nil
+            if let timeout {
+                group.addTask {
+                    try? await Task.sleep(for: timeout)
+                    guard !Task.isCancelled, process.isRunning else { return false }
+                    process.terminate()
+                    return true
+                }
             }
-            if let already { continuation.resume(returning: already) }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
         }
-        watchdog?.cancel()
+
+        // If the timeout fired, wait for the terminate to actually land.
+        if timedOut { await waitForExit() }
 
         return ProcessResult(
-            exitCode: exit.code,
-            stdoutData: exit.stdout,
-            stderrData: exit.stderr,
-            timedOut: timedOut.value
+            exitCode: process.terminationStatus,
+            stdoutData: await outData,
+            stderrData: await errData,
+            timedOut: timedOut
         )
-    }
-
-    private struct Exit: Sendable {
-        var code: Int32
-        var stdout: Data
-        var stderr: Data
-    }
-
-    private struct Wait: @unchecked Sendable {
-        /// Filled by the readability handlers while the child runs.
-        var stdout = Data()
-        var stderr = Data()
-        var exit: Exit?
-        /// Whoever is waiting for the exit, parked under the same lock that
-        /// publishes it.
-        var waiter: CheckedContinuation<Exit, Never>?
     }
 
     /// Runs a command and throws unless it exits 0.

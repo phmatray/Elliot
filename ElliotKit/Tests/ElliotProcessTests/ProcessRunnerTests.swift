@@ -1,65 +1,97 @@
 import Foundation
+import TestSupport
 import Testing
 
 @testable import ElliotProcess
 
-private let cleanEnvironment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
-
 @Suite("Process runner")
 struct ProcessRunnerTests {
 
-    @Test("A command's output and exit code come back whole")
-    func collectsOutput() async throws {
+    @Test("Concurrent short-lived children all report their exit")
+    func concurrentRunsAllComplete() async throws {
+        // The wedge needs concurrency to appear: one lost termination
+        // notification parked a cooperative-pool thread in waitUntilExit
+        // forever, taking `swift test` and the SwiftPM build lock with it
+        // (issue #7, sampled at ProcessRunner.swift:66).
+        try await withTimeout(.seconds(60)) {
+            await withTaskGroup(of: Int32.self) { group in
+                for _ in 0..<40 {
+                    group.addTask {
+                        let result = try? await ProcessRunner.run(
+                            executable: "/usr/bin/true",
+                            arguments: [],
+                            environment: [:],
+                            timeout: .seconds(10)
+                        )
+                        return result?.exitCode ?? -1
+                    }
+                }
+                for await code in group { #expect(code == 0) }
+            }
+        }
+    }
+
+    @Test("stdout and stderr are both captured, and a non-zero exit is reported")
+    func capturesBothStreams() async throws {
         let result = try await ProcessRunner.run(
             executable: "/bin/sh",
-            arguments: ["-c", "printf hello; printf oops 1>&2; exit 3"],
-            environment: cleanEnvironment
+            arguments: ["-c", "printf out; printf err >&2; exit 7"],
+            environment: [:],
+            timeout: .seconds(10)
         )
-        #expect(result.stdout == "hello")
-        #expect(result.stderr == "oops")
-        #expect(result.exitCode == 3)
+        #expect(result.exitCode == 7)
+        #expect(result.stdout == "out")
+        #expect(result.stderr == "err")
         #expect(!result.timedOut)
         #expect(!result.succeeded)
     }
 
-    @Test("A child that outlives its window is terminated and said to have been")
-    func timesOut() async throws {
-        let result = try await ProcessRunner.run(
-            executable: "/bin/sh",
-            arguments: ["-c", "sleep 30"],
-            environment: cleanEnvironment,
-            timeout: .milliseconds(300)
-        )
+    @Test("A child that outlives its timeout is terminated and reported as timed out")
+    func timeoutTerminates() async throws {
+        let result = try await withTimeout(.seconds(30)) {
+            try await ProcessRunner.run(
+                executable: "/bin/sh",
+                arguments: ["-c", "sleep 30"],
+                environment: [:],
+                timeout: .milliseconds(300)
+            )
+        }
         #expect(result.timedOut)
         #expect(!result.succeeded)
     }
 
-    @Test("More output than a pipe holds does not deadlock")
-    func drainsWhileTheChildIsStillWriting() async throws {
-        // A pipe buffers 64 KiB. A child writing past that blocks in `write`
-        // until someone reads, so a runner that only drains after the child has
-        // exited waits forever for a child waiting for it. This is the test
-        // that catches that inversion.
-        let result = try await ProcessRunner.run(
-            executable: "/bin/sh",
-            arguments: ["-c", "/usr/bin/head -c 400000 /dev/zero | /usr/bin/tr '\\0' 'x'"],
-            environment: cleanEnvironment,
-            timeout: .seconds(20)
-        )
-        #expect(result.stdoutData.count == 400_000)
-        #expect(result.succeeded)
+    @Test("A child that writes more than one pipe buffer does not deadlock")
+    func largeOutputDoesNotDeadlock() async throws {
+        // Both pipes must drain concurrently; 1 MiB is well past the 64 KiB
+        // pipe buffer that would otherwise block the child forever.
+        let result = try await withTimeout(.seconds(60)) {
+            try await ProcessRunner.run(
+                executable: "/bin/sh",
+                arguments: ["-c", "yes abcdefghij | head -c 1048576; yes k | head -c 200000 >&2"],
+                environment: [:],
+                timeout: .seconds(30)
+            )
+        }
+        #expect(result.stdoutData.count == 1_048_576)
+        #expect(result.stderrData.count == 200_000)
+        #expect(result.exitCode == 0)
     }
 
     @Test("A child that exits before anyone waits is still reported")
     func exitsImmediately() async throws {
-        // `/usr/bin/false` is what the end-to-end tests hand every verifier, so
-        // this race is run hundreds of times per suite.
-        for _ in 0..<20 {
-            let result = try await ProcessRunner.run(
-                executable: "/usr/bin/false", arguments: [], environment: cleanEnvironment
-            )
-            #expect(result.exitCode == 1)
-            #expect(!result.timedOut)
+        // The other half of the same race: the concurrency test above proves a
+        // notification is not lost between siblings, this one proves it is not
+        // lost to speed. `/usr/bin/false` is what the end-to-end suites hand
+        // every verifier, so a child finishing before its waiter arrives is run
+        // hundreds of times per `swift test`.
+        try await withTimeout(.seconds(60)) {
+            for _ in 0..<20 {
+                let result = try await ProcessRunner.run(
+                    executable: "/usr/bin/false", arguments: [], environment: [:]
+                )
+                #expect(result.exitCode == 1)
+                #expect(!result.timedOut)
+            }
         }
     }
 
@@ -67,7 +99,7 @@ struct ProcessRunnerTests {
     func refusesNonExecutable() async {
         await #expect(throws: ProcessError.self) {
             try await ProcessRunner.run(
-                executable: "/etc/hosts", arguments: [], environment: cleanEnvironment
+                executable: "/etc/hosts", arguments: [], environment: [:]
             )
         }
     }
@@ -78,7 +110,7 @@ struct ProcessRunnerTests {
             try await ProcessRunner.check(
                 executable: "/bin/sh",
                 arguments: ["-c", "echo nope 1>&2; exit 1"],
-                environment: cleanEnvironment
+                environment: [:]
             )
         }
     }

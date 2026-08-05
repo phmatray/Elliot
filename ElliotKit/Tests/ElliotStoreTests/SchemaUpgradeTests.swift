@@ -75,8 +75,20 @@ private func rewindToV1(_ url: URL) throws {
     try queue.write { db in
         try db.execute(sql: #"DROP INDEX "card_on_idempotencyKey""#)
         try db.execute(sql: #"ALTER TABLE "card" DROP COLUMN "idempotencyKey""#)
+        try db.execute(sql: #"DROP TABLE "setting""#)
+        try db.execute(sql: #"ALTER TABLE "repo" DROP COLUMN "visibility""#)
+        // Both post-v1 migrations, and asserted rather than assumed: `DELETE`
+        // of a row that is not there succeeds, so a stale identifier here would
+        // leave this whole file testing an upgrade that never runs.
         try db.execute(
-            sql: #"DELETE FROM "grdb_migrations" WHERE "identifier" = 'v2_cardIdempotencyKey'"#
+            sql: """
+                DELETE FROM "grdb_migrations"
+                WHERE "identifier" IN ('v2_repositoryLayout', 'v3_cardIdempotencyKey')
+                """
+        )
+        precondition(
+            db.changesCount == 2,
+            "rewindToV1 removed \(db.changesCount) migration rows, expected 2"
         )
     }
 }

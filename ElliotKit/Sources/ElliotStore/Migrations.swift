@@ -89,7 +89,22 @@ enum Migrations {
             try db.create(index: "moveAudit_on_card_at", on: "moveAudit", columns: ["cardID", "at"])
         }
 
-        migrator.registerMigration("v2_cardIdempotencyKey") { db in
+        // Additive only: v1 databases in the field must keep their rows.
+        migrator.registerMigration("v2_repositoryLayout") { db in
+            try db.create(table: "setting") { t in
+                t.primaryKey("key", .text)
+                t.column("value", .text).notNull()
+            }
+            try db.alter(table: "repo") { t in
+                t.add(column: "visibility", .text)
+            }
+        }
+
+        // v3 rather than a second v2: `v2_repositoryLayout` above has shipped on
+        // `main`, and a migration's name is its identity in `grdb_migrations`.
+        // Renaming a shipped one makes every database in the field try to run it
+        // again; this one has shipped nowhere, so it is the one that moves.
+        migrator.registerMigration("v3_cardIdempotencyKey") { db in
             try db.alter(table: "card") { t in
                 t.add(column: "idempotencyKey", .text)
             }

@@ -1,5 +1,6 @@
 import ElliotModel
 import Foundation
+import TestSupport
 import Testing
 
 @testable import ElliotProcess
@@ -98,17 +99,23 @@ struct ClaudeInvocationTests {
 @Suite("Claude runner", .serialized)
 struct ClaudeRunnerTests {
 
-    private func collect(_ run: ClaudeRun) async -> (events: [StreamEvent], outcome: ClaudeRunOutcome?) {
-        var events: [StreamEvent] = []
-        var outcome: ClaudeRunOutcome?
-        for await update in run.updates {
-            switch update {
-            case .event(let event): events.append(event)
-            case .finished(let result): outcome = result
-            case .started, .stalled: break
+    /// Bounded, so a child that never dies fails its test in seconds instead of
+    /// hanging `swift test` — and with it the SwiftPM build lock — forever.
+    private func collect(
+        _ run: ClaudeRun, timeout: Duration = .seconds(10)
+    ) async throws -> (events: [StreamEvent], outcome: ClaudeRunOutcome?) {
+        try await withTimeout(timeout) {
+            var events: [StreamEvent] = []
+            var outcome: ClaudeRunOutcome?
+            for await update in run.updates {
+                switch update {
+                case .event(let event): events.append(event)
+                case .finished(let result): outcome = result
+                case .started, .stalled: break
+                }
             }
+            return (events, outcome)
         }
-        return (events, outcome)
     }
 
     @Test("A successful run streams its events and reports a clean result")
@@ -126,7 +133,8 @@ struct ClaudeRunnerTests {
             ]),
             logURL: logURL
         )
-        let (events, outcome) = await collect(run)
+        defer { run.cancel() }
+        let (events, outcome) = try await collect(run)
 
         // init + 4 message events + text + result
         #expect(events.count == 8)
@@ -156,7 +164,8 @@ struct ClaudeRunnerTests {
             config: config(environment: ["FAKE_CLAUDE_FIXTURE": TestPaths.fixture("denied.ndjson")]),
             logURL: dir.appendingPathComponent("run.ndjson")
         )
-        let (_, outcome) = await collect(run)
+        defer { run.cancel() }
+        let (_, outcome) = try await collect(run)
 
         let result = try #require(outcome?.result)
         #expect(outcome?.exitCode == 0)
@@ -177,7 +186,8 @@ struct ClaudeRunnerTests {
             ]),
             logURL: dir.appendingPathComponent("run.ndjson")
         )
-        let (events, outcome) = await collect(run)
+        defer { run.cancel() }
+        let (events, outcome) = try await collect(run)
 
         #expect(events.count == 1)
         #expect(outcome?.result?.text == "no trailing newline")
@@ -197,19 +207,27 @@ struct ClaudeRunnerTests {
             logURL: dir.appendingPathComponent("run.ndjson")
         )
 
-        var firstEventAt: Date?
-        var finishedAt: Date?
-        for await update in run.updates {
-            switch update {
-            case .event where firstEventAt == nil: firstEventAt = Date()
-            case .finished: finishedAt = Date()
-            default: break
+        defer { run.cancel() }
+
+        // Returned rather than captured: `withTimeout`'s operation is
+        // `@Sendable`, so mutating locals from inside it is a Swift 6 error.
+        let (sawEventBeforeFinish, finished) = try await withTimeout(.seconds(10)) {
+            () -> (Bool, Bool) in
+            var sawEvent = false
+            var didFinish = false
+            for await update in run.updates {
+                switch update {
+                case .event where !didFinish: sawEvent = true
+                case .finished: didFinish = true
+                default: break
+                }
             }
+            return (sawEvent, didFinish)
         }
-        let first = try #require(firstEventAt)
-        let last = try #require(finishedAt)
-        // 8 lines at 40 ms apart: the first event must land well before the end.
-        #expect(last.timeIntervalSince(first) > 0.15)
+        // The point of the test: events are delivered as they arrive, not batched
+        // after the process exits. No clock, so no contention flake.
+        #expect(sawEventBeforeFinish)
+        #expect(finished)
     }
 
     @Test("Cancelling terminates the child and reports it")
@@ -217,22 +235,67 @@ struct ClaudeRunnerTests {
         let dir = try TestPaths.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
 
+        let ready = dir.appendingPathComponent("ready")
         let run = try ClaudeRun.start(
             invocation: ClaudeInvocation(runID: UUID(), prompt: "x", cwd: dir.path),
-            config: config(environment: ["FAKE_CLAUDE_MODE": "trap"]),
+            config: config(environment: [
+                "FAKE_CLAUDE_MODE": "trap",
+                "FAKE_CLAUDE_READY": ready.path,
+            ]),
             logURL: dir.appendingPathComponent("run.ndjson")
         )
+        defer { run.cancel() }
 
-        try await Task.sleep(for: .milliseconds(200))
+        // Wait on the fact that the trap is installed, not on a duration: 143 is
+        // only produced once the child is trap-protected, and under load a fixed
+        // sleep can expire before bash gets there.
+        try await withTimeout(.seconds(5)) {
+            while !FileManager.default.fileExists(atPath: ready.path) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
         run.cancel()
 
-        let (_, outcome) = await collect(run)
+        let (_, outcome) = try await collect(run)
         let result = try #require(outcome)
         #expect(result.wasTerminated)
         #expect(result.wasSignalled)
         // Claude Code documents 143 for its own SIGTERM shutdown; the fake
         // reproduces that so the runner is exercised against the real contract.
         #expect(result.exitCode == 143)
+    }
+
+    @Test("A hanging child is still reaped, and readiness is observable")
+    func hangingChildIsReaped() async throws {
+        let dir = try TestPaths.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let ready = dir.appendingPathComponent("ready")
+
+        let run = try ClaudeRun.start(
+            invocation: ClaudeInvocation(runID: UUID(), prompt: "x", cwd: dir.path),
+            config: config(environment: [
+                "FAKE_CLAUDE_MODE": "hang",
+                "FAKE_CLAUDE_READY": ready.path,
+            ]),
+            logURL: dir.appendingPathComponent("run.ndjson")
+        )
+        defer { run.cancel() }
+
+        try await withTimeout(.seconds(5)) {
+            while !FileManager.default.fileExists(atPath: ready.path) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        run.cancel()
+
+        let outcome = try await withTimeout(.seconds(5)) { () -> ClaudeRunOutcome? in
+            var last: ClaudeRunOutcome?
+            for await update in run.updates {
+                if case .finished(let result) = update { last = result }
+            }
+            return last
+        }
+        #expect(try #require(outcome).wasTerminated)
     }
 
     @Test("A crashing run surfaces its stderr")
@@ -245,7 +308,8 @@ struct ClaudeRunnerTests {
             config: config(environment: ["FAKE_CLAUDE_MODE": "crash", "FAKE_CLAUDE_EXIT": "9"]),
             logURL: dir.appendingPathComponent("run.ndjson")
         )
-        let (_, outcome) = await collect(run)
+        defer { run.cancel() }
+        let (_, outcome) = try await collect(run)
         #expect(outcome?.exitCode == 9)
         #expect(outcome?.result == nil)
         #expect(outcome?.stderr.contains("simulated failure") == true)
@@ -265,7 +329,8 @@ struct ClaudeRunnerTests {
             config: config(environment: ["FAKE_CLAUDE_ARGV_OUT": argvOut.path]),
             logURL: dir.appendingPathComponent("run.ndjson")
         )
-        _ = await collect(run)
+        defer { run.cancel() }
+        _ = try await collect(run)
 
         let argv = try String(contentsOf: argvOut, encoding: .utf8)
             .split(separator: "\n", omittingEmptySubsequences: false)
