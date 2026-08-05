@@ -212,6 +212,9 @@ public enum MoveOrigin: Codable, Sendable, Hashable {
         case prBecameReady
         case prMergedExternally
         case reconciliation
+        /// A column set by adopting what GitHub already said. Like every system
+        /// reason it maps to `.noAction`, so importing fires no skill.
+        case githubImport
     }
 
     /// System moves react to reality rather than changing it, so they must

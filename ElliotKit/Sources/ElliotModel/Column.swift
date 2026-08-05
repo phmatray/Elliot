@@ -35,8 +35,13 @@ public enum Column: String, Codable, CaseIterable, Sendable, Hashable {
     }
 }
 
-extension Column {
-    /// Position in board order. Ranking uses it to put work that is nearly done
-    /// above work that has barely started.
+public extension Column {
+    /// Position in board order, so "forward" is comparable. Ranking uses it to
+    /// put work that is nearly done above work that has barely started, and the
+    /// GitHub import uses it to move a card on only when the computed column is
+    /// strictly later than the one it sits in.
+    ///
+    /// Read off `allCases`, which is declared in board order, so this cannot
+    /// drift from what the user sees.
     var boardIndex: Int { Self.allCases.firstIndex(of: self) ?? 0 }
 }
