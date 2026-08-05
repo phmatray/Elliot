@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "elliot-mcp", targets: ["elliot-mcp"]),
         .executable(name: "ElliotApp", targets: ["ElliotApp"]),
+        .executable(name: "elliot-icon", targets: ["elliot-icon"]),
         .library(name: "ElliotModel", targets: ["ElliotModel"]),
         .library(name: "ElliotStore", targets: ["ElliotStore"]),
         .library(name: "ElliotProcess", targets: ["ElliotProcess"]),
@@ -24,6 +25,10 @@ let package = Package(
             name: "ElliotApp",
             dependencies: ["ElliotEngine", "ElliotIPC", "ElliotStore", "ElliotProcess"]
         ),
+        // Renders the mark to PNGs so `Scripts/build-app.sh` can hand them to
+        // `iconutil`. It draws from ElliotMark rather than owning an outline,
+        // so the Dock icon and the badge in the app cannot drift apart.
+        .executableTarget(name: "elliot-icon", dependencies: ["ElliotModel"]),
         .target(name: "ElliotModel"),
         .target(
             name: "ElliotStore",

@@ -1,5 +1,7 @@
 # Elliot
 
+<img src="docs/elliot-icon.png" width="128" alt="Elliot's mark: three interlocking chevron cards, each pointed on the right and notched on the left, on a plate that runs from violet to crimson.">
+
 A native macOS Kanban board where **moving a card is the act of execution**.
 
 The `create-issue`, `implement-issue` and `merge-pr` skills already cover a
@@ -53,7 +55,7 @@ The same four steps are available over MCP: `board_analyze_repo`,
 ## Build and run
 
 ```bash
-cd ElliotKit && swift test          # 448 tests, no Xcode needed
+cd ElliotKit && swift test          # 459 tests, no Xcode needed
 ./Scripts/build-app.sh              # assembles dist/Elliot.app
 open dist/Elliot.app
 ```
@@ -66,6 +68,16 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
 ```
 
 Re-run it if you move the app: the registration records an absolute path.
+
+The app icon is rendered at build time from the mark's geometry in
+`ElliotModel` — there is no committed `.icns`. The one image that *is*
+committed, `docs/elliot-icon.png`, comes from the same source and can be
+checked against it:
+
+```bash
+cd ElliotKit && swift build --product elliot-icon
+.build/debug/elliot-icon png ../docs/elliot-icon.png --pixels 512 --check
+```
 
 ## Layout
 
