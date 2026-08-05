@@ -418,3 +418,39 @@ struct SchedulerAdmissionTests {
         #expect(RunScheduler.state(for: nil) == .failed)
     }
 }
+
+@Suite("Deleting and editing imported cards")
+struct ImportedCardLifecycleTests {
+
+    @Test("Deleting a filed card dismisses its issue so a refresh cannot resurrect it")
+    func deletingDismisses() async throws {
+        let f = try await Fixture.make()
+        let card = try await f.board.adoptCard(CardSeed(
+            repoID: f.repo.id, title: "Dependency Dashboard", body: "",
+            column: .todo, issueNumber: 4, createdAt: Date(timeIntervalSince1970: 0)))
+
+        try await f.board.deleteCard(id: card.id)
+
+        #expect(try await f.store.dismissals(repoID: f.repo.id) == [ExternalRef(kind: .issue, number: 4)])
+    }
+
+    @Test("Deleting an unfiled card dismisses nothing")
+    func deletingAPlainCardDismissesNothing() async throws {
+        let f = try await Fixture.make()
+        let card = try await f.board.createCard(repoID: f.repo.id, title: "just an idea").card
+        try await f.board.deleteCard(id: card.id)
+        #expect(try await f.store.dismissals(repoID: f.repo.id).isEmpty)
+    }
+
+    @Test("A card carrying only a pull request refuses an edit")
+    func pullRequestOnlyCardIsNotEditable() async throws {
+        let f = try await Fixture.make()
+        let card = try await f.board.adoptCard(CardSeed(
+            repoID: f.repo.id, title: "chore(deps): bump GRDB", body: "",
+            column: .inReview, prNumber: 20, createdAt: Date(timeIntervalSince1970: 0)))
+
+        await #expect(throws: BoardError.self) {
+            try await f.board.updateCard(id: card.id, title: "mine now", body: "", story: nil)
+        }
+    }
+}

@@ -87,6 +87,19 @@ public struct MCPRequestHandler: Sendable {
                     hint: "Edit the issue instead: gh issue edit \(number). The card follows the "
                         + "issue, never the other way round."
                 )
+            case .cardTracksPullRequest(let number):
+                // Deliberately the same wire code as `cardAlreadyFiled` rather
+                // than a new one. From the agent's side the two refusals are one
+                // fact — this card is pinned to something on github.com, and
+                // retrying will never clear it — and a new code string would be
+                // a wire change an older helper could not decode, for no gain.
+                return .failure(
+                    code: .cardAlreadyFiled,
+                    message: "This card tracks pull request #\(number). Its text belongs to the "
+                        + "pull request now, and editing the card would leave the two disagreeing.",
+                    hint: "Edit the pull request instead: gh pr edit \(number). The card follows "
+                        + "the pull request, never the other way round."
+                )
             }
         } catch let error as AnalysisError {
             switch error {
