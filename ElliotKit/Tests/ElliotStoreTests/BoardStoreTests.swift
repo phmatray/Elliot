@@ -310,3 +310,88 @@ struct BoardStoreTests {
         #expect(try await store.repo(id: repo.id)?.visibility == .private)
     }
 }
+
+@Suite("GitHub import persistence")
+struct ImportPersistenceTests {
+
+    private func storeWithRepo() async throws -> (BoardStore, Repo) {
+        let store = try BoardStore.inMemory()
+        let repo = Repo(path: "/tmp/elliot", nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        try await store.saveRepo(repo)
+        return (store, repo)
+    }
+
+    private func card(_ repo: Repo, issueNumber: Int? = nil, prNumber: Int? = nil) -> Card {
+        let t = Date(timeIntervalSince1970: 0)
+        return Card(
+            repoID: repo.id, title: "work", issueNumber: issueNumber, prNumber: prNumber,
+            columnEnteredAt: t, createdAt: t, updatedAt: t)
+    }
+
+    @Test("Two cards cannot claim the same issue in one repository")
+    func duplicateIssueNumberIsRejected() async throws {
+        let (store, repo) = try await storeWithRepo()
+        try await store.saveCard(card(repo, issueNumber: 11))
+        await #expect(throws: (any Error).self) {
+            try await store.saveCard(card(repo, issueNumber: 11))
+        }
+    }
+
+    @Test("Two cards cannot claim the same pull request in one repository")
+    func duplicatePRNumberIsRejected() async throws {
+        let (store, repo) = try await storeWithRepo()
+        try await store.saveCard(card(repo, prNumber: 20))
+        await #expect(throws: (any Error).self) {
+            try await store.saveCard(card(repo, prNumber: 20))
+        }
+    }
+
+    @Test("Many cards may carry no issue at all")
+    func nullsDoNotCollide() async throws {
+        let (store, repo) = try await storeWithRepo()
+        try await store.saveCard(card(repo))
+        try await store.saveCard(card(repo))
+        #expect(try await store.cards(repoID: repo.id).count == 2)
+    }
+
+    @Test("Dismissals round-trip")
+    func dismissalsRoundTrip() async throws {
+        let (store, repo) = try await storeWithRepo()
+        let ref = ExternalRef(kind: .issue, number: 4)
+        try await store.dismiss(ref, repoID: repo.id)
+        #expect(try await store.dismissals(repoID: repo.id) == [ref])
+        // Dismissing twice is not an error — the user may delete a resurrected card.
+        try await store.dismiss(ref, repoID: repo.id)
+        #expect(try await store.dismissals(repoID: repo.id).count == 1)
+        try await store.clearDismissals(repoID: repo.id)
+        #expect(try await store.dismissals(repoID: repo.id).isEmpty)
+    }
+
+    @Test("Dismissals die with their repository")
+    func dismissalsCascade() async throws {
+        let (store, repo) = try await storeWithRepo()
+        try await store.dismiss(ExternalRef(kind: .pullRequest, number: 20), repoID: repo.id)
+        try await store.deleteRepo(id: repo.id)
+        #expect(try await store.dismissals(repoID: repo.id).isEmpty)
+    }
+
+    /// Reopening is the everyday path; the upgrade *over pre-existing rows* —
+    /// which is the one that can actually fail — is proven in
+    /// `SchemaUpgradeTests`, over a file rewound to v1 on purpose.
+    @Test("Reopening a store runs every migration and keeps its cards")
+    func migrationIsAdditive() async throws {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("elliot-v1-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let first = try BoardStore.open(at: url)
+        let repo = Repo(path: "/tmp/elliot", nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        try await first.saveRepo(repo)
+        try await first.saveCard(card(repo, issueNumber: 11))
+
+        // Reopening runs every registered migration against the existing file.
+        let second = try BoardStore.open(at: url)
+        #expect(try await second.cards(repoID: repo.id).count == 1)
+        #expect(try await second.dismissals(repoID: repo.id).isEmpty)
+    }
+}

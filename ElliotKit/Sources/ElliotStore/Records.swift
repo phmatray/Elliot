@@ -91,6 +91,24 @@ extension MoveAudit: FetchableRecord, PersistableRecord {
     }
 }
 
+/// A `(repo, issue|pr, number)` the user dismissed. Not a model type: nothing
+/// outside the store needs the timestamp.
+///
+/// The UUID strategy is not optional here — `repo.id` is stored as uppercase
+/// text, so a `repoID` written as GRDB's default blob would match no repository
+/// and the `ON DELETE CASCADE` would never fire.
+struct DismissalRecord: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "dismissedExternal"
+    static func databaseUUIDEncodingStrategy(for column: String) -> DatabaseUUIDEncodingStrategy {
+        .uppercaseString
+    }
+
+    var repoID: UUID
+    var kind: String
+    var number: Int
+    var dismissedAt: Date
+}
+
 /// `Column` means the board's five columns everywhere in Elliot. GRDB's SQL
 /// `Column` is reached through this alias so the unqualified name keeps the
 /// meaning that matters to the domain.
