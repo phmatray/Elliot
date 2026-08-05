@@ -44,6 +44,11 @@ enum Palette {
     /// signal.
     static let inert = Color.secondary
 
+    /// The cards in the mark. Not a consequence colour and never used as one —
+    /// it is the mark's own paper, and it is the same in both appearances
+    /// because a macOS 15 app icon does not follow the system appearance.
+    static let paper = dynamic(BrandColor.paper)
+
     static func dynamic(_ brand: BrandColor) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
             let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua

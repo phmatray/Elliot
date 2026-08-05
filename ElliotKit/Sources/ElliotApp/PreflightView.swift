@@ -1,4 +1,5 @@
 import ElliotEngine
+import ElliotIPC
 import ElliotModel
 import SwiftUI
 
@@ -9,6 +10,7 @@ struct PreflightView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                identity
                 summary
 
                 section("This machine", results: model.globalChecks)
@@ -39,6 +41,23 @@ struct PreflightView: View {
         }
         .frame(maxWidth: .infinity)
         .navigationTitle("Preflight")
+    }
+
+    /// Preflight is the first screen a new user sees, and until now it opened
+    /// with a verdict about a product it never names. The version is set in the
+    /// fact face because the build stamped it, not a person — and it is the one
+    /// thing a bug report from the field is trusted on.
+    private var identity: some View {
+        HStack(spacing: 10) {
+            MarkBadge(size: 34)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Elliot").font(Type.sheetTitle)
+                Fact(text: ElliotBuild.version, small: true)
+            }
+            Spacer()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Elliot, version \(ElliotBuild.version)")
     }
 
     /// The verdict first. A wall of green ticks makes you hunt for the one
