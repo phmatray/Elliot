@@ -168,6 +168,10 @@ enum Migrations {
             t.column("verifiedOutcome", .text)
             t.column("analysisReport", .text)                // JSON object
             t.column("createdAt", .datetime).notNull()
+            // A run works on a card or reads an analysis, never both and never
+            // neither — checked here so the malformed row is refused by SQLite
+            // even if it is ever reached some way other than the two factories.
+            t.check(sql: #"("cardID" IS NULL) <> ("analysisID" IS NULL)"#)
         }
         try db.execute(sql: """
             INSERT INTO "skillRun" (

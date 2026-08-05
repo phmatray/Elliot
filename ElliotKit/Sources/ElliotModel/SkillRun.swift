@@ -131,6 +131,76 @@ public extension SkillRun {
     var isAnalysis: Bool { kind == .analyzeRepo }
 }
 
+public extension SkillRun {
+    /// A run that works on a card. `analysisID` and `analysisAngle` are always
+    /// nil — the obvious way to build a card run without the two fields that
+    /// only make sense for the other kind ever coming apart from each other.
+    static func card(
+        id: UUID = UUID(),
+        cardID: UUID,
+        repoID: UUID,
+        kind: SkillKind,
+        prompt: String,
+        argv: [String] = [],
+        cwd: String,
+        state: RunState = .queued,
+        startedAt: Date? = nil,
+        endedAt: Date? = nil,
+        exitCode: Int32? = nil,
+        logPath: String,
+        stderrPath: String,
+        resultText: String? = nil,
+        totalCostUSD: Double? = nil,
+        numTurns: Int? = nil,
+        permissionDenials: [String] = [],
+        verifiedOutcome: VerifiedOutcome? = nil,
+        createdAt: Date
+    ) -> SkillRun {
+        SkillRun(
+            id: id, cardID: cardID, repoID: repoID, analysisID: nil, analysisAngle: nil,
+            kind: kind, prompt: prompt, argv: argv, cwd: cwd, state: state,
+            startedAt: startedAt, endedAt: endedAt, exitCode: exitCode,
+            logPath: logPath, stderrPath: stderrPath, resultText: resultText,
+            totalCostUSD: totalCostUSD, numTurns: numTurns, permissionDenials: permissionDenials,
+            verifiedOutcome: verifiedOutcome, analysisReport: nil, createdAt: createdAt
+        )
+    }
+
+    /// A run that reads a repository through one angle. `cardID` is always nil
+    /// and `kind` is always `.analyzeRepo` — there is no other kind an analysis
+    /// run can have, so it is not a parameter here.
+    static func analysis(
+        id: UUID = UUID(),
+        repoID: UUID,
+        analysisID: UUID,
+        analysisAngle: AnalysisAngle,
+        prompt: String,
+        argv: [String] = [],
+        cwd: String,
+        state: RunState = .queued,
+        startedAt: Date? = nil,
+        endedAt: Date? = nil,
+        exitCode: Int32? = nil,
+        logPath: String,
+        stderrPath: String,
+        resultText: String? = nil,
+        totalCostUSD: Double? = nil,
+        numTurns: Int? = nil,
+        permissionDenials: [String] = [],
+        analysisReport: AnalysisRunReport? = nil,
+        createdAt: Date
+    ) -> SkillRun {
+        SkillRun(
+            id: id, cardID: nil, repoID: repoID, analysisID: analysisID, analysisAngle: analysisAngle,
+            kind: .analyzeRepo, prompt: prompt, argv: argv, cwd: cwd, state: state,
+            startedAt: startedAt, endedAt: endedAt, exitCode: exitCode,
+            logPath: logPath, stderrPath: stderrPath, resultText: resultText,
+            totalCostUSD: totalCostUSD, numTurns: numTurns, permissionDenials: permissionDenials,
+            verifiedOutcome: nil, analysisReport: analysisReport, createdAt: createdAt
+        )
+    }
+}
+
 /// Why a card changed column. Recorded for every move, including the ones that
 /// trigger nothing, so the board's history is explainable after the fact.
 public enum MoveOrigin: Codable, Sendable, Hashable {
