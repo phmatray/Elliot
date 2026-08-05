@@ -165,6 +165,10 @@ public actor RunScheduler: RunLaunching {
             )
             claudeRun = try ClaudeRun.start(invocation: invocation, config: toolConfig, logURL: logURL)
         } catch {
+            // The baseline was taken above whether or not the spawn survives;
+            // `finish` is never reached from here, so nothing else would ever
+            // clear it.
+            treeBaselines[run.id] = nil
             updated.state = .failed
             updated.endedAt = Date()
             updated.resultText = error.localizedDescription
@@ -284,8 +288,13 @@ public actor RunScheduler: RunLaunching {
 
         if let baseline {
             let after = await git.porcelainStatus(cwd: repo.path)
-            if after != baseline {
-                report.workingTreeChanged = true
+            let changed = after != baseline
+            // Explicit even when unchanged: a checked-and-clean tree (`false`)
+            // must not read the same as a tree the sentinel never got to look
+            // at (`nil`) — that collapse is exactly what let an orphaned run
+            // masquerade as verified-clean.
+            report.workingTreeChanged = changed
+            if changed {
                 report.workingTreeDiff = after
             }
         }

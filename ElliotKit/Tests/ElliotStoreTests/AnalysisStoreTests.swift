@@ -108,7 +108,7 @@ struct AnalysisStoreTests {
 
         let back = try #require(try await store.run(id: run.id)?.analysisReport)
         #expect(back.harvestSource == .resultText)
-        #expect(back.workingTreeChanged)
+        #expect(back.workingTreeChanged == true)
         #expect(back.dropped.count == 1)
     }
 

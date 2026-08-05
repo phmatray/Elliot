@@ -61,7 +61,15 @@ public struct AnalysisRunReport: Codable, Sendable, Hashable {
     public var dropped: [String]
     /// The git sentinel. An analysis has no business writing to the repository
     /// and Elliot cannot prevent it, so it checks the outcome instead.
-    public var workingTreeChanged: Bool
+    ///
+    /// Tri-state, not a plain `Bool`: the baseline this compares against lives
+    /// only in the scheduler's memory, so a run orphaned by a crash has
+    /// nothing to compare against.
+    /// - `nil` — the sentinel never ran; an app that died mid-run lost the
+    ///   baseline, so this is honestly "unchecked", not "clean".
+    /// - `false` — checked, and the tree was untouched.
+    /// - `true` — checked, and the tree moved; `workingTreeDiff` says how.
+    public var workingTreeChanged: Bool?
     /// `git status --porcelain` after the run, when it differs from before.
     public var workingTreeDiff: String?
 
@@ -69,7 +77,7 @@ public struct AnalysisRunReport: Codable, Sendable, Hashable {
         harvestSource: HarvestSource,
         kept: Int = 0,
         dropped: [String] = [],
-        workingTreeChanged: Bool = false,
+        workingTreeChanged: Bool? = nil,
         workingTreeDiff: String? = nil
     ) {
         self.harvestSource = harvestSource
