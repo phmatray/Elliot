@@ -52,42 +52,106 @@ public enum ProcessRunner {
         // Never let a child inherit the app's stdin and block waiting on it.
         process.standardInput = FileHandle.nullDevice
 
-        try process.run()
-
-        // Both pipes must be drained concurrently: a child that fills one while
-        // we block on the other deadlocks.
+        // Collected as it arrives, and published by the termination handler —
+        // the arrangement `StreamingProcess` already uses, for the two reasons
+        // it documents. Both pipes must keep draining *while* the child runs or
+        // a child that fills one deadlocks; and the exit must be reported by
+        // the handler rather than awaited, because `waitUntilExit` spins a run
+        // loop on whatever thread calls it and was observed never returning for
+        // a child that had already gone. That hang wedged the whole test
+        // process roughly one run in three.
+        //
+        // The handler is installed before `run()`, so a child that exits
+        // immediately — the `/usr/bin/false` this is asked for constantly —
+        // cannot finish in the gap and leave nobody listening.
+        let state = Locked(Wait())
         let outHandle = outPipe.fileHandleForReading
         let errHandle = errPipe.fileHandleForReading
-        async let outData = Task.detached { outHandle.readDataToEndOfFile() }.value
-        async let errData = Task.detached { errHandle.readDataToEndOfFile() }.value
 
-        let timedOut = await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                await Task.detached { process.waitUntilExit() }.value
-                return false
-            }
-            if let timeout {
-                group.addTask {
-                    try? await Task.sleep(for: timeout)
-                    guard !Task.isCancelled, process.isRunning else { return false }
-                    process.terminate()
-                    return true
-                }
-            }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
+        outHandle.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            state.withLock { $0.stdout.append(chunk) }
+        }
+        errHandle.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            state.withLock { $0.stderr.append(chunk) }
         }
 
-        // If the timeout fired, wait for the terminate to actually land.
-        if timedOut { await Task.detached { process.waitUntilExit() }.value }
+        process.terminationHandler = { process in
+            // Detached before the final drain: they read the same descriptor on
+            // their own queue, and racing them against `readDataToEndOfFile`
+            // loses the tail.
+            outHandle.readabilityHandler = nil
+            errHandle.readabilityHandler = nil
+            let restOut = outHandle.readDataToEndOfFile()
+            let restErr = errHandle.readDataToEndOfFile()
+
+            // Publishing the exit and handing off any waiter happen under one
+            // lock, so a caller parking at this instant cannot miss it.
+            let handoff = state.withLock { current -> (CheckedContinuation<Exit, Never>, Exit)? in
+                current.stdout.append(restOut)
+                current.stderr.append(restErr)
+                let exit = Exit(
+                    code: process.terminationStatus,
+                    stdout: current.stdout,
+                    stderr: current.stderr
+                )
+                current.exit = exit
+                defer { current.waiter = nil }
+                return current.waiter.map { ($0, exit) }
+            }
+            if let (waiter, exit) = handoff { waiter.resume(returning: exit) }
+        }
+
+        try process.run()
+
+        let timedOut = Locked(false)
+        let watchdog = timeout.map { limit in
+            Task {
+                try? await Task.sleep(for: limit)
+                guard !Task.isCancelled, process.isRunning else { return }
+                timedOut.withLock { $0 = true }
+                // Terminating makes the child exit, which fires the handler
+                // above — so there is nothing further to wait for here.
+                process.terminate()
+            }
+        }
+        let exit = await withCheckedContinuation { continuation in
+            // Checked and parked under one lock: the termination handler cannot
+            // slip between the two and leave this waiting forever.
+            let already = state.withLock { current -> Exit? in
+                if let exit = current.exit { return exit }
+                current.waiter = continuation
+                return nil
+            }
+            if let already { continuation.resume(returning: already) }
+        }
+        watchdog?.cancel()
 
         return ProcessResult(
-            exitCode: process.terminationStatus,
-            stdoutData: await outData,
-            stderrData: await errData,
-            timedOut: timedOut
+            exitCode: exit.code,
+            stdoutData: exit.stdout,
+            stderrData: exit.stderr,
+            timedOut: timedOut.value
         )
+    }
+
+    private struct Exit: Sendable {
+        var code: Int32
+        var stdout: Data
+        var stderr: Data
+    }
+
+    private struct Wait: @unchecked Sendable {
+        /// Filled by the readability handlers while the child runs.
+        var stdout = Data()
+        var stderr = Data()
+        var exit: Exit?
+        /// Whoever is waiting for the exit, parked under the same lock that
+        /// publishes it.
+        var waiter: CheckedContinuation<Exit, Never>?
     }
 
     /// Runs a command and throws unless it exits 0.

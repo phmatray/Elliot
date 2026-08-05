@@ -89,6 +89,27 @@ enum Migrations {
             try db.create(index: "moveAudit_on_card_at", on: "moveAudit", columns: ["cardID", "at"])
         }
 
+        migrator.registerMigration("v2_cardIdempotencyKey") { db in
+            try db.alter(table: "card") { t in
+                t.add(column: "idempotencyKey", .text)
+            }
+            // The retry of a create that timed out on the way back may reach a
+            // different app process than the first attempt, so the "only one
+            // card" guarantee has to be in the schema. SQLite counts NULLs as
+            // distinct here, which is what lets every keyless card — all of the
+            // ones made in the UI — share the column without colliding.
+            //
+            // Unique on the key alone, not on `(repoID, idempotencyKey)`: the
+            // lookup names only the key, and a key that could repeat across
+            // repositories would answer with an arbitrary one of them.
+            try db.create(
+                index: "card_on_idempotencyKey",
+                on: "card",
+                columns: ["idempotencyKey"],
+                unique: true
+            )
+        }
+
         return migrator
     }
 }

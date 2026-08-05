@@ -51,7 +51,7 @@ struct BoardServiceTests {
                 want: "to see the run log inside the card",
                 benefit: "I can diagnose without a terminal"
             )
-        )
+        ).card
 
         let result = try await f.board.move(cardID: card.id, to: .todo, origin: .userDrag)
         guard case .moved(let runID?) = result else {
@@ -71,7 +71,7 @@ struct BoardServiceTests {
     @Test("To Do to In Progress enqueues implement-issue with only the number")
     func triggersImplementIssue() async throws {
         let f = try await Fixture.make()
-        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
         card.column = .todo
         card.issueNumber = 47
         try await f.store.saveCard(card)
@@ -88,7 +88,7 @@ struct BoardServiceTests {
     @Test("In Review to Done asks for follow-ups, then merges")
     func mergeNeedsFollowUpsFirst() async throws {
         let f = try await Fixture.make()
-        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
         card.column = .inReview
         card.prNumber = 279
         try await f.store.saveCard(card)
@@ -114,7 +114,7 @@ struct BoardServiceTests {
     @Test("An MCP move goes through the very same rules as a drag")
     func mcpMoveUsesTheSameRules() async throws {
         let f = try await Fixture.make()
-        let card = try await f.board.createCard(repoID: f.repo.id, title: "Add CSV export")
+        let card = try await f.board.createCard(repoID: f.repo.id, title: "Add CSV export").card
 
         let result = try await f.board.move(
             cardID: card.id, to: .todo, origin: .mcp(client: "claude-code")
@@ -134,7 +134,7 @@ struct BoardServiceTests {
     @Test("Moving to In Progress with no issue number is refused, and nothing moves")
     func blockedWithoutIssue() async throws {
         let f = try await Fixture.make()
-        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
         card.column = .todo
         try await f.store.saveCard(card)
 
@@ -148,7 +148,7 @@ struct BoardServiceTests {
     @Test("A card already running refuses a second move")
     func blockedWhileRunning() async throws {
         let f = try await Fixture.make()
-        let card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        let card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
         _ = try await f.board.move(cardID: card.id, to: .todo, origin: .userDrag)
 
         var running = try #require(try await f.store.runs(cardID: card.id).first)
@@ -166,7 +166,7 @@ struct BoardServiceTests {
         repo.isEnabled = false
         try await f.store.saveRepo(repo)
 
-        let card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        let card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
         let result = try await f.board.move(cardID: card.id, to: .todo, origin: .userDrag)
         #expect(result == .blocked(.repoDisabled))
     }
@@ -178,7 +178,7 @@ struct BoardServiceTests {
             repoID: f.repo.id,
             title: "Run log",
             story: UserStory(role: "developer", want: "the log", benefit: "")
-        )
+        ).card
         let result = try await f.board.move(cardID: card.id, to: .todo, origin: .userDrag)
         #expect(result == .blocked(.incompleteStory))
         #expect(try await f.store.runs(cardID: card.id).isEmpty)
@@ -189,7 +189,7 @@ struct BoardServiceTests {
     @Test("A system move never triggers a run")
     func systemMoveIsInert() async throws {
         let f = try await Fixture.make()
-        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
         card.column = .inProgress
         card.issueNumber = 47
         card.prNumber = 279
@@ -208,7 +208,7 @@ struct BoardServiceTests {
         // implement-issue flips its PR ready as its last act, so the watcher
         // often sees it before the process has exited.
         let f = try await Fixture.make()
-        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
         card.column = .inProgress
         card.issueNumber = 47
         try await f.store.saveCard(card)
@@ -230,7 +230,7 @@ struct BoardServiceTests {
     @Test("Reordering inside a column changes nothing but the order")
     func reordering() async throws {
         let f = try await Fixture.make()
-        let card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        let card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
         try await f.board.reorder(cardID: card.id, between: 100, and: 200)
         #expect(try await f.store.card(id: card.id)?.orderIndex == 150)
         #expect(try await f.store.audits(cardID: card.id).isEmpty)
@@ -239,7 +239,7 @@ struct BoardServiceTests {
     @Test("A move that changes nothing is refused as the same column")
     func sameColumnRefused() async throws {
         let f = try await Fixture.make()
-        let card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        let card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
         let result = try await f.board.move(cardID: card.id, to: .backlog, origin: .userDrag)
         #expect(result == .blocked(.sameColumn))
     }
@@ -261,7 +261,7 @@ struct BoardServiceTests {
             repoID: f.repo.id,
             title: "Run lgo",
             story: UserStory(role: "developer", want: "teh log", benefit: "no terminal")
-        )
+        ).card
 
         try await f.board.updateCard(
             id: card.id,
@@ -282,7 +282,7 @@ struct BoardServiceTests {
     @Test("Editing cannot move a card or touch what the funnel owns")
     func editLeavesTheFunnelAlone() async throws {
         let f = try await Fixture.make()
-        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
         card.column = .todo
         card.orderIndex = 4096
         card.branch = "feat/12-run-log"
@@ -301,7 +301,7 @@ struct BoardServiceTests {
     @Test("A filed card is refused — the issue is the record from that point on")
     func refusesFiledCard() async throws {
         let f = try await Fixture.make()
-        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
         card.issueNumber = 42
         try await f.store.saveCard(card)
 

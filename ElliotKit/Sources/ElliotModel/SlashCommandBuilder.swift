@@ -16,6 +16,20 @@ public enum SkillKind: String, Codable, CaseIterable, Sendable, Hashable {
     case implementIssue
     case mergePR
 
+    /// The bare skill name, and the one word every layer uses for this skill:
+    /// `RunDTO.kind`, `MoveDTO.triggered` and `NextDTO.wouldTrigger` all read
+    /// the same string, so an agent correlating them needs no table.
+    ///
+    /// Not the raw value, which is persisted and therefore stuck with
+    /// `createIssue`. Decoupling the two is what makes this rename free.
+    public var skillName: String {
+        switch self {
+        case .createIssue: "create-issue"
+        case .implementIssue: "implement-issue"
+        case .mergePR: "merge-pr"
+        }
+    }
+
     /// Plugin-qualified slash name. The CLI builds component ids as
     /// `"\(pluginName):\(name)"`.
     public var slashName: String {

@@ -63,8 +63,9 @@ public final class IPCServer: @unchecked Sendable {
 
     private func serve(_ fd: Int32) async {
         var greeted = false
+        let reader = UnixSocket.LineReader(fd: fd)
 
-        while let line = UnixSocket.readLine(fd: fd) {
+        while let line = reader.next() {
             guard !line.isEmpty else { continue }
 
             let envelope: Envelope<ElliotRequest>
@@ -91,7 +92,10 @@ public final class IPCServer: @unchecked Sendable {
                     response = .failure(code: .unauthorized, message: "Bad token.", hint: nil)
                 } else {
                     greeted = true
-                    response = .ok(.hello(serverVersion: "\(elliotProtocolVersion)"))
+                    // The build, not the protocol number — the version check
+                    // already happened three lines up, and a bug report needs
+                    // to name a build that exists.
+                    response = .ok(.hello(serverVersion: ElliotBuild.version))
                 }
             } else if !greeted {
                 response = .failure(
