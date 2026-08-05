@@ -50,7 +50,7 @@ public struct Verifier: Sendable {
         if !wanted.isEmpty {
             let scored = recent
                 .map { ($0, Self.overlap(wanted, Self.tokens($0.title))) }
-                .filter { $0.1 >= 0.6 }
+                .filter { $0.1 >= TextSimilarity.duplicateThreshold }
                 .max { $0.1 < $1.1 }
             if let match = scored?.0 {
                 return .issueCreated(number: match.number, url: match.url)
@@ -124,18 +124,12 @@ public struct Verifier: Sendable {
         return numbers.reversed()
     }
 
-    static func tokens(_ text: String) -> Set<String> {
-        Set(
-            text.lowercased()
-                .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-                .map(String.init)
-                .filter { $0.count > 2 }
-        )
-    }
+    // The heuristic itself lives in ElliotModel: the proposal harvester needs
+    // exactly this scoring to hint at duplicates, and one implementation is the
+    // only way the two stay agreed.
+    static func tokens(_ text: String) -> Set<String> { TextSimilarity.tokens(text) }
 
-    /// How much of the wanted vocabulary a candidate title covers.
     static func overlap(_ wanted: Set<String>, _ candidate: Set<String>) -> Double {
-        guard !wanted.isEmpty else { return 0 }
-        return Double(wanted.intersection(candidate).count) / Double(wanted.count)
+        TextSimilarity.overlap(wanted, candidate)
     }
 }
