@@ -207,6 +207,104 @@ public final class BoardStore: Sendable {
 
     private static let activeStates = RunState.allCases.filter(\.isActive).map(\.rawValue)
 
+    // MARK: - Analyses
+
+    public func saveAnalysis(_ analysis: Analysis) async throws {
+        try await requireWriter().write { db in try analysis.save(db) }
+    }
+
+    public func analysis(id: UUID) async throws -> Analysis? {
+        try await reader.read { db in try Analysis.fetchOne(db, key: id.databaseKey) }
+    }
+
+    public func analyses(repoID: UUID? = nil, limit: Int = 50) async throws -> [Analysis] {
+        try await reader.read { db in
+            var request = Analysis.all()
+            if let repoID {
+                request = request.filter(Analysis.Columns.repoID == repoID.databaseKey)
+            }
+            return try request.order(Analysis.Columns.createdAt.desc).limit(limit).fetchAll(db)
+        }
+    }
+
+    /// Every run of one analysis, oldest first — the order the window lists them.
+    public func runs(analysisID: UUID) async throws -> [SkillRun] {
+        try await reader.read { db in
+            try SkillRun
+                .filter(SkillRun.Columns.analysisID == analysisID.databaseKey)
+                .order(SkillRun.Columns.createdAt)
+                .fetchAll(db)
+        }
+    }
+
+    /// Analysis runs still in flight for a repo. The dedupe key `(repoID, angle)`
+    /// is checked against this.
+    public func activeAnalysisRuns(repoID: UUID) async throws -> [SkillRun] {
+        try await reader.read { db in
+            try SkillRun
+                .filter(SkillRun.Columns.repoID == repoID.databaseKey)
+                .filter(SkillRun.Columns.analysisID != nil)
+                .filter(Self.activeStates.contains(SkillRun.Columns.state))
+                .fetchAll(db)
+        }
+    }
+
+    // MARK: - Proposals
+
+    public func saveProposals(_ proposals: [StoryProposal]) async throws {
+        try await requireWriter().write { db in
+            for proposal in proposals { try proposal.save(db) }
+        }
+    }
+
+    public func saveProposal(_ proposal: StoryProposal) async throws {
+        try await saveProposals([proposal])
+    }
+
+    public func proposal(id: UUID) async throws -> StoryProposal? {
+        try await reader.read { db in try StoryProposal.fetchOne(db, key: id.databaseKey) }
+    }
+
+    public func proposals(
+        analysisID: UUID? = nil,
+        repoID: UUID? = nil,
+        status: ProposalStatus? = nil,
+        limit: Int = 500
+    ) async throws -> [StoryProposal] {
+        try await reader.read { db in
+            try Self.proposalQuery(analysisID: analysisID, repoID: repoID, status: status)
+                .limit(limit)
+                .fetchAll(db)
+        }
+    }
+
+    private static func proposalQuery(
+        analysisID: UUID?, repoID: UUID?, status: ProposalStatus?
+    ) -> QueryInterfaceRequest<StoryProposal> {
+        var request = StoryProposal.all()
+        if let analysisID {
+            request = request.filter(StoryProposal.Columns.analysisID == analysisID.databaseKey)
+        }
+        if let repoID {
+            request = request.filter(StoryProposal.Columns.repoID == repoID.databaseKey)
+        }
+        if let status {
+            request = request.filter(StoryProposal.Columns.status == status.rawValue)
+        }
+        return request.order(StoryProposal.Columns.createdAt)
+    }
+
+    /// Live proposals for the analysis window: they arrive run by run, so the
+    /// list fills in as each angle lands rather than after the last one.
+    public func observeProposals(analysisID: UUID) -> AsyncValueObservation<[StoryProposal]> {
+        ValueObservation
+            .tracking { db in
+                try Self.proposalQuery(analysisID: analysisID, repoID: nil, status: nil).fetchAll(db)
+            }
+            .removeDuplicates()
+            .values(in: reader)
+    }
+
     // MARK: - Audit
 
     public func audits(cardID: UUID, limit: Int = 100) async throws -> [MoveAudit] {

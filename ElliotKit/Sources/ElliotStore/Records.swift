@@ -46,7 +46,34 @@ extension SkillRun: FetchableRecord, PersistableRecord {
         public static let id = GRDB.Column("id")
         public static let cardID = GRDB.Column("cardID")
         public static let repoID = GRDB.Column("repoID")
+        public static let analysisID = GRDB.Column("analysisID")
         public static let state = GRDB.Column("state")
+        public static let createdAt = GRDB.Column("createdAt")
+    }
+}
+
+extension Analysis: FetchableRecord, PersistableRecord {
+    public static let databaseTableName = "analysis"
+    public static func databaseUUIDEncodingStrategy(for column: String) -> DatabaseUUIDEncodingStrategy {
+        .uppercaseString
+    }
+
+    public enum Columns {
+        public static let repoID = GRDB.Column("repoID")
+        public static let createdAt = GRDB.Column("createdAt")
+    }
+}
+
+extension StoryProposal: FetchableRecord, PersistableRecord {
+    public static let databaseTableName = "storyProposal"
+    public static func databaseUUIDEncodingStrategy(for column: String) -> DatabaseUUIDEncodingStrategy {
+        .uppercaseString
+    }
+
+    public enum Columns {
+        public static let analysisID = GRDB.Column("analysisID")
+        public static let repoID = GRDB.Column("repoID")
+        public static let status = GRDB.Column("status")
         public static let createdAt = GRDB.Column("createdAt")
     }
 }
