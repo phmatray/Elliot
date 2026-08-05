@@ -14,6 +14,10 @@
 #                          crash = write to stderr and exit non-zero
 #   FAKE_CLAUDE_ARGV_OUT   file to dump argv into, one argument per line
 #   FAKE_CLAUDE_STDERR     text to emit on stderr
+#   FAKE_CLAUDE_STORIES    path to a JSON file to drop at the analysis output
+#                          path the prompt announces (ELLIOT_OUTPUT=…)
+#   FAKE_CLAUDE_TOUCH      path, relative to cwd, to write to — used to prove
+#                          the git sentinel notices a run that edits the repo
 
 set -u
 
@@ -24,6 +28,37 @@ fi
 
 if [ -n "${FAKE_CLAUDE_STDERR:-}" ]; then
   printf '%s\n' "$FAKE_CLAUDE_STDERR" >&2
+fi
+
+# Elliot announces the analysis artifact path in the prompt itself, with a
+# marker chosen so it can be found in shell as easily as in Swift. Finding it
+# here is what makes the whole analysis path testable without a real agent.
+#
+# Capture to end of line, not to the first whitespace: Elliot's real default
+# home is `~/Library/Application Support/Elliot`, and a path that stops at the
+# first space is a path that silently loses everything after "Application".
+# `AnalysisPromptBuilder.outputPath(in:)` parses the same way — to the
+# newline that ends the marker's line, then trims trailing spaces/tabs only
+# (never newlines, since there are none left in a single captured line).
+if [ -n "${FAKE_CLAUDE_STORIES:-}" ]; then
+  prompt=""
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "-p" ]; then prompt="$arg"; fi
+    prev="$arg"
+  done
+  out="$(printf '%s\n' "$prompt" \
+    | sed -n 's/^.*ELLIOT_OUTPUT=\(.*\)$/\1/p' \
+    | sed 's/[[:blank:]]*$//' \
+    | head -1)"
+  if [ -n "$out" ]; then
+    mkdir -p "$(dirname "$out")"
+    cp "$FAKE_CLAUDE_STORIES" "$out"
+  fi
+fi
+
+if [ -n "${FAKE_CLAUDE_TOUCH:-}" ]; then
+  printf 'touched by fake-claude\n' >"$FAKE_CLAUDE_TOUCH"
 fi
 
 case "${FAKE_CLAUDE_MODE:-replay}" in

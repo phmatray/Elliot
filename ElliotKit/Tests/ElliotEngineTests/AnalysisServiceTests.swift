@@ -6,20 +6,6 @@ import Testing
 
 @testable import ElliotEngine
 
-/// `ELLIOT_HOME` is unset by default, which points `StoreLocation` at the real
-/// `~/Library/Application Support/Elliot` — a directory these tests have no
-/// business writing into, and whose path contains a space that breaks
-/// `AnalysisPromptBuilder.outputPath(in:)`'s whitespace-delimited parsing (it
-/// stops at "Application", before "Support"). Set once per process to a
-/// scratch directory that has neither problem. Only if unset, so a shared
-/// process-wide home set by another suite is left alone.
-private let elliotHomeConfiguredForTests: Void = {
-    guard ProcessInfo.processInfo.environment["ELLIOT_HOME"] == nil else { return }
-    let url = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("elliot-analysis-service-tests-\(ProcessInfo.processInfo.processIdentifier)")
-    setenv("ELLIOT_HOME", url.path, 1)
-}()
-
 /// Records what would have been launched, without spawning anything.
 private actor LaunchSpy: RunLaunching {
     private(set) var launched: [UUID] = []
@@ -40,7 +26,12 @@ struct AnalysisServiceTests {
     }
 
     private func makeFixture(enabled: Bool = true) async throws -> Fixture {
-        _ = elliotHomeConfiguredForTests
+        // `AnalysisService.start` computes its artifact path — and creates
+        // the directory for it — through `StoreLocation`, even here where the
+        // store is in-memory and nothing is actually spawned. `TestHome` is
+        // the one place in this target permitted to point `ELLIOT_HOME`
+        // somewhere other than the real `~/Library/Application Support/Elliot`.
+        _ = TestHome.root
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
             claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",

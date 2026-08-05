@@ -6,20 +6,6 @@ import Testing
 
 @testable import ElliotEngine
 
-/// `ELLIOT_HOME` is unset by default, which points `StoreLocation` at the real
-/// `~/Library/Application Support/Elliot` — a directory these tests have no
-/// business reading from. `completeAnalysisRun` resolves its artifact path
-/// through `StoreLocation`, not a parameter, so any test that runs an
-/// analysis to completion needs this redirected. Set once per process, and
-/// only if unset, so a shared process-wide home set by another suite is left
-/// alone.
-private let elliotHomeConfiguredForTests: Void = {
-    guard ProcessInfo.processInfo.environment["ELLIOT_HOME"] == nil else { return }
-    let url = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("elliot-e2e-tests-\(ProcessInfo.processInfo.processIdentifier)")
-    setenv("ELLIOT_HOME", url.path, 1)
-}()
-
 /// The repository root, from this file's own location, so the tests use the
 /// same `Scripts/` and `Fixtures/` a human would from a terminal.
 private enum TestPaths {
@@ -49,11 +35,11 @@ private struct Stack {
     static func make(
         fixture: String, extraEnv: [String: String] = [:], gitPath: String = "/usr/bin/false"
     ) async throws -> Stack {
-        let home = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("elliot-e2e-\(UUID().uuidString)", isDirectory: true)
+        let home = TestHome.scratch("board-e2e")
         try FileManager.default.createDirectory(
             at: home.appendingPathComponent("runs"), withIntermediateDirectories: true
         )
+        try StoreLocation.ensureDirectories()
 
         let store = try BoardStore.open(at: home.appendingPathComponent("elliot.sqlite"))
         var environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
@@ -111,6 +97,12 @@ private struct Stack {
 
     enum StackError: Error { case timedOut }
 }
+
+/// Nested under the shared parent from `AnalysisEndToEndTests.swift`: both
+/// this suite and `AnalysisCompletionTests` below use `Stack`, which resolves
+/// its paths through the one process-global `TestHome.root`, so they must not
+/// run at the same time as each other or as the analysis end-to-end suite.
+extension EndToEndSuites {
 
 @Suite("End to end", .serialized)
 struct EndToEndTests {
@@ -292,7 +284,6 @@ struct AnalysisCompletionTests {
     /// A test that only sees one of the two states cannot show they differ.
     @Test("A checked-clean run and an orphaned run report different things through the same field")
     func sentinelDistinguishesCleanFromUnchecked() async throws {
-        _ = elliotHomeConfiguredForTests
         let stack = try await Stack.make(fixture: "create-issue-success.ndjson", gitPath: "/usr/bin/git")
         defer { stack.cleanUp() }
 
@@ -372,3 +363,5 @@ struct AnalysisCompletionTests {
         #expect(cleanReport.workingTreeChanged != orphanReport.workingTreeChanged)
     }
 }
+
+}  // extension EndToEndSuites

@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"00000000-0000-0000-0000-000000000000","cwd":"/tmp/r","model":"claude-opus-5","permissionMode":"bypassPermissions","tools":["Read","Grep","Glob","Write"],"slash_commands":[],"mcp_servers":[]}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Reading the process layer for defects."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_1","name":"Write","input":{"file_path":"stories.json"}}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"Wrote 3 candidate stories.","num_turns":5,"duration_ms":41000,"total_cost_usd":0.0912,"session_id":"00000000-0000-0000-0000-000000000000","permission_denials":[]}
