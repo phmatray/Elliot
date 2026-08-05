@@ -30,10 +30,15 @@ The backlog holds **user stories**, not loose ideas: `role` / `want` / `benefit`
 plus acceptance criteria, kept as separate fields. That is what will let a skill
 *generate* stories from a repository later instead of parsing prose back apart.
 
+A card can be corrected — label, story, acceptance criteria — from its detail
+sheet, right up until it is filed. Once it carries an issue number the card stops
+being the record: edit the issue on GitHub instead. Elliot refuses the edit rather
+than letting the two drift.
+
 ## Build and run
 
 ```bash
-cd ElliotKit && swift test          # 155 tests, no Xcode needed
+cd ElliotKit && swift test          # 167 tests, no Xcode needed
 ./Scripts/build-app.sh              # assembles dist/Elliot.app
 open dist/Elliot.app
 ```

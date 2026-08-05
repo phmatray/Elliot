@@ -121,50 +121,101 @@ struct CardDetailView: View {
     @Environment(\.dismiss) private var dismiss
     let card: Card
 
+    @State private var draft: CardDraft?
+    @State private var saveError: String?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(card.displayTitle).font(.title2.bold())
-
-            if let story = card.story {
-                GroupBox("User story") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(story.narrative)
-                        if !story.acceptanceCriteria.isEmpty {
-                            Text("Acceptance criteria").font(.caption.bold()).padding(.top, 4)
-                            ForEach(Array(story.acceptanceCriteria.enumerated()), id: \.offset) { index, item in
-                                Text("\(index + 1). \(item)").font(.caption)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            // `Binding($draft)` rather than a hand-rolled get/set: a getter that
+            // closed over the unwrapped local would keep reporting the value as
+            // it was when the body was last evaluated, so two mutations in one
+            // action would lose the first.
+            if let editable = Binding($draft) {
+                Text("Editing").font(.title2.bold())
+                CardFieldsEditor(draft: editable)
+                if let saveError {
+                    Text(saveError).font(.caption).foregroundStyle(.orange)
                 }
-            } else if !card.body.isEmpty {
-                GroupBox("Note") {
-                    Text(card.body).frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-
-            let runs = model.runsByCard[card.id] ?? []
-            if !runs.isEmpty {
-                GroupBox("Runs") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(runs) { run in
-                            RunRow(run: run, liveLines: model.liveLog[run.id] ?? [])
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            } else {
+                readOnly
             }
 
             Spacer()
             HStack {
+                if draft == nil, card.issueNumber == nil {
+                    Button("Edit", systemImage: "pencil") { draft = CardDraft(card: card) }
+                }
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                if let draft {
+                    Button("Cancel", role: .cancel) { self.draft = nil; saveError = nil }
+                    Button("Save") { save(draft) }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!draft.isValid)
+                } else {
+                    Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                }
             }
         }
         .padding(16)
         .frame(width: 620, height: 520)
         .task { await model.refreshRuns(cardID: card.id) }
+    }
+
+    @ViewBuilder
+    private var readOnly: some View {
+        Text(card.displayTitle).font(.title2.bold())
+
+        if let issue = card.issueNumber {
+            // The card stops being the record the moment the issue exists;
+            // editing here would quietly diverge from what is on github.com.
+            Text("Filed as #\(issue) — edit it on GitHub. From here on the issue is the record.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        if let story = card.story {
+            GroupBox("User story") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(story.narrative)
+                    if !story.acceptanceCriteria.isEmpty {
+                        Text("Acceptance criteria").font(.caption.bold()).padding(.top, 4)
+                        ForEach(Array(story.acceptanceCriteria.enumerated()), id: \.offset) { index, item in
+                            Text("\(index + 1). \(item)").font(.caption)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else if !card.body.isEmpty {
+            GroupBox("Note") {
+                Text(card.body).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+
+        let runs = model.runsByCard[card.id] ?? []
+        if !runs.isEmpty {
+            GroupBox("Runs") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(runs) { run in
+                        RunRow(run: run, liveLines: model.liveLog[run.id] ?? [])
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func save(_ draft: CardDraft) {
+        Task {
+            if await model.updateCard(id: card.id, draft: draft) {
+                self.draft = nil
+                saveError = nil
+            } else {
+                // Filed, or deleted, between opening the sheet and saving.
+                // Stay in edit mode — the typed text is still here.
+                saveError = model.status
+            }
+        }
     }
 }
 

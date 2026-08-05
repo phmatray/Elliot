@@ -251,6 +251,74 @@ struct BoardServiceTests {
             try await f.board.move(cardID: UUID(), to: .todo, origin: .userDrag)
         }
     }
+
+    // MARK: - Editing
+
+    @Test("Editing an unfiled card rewrites its label, story and note")
+    func editsUnfiledCard() async throws {
+        let f = try await Fixture.make()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id,
+            title: "Run lgo",
+            story: UserStory(role: "developer", want: "teh log", benefit: "no terminal")
+        )
+
+        try await f.board.updateCard(
+            id: card.id,
+            title: "Run log",
+            body: "",
+            story: UserStory(
+                role: "developer", want: "the log", benefit: "no terminal",
+                acceptanceCriteria: ["it tails live"]
+            )
+        )
+
+        let stored = try #require(try await f.store.card(id: card.id))
+        #expect(stored.title == "Run log")
+        #expect(stored.story?.want == "the log")
+        #expect(stored.story?.acceptanceCriteria == ["it tails live"])
+    }
+
+    @Test("Editing cannot move a card or touch what the funnel owns")
+    func editLeavesTheFunnelAlone() async throws {
+        let f = try await Fixture.make()
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        card.column = .todo
+        card.orderIndex = 4096
+        card.branch = "feat/12-run-log"
+        try await f.store.saveCard(card)
+
+        try await f.board.updateCard(id: card.id, title: "Run log v2", body: "note", story: nil)
+
+        let stored = try #require(try await f.store.card(id: card.id))
+        #expect(stored.title == "Run log v2")
+        #expect(stored.body == "note")
+        #expect(stored.column == .todo)
+        #expect(stored.orderIndex == 4096)
+        #expect(stored.branch == "feat/12-run-log")
+    }
+
+    @Test("A filed card is refused — the issue is the record from that point on")
+    func refusesFiledCard() async throws {
+        let f = try await Fixture.make()
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log")
+        card.issueNumber = 42
+        try await f.store.saveCard(card)
+
+        await #expect(throws: BoardError.self) {
+            try await f.board.updateCard(id: card.id, title: "Renamed", body: "", story: nil)
+        }
+        #expect(try await f.store.card(id: card.id)?.title == "Run log")
+    }
+
+    @Test("Editing a card that is gone reports it rather than resurrecting it")
+    func refusesMissingCard() async throws {
+        let f = try await Fixture.make()
+
+        await #expect(throws: BoardError.self) {
+            try await f.board.updateCard(id: UUID(), title: "Ghost", body: "", story: nil)
+        }
+    }
 }
 
 @Suite("Scheduler admission")
