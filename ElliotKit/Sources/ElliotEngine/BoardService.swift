@@ -20,11 +20,14 @@ public enum MoveResult: Sendable, Equatable {
 public enum BoardError: Error, LocalizedError {
     case cardNotFound(UUID)
     case repoNotFound(UUID)
+    case cardAlreadyFiled(Int)
 
     public var errorDescription: String? {
         switch self {
         case .cardNotFound(let id): "No card with id \(id)."
         case .repoNotFound(let id): "No repository with id \(id)."
+        case .cardAlreadyFiled(let number):
+            "This card is filed as issue #\(number); edit the issue on GitHub."
         }
     }
 }
@@ -171,7 +174,21 @@ public actor BoardService: SystemMoving {
         return card
     }
 
-    public func updateCard(_ card: Card) async throws {
+    /// Corrects what the *user* wrote on a card: its label, its story, its note.
+    ///
+    /// Deliberately not `(_ card: Card)`. The stored card is re-fetched and only
+    /// these three fields are overwritten, so column, order, issue, PR and
+    /// branch keep their one real owner — a whole-`Card` write would be a second
+    /// path that can move a card without firing a rule.
+    ///
+    /// Refused once the card carries an issue number: from that point the issue
+    /// on github.com is the record, and a card edit would silently diverge from it.
+    public func updateCard(id: UUID, title: String, body: String, story: UserStory?) async throws {
+        guard var card = try await store.card(id: id) else { throw BoardError.cardNotFound(id) }
+        if let issue = card.issueNumber { throw BoardError.cardAlreadyFiled(issue) }
+        card.title = title
+        card.body = body
+        card.story = story
         try await store.saveCard(card)
     }
 

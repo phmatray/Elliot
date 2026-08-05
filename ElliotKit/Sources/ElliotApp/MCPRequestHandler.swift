@@ -40,6 +40,15 @@ public struct MCPRequestHandler: Sendable {
                 return .failure(code: .cardNotFound, message: "No card with id \(id).", hint: nil)
             case .repoNotFound(let id):
                 return .failure(code: .repoNotFound, message: "No repository \(id).", hint: nil)
+            case .cardAlreadyFiled(let number):
+                // Unreachable today — the wire has no update request. Mapped
+                // rather than defaulted so that adding one surfaces the real
+                // reason instead of an internal error.
+                return .failure(
+                    code: .readOnly,
+                    message: "This card is filed as issue #\(number); edit the issue on GitHub.",
+                    hint: nil
+                )
             }
         } catch {
             return .failure(code: .internalError, message: error.localizedDescription, hint: nil)
