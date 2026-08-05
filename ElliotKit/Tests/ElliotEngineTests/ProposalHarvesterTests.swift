@@ -187,4 +187,66 @@ struct ProposalHarvesterTests {
         #expect(report.kept == 0)
         #expect(report.dropped.contains { $0.contains("benefit") })
     }
+
+    @Test("A citation that escapes via a sibling directory is not treated as inside the repository")
+    func evidenceContainmentRejectsSiblingEscape() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.cleanUp() }
+
+        // "elliot-harvest-<uuid>-evil" shares `root`'s path as a string
+        // *prefix* without being underneath it — exactly the shape a naive
+        // `hasPrefix` check would wrongly admit.
+        let evilRoot = fixture.root.deletingLastPathComponent()
+            .appendingPathComponent("\(fixture.root.lastPathComponent)-evil", isDirectory: true)
+        try FileManager.default.createDirectory(at: evilRoot, withIntermediateDirectories: true)
+        try "// secret".write(
+            to: evilRoot.appendingPathComponent("secret.swift"), atomically: true, encoding: .utf8
+        )
+        defer { try? FileManager.default.removeItem(at: evilRoot) }
+
+        try """
+        [{"title":"Escaping citation","role":"dev","want":"w","benefit":"b",
+          "evidence":["../\(fixture.root.lastPathComponent)-evil/secret.swift:1"]}]
+        """.write(to: fixture.artifactURL, atomically: true, encoding: .utf8)
+
+        _ = await makeHarvester(fixture).harvest(
+            run: fixture.run, analysis: fixture.analysis,
+            repo: fixture.repo, artifactURL: fixture.artifactURL
+        )
+
+        let proposal = try #require(try await fixture.store.proposals(analysisID: fixture.analysis.id).first)
+        let evidence = try #require(proposal.evidence.first)
+        // The escaped file genuinely exists — proving the containment check,
+        // not a missing-file coincidence, is what marked this ungrounded.
+        #expect(FileManager.default.fileExists(atPath: evilRoot.appendingPathComponent("secret.swift").path))
+        #expect(evidence.exists == false)
+    }
+
+    @Test("A run with no recorded angle still yields proposals, visibly labelled as suspect")
+    func missingAngleIsNotedNotHidden() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.cleanUp() }
+
+        var run = fixture.run
+        run.analysisAngle = nil
+        try await fixture.store.saveRun(run)
+
+        try """
+        [{"title":"No angle on the run","role":"dev","want":"w","benefit":"b",
+          "evidence":["Sources/Real.swift:1"]}]
+        """.write(to: fixture.artifactURL, atomically: true, encoding: .utf8)
+
+        let report = await makeHarvester(fixture).harvest(
+            run: run, analysis: fixture.analysis,
+            repo: fixture.repo, artifactURL: fixture.artifactURL
+        )
+
+        #expect(report.kept == 1)
+        #expect(report.dropped.contains { $0.contains("no recorded angle") })
+
+        let proposal = try #require(try await fixture.store.proposals(analysisID: fixture.analysis.id).first)
+        // Defaulted, not dropped: the proposal still lands, under the
+        // analysis's first angle, with the guess recorded above.
+        #expect(proposal.angle == fixture.analysis.angles.first)
+    }
 }

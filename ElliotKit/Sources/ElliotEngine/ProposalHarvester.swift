@@ -31,6 +31,17 @@ public struct ProposalHarvester: Sendable {
             return AnalysisRunReport(harvestSource: source, kept: 0, dropped: harvest.dropped)
         }
 
+        // A run tied to an analysis should always carry the angle it was
+        // launched under. If it doesn't, `analysis.angles.first` is a guess —
+        // not necessarily the lens this run actually read through — so the
+        // guess is recorded rather than let the proposals land under a wrong
+        // angle with nothing to say why.
+        let angle = run.analysisAngle ?? analysis.angles.first ?? .bugs
+        var dropped = harvest.dropped
+        if run.analysisAngle == nil {
+            dropped.append("Run had no recorded angle; defaulted to \(angle).")
+        }
+
         let existing = await existingTitles(repo: repo)
         let now = Date()
         let proposals = harvest.stories.map { story in
@@ -38,7 +49,7 @@ public struct ProposalHarvester: Sendable {
                 analysisID: analysis.id,
                 runID: run.id,
                 repoID: repo.id,
-                angle: run.analysisAngle ?? analysis.angles.first ?? .bugs,
+                angle: angle,
                 title: story.title.trimmingCharacters(in: .whitespacesAndNewlines),
                 story: story.story,
                 rationale: story.rationale.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -55,12 +66,12 @@ public struct ProposalHarvester: Sendable {
             return AnalysisRunReport(
                 harvestSource: source,
                 kept: 0,
-                dropped: harvest.dropped + ["The proposals could not be saved: \(error.localizedDescription)"]
+                dropped: dropped + ["The proposals could not be saved: \(error.localizedDescription)"]
             )
         }
 
         return AnalysisRunReport(
-            harvestSource: source, kept: proposals.count, dropped: harvest.dropped
+            harvestSource: source, kept: proposals.count, dropped: dropped
         )
     }
 
@@ -113,8 +124,11 @@ public struct ProposalHarvester: Sendable {
             guard let parsed = Evidence.parse(citation) else { return nil }
             let resolved = root.appendingPathComponent(parsed.path).standardizedFileURL
             // A citation must stay inside the repository: "../../etc/passwd"
-            // is not evidence about this codebase.
-            let inside = resolved.path.hasPrefix(root.path)
+            // is not evidence about this codebase. The boundary check must
+            // land on a path component, not a bare string prefix — otherwise
+            // a sibling directory like "/repo-evil" would be accepted for a
+            // root of "/repo".
+            let inside = resolved.path == root.path || resolved.path.hasPrefix(root.path + "/")
             return Evidence(
                 path: parsed.path,
                 line: parsed.line,
