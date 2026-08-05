@@ -36,10 +36,16 @@ cp "$BIN/elliot-mcp" "$APP/Contents/MacOS/elliot-mcp"
 
 # The icon is rendered from ElliotMark rather than committed as a blob, so it
 # cannot fall behind the mark the app itself draws. `iconutil` ships with macOS.
-ICONSET="$(mktemp -d)/AppIcon.iconset"
-"$BIN/elliot-icon" iconset "$ICONSET"
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
-rm -rf "$(dirname "$ICONSET")"
+#
+# The temporary directory is held in its own variable and removed by name. The
+# obvious spelling — building "$(mktemp -d)/AppIcon.iconset" and later removing
+# "$(dirname …)" — reconstructs the path to a `rm -rf` argument, and if mktemp
+# ever produced nothing that argument is `/`. `set -e` would abort at the
+# assignment first, but that is a poor thing to bet a recursive delete on.
+ICONDIR="$(mktemp -d)"
+"$BIN/elliot-icon" iconset "$ICONDIR/AppIcon.iconset"
+iconutil -c icns "$ICONDIR/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
+rm -rf "$ICONDIR"
 
 cat >"$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

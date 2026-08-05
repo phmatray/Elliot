@@ -54,14 +54,14 @@ struct MarkBadge: View {
             }
         }
         .frame(width: size, height: size)
-            .background(
-                LinearGradient(
-                    colors: [Palette.armed, Palette.irreversible],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
+        .background(
+            LinearGradient(
+                colors: [Palette.armed, Palette.irreversible],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
             )
-            .clipShape(RoundedRectangle(cornerRadius: size * 0.2237, style: .continuous))
-            .accessibilityHidden(true)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.2237, style: .continuous))
+        .accessibilityHidden(true)
     }
 }
