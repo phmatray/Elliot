@@ -1,0 +1,22 @@
+[
+  {
+    "title": "Add --json to the preflight CLI",
+    "role": "developer",
+    "want": "preflight results as machine-readable JSON",
+    "benefit": "I can fail a CI job on a broken setup",
+    "acceptance_criteria": ["one object per check", "non-zero exit on failure"],
+    "rationale": "The checks exist and are only rendered for humans.",
+    "evidence": ["Sources/ElliotEngine/PreflightService.swift:31"],
+    "effort": "small"
+  },
+  {
+    "title": "Cache the login-shell environment",
+    "role": "user",
+    "want": "Elliot to start without waiting on zsh",
+    "benefit": "the board is usable immediately after launch",
+    "acceptanceCriteria": ["the capture is reused until ~/.zshrc changes"],
+    "rationale": "Every launch pays for a login shell.",
+    "evidence": ["Sources/ElliotProcess/LoginShellEnvironment.swift"],
+    "effort": "medium"
+  }
+]

@@ -70,7 +70,13 @@ public struct IPCClient: Sendable {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         process.arguments = ["-g", "-j", "-b", bundleIdentifier]
         try? process.run()
-        process.waitUntilExit()
+        // Deliberately not `waitUntilExit()`. `open` returns the moment it has
+        // handed the launch to the system, so waiting on it tells us nothing the
+        // poll below does not — and it tells it dangerously: `waitUntilExit`
+        // spins a run loop on its calling thread, and the one caller of this is
+        // reached from an `async` context, where that thread belongs to the
+        // cooperative pool. It intermittently never returns there, which would
+        // hang an agent's card move outright.
 
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {

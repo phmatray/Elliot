@@ -38,6 +38,10 @@ public struct ElliotMCPServer: Sendable {
         ListRunsTool(),
         AwaitRunTool(),
         CancelRunTool(),
+        AnalyzeRepoTool(),
+        ListProposalsTool(),
+        AcceptProposalsTool(),
+        RejectProposalsTool(),
     ]
 
     public static let tools: [Tool] = registry.map(\.tool)

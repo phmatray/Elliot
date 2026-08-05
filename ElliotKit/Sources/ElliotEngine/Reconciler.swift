@@ -54,8 +54,17 @@ public struct Reconciler: Sendable {
                 orphan.endedAt = Date()
                 orphan.resultText = "Elliot stopped while this run was in flight."
 
-                if let card = try? await store.card(id: run.cardID),
-                   let repo = try? await store.repo(id: run.repoID) {
+                if run.isAnalysis {
+                    // The artifact may well have been written before the app
+                    // died, but the sentinel baseline died with it — say so
+                    // rather than claim the tree was clean.
+                    orphan.analysisReport = AnalysisRunReport(
+                        harvestSource: .none,
+                        dropped: ["Elliot stopped before this analysis was harvested."]
+                    )
+                } else if let cardID = run.cardID,
+                          let card = try? await store.card(id: cardID),
+                          let repo = try? await store.repo(id: run.repoID) {
                     let outcome = await verifier.verify(run: orphan, card: card, repo: repo)
                     orphan.verifiedOutcome = outcome
                     if await apply(outcome, to: card) { summary.cardsCorrected += 1 }

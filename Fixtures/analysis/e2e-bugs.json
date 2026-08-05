@@ -1,0 +1,31 @@
+[
+  {
+    "title": "The idle watchdog outlives a cancelled run",
+    "role": "developer",
+    "want": "the idle task cancelled on every exit path",
+    "benefit": "a cancelled run stops waking the machine every 30 seconds",
+    "acceptance_criteria": [
+      "cancelling a run cancels its idle task",
+      "a test asserts no timer survives the run"
+    ],
+    "rationale": "The idle task is only cancelled after waitForExit returns.",
+    "evidence": ["Sources/ElliotProcess/ClaudeRunner.swift:159"],
+    "effort": "small"
+  },
+  {
+    "title": "Cache the login shell environment",
+    "role": "user",
+    "want": "Elliot to start without waiting on a login shell",
+    "benefit": "the board is usable immediately after launch",
+    "acceptance_criteria": ["the capture is reused until ~/.zshrc changes"],
+    "rationale": "Every launch pays for a full zsh -lic.",
+    "evidence": ["Sources/ElliotProcess/LoginShellEnvironment.swift"],
+    "effort": "medium"
+  },
+  {
+    "title": "Unusable on purpose",
+    "role": "developer",
+    "want": "to prove a broken story is dropped with its reason",
+    "evidence": ["Sources/ElliotModel/Card.swift:1"]
+  }
+]

@@ -1,0 +1,26 @@
+{
+  "stories": [
+    {
+      "title": "Keep this one",
+      "role": "developer",
+      "want": "to keep well-formed stories",
+      "benefit": "the harvest is not all-or-nothing",
+      "evidence": ["Sources/ElliotModel/ProposalDecoder.swift:1"],
+      "effort": "enormous",
+      "confidence": 0.8
+    },
+    {
+      "title": "No benefit",
+      "role": "developer",
+      "want": "something",
+      "evidence": ["Sources/A.swift:1"]
+    },
+    {
+      "title": "No evidence",
+      "role": "developer",
+      "want": "something",
+      "benefit": "something else",
+      "evidence": []
+    }
+  ]
+}

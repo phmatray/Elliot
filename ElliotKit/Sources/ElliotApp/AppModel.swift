@@ -19,6 +19,14 @@ public final class AppModel {
     public private(set) var status: String = "Starting…"
     public private(set) var isReady = false
 
+    public var showingAnalysis = false
+    /// The analysis the window is showing. `nil` means it is still in setup.
+    public private(set) var activeAnalysisID: UUID?
+    public private(set) var analysisRuns: [SkillRun] = []
+    public private(set) var proposals: [StoryProposal] = []
+    /// Whatever the window needs to say about the last action.
+    public private(set) var analysisNote: String?
+
     /// Live tail per run, for the card's log view. Bounded — the file on disk
     /// is the complete record.
     public private(set) var liveLog: [UUID: [String]] = [:]
@@ -39,7 +47,9 @@ public final class AppModel {
     private var watcher: PRWatcher?
     private var ipcServer: IPCServer?
     private var toolConfig: ToolConfig?
+    private var analysisService: AnalysisService?
     private var observationTasks: [Task<Void, Never>] = []
+    private var proposalObservation: Task<Void, Never>?
 
     public init() {}
 
@@ -83,7 +93,11 @@ public final class AppModel {
             let preflight = PreflightService(environment: environment, config: config)
             globalChecks = await preflight.globalChecks()
 
-            startIPC(board: board, store: store)
+            let analysisService = AnalysisService(
+                store: store, launcher: scheduler, board: board, gh: ghClient
+            )
+            self.analysisService = analysisService
+            startIPC(board: board, store: store, analysis: analysisService)
 
             // Put the board back in touch with reality before anything is
             // dragged: runs died when the app last quit.
@@ -107,10 +121,10 @@ public final class AppModel {
         }
     }
 
-    private func startIPC(board: BoardService, store: BoardStore) {
+    private func startIPC(board: BoardService, store: BoardStore, analysis: AnalysisService) {
         do {
             let token = try IPCServer.loadOrCreateToken(at: StoreLocation.tokenURL)
-            let handler = MCPRequestHandler(store: store, board: board)
+            let handler = MCPRequestHandler(store: store, board: board, analysis: analysis)
             let server = IPCServer(
                 socketPath: StoreLocation.socketURL.path,
                 token: token
@@ -131,6 +145,7 @@ public final class AppModel {
 
     public func shutdown() async {
         observationTasks.forEach { $0.cancel() }
+        proposalObservation?.cancel()
         await watcher?.stop()
         ipcServer?.stop()
     }
@@ -178,6 +193,7 @@ public final class AppModel {
         switch update {
         case .runStarted(let runID, _):
             liveLog[runID] = ["▸ started"]
+            Task { await self.refreshAnalysisRuns() }
         case .runOutput(let runID, let event):
             var lines = liveLog[runID] ?? []
             if let rendered = Self.describe(event) {
@@ -194,7 +210,8 @@ public final class AppModel {
             var lines = liveLog[runID] ?? []
             lines.append("■ \(state.rawValue)")
             liveLog[runID] = lines
-            Task { await self.refreshRuns(cardID: cardID) }
+            if let cardID { Task { await self.refreshRuns(cardID: cardID) } }
+            Task { await self.refreshAnalysisRuns() }
         }
     }
 
@@ -350,6 +367,91 @@ public final class AppModel {
 
     public func isBlocked(_ repo: Repo) -> Bool {
         PreflightService.isBlocking(repoChecks[repo.id] ?? [])
+    }
+
+    // MARK: - Analysis
+
+    public func startAnalysis(
+        repoID: UUID, angles: [AnalysisAngle], instructions: String, maxStories: Int
+    ) async {
+        guard let analysisService else { return }
+        do {
+            let started = try await analysisService.start(
+                repoID: repoID, angles: angles, extraInstructions: instructions,
+                maxStoriesPerAngle: maxStories, origin: .manual
+            )
+            analysisNote = nil
+            openAnalysis(id: started.analysis.id)
+        } catch {
+            analysisNote = error.localizedDescription
+        }
+    }
+
+    public func openAnalysis(id: UUID) {
+        activeAnalysisID = id
+        proposals = []
+        analysisRuns = []
+        Task { await refreshAnalysisRuns() }
+
+        // Proposals arrive run by run, so the list fills in as each angle
+        // lands rather than all at once when the last one does.
+        proposalObservation?.cancel()
+        guard let store else { return }
+        let observation = store.observeProposals(analysisID: id)
+        proposalObservation = Task { [weak self] in
+            do {
+                for try await proposals in observation {
+                    await MainActor.run { self?.proposals = proposals }
+                }
+            } catch {
+                await MainActor.run { self?.analysisNote = error.localizedDescription }
+            }
+        }
+    }
+
+    public func closeAnalysis() {
+        proposalObservation?.cancel()
+        proposalObservation = nil
+        activeAnalysisID = nil
+        analysisRuns = []
+        proposals = []
+        analysisNote = nil
+    }
+
+    public func refreshAnalysisRuns() async {
+        guard let store, let id = activeAnalysisID else { return }
+        analysisRuns = (try? await store.runs(analysisID: id)) ?? []
+    }
+
+    public func recentAnalyses() async -> [Analysis] {
+        guard let store else { return [] }
+        return (try? await store.analyses(repoID: selectedRepoID, limit: 20)) ?? []
+    }
+
+    public func updateProposal(_ proposal: StoryProposal) async {
+        try? await analysisService?.updateProposal(proposal)
+    }
+
+    public func acceptProposals(ids: [UUID]) async {
+        guard let analysisService else { return }
+        do {
+            let cards = try await analysisService.accept(proposalIDs: ids)
+            analysisNote = cards.isEmpty
+                ? "Nothing to accept — those were already decided."
+                : "Added \(cards.count) card(s) to Backlog. Nothing was filed on GitHub."
+        } catch {
+            analysisNote = error.localizedDescription
+        }
+    }
+
+    public func rejectProposals(ids: [UUID]) async {
+        try? await analysisService?.reject(proposalIDs: ids)
+        analysisNote = "Rejected \(ids.count) proposal(s)."
+    }
+
+    /// The angles still working, for the window's header.
+    public var runningAngles: [AnalysisAngle] {
+        analysisRuns.filter { !$0.state.isTerminal }.compactMap(\.analysisAngle)
     }
 
     /// The command that registers the bundled helper with Claude Code.

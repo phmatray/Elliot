@@ -30,6 +30,9 @@ public struct BoardView: View {
         .sheet(item: $model.pendingFollowUps) { pending in
             FollowUpSheet(pending: pending)
         }
+        .sheet(isPresented: $model.showingAnalysis) {
+            AnalysisWindow()
+        }
     }
 
     private var toolbar: some View {
@@ -50,6 +53,16 @@ public struct BoardView: View {
                 Label("New story", systemImage: "plus")
             }
             .disabled(model.repos.isEmpty)
+
+            Button {
+                model.showingAnalysis = true
+            } label: {
+                Label("Analyze…", systemImage: "sparkle.magnifyingglass")
+            }
+            .disabled(model.selectedRepoID == nil || isSelectedRepoBlocked)
+            .help(model.selectedRepoID == nil
+                ? "Pick a single repository to analyse."
+                : "Read this repository through several lenses and propose stories.")
 
             Spacer()
 
@@ -103,6 +116,14 @@ public struct BoardView: View {
         panel.prompt = "Add"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await model.addRepo(path: url.path) }
+    }
+
+    /// Analysis is refused for the same repositories cards are: a blocked repo
+    /// would fail at the first run anyway, and saying so here is cheaper.
+    private var isSelectedRepoBlocked: Bool {
+        guard let id = model.selectedRepoID, let repo = model.repos.first(where: { $0.id == id })
+        else { return true }
+        return !repo.isEnabled || model.isBlocked(repo)
     }
 }
 
