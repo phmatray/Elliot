@@ -147,16 +147,6 @@ extension RunState {
     }
 }
 
-extension SkillKind {
-    var label: String {
-        switch self {
-        case .createIssue: "create-issue"
-        case .implementIssue: "implement-issue"
-        case .mergePR: "merge-pr"
-        }
-    }
-}
-
 extension VerifiedOutcome {
     /// What `gh` established, as opposed to what the agent said about itself.
     /// This is the app's whole epistemology, and until now it was stored and

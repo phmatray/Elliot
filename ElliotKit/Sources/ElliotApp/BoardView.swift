@@ -39,6 +39,9 @@ public struct BoardView: View {
         .sheet(item: $model.pendingFollowUps) { pending in
             FollowUpSheet(pending: pending)
         }
+        .sheet(isPresented: $model.showingAnalysis) {
+            AnalysisWindow()
+        }
         // The board keeps focus so a card can be moved without the mouse.
         .focusable()
         .focusEffectDisabled()
@@ -72,6 +75,18 @@ public struct BoardView: View {
             .disabled(model.repos.isEmpty)
             .help("Write a new backlog story (⌘N)")
             .keyboardShortcut("n")
+        }
+
+        ToolbarItem {
+            Button {
+                model.showingAnalysis = true
+            } label: {
+                Label("Analyse", systemImage: "sparkle.magnifyingglass")
+            }
+            .disabled(model.selectedRepoID == nil || isSelectedRepoBlocked)
+            .help(model.selectedRepoID == nil
+                ? "Pick a single repository to analyse."
+                : "Read this repository through several lenses and propose stories.")
         }
 
         ToolbarItem {
@@ -151,6 +166,14 @@ public struct BoardView: View {
         panel.message = "Choose the main checkout — not a linked worktree."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await model.addRepo(path: url.path) }
+    }
+
+    /// Analysis is refused for the same repositories cards are: a blocked repo
+    /// would fail at the first run anyway, and saying so here is cheaper.
+    private var isSelectedRepoBlocked: Bool {
+        guard let id = model.selectedRepoID, let repo = model.repos.first(where: { $0.id == id })
+        else { return true }
+        return !repo.isEnabled || model.isBlocked(repo)
     }
 }
 

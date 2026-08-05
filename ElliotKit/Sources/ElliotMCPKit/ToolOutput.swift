@@ -154,6 +154,56 @@ enum ToolOutput {
         if !text.isEmpty { fields["note"] = .string(text) }
     }
 
+    /// The body of a proposal decision, for both `board_accept_proposals` and
+    /// `board_reject_proposals`.
+    ///
+    /// Shared for the same reason the page fields are: `decided` and `skipped`
+    /// mean one thing, and two tools phrasing the same split differently would
+    /// leave an agent unable to tell whether accept and reject disagree about
+    /// what happened or merely about how to say it. The summary itself comes
+    /// from the app, which is the only side that knows which claims it won.
+    static func decisionFields(_ decision: DecisionDTO) throws -> [String: Value] {
+        var fields: [String: Value] = [
+            "decided": .array(decision.decided.map { .string($0.uuidString) }),
+            "summary": .string(decision.summary),
+        ]
+        // Omitted when empty rather than sent as `[]`: an empty list reads as a
+        // finding — "these were skipped" — when there was nothing to report.
+        if !decision.skipped.isEmpty {
+            fields["skipped"] = .array(decision.skipped.map { .string($0.uuidString) })
+        }
+        if !decision.cards.isEmpty {
+            fields["cards"] = try Value.encoding(decision.cards)
+        }
+        return fields
+    }
+
+    /// The proposal ids a decision tool was given, refusing anything that is not
+    /// a UUID rather than dropping it.
+    ///
+    /// Silently skipping a malformed id would answer "decided 2 of 3" with no
+    /// hint that the third was never a valid id in the first place — the caller
+    /// reads that as a lost race and retries forever.
+    static func proposalIDs(_ args: [String: Value]) throws -> [UUID] {
+        let raw = args["proposal_ids"]?.arrayValue ?? []
+        guard !raw.isEmpty else {
+            throw ToolFailure(
+                code: "bad_argument",
+                message: "proposal_ids must contain at least one proposal UUID."
+            )
+        }
+        return try raw.map { value in
+            guard let id = value.stringValue.flatMap(UUID.init(uuidString:)) else {
+                throw ToolFailure(
+                    code: "bad_argument",
+                    message: "proposal_ids must all be UUIDs.",
+                    hint: "board_list_proposals returns the ids to use here."
+                )
+            }
+            return id
+        }
+    }
+
     /// The body of a `board_next` answer, live or offline, so the two cannot
     /// drift into describing the same ranking differently.
     static func nextFields(

@@ -4,17 +4,21 @@ import ElliotModel
 import ElliotStore
 import Foundation
 
-/// Turns an IPC request into the same board calls a drag makes.
+/// Turns an IPC request into the same board and analysis calls a drag, or the
+/// analysis window, would make.
 ///
-/// Nothing here decides anything: it resolves ids, calls `BoardService`, and
-/// translates the answer back. The rules live in one place and this is not it.
+/// Nothing here decides anything: it resolves ids, calls `BoardService` or
+/// `AnalysisService`, and translates the answer back. The rules live in one
+/// place and this is not it.
 public struct MCPRequestHandler: Sendable {
     private let store: BoardStore
     private let board: BoardService
+    private let analysis: AnalysisService
 
-    public init(store: BoardStore, board: BoardService) {
+    public init(store: BoardStore, board: BoardService, analysis: AnalysisService) {
         self.store = store
         self.board = board
+        self.analysis = analysis
     }
 
     /// Exhaustive by construction — no `default`. A request case added to the
@@ -48,6 +52,18 @@ public struct MCPRequestHandler: Sendable {
                 return .ok(.repos(try await store.repos().map { RepoDTO(repo: $0) }))
             case .next(let repo, let limit):
                 return try await next(repo: repo, limit: limit)
+            case .analyzeRepo(let repo, let angles, let maxStories, let instructions):
+                return try await analyze(
+                    repo: repo, angles: angles, maxStories: maxStories, instructions: instructions
+                )
+            case .listProposals(let analysisID, let repo, let status, let limit):
+                return try await listProposals(
+                    analysisID: analysisID, repo: repo, status: status, limit: limit
+                )
+            case .acceptProposals(let ids):
+                return try await decide(ids: ids, accept: true)
+            case .rejectProposals(let ids):
+                return try await decide(ids: ids, accept: false)
             }
         } catch let error as BoardError {
             switch error {
@@ -70,6 +86,31 @@ public struct MCPRequestHandler: Sendable {
                         + "issue now, and editing the card would leave the two disagreeing.",
                     hint: "Edit the issue instead: gh issue edit \(number). The card follows the "
                         + "issue, never the other way round."
+                )
+            }
+        } catch let error as AnalysisError {
+            switch error {
+            case .repoNotFound(let id):
+                return .failure(code: .repoNotFound, message: "No repository \(id).", hint: nil)
+            case .analysisNotFound(let id):
+                return .failure(code: .analysisNotFound, message: "No analysis \(id).", hint: nil)
+            case .noAngles:
+                return .failure(
+                    code: .analysisRefused,
+                    message: error.localizedDescription,
+                    hint: "Pick from: \(AnalysisAngle.allCases.map(\.rawValue).joined(separator: ", "))."
+                )
+            case .repoDisabled:
+                return .failure(
+                    code: .analysisRefused,
+                    message: error.localizedDescription,
+                    hint: "Enable the repository in Elliot's Preflight screen."
+                )
+            case .angleAlreadyRunning:
+                return .failure(
+                    code: .analysisRefused,
+                    message: error.localizedDescription,
+                    hint: "Poll board_list_runs and try again when it finishes."
                 )
             }
         } catch {
@@ -227,6 +268,140 @@ public struct MCPRequestHandler: Sendable {
                 hint: MoveBlockText.hint(block)
             )
         }
+    }
+
+    // MARK: - Analysis
+
+    private func analyze(
+        repo: String, angles: [String], maxStories: Int, instructions: String
+    ) async throws -> ElliotResponse {
+        let repos = try await store.repos()
+        guard case .one(let match) = Self.filter(repo, in: repos) else {
+            return Self.unknownRepo(repo, in: repos)
+        }
+        // An unknown angle is worth its own message: a decoding failure would
+        // lose the whole request and say nothing useful about why.
+        var resolved: [AnalysisAngle] = []
+        for raw in angles {
+            guard let angle = AnalysisAngle(rawValue: raw) else {
+                return .failure(
+                    code: .unknownAngle,
+                    message: "\"\(raw)\" is not an angle.",
+                    hint: "One of: \(AnalysisAngle.allCases.map(\.rawValue).joined(separator: ", "))."
+                )
+            }
+            resolved.append(angle)
+        }
+
+        let started = try await analysis.start(
+            repoID: match.id,
+            angles: resolved,
+            extraInstructions: instructions,
+            maxStoriesPerAngle: max(1, min(maxStories, 30)),
+            origin: .mcp(client: "mcp")
+        )
+        return .ok(.analysisStarted(AnalysisDTO(
+            analysis: started.analysis,
+            repoName: match.nameWithOwner,
+            runs: started.runs.map {
+                AnalysisRunDTO(
+                    runID: $0.id,
+                    angle: $0.analysisAngle?.rawValue ?? "",
+                    state: $0.state.rawValue
+                )
+            }
+        )))
+    }
+
+    private func listProposals(
+        analysisID: UUID?, repo: String?, status: String?, limit: Int
+    ) async throws -> ElliotResponse {
+        let repos = try await store.repos()
+        let repoID: UUID?
+        switch Self.filter(repo, in: repos) {
+        case .all: repoID = nil
+        case .one(let match): repoID = match.id
+        case .unknown(let failure): return failure
+        }
+        let proposals = try await store.proposals(
+            analysisID: analysisID,
+            repoID: repoID,
+            status: status.flatMap(ProposalStatus.init(rawValue:)),
+            limit: limit
+        )
+        return .ok(.proposals(proposals.map { proposal in
+            ProposalDTO(
+                proposal: proposal,
+                repoName: repos.first { $0.id == proposal.repoID }?.nameWithOwner ?? "?"
+            )
+        }))
+    }
+
+    /// Ids are checked one at a time with a plain sequential loop, not a task
+    /// group: the store call is cheap and the id lists here are short, so the
+    /// concurrency would buy nothing but a harder-to-read method.
+    private func decide(ids: [UUID], accept: Bool) async throws -> ElliotResponse {
+        guard accept else { return try await rejectProposals(ids: ids) }
+        return try await acceptProposals(ids: ids)
+    }
+
+    /// `AnalysisService.reject` discards each id's atomic claim result
+    /// internally — it always marks the proposal `.rejected` when it can, but
+    /// never says whether *this* call is the one that won the claim, or
+    /// whether it was already `.rejected` from an earlier call, or lost to a
+    /// concurrent `accept`. So `decided` here means only "named a proposal
+    /// that exists," not "this call rejected it" — the summary says so
+    /// explicitly rather than let `decided` overclaim on its own.
+    private func rejectProposals(ids: [UUID]) async throws -> ElliotResponse {
+        var known: Set<UUID> = []
+        for id in ids where try await store.proposal(id: id) != nil {
+            known.insert(id)
+        }
+        try await analysis.reject(proposalIDs: ids)
+        return .ok(.proposalsDecided(DecisionDTO(
+            decided: ids.filter(known.contains),
+            skipped: ids.filter { !known.contains($0) },
+            cards: [],
+            summary: "Asked to reject \(known.count) proposal(s) that exist. A proposal a "
+                + "concurrent request already decided may not have moved; they stay on the "
+                + "analysis, marked, either way."
+        )))
+    }
+
+    /// `AnalysisService.accept` hands back the cards it actually created,
+    /// each with a freshly generated id no other caller could also be
+    /// holding — so, unlike `reject`, there is proof to check an id against:
+    /// it is truly decided *by this call* only when the proposal's
+    /// `acceptedCardID` now points at one of the cards this call got back.
+    /// An id that lost the claim race to a concurrent accept still ends up
+    /// `.accepted` with a card somewhere, just not one of these — it belongs
+    /// in `skipped`, not `decided`, or the two fields would disagree with
+    /// each other about what this response actually contains.
+    private func acceptProposals(ids: [UUID]) async throws -> ElliotResponse {
+        let cards = try await analysis.accept(proposalIDs: ids)
+        let cardIDs = Set(cards.map(\.id))
+
+        var decided: [UUID] = []
+        var skipped: [UUID] = []
+        for id in ids {
+            if let proposal = try await store.proposal(id: id),
+                let acceptedCardID = proposal.acceptedCardID,
+                cardIDs.contains(acceptedCardID) {
+                decided.append(id)
+            } else {
+                skipped.append(id)
+            }
+        }
+
+        let repos = try await store.repos()
+        let dtos = cards.map { card in
+            CardDTO(card: card, repoName: repos.first { $0.id == card.repoID }?.nameWithOwner ?? "?")
+        }
+        return .ok(.proposalsDecided(DecisionDTO(
+            decided: decided, skipped: skipped, cards: dtos,
+            summary: "Created \(cards.count) Backlog card(s). Nothing was filed on GitHub — "
+                + "moving a card from backlog to todo is what does that."
+        )))
     }
 
     // MARK: - Runs

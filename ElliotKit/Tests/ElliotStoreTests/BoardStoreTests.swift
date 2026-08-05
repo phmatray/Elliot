@@ -23,7 +23,7 @@ private func makeCard(repoID: UUID, column: Column = .backlog, orderIndex: Doubl
 }
 
 private func makeRun(cardID: UUID, repoID: UUID, state: RunState = .queued) -> SkillRun {
-    SkillRun(
+    SkillRun.card(
         cardID: cardID,
         repoID: repoID,
         kind: .createIssue,

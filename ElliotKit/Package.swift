@@ -58,11 +58,21 @@ let package = Package(
         // reproducing a run.
         .testTarget(name: "ElliotProcessTests", dependencies: ["ElliotProcess", "TestSupport"]),
         .testTarget(name: "ElliotEngineTests", dependencies: ["ElliotEngine", "TestSupport"]),
-        .testTarget(name: "ElliotIPCTests", dependencies: ["ElliotIPC"]),
+        // Reaches past the wire into the helper that speaks it: the analysis
+        // cases are asserted round-trip, so the encoder and the tool that emits
+        // it are proven against each other rather than separately.
+        .testTarget(
+            name: "ElliotIPCTests",
+            dependencies: ["ElliotIPC", "ElliotMCPKit", .product(name: "MCP", package: "swift-sdk")]
+        ),
         // Drives the tools through `BridgeProviding`, so the offline branches —
         // the ones that never run on a machine where Elliot is up — are reached
         // without a socket and without an app.
-        .testTarget(name: "ElliotMCPKitTests", dependencies: ["ElliotMCPKit"]),
+        // TestSupport for `TestHome`, not for its waits: these tests resolve
+        // `StoreLocation` paths, and touching the shared home first is what
+        // stops the process-global `ELLIOT_HOME` moving between a write and
+        // the read that follows it.
+        .testTarget(name: "ElliotMCPKitTests", dependencies: ["ElliotMCPKit", "TestSupport"]),
     ],
     swiftLanguageModes: [.v6]
 )

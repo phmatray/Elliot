@@ -34,13 +34,31 @@ public enum StoreLocation {
         runsDirectory.appendingPathComponent("\(runID.uuidString).stderr.log")
     }
 
+    /// One directory per analysis run, holding the `stories.json` the run was
+    /// told to write. Kept beside the run's log so a harvest can be repeated
+    /// from disk without spawning anything.
+    public static var analysesDirectory: URL {
+        home.appendingPathComponent("analyses", isDirectory: true)
+    }
+
+    public static func analysisRunDirectory(analysisID: UUID, runID: UUID) -> URL {
+        analysesDirectory
+            .appendingPathComponent(analysisID.uuidString, isDirectory: true)
+            .appendingPathComponent(runID.uuidString, isDirectory: true)
+    }
+
+    public static func analysisArtifactURL(analysisID: UUID, runID: UUID) -> URL {
+        analysisRunDirectory(analysisID: analysisID, runID: runID)
+            .appendingPathComponent("stories.json")
+    }
+
     public static var socketURL: URL { home.appendingPathComponent("ipc.sock") }
     public static var tokenURL: URL { home.appendingPathComponent("ipc.token") }
 
     /// Creates the directory tree with owner-only permissions. The socket and
     /// token live here, so the parent must not be group- or world-readable.
     public static func ensureDirectories() throws {
-        for url in [home, runsDirectory] {
+        for url in [home, runsDirectory, analysesDirectory] {
             try FileManager.default.createDirectory(
                 at: url,
                 withIntermediateDirectories: true,

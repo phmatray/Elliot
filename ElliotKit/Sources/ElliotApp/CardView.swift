@@ -168,7 +168,7 @@ struct RunningStrip: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
                 ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
-                Text(run.kind.label)
+                Text(run.kind.skillName)
                     .font(Type.fact)
                     .foregroundStyle(run.state.tint)
                 Spacer(minLength: 0)

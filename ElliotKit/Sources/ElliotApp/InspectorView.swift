@@ -288,7 +288,7 @@ struct RunRow: View {
                 Image(systemName: run.state.icon)
                     .font(.system(size: 11))
                     .foregroundStyle(run.state.tint)
-                Text(run.kind.label).font(Type.fact).foregroundStyle(.primary)
+                Text(run.kind.skillName).font(Type.fact).foregroundStyle(.primary)
                 Spacer()
                 if let cost = run.totalCostUSD {
                     Fact(text: String(format: "$%.4f", cost), small: true)

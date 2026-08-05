@@ -3,31 +3,48 @@ import ElliotModel
 import ElliotStore
 import Foundation
 import MCP
+import TestSupport
 import Testing
 
 @testable import ElliotMCPKit
 
 /// Reading a run's transcript back off disk.
 ///
-/// Written where `StoreLocation` says, rather than under a redirected
-/// `ELLIOT_HOME`: that variable is process-wide and these tests share a process
-/// with ones that spawn real runs, so moving it under them would be a race. The
-/// coupling being pinned is exactly that the reader computes the same path the
-/// writer did — `RunLogPathTests` holds up the other end — so writing anywhere
-/// else would test nothing. Each file is named by a fresh UUID and removed after.
+/// Written where `StoreLocation` says: the coupling being pinned is exactly
+/// that the reader computes the same path the writer did — `RunLogPathTests`
+/// holds up the other end — so writing anywhere else would test nothing. Each
+/// file is named by a fresh UUID and removed after.
+///
+/// `ELLIOT_HOME` is not redirected here, but it *is* pinned before any path is
+/// resolved, by touching `TestHome.root`. This suite shares a process with ones
+/// that spawn real runs — SwiftPM links every test target into one bundle — and
+/// those set the variable from a lazy static. Leaving it alone was not the same
+/// as leaving it stable: this suite wrote a file under one home and then read it
+/// under another, and reported its own log missing.
 @Suite("The run log as a resource")
 struct RunLogResourceTests {
 
+    /// Settles `ELLIOT_HOME` before the first path is computed. Idempotent, and
+    /// called from every helper below rather than once somewhere clever: Swift
+    /// Testing gives a suite no "before all", so the guarantee has to be one
+    /// each entry point can restate cheaply.
+    private func pinHome() {
+        _ = TestHome.root
+    }
+
     private func writeLog(_ text: String, for runID: UUID) throws {
+        pinHome()
         try StoreLocation.ensureDirectories()
         try Data(text.utf8).write(to: StoreLocation.runLogURL(runID: runID))
     }
 
     private func removeLog(_ runID: UUID) {
+        pinHome()
         try? FileManager.default.removeItem(at: StoreLocation.runLogURL(runID: runID))
     }
 
     private func read(_ runID: UUID) async throws -> Resource.Content {
+        pinHome()
         let store = try await makeStore()
         let result = try await ElliotMCPServer(bridge: StubBridge.snapshot(store))
             .readResource(uri: "elliot://run/\(runID.uuidString)/log")

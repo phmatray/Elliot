@@ -43,8 +43,16 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     /// Also passed as `--session-id`, so the CLI transcript path is known
     /// before the process emits anything.
     public var id: UUID
-    public var cardID: UUID
+    /// The card this run works on. `nil` for an analysis run, which has no card
+    /// — exactly one of `cardID` and `analysisID` is set.
+    public var cardID: UUID?
     public var repoID: UUID
+    /// The analysis this run belongs to, when it is one.
+    public var analysisID: UUID?
+    /// Which lens this run reads through. On the run rather than only on the
+    /// analysis because the window lists runs by angle, and because the
+    /// scheduler's dedupe key is `(repoID, angle)`.
+    public var analysisAngle: AnalysisAngle?
     public var kind: SkillKind
     /// The exact `-p` argument.
     public var prompt: String
@@ -64,9 +72,70 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     public var numTurns: Int?
     public var permissionDenials: [String]
     public var verifiedOutcome: VerifiedOutcome?
+    /// What an analysis run had to say about itself: where the stories were
+    /// harvested from, what was dropped, and whether the working tree moved.
+    /// `nil` for a card run.
+    public var analysisReport: AnalysisRunReport?
     public var createdAt: Date
 
     public init(
+        id: UUID = UUID(),
+        cardID: UUID?,
+        repoID: UUID,
+        analysisID: UUID? = nil,
+        analysisAngle: AnalysisAngle? = nil,
+        kind: SkillKind,
+        prompt: String,
+        argv: [String] = [],
+        cwd: String,
+        state: RunState = .queued,
+        startedAt: Date? = nil,
+        endedAt: Date? = nil,
+        exitCode: Int32? = nil,
+        logPath: String,
+        stderrPath: String,
+        resultText: String? = nil,
+        totalCostUSD: Double? = nil,
+        numTurns: Int? = nil,
+        permissionDenials: [String] = [],
+        verifiedOutcome: VerifiedOutcome? = nil,
+        analysisReport: AnalysisRunReport? = nil,
+        createdAt: Date
+    ) {
+        self.id = id
+        self.cardID = cardID
+        self.repoID = repoID
+        self.analysisID = analysisID
+        self.analysisAngle = analysisAngle
+        self.kind = kind
+        self.prompt = prompt
+        self.argv = argv
+        self.cwd = cwd
+        self.state = state
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.exitCode = exitCode
+        self.logPath = logPath
+        self.stderrPath = stderrPath
+        self.resultText = resultText
+        self.totalCostUSD = totalCostUSD
+        self.numTurns = numTurns
+        self.permissionDenials = permissionDenials
+        self.verifiedOutcome = verifiedOutcome
+        self.analysisReport = analysisReport
+        self.createdAt = createdAt
+    }
+}
+
+public extension SkillRun {
+    var isAnalysis: Bool { kind == .analyzeRepo }
+}
+
+public extension SkillRun {
+    /// A run that works on a card. `analysisID` and `analysisAngle` are always
+    /// nil — the obvious way to build a card run without the two fields that
+    /// only make sense for the other kind ever coming apart from each other.
+    static func card(
         id: UUID = UUID(),
         cardID: UUID,
         repoID: UUID,
@@ -86,26 +155,49 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         permissionDenials: [String] = [],
         verifiedOutcome: VerifiedOutcome? = nil,
         createdAt: Date
-    ) {
-        self.id = id
-        self.cardID = cardID
-        self.repoID = repoID
-        self.kind = kind
-        self.prompt = prompt
-        self.argv = argv
-        self.cwd = cwd
-        self.state = state
-        self.startedAt = startedAt
-        self.endedAt = endedAt
-        self.exitCode = exitCode
-        self.logPath = logPath
-        self.stderrPath = stderrPath
-        self.resultText = resultText
-        self.totalCostUSD = totalCostUSD
-        self.numTurns = numTurns
-        self.permissionDenials = permissionDenials
-        self.verifiedOutcome = verifiedOutcome
-        self.createdAt = createdAt
+    ) -> SkillRun {
+        SkillRun(
+            id: id, cardID: cardID, repoID: repoID, analysisID: nil, analysisAngle: nil,
+            kind: kind, prompt: prompt, argv: argv, cwd: cwd, state: state,
+            startedAt: startedAt, endedAt: endedAt, exitCode: exitCode,
+            logPath: logPath, stderrPath: stderrPath, resultText: resultText,
+            totalCostUSD: totalCostUSD, numTurns: numTurns, permissionDenials: permissionDenials,
+            verifiedOutcome: verifiedOutcome, analysisReport: nil, createdAt: createdAt
+        )
+    }
+
+    /// A run that reads a repository through one angle. `cardID` is always nil
+    /// and `kind` is always `.analyzeRepo` — there is no other kind an analysis
+    /// run can have, so it is not a parameter here.
+    static func analysis(
+        id: UUID = UUID(),
+        repoID: UUID,
+        analysisID: UUID,
+        analysisAngle: AnalysisAngle,
+        prompt: String,
+        argv: [String] = [],
+        cwd: String,
+        state: RunState = .queued,
+        startedAt: Date? = nil,
+        endedAt: Date? = nil,
+        exitCode: Int32? = nil,
+        logPath: String,
+        stderrPath: String,
+        resultText: String? = nil,
+        totalCostUSD: Double? = nil,
+        numTurns: Int? = nil,
+        permissionDenials: [String] = [],
+        analysisReport: AnalysisRunReport? = nil,
+        createdAt: Date
+    ) -> SkillRun {
+        SkillRun(
+            id: id, cardID: nil, repoID: repoID, analysisID: analysisID, analysisAngle: analysisAngle,
+            kind: .analyzeRepo, prompt: prompt, argv: argv, cwd: cwd, state: state,
+            startedAt: startedAt, endedAt: endedAt, exitCode: exitCode,
+            logPath: logPath, stderrPath: stderrPath, resultText: resultText,
+            totalCostUSD: totalCostUSD, numTurns: numTurns, permissionDenials: permissionDenials,
+            verifiedOutcome: nil, analysisReport: analysisReport, createdAt: createdAt
+        )
     }
 }
 

@@ -4,90 +4,7 @@ import GRDB
 enum Migrations {
     static var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
-
-        migrator.registerMigration("v1_initial") { db in
-            try db.create(table: "repo") { t in
-                t.primaryKey("id", .text)
-                t.column("path", .text).notNull().unique()
-                t.column("nameWithOwner", .text).notNull()
-                t.column("defaultBranch", .text).notNull()
-                t.column("displayName", .text).notNull()
-                t.column("permissionMode", .text).notNull()
-                // JSON array.
-                t.column("extraAllowedTools", .text).notNull()
-                t.column("isEnabled", .boolean).notNull()
-            }
-
-            try db.create(table: "card") { t in
-                t.primaryKey("id", .text)
-                t.column("repoID", .text).notNull()
-                    .references("repo", onDelete: .cascade)
-                t.column("title", .text).notNull()
-                t.column("body", .text).notNull()
-                // JSON object, null for a card that is a plain note.
-                t.column("story", .text)
-                t.column("column", .text).notNull()
-                t.column("orderIndex", .double).notNull()
-                t.column("issueNumber", .integer)
-                t.column("issueURL", .text)
-                t.column("prNumber", .integer)
-                t.column("prURL", .text)
-                t.column("branch", .text)
-                t.column("columnEnteredAt", .datetime).notNull()
-                t.column("lastError", .text)
-                t.column("createdAt", .datetime).notNull()
-                t.column("updatedAt", .datetime).notNull()
-            }
-            // The board's only read pattern: one repo, one column, in order.
-            try db.create(
-                index: "card_on_repo_column_order",
-                on: "card",
-                columns: ["repoID", "column", "orderIndex"]
-            )
-
-            try db.create(table: "skillRun") { t in
-                t.primaryKey("id", .text)
-                t.column("cardID", .text).notNull()
-                    .references("card", onDelete: .cascade)
-                t.column("repoID", .text).notNull()
-                    .references("repo", onDelete: .cascade)
-                t.column("kind", .text).notNull()
-                t.column("prompt", .text).notNull()
-                t.column("argv", .text).notNull()          // JSON array
-                t.column("cwd", .text).notNull()
-                t.column("state", .text).notNull()
-                t.column("startedAt", .datetime)
-                t.column("endedAt", .datetime)
-                t.column("exitCode", .integer)
-                t.column("logPath", .text).notNull()
-                t.column("stderrPath", .text).notNull()
-                t.column("resultText", .text)
-                t.column("totalCostUSD", .double)
-                t.column("numTurns", .integer)
-                t.column("permissionDenials", .text).notNull()  // JSON array
-                t.column("verifiedOutcome", .text)              // JSON object
-                t.column("createdAt", .datetime).notNull()
-            }
-            try db.create(
-                index: "skillRun_on_card_created",
-                on: "skillRun",
-                columns: ["cardID", "createdAt"]
-            )
-            // The launch sweep asks for every non-terminal run.
-            try db.create(index: "skillRun_on_state", on: "skillRun", columns: ["state"])
-
-            try db.create(table: "moveAudit") { t in
-                t.primaryKey("id", .text)
-                t.column("cardID", .text).notNull()
-                    .references("card", onDelete: .cascade)
-                t.column("from", .text).notNull()
-                t.column("to", .text).notNull()
-                t.column("origin", .text).notNull()   // JSON object
-                t.column("runID", .text)
-                t.column("at", .datetime).notNull()
-            }
-            try db.create(index: "moveAudit_on_card_at", on: "moveAudit", columns: ["cardID", "at"])
-        }
+        migrator.registerMigration("v1_initial", migrate: v1Initial)
 
         // Additive only: v1 databases in the field must keep their rows.
         migrator.registerMigration("v2_repositoryLayout") { db in
@@ -125,6 +42,197 @@ enum Migrations {
             )
         }
 
+        // v4 for the same reason v3 is v3: this one was written as `v2_analysis`
+        // on a branch that had not landed, and `v2_repositoryLayout` reached
+        // `main` first. The unshipped name is the one that moves.
+        //
+        // Deferred because skillRun is rebuilt: its rows reference card and repo
+        // while the table is briefly named skillRun_old.
+        migrator.registerMigration("v4_analysis", foreignKeyChecks: .deferred, migrate: v4Analysis)
+
         return migrator
+    }
+
+    /// The original schema. Named so a test can build a v1 database and prove
+    /// the upgrade to the current schema loses nothing.
+    static func v1Initial(_ db: Database) throws {
+        try db.create(table: "repo") { t in
+            t.primaryKey("id", .text)
+            t.column("path", .text).notNull().unique()
+            t.column("nameWithOwner", .text).notNull()
+            t.column("defaultBranch", .text).notNull()
+            t.column("displayName", .text).notNull()
+            t.column("permissionMode", .text).notNull()
+            // JSON array.
+            t.column("extraAllowedTools", .text).notNull()
+            t.column("isEnabled", .boolean).notNull()
+        }
+
+        try db.create(table: "card") { t in
+            t.primaryKey("id", .text)
+            t.column("repoID", .text).notNull()
+                .references("repo", onDelete: .cascade)
+            t.column("title", .text).notNull()
+            t.column("body", .text).notNull()
+            // JSON object, null for a card that is a plain note.
+            t.column("story", .text)
+            t.column("column", .text).notNull()
+            t.column("orderIndex", .double).notNull()
+            t.column("issueNumber", .integer)
+            t.column("issueURL", .text)
+            t.column("prNumber", .integer)
+            t.column("prURL", .text)
+            t.column("branch", .text)
+            t.column("columnEnteredAt", .datetime).notNull()
+            t.column("lastError", .text)
+            t.column("createdAt", .datetime).notNull()
+            t.column("updatedAt", .datetime).notNull()
+        }
+        // The board's only read pattern: one repo, one column, in order.
+        try db.create(
+            index: "card_on_repo_column_order",
+            on: "card",
+            columns: ["repoID", "column", "orderIndex"]
+        )
+
+        try db.create(table: "skillRun") { t in
+            t.primaryKey("id", .text)
+            t.column("cardID", .text).notNull()
+                .references("card", onDelete: .cascade)
+            t.column("repoID", .text).notNull()
+                .references("repo", onDelete: .cascade)
+            t.column("kind", .text).notNull()
+            t.column("prompt", .text).notNull()
+            t.column("argv", .text).notNull()          // JSON array
+            t.column("cwd", .text).notNull()
+            t.column("state", .text).notNull()
+            t.column("startedAt", .datetime)
+            t.column("endedAt", .datetime)
+            t.column("exitCode", .integer)
+            t.column("logPath", .text).notNull()
+            t.column("stderrPath", .text).notNull()
+            t.column("resultText", .text)
+            t.column("totalCostUSD", .double)
+            t.column("numTurns", .integer)
+            t.column("permissionDenials", .text).notNull()  // JSON array
+            t.column("verifiedOutcome", .text)              // JSON object
+            t.column("createdAt", .datetime).notNull()
+        }
+        try db.create(
+            index: "skillRun_on_card_created",
+            on: "skillRun",
+            columns: ["cardID", "createdAt"]
+        )
+        // The launch sweep asks for every non-terminal run.
+        try db.create(index: "skillRun_on_state", on: "skillRun", columns: ["state"])
+
+        try db.create(table: "moveAudit") { t in
+            t.primaryKey("id", .text)
+            t.column("cardID", .text).notNull()
+                .references("card", onDelete: .cascade)
+            t.column("from", .text).notNull()
+            t.column("to", .text).notNull()
+            t.column("origin", .text).notNull()   // JSON object
+            t.column("runID", .text)
+            t.column("at", .datetime).notNull()
+        }
+        try db.create(index: "moveAudit_on_card_at", on: "moveAudit", columns: ["cardID", "at"])
+    }
+
+    static func v4Analysis(_ db: Database) throws {
+        try db.create(table: "analysis") { t in
+            t.primaryKey("id", .text)
+            t.column("repoID", .text).notNull()
+                .references("repo", onDelete: .cascade)
+            t.column("angles", .text).notNull()              // JSON array
+            t.column("extraInstructions", .text).notNull()
+            t.column("maxStoriesPerAngle", .integer).notNull()
+            t.column("origin", .text).notNull()              // JSON object
+            t.column("createdAt", .datetime).notNull()
+        }
+        try db.create(index: "analysis_on_repo_created", on: "analysis", columns: ["repoID", "createdAt"])
+
+        try db.create(table: "storyProposal") { t in
+            t.primaryKey("id", .text)
+            t.column("analysisID", .text).notNull()
+                .references("analysis", onDelete: .cascade)
+            t.column("runID", .text).notNull()
+            t.column("repoID", .text).notNull()
+                .references("repo", onDelete: .cascade)
+            t.column("angle", .text).notNull()
+            t.column("title", .text).notNull()
+            t.column("story", .text).notNull()               // JSON object
+            t.column("rationale", .text).notNull()
+            t.column("evidence", .text).notNull()            // JSON array
+            t.column("effort", .text).notNull()
+            t.column("status", .text).notNull()
+            t.column("acceptedCardID", .text)
+            t.column("duplicateOf", .text)                   // JSON object, null when none
+            t.column("createdAt", .datetime).notNull()
+        }
+        try db.create(
+            index: "storyProposal_on_analysis_status",
+            on: "storyProposal", columns: ["analysisID", "status"]
+        )
+        try db.create(
+            index: "storyProposal_on_repo_status",
+            on: "storyProposal", columns: ["repoID", "status"]
+        )
+
+        // SQLite cannot relax a NOT NULL in place, so the table is rebuilt.
+        // A renamed table keeps its indexes under their original names, so the
+        // new ones can only be created after the old table is dropped.
+        try db.rename(table: "skillRun", to: "skillRun_old")
+        try db.create(table: "skillRun") { t in
+            t.primaryKey("id", .text)
+            // Nullable now: an analysis run has no card.
+            t.column("cardID", .text)
+                .references("card", onDelete: .cascade)
+            t.column("repoID", .text).notNull()
+                .references("repo", onDelete: .cascade)
+            t.column("analysisID", .text)
+                .references("analysis", onDelete: .cascade)
+            t.column("analysisAngle", .text)
+            t.column("kind", .text).notNull()
+            t.column("prompt", .text).notNull()
+            t.column("argv", .text).notNull()
+            t.column("cwd", .text).notNull()
+            t.column("state", .text).notNull()
+            t.column("startedAt", .datetime)
+            t.column("endedAt", .datetime)
+            t.column("exitCode", .integer)
+            t.column("logPath", .text).notNull()
+            t.column("stderrPath", .text).notNull()
+            t.column("resultText", .text)
+            t.column("totalCostUSD", .double)
+            t.column("numTurns", .integer)
+            t.column("permissionDenials", .text).notNull()
+            t.column("verifiedOutcome", .text)
+            t.column("analysisReport", .text)                // JSON object
+            t.column("createdAt", .datetime).notNull()
+            // A run works on a card or reads an analysis, never both and never
+            // neither — checked here so the malformed row is refused by SQLite
+            // even if it is ever reached some way other than the two factories.
+            t.check(sql: #"("cardID" IS NULL) <> ("analysisID" IS NULL)"#)
+        }
+        try db.execute(sql: """
+            INSERT INTO "skillRun" (
+              "id","cardID","repoID","analysisID","analysisAngle","kind","prompt","argv","cwd",
+              "state","startedAt","endedAt","exitCode","logPath","stderrPath","resultText",
+              "totalCostUSD","numTurns","permissionDenials","verifiedOutcome","analysisReport",
+              "createdAt"
+            )
+            SELECT
+              "id","cardID","repoID",NULL,NULL,"kind","prompt","argv","cwd",
+              "state","startedAt","endedAt","exitCode","logPath","stderrPath","resultText",
+              "totalCostUSD","numTurns","permissionDenials","verifiedOutcome",NULL,
+              "createdAt"
+            FROM "skillRun_old"
+            """)
+        try db.drop(table: "skillRun_old")
+
+        try db.create(index: "skillRun_on_card_created", on: "skillRun", columns: ["cardID", "createdAt"])
+        try db.create(index: "skillRun_on_state", on: "skillRun", columns: ["state"])
+        try db.create(index: "skillRun_on_analysis", on: "skillRun", columns: ["analysisID"])
     }
 }

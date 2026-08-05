@@ -17,6 +17,8 @@ public struct GHIssue: Codable, Sendable, Hashable {
         self.state = state
         self.createdAt = createdAt
     }
+
+    public var isOpen: Bool { (state ?? "OPEN").uppercased() == "OPEN" }
 }
 
 public struct GHPullRequest: Codable, Sendable, Hashable {

@@ -1,0 +1,184 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+A native macOS Kanban board where **moving a card is the act of execution**. Dragging a card from
+Backlog to To Do genuinely spawns `claude -p /ai-migration-kit:create-issue <story>` in a registered
+repository. The board is a remote control, not a mirror of GitHub.
+
+Two binaries ship in one bundle: the SwiftUI app (`ElliotApp`) and an MCP helper (`elliot-mcp`) that
+Claude Code spawns over stdio. Both reach the same rule engine, so an agent's `board_move_card` and a
+human's drag are the same act.
+
+`README.md` carries the design rationale; this file carries what you need to work in the code.
+
+## Commands
+
+```bash
+cd ElliotKit && swift build                      # library + both executables
+cd ElliotKit && swift test                       # whole suite; no Xcode, no tokens, no GitHub
+cd ElliotKit && swift test --filter BoardServiceTests   # one suite
+
+swift format --in-place --recursive ElliotKit/Sources ElliotKit/Tests
+swift format lint --strict --recursive ElliotKit/Sources ElliotKit/Tests
+
+./Scripts/build-app.sh                           # assembles dist/Elliot.app (SwiftPM emits no bundle)
+open dist/Elliot.app                             # launch from Finder, not a terminal — see PATH below
+claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp"
+```
+
+- `swift test --filter` matches the **type** name, not the `@Suite` display name: `ClaudeRunnerTests`,
+  not `"Claude runner"`. A filter matching nothing prints `warning: No matching test cases were run`
+  and **exits 0** — indistinguishable from success.
+- Swift 6.1 tools-version, `swiftLanguageModes: [.v6]`, macOS 15+. Strict concurrency is on: every new
+  type crossing an isolation boundary must be `Sendable`.
+- **There is no CI.** No `.github/workflows/`, no branch protection. A pull request here is judged by a
+  local `swift test` only — "wait for green CI" is not a thing that can happen in this repo.
+- Re-run `claude mcp add` after moving the app: the registration records an absolute path.
+
+## Architecture
+
+The dependency graph *is* the layer order (`ElliotKit/Package.swift`). Touch them in this order:
+
+```
+ElliotModel     no dependencies    value types, rule engine, prompt builder, stream-json decoder,
+                                   PRMatcher, reconciler — pure: no I/O, no clock, no randomness
+ElliotStore     GRDB               schema, migrations, the one atomic move
+ElliotProcess   —                  tool discovery, login-shell env capture, spawning, line splitting,
+                                   gh/git clients
+ElliotIPC       —                  wire protocol, unix socket server and client
+ElliotEngine    all of the above   BoardService, RunScheduler, Verifier, PRWatcher, Reconciler, preflight
+ElliotMCPKit    Model+IPC+Store    the MCP tools (one file per tool under Tools/)
+ElliotApp       SwiftUI            the board
+elliot-mcp      stdio              the helper Claude Code spawns
+```
+
+### The load-bearing invariants
+
+These span several files each; breaking one is invisible locally.
+
+**One funnel.** `BoardService` (`ElliotEngine/BoardService.swift`) is the only thing that changes a
+card's `column`. A drag and `board_move_card` both reach `proposeMove`/`commitMove`. Never add a second
+write path for `column`.
+
+**One rule engine.** `evaluateMove` in `ElliotModel/RuleEngine.swift` is pure and decides the whole
+transition matrix. `rankNextSteps` (what `board_next` answers) decides by *calling* `evaluateMove`, so
+the board predicts its own behaviour instead of holding a second copy of the rules.
+
+**`ElliotMCPKit` imports neither `ElliotEngine` nor `ElliotProcess`** — deliberate, commented in
+`Package.swift`. The helper holds no copy of the rules, so it cannot diverge from them.
+
+**A system-originated move never triggers a skill.** `MoveContext.allowSideEffects == false` →
+`.noAction`, checked before every other guard. The state a system move reacts to (a PR going ready, a
+crash reconciled) was *produced* by a skill.
+
+**`gh` is the fact; the agent's prose is a hint.** Nothing written back to a card is parsed out of a
+run's closing summary. Issue and PR numbers come from `gh … --json` through `GHClient`/`Verifier`.
+`PRMatcher` scores branches rather than looking one up, anchoring on `^<issue>-` *with* the trailing
+hyphen so issue 4 cannot match `feat/47-…`.
+
+**The app is the sole writer.** SQLite does not notify other processes of writes, so `elliot-mcp` opens
+the store read-only and routes every mutation back over the unix socket. A read may fall back to
+`source: offline-db`; a **write never falls back** — writing a column change straight to the database
+would move a card without firing its rule.
+
+**Rules belong in `ElliotModel`.** `ElliotApp` is an `executableTarget` with no test target, so any rule
+written in a SwiftUI view is unprovable by `swift test`. Views render and dispatch; they do not judge.
+
+### Board transitions
+
+| From → To | What happens |
+|---|---|
+| Backlog → To Do | `/ai-migration-kit:create-issue <story>` — fills in the issue number |
+| To Do → In Progress | `/ai-migration-kit:implement-issue <n>` — fills in the PR number and branch |
+| In Progress → In Review | *no skill* — a system move, when `PRWatcher` sees the PR go ready |
+| In Review → Done | `/ai-migration-kit:merge-pr <pr>` (+ repeatable `--follow-up`) |
+| anything else | nothing |
+
+The backlog holds **user stories** (`role` / `want` / `benefit` + acceptance criteria as separate
+fields), not loose prose. A card is editable up to the moment it carries an issue number; after that
+`updateCard` refuses rather than letting card and issue drift.
+
+### Run lifecycle
+
+`is_error` is not enough: a run only counts as clean when `permission_denials` is empty too — a run can
+end `subtype: "success"` having been refused a tool and quietly worked around the gap.
+
+There is no wall-clock kill (`merge-pr` waiting hours on CI is legitimate). What is actionable is
+**silence**: 20 minutes without output marks the run stalled and asks. Cancellation is a plain SIGTERM —
+Claude Code handles it, aborts the turn, kills its Bash process tree, runs SessionEnd hooks, exits 143.
+
+Runs default to `--permission-mode bypassPermissions`; `permissionMode` is a per-repo column if you want
+to tighten one.
+
+## Testing discipline
+
+`swift test` must be **deterministic and always-terminating**. Three rules keep it that way; breaking any
+reintroduces the bug where a wedged child held the SwiftPM build lock for a quarter of an hour and
+presented as a broken toolchain rather than a stuck test.
+
+- **Every async wait is bounded**, through `withTimeout` in the test-only `TestSupport` target. An
+  unbounded `for await …` is how one hung child stopped `swift test` from ever exiting.
+- **`Scripts/fake-claude.sh` traps in every mode**, installing the trap before anything else, so no child
+  outlives its parent holding the runner's stdout pipe open. It touches `FAKE_CLAUDE_READY` once
+  trap-protected.
+- **No assertion measures an absolute duration**, and no test sleeps a fixed interval waiting for a child
+  — it waits on that file. Wall-clock assertions fail under load while the code behaved perfectly.
+
+The matching rule in production code: **nothing waits on `Process.waitUntilExit()`**. Both spawners
+publish the exit from `terminationHandler` under one lock (`StreamingProcess.waitForExit`,
+`ProcessRunner.run`); `waitUntilExit()` spins a run loop waiting for a notification a concurrently-spawned
+sibling can consume first.
+
+The end-to-end suite drives the real stack — rule engine, scheduler, actual process spawn, stream parsing,
+log writing, cancellation, launch sweep — against `Scripts/fake-claude.sh`, driven by
+`FAKE_CLAUDE_FIXTURE`, `_DELAY_MS`, `_MODE=hang|trap|crash`, `_ARGV_OUT`, `_STDERR`, `_READY`. Fixtures
+live at `Fixtures/` (repository root, not a resource bundle) so the same files are usable by hand from a
+terminal when reproducing a run.
+
+Two invariants carry most of the weight:
+- the first digit run of an `implement-issue` prompt is the issue number, because the skill resolves its
+  argument with `grep -oE '[0-9]+' | head -1`;
+- a system-originated move never triggers a skill.
+
+## Things that bite
+
+- **Migrations are additive and shipped ones are frozen.** `ElliotStore/Migrations.swift` — append,
+  renumber so versions stay ordered, never edit a migration that has run. `Column`'s raw values are
+  persisted, so renaming a case needs a migration.
+- **Bump `elliotProtocolVersion` when the wire format changes** (`ElliotIPC/Protocol.swift`). An old
+  helper in an old bundle meeting a newer app must fail loudly at `hello`, not halfway through a move.
+- **`ElliotBuild.marketingVersion` is the single source of the version.** `Scripts/build-app.sh` `sed`s
+  that line to stamp `CFBundleShortVersionString`; a plist naming a version the source does not is the
+  one thing a field bug report is trusted on.
+- **PATH is captured, never inherited.** Launched from the Finder the app sees only
+  `/usr/bin:/bin:/usr/sbin:/sbin`. `LoginShellEnvironment.capture()` gets the real environment and
+  `ToolLocator` finds `claude`/`gh`/`git`; anything spawning a tool must go through `ToolConfig`. Testing
+  preflight means launching from the Finder, not from a terminal or Xcode.
+- **A registered repo path must be the main checkout, never a linked worktree** — `merge-pr` tears down
+  the PR's worktree and cannot do so from inside it. `GitClient.isMainCheckout` enforces this in Preflight.
+- **The app is not sandboxed** (Hardened Runtime on, ad-hoc signed, not notarised). Child processes
+  inherit the sandbox and security-scoped access does not extend to them, so a sandboxed `claude` could
+  not write to `~/.claude` or reach your repositories.
+- **`ELLIOT_HOME` overrides every path** (`StoreLocation`) — that is how tests and the fake-tool harness
+  get an isolated store, socket and runs directory.
+- **Several agent worktrees share this repo's `.git`.** Re-read `git rev-parse --abbrev-ref HEAD`
+  immediately before committing and after pushing.
+
+## Conventions
+
+- Conventional Commits with the layer as scope: `feat(model|store|process|engine|ipc|mcp|app): subject`.
+  Squash merge appends the PR number — `feat(app): … (#5) (#6)`. `main` is linear.
+- Branches: `feat/<issue>-<slug>` · `fix/<issue>-<slug>`. The number must come first and be followed by
+  `-` or `_` (`PRMatcher.branchMatches` anchors on it).
+- Issues follow a de-facto template — `## User story` → `## Acceptance criteria` → `## Problem` →
+  `## Proposed solution` → `## Area` (naming the SwiftPM targets) → collapsible `🧠 Brainstorm` /
+  `📋 Spec` → visible `## 🛠️ Implementation plan`. There are no `priority:`/`effort:`/area labels; only
+  GitHub's defaults exist.
+- `.claude/skills/repo-profile.md` is the committed config the `create-issue` / `implement-issue` /
+  `merge-pr` skills read (build commands, labels, conflict hot-spots). Refresh it when the toolchain,
+  labels or CI change.
+- Conflict hot-spots: `Package.swift`, `AppModel.swift`, `Migrations.swift`, `README.md` and test files
+  are **union** merges; `Package.resolved` is **regenerated** (`swift package resolve`), never hand-merged.

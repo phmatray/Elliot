@@ -11,7 +11,14 @@ import Foundation
 /// do next. Version 1 shipped the agent prose where it needed facts, and a
 /// silent slice where it needed a count. Neither is fixable in a compatible way,
 /// so the number moves and an old helper is turned away at the handshake.
-public let elliotProtocolVersion = 2
+///
+/// **3** — repository analysis: `analyzeRepo`, `listProposals`,
+/// `acceptProposals`, `rejectProposals`. Written against 2 while 2 was still
+/// unreleased, and renumbered on the way in: 2 reached `main` first, so a
+/// helper claiming 2 is one that cannot analyse anything. Additive to the app,
+/// but not to the helper — a 3 helper meeting a 2 app would send a request that
+/// app cannot decode, which is precisely what the handshake exists to refuse.
+public let elliotProtocolVersion = 3
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
@@ -57,7 +64,7 @@ public enum ElliotBuild {
 
 // MARK: - Requests
 
-public enum ElliotRequest: Codable, Sendable {
+public enum ElliotRequest: Codable, Sendable, Equatable {
     case hello(protocolVersion: Int, token: String, client: String)
     case listCards(repo: String?, column: ElliotModel.Column?, limit: Int)
     case getCard(id: UUID)
@@ -82,6 +89,12 @@ public enum ElliotRequest: Codable, Sendable {
     /// What to do next, ranked. The one request that answers a question rather
     /// than fetching a row.
     case next(repo: String?, limit: Int)
+    /// Angles arrive as strings so an unknown one is a clear error message
+    /// rather than a decoding failure that loses the whole request.
+    case analyzeRepo(repo: String, angles: [String], maxStories: Int, instructions: String)
+    case listProposals(analysisID: UUID?, repo: String?, status: String?, limit: Int)
+    case acceptProposals(ids: [UUID])
+    case rejectProposals(ids: [UUID])
 
     /// The three parts of a user story, separately — so a skill generating
     /// stories from a repository can fill them in rather than hand over prose
@@ -144,6 +157,12 @@ public enum ElliotErrorCode: String, Codable, Sendable {
     /// The database was opened read-only because Elliot is not running.
     case readOnly = "read_only"
     case internalError = "internal_error"
+    case analysisNotFound = "analysis_not_found"
+    /// Reserved for a future single-proposal lookup request; nothing in the
+    /// wire protocol throws this yet.
+    case proposalNotFound = "proposal_not_found"
+    case unknownAngle = "unknown_angle"
+    case analysisRefused = "analysis_refused"
 }
 
 public enum ElliotResponse: Codable, Sendable {
@@ -161,6 +180,9 @@ public enum ElliotPayload: Codable, Sendable {
     case run(RunDTO)
     case repos([RepoDTO])
     case next(NextPage)
+    case analysisStarted(AnalysisDTO)
+    case proposals([ProposalDTO])
+    case proposalsDecided(DecisionDTO)
 }
 
 // MARK: - Limits
@@ -483,10 +505,11 @@ public struct VerifiedOutcomeDTO: Codable, Sendable, Hashable {
 
 public struct RunDTO: Codable, Sendable, Hashable {
     public var id: UUID
-    public var cardID: UUID
-    /// `create-issue`, `implement-issue` or `merge-pr` — the same vocabulary
-    /// `MoveDTO.triggered` and `NextDTO.wouldTrigger` use, so one word means one
-    /// thing across the whole wire.
+    /// Null for an analysis run, which reads a repository and has no card.
+    public var cardID: UUID?
+    /// `create-issue`, `implement-issue`, `merge-pr` or `analyze-repo` — the
+    /// same vocabulary `MoveDTO.triggered` and `NextDTO.wouldTrigger` use, so
+    /// one word means one thing across the whole wire.
     public var kind: String
     public var state: String
     /// `state` is not enough on its own: `succeeded` is compatible with an
@@ -736,6 +759,92 @@ public struct NextPage: Codable, Sendable, Hashable {
         truncated = total > items.count
         self.readyCount = readyCount
         self.limitCappedFrom = limitCappedFrom
+    }
+}
+
+public struct AnalysisRunDTO: Codable, Sendable, Hashable {
+    public var runID: UUID
+    public var angle: String
+    public var state: String
+
+    public init(runID: UUID, angle: String, state: String) {
+        self.runID = runID
+        self.angle = angle
+        self.state = state
+    }
+}
+
+public struct AnalysisDTO: Codable, Sendable, Hashable {
+    public var id: UUID
+    public var repo: String
+    public var angles: [String]
+    public var maxStoriesPerAngle: Int
+    public var createdAt: Date
+    public var runs: [AnalysisRunDTO]
+
+    public init(analysis: Analysis, repoName: String, runs: [AnalysisRunDTO]) {
+        id = analysis.id
+        repo = repoName
+        angles = analysis.angles.map(\.rawValue)
+        maxStoriesPerAngle = analysis.maxStoriesPerAngle
+        createdAt = analysis.createdAt
+        self.runs = runs
+    }
+}
+
+public struct ProposalDTO: Codable, Sendable, Hashable {
+    public var id: UUID
+    public var analysisID: UUID
+    public var repo: String
+    public var angle: String
+    public var title: String
+    public var story: CardDTO.StoryDTO
+    public var rationale: String
+    /// `path:line`, as cited. See `grounded` for whether they were found.
+    public var evidence: [String]
+    /// Every cited file was found in the repository. A proposal that is not
+    /// grounded may still be right — but it was not checkable.
+    public var grounded: Bool
+    public var effort: String
+    public var status: String
+    public var duplicateHint: String?
+    public var acceptedCardID: UUID?
+
+    public init(proposal: StoryProposal, repoName: String) {
+        id = proposal.id
+        analysisID = proposal.analysisID
+        repo = repoName
+        angle = proposal.angle.rawValue
+        title = proposal.title
+        story = CardDTO.StoryDTO(proposal.story)
+        rationale = proposal.rationale
+        evidence = proposal.evidence.map(\.display)
+        grounded = proposal.isGrounded
+        effort = proposal.effort.rawValue
+        status = proposal.status.rawValue
+        duplicateHint = proposal.duplicateOf?.label
+        acceptedCardID = proposal.acceptedCardID
+    }
+}
+
+public struct DecisionDTO: Codable, Sendable, Hashable {
+    /// For `acceptProposals`, this is exact: an id lands here only when its
+    /// proposal now links to one of `cards`, so a caller that lost a race
+    /// against a concurrent accept is correctly left out. For
+    /// `rejectProposals` there is no equivalent evidence to check against —
+    /// see `MCPRequestHandler.decide` — so this only means "named a proposal
+    /// that exists," not "this call is the one that rejected it."
+    public var decided: [UUID]
+    public var skipped: [UUID]
+    public var cards: [CardDTO]
+    /// Plain-language account for the agent to relay.
+    public var summary: String
+
+    public init(decided: [UUID], skipped: [UUID], cards: [CardDTO], summary: String) {
+        self.decided = decided
+        self.skipped = skipped
+        self.cards = cards
+        self.summary = summary
     }
 }
 

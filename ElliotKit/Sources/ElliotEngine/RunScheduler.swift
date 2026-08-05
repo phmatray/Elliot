@@ -19,10 +19,10 @@ public protocol SystemMoving: AnyObject, Sendable {
 }
 
 public enum SchedulerUpdate: Sendable {
-    case runStarted(runID: UUID, cardID: UUID)
+    case runStarted(runID: UUID, cardID: UUID?)
     case runOutput(runID: UUID, event: StreamEvent)
     case runStalled(runID: UUID, since: Date)
-    case runFinished(runID: UUID, cardID: UUID, state: RunState, outcome: VerifiedOutcome?)
+    case runFinished(runID: UUID, cardID: UUID?, state: RunState, outcome: VerifiedOutcome?)
 }
 
 /// Runs skills, at most a few at a time, respecting what can safely overlap.
@@ -31,6 +31,13 @@ public actor RunScheduler: RunLaunching {
     private let toolConfig: ToolConfig
     private let verifier: Verifier
     private let maxConcurrent: Int
+    private let maxConcurrentAnalyses: Int
+    private let harvester: ProposalHarvester
+    /// `git status --porcelain` taken just before each analysis spawned, keyed
+    /// by run. In memory only: if the app dies mid-run the baseline is gone and
+    /// the sweep reports the sentinel as unchecked rather than guessing.
+    private var treeBaselines: [UUID: String] = [:]
+    private let git: GitClient
 
     private var live: [UUID: ClaudeRun] = [:]
     private var inFlight: [UUID: SkillRun] = [:]
@@ -45,12 +52,17 @@ public actor RunScheduler: RunLaunching {
         store: BoardStore,
         toolConfig: ToolConfig,
         verifier: Verifier,
-        maxConcurrent: Int = 2
+        harvester: ProposalHarvester? = nil,
+        maxConcurrent: Int = 2,
+        maxConcurrentAnalyses: Int = 3
     ) {
         self.store = store
         self.toolConfig = toolConfig
         self.verifier = verifier
+        self.harvester = harvester ?? ProposalHarvester(store: store, gh: GHClient(config: toolConfig))
         self.maxConcurrent = maxConcurrent
+        self.maxConcurrentAnalyses = maxConcurrentAnalyses
+        self.git = GitClient(config: toolConfig)
         var continuation: AsyncStream<SchedulerUpdate>.Continuation!
         updates = AsyncStream(bufferingPolicy: .bufferingNewest(1024)) { continuation = $0 }
         self.continuation = continuation
@@ -68,17 +80,33 @@ public actor RunScheduler: RunLaunching {
     /// safe. Two `merge-pr` runs are not — each merges to `main`, removes a
     /// worktree and deletes a branch. Two `create-issue` runs would each do
     /// duplicate detection against a repo the other is about to change.
+    ///
+    /// An analysis only reads, but it reads the working tree, so it must not
+    /// overlap a merge in the same repo: it would see a moving target, and the
+    /// git sentinel would fire on someone else's work. It gets its own lane
+    /// because the cap below exists to keep two *builds* out of one `.build/`,
+    /// and an analysis builds nothing.
     func canStart(_ run: SkillRun) -> Bool {
-        guard inFlight.count < maxConcurrent else { return false }
         let sameRepo = inFlight.values.filter { $0.repoID == run.repoID }
         guard !sameRepo.contains(where: { $0.kind == .mergePR }) else { return false }
 
+        if run.kind == .analyzeRepo {
+            let analysesInFlight = inFlight.values.filter { $0.kind == .analyzeRepo }.count
+            return analysesInFlight < maxConcurrentAnalyses
+        }
+
+        let writersInFlight = inFlight.values.filter { $0.kind != .analyzeRepo }.count
+        guard writersInFlight < maxConcurrent else { return false }
+
         switch run.kind {
         case .mergePR:
+            // Waits for an analysis too, at no extra cost: it is in sameRepo.
             return sameRepo.isEmpty
         case .createIssue:
             return !sameRepo.contains { $0.kind == .createIssue }
         case .implementIssue:
+            return true
+        case .analyzeRepo:
             return true
         }
     }
@@ -121,6 +149,14 @@ public actor RunScheduler: RunLaunching {
         updated.argv = [toolConfig.claudePath] + invocation.arguments()
 
         let logURL = URL(fileURLWithPath: run.logPath)
+
+        if updated.isAnalysis {
+            // The prompt forbids modifying the repository and no CLI flag can
+            // enforce it, so record the tree now and compare after. Do not
+            // trust the instruction; check the outcome.
+            treeBaselines[run.id] = await git.porcelainStatus(cwd: repo.path)
+        }
+
         let claudeRun: ClaudeRun
         do {
             try? FileManager.default.createDirectory(
@@ -129,6 +165,10 @@ public actor RunScheduler: RunLaunching {
             )
             claudeRun = try ClaudeRun.start(invocation: invocation, config: toolConfig, logURL: logURL)
         } catch {
+            // The baseline was taken above whether or not the spawn survives;
+            // `finish` is never reached from here, so nothing else would ever
+            // clear it.
+            treeBaselines[run.id] = nil
             updated.state = .failed
             updated.endedAt = Date()
             updated.resultText = error.localizedDescription
@@ -188,23 +228,78 @@ public actor RunScheduler: RunLaunching {
         updated.permissionDenials = outcome?.result?.permissionDenials.map(\.toolName) ?? []
         updated.state = Self.state(for: outcome)
 
-        // Verify even a cancelled run: implement-issue may well have opened the
-        // pull request before it was stopped, and both skills are resume-safe.
+        // One split, in one place: a card run is verified against gh and writes
+        // back to its card; an analysis run is harvested and writes proposals.
+        // Letting `finish` acquire two personalities is how this method would
+        // become unreadable.
+        //
+        // if/else rather than a ternary: `inout` arguments are not allowed in
+        // one.
         var verified: VerifiedOutcome?
-        if let card = try? await store.card(id: run.cardID),
-           let repo = try? await store.repo(id: run.repoID) {
-            verified = await verifier.verify(run: updated, card: card, repo: repo)
-            updated.verifiedOutcome = verified
-            try? await store.saveRun(updated)
-            await apply(verified!, to: card, run: updated)
+        if updated.isAnalysis {
+            await completeAnalysisRun(&updated)
         } else {
-            try? await store.saveRun(updated)
+            verified = await completeCardRun(&updated)
         }
 
+        try? await store.saveRun(updated)
         continuation.yield(.runFinished(
-            runID: run.id, cardID: run.cardID, state: updated.state, outcome: verified
+            runID: run.id, cardID: updated.cardID, state: updated.state, outcome: verified
         ))
         await pump()
+    }
+
+    /// Verify against `gh`, then write what it said onto the card.
+    private func completeCardRun(_ run: inout SkillRun) async -> VerifiedOutcome? {
+        guard let cardID = run.cardID,
+              let card = try? await store.card(id: cardID),
+              let repo = try? await store.repo(id: run.repoID)
+        else { return nil }
+
+        // Verify even a cancelled run: implement-issue may well have opened the
+        // pull request before it was stopped, and both skills are resume-safe.
+        let verified = await verifier.verify(run: run, card: card, repo: repo)
+        run.verifiedOutcome = verified
+        await apply(verified, to: card, run: run)
+        return verified
+    }
+
+    /// Harvest the artifact, then answer the sentinel's question.
+    private func completeAnalysisRun(_ run: inout SkillRun) async {
+        let baseline = treeBaselines.removeValue(forKey: run.id)
+
+        guard let analysisID = run.analysisID,
+              let analysis = try? await store.analysis(id: analysisID),
+              let repo = try? await store.repo(id: run.repoID)
+        else {
+            run.analysisReport = AnalysisRunReport(
+                harvestSource: .none,
+                dropped: ["The analysis this run belonged to could not be found."]
+            )
+            return
+        }
+
+        var report = await harvester.harvest(
+            run: run,
+            analysis: analysis,
+            repo: repo,
+            artifactURL: StoreLocation.analysisArtifactURL(analysisID: analysisID, runID: run.id)
+        )
+
+        if let baseline {
+            let after = await git.porcelainStatus(cwd: repo.path)
+            let changed = after != baseline
+            // Explicit even when unchanged: a checked-and-clean tree (`false`)
+            // must not read the same as a tree the sentinel never got to look
+            // at (`nil`) — that collapse is exactly what let an orphaned run
+            // masquerade as verified-clean.
+            report.workingTreeChanged = changed
+            if changed {
+                report.workingTreeDiff = after
+            }
+        }
+
+        run.analysisReport = report
     }
 
     static func state(for outcome: ClaudeRunOutcome?) -> RunState {
