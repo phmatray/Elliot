@@ -3367,6 +3367,7 @@ config, so its agent can see elliot and call board_analyze_repo."
 - Create: `Fixtures/analysis/e2e-bugs.json`
 - Create: `Fixtures/stream-json/analyze-success.ndjson`
 - Test: `ElliotKit/Tests/ElliotEngineTests/AnalysisEndToEndTests.swift`
+- Modify: `ElliotKit/Tests/ElliotEngineTests/EndToEndTests.swift:35-41,85-86` (see Step 4b)
 
 **Interfaces:**
 - Consumes: everything from Tasks 1–9.
@@ -3507,6 +3508,43 @@ private enum TestPaths {
     }
 }
 
+/// One `ELLIOT_HOME` for the whole test process, set once and never removed.
+///
+/// `StoreLocation` reads the variable on every access and it is process-global,
+/// so a per-test home that gets deleted at the end of one test pulls the ground
+/// out from under any suite still writing run logs. Both end-to-end suites are
+/// nested under one `.serialized` parent for the same reason.
+///
+/// This also fixes something that was already true: without it, the existing
+/// end-to-end suite writes its run logs into the real
+/// `~/Library/Application Support/Elliot/runs`.
+enum TestHome {
+    /// `nonisolated(unsafe)` because it is written exactly once, before any
+    /// test body runs, by the `static let` initialiser itself.
+    static let root: URL = {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("elliot-tests-\(ProcessInfo.processInfo.processIdentifier)",
+                                    isDirectory: true)
+        setenv("ELLIOT_HOME", url.path, 1)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }()
+
+    /// A directory of one test's own, inside the shared home. Safe to delete:
+    /// nothing else writes here.
+    static func scratch(_ label: String) -> URL {
+        _ = root
+        return root.appendingPathComponent("\(label)-\(UUID().uuidString)", isDirectory: true)
+    }
+}
+
+/// Both end-to-end suites nested under one serialized parent. They share a
+/// process-global `ELLIOT_HOME`, so they must not run at the same time.
+@Suite("End to end", .serialized)
+struct EndToEndSuites {}
+
+extension EndToEndSuites {
+
 @Suite("Analysis end to end", .serialized)
 struct AnalysisEndToEndTests {
 
@@ -3518,6 +3556,8 @@ struct AnalysisEndToEndTests {
         var repo: Repo
         var home: URL
 
+        /// Removes this test's own directory only. The shared `ELLIOT_HOME`
+        /// above it stays: another suite may still be writing into it.
         func cleanUp() { try? FileManager.default.removeItem(at: home) }
 
         func awaitRuns(analysisID: UUID, timeout: Duration = .seconds(30)) async throws -> [SkillRun] {
@@ -3533,14 +3573,16 @@ struct AnalysisEndToEndTests {
         enum StackError: Error { case timedOut }
     }
 
-    /// `ELLIOT_HOME` is set for the whole process so `StoreLocation` resolves
-    /// the artifact path the prompt announces into this test's own directory —
-    /// the prompt, the fake tool and the harvester must agree on one path, and
-    /// that agreement is precisely what is under test.
+    /// The prompt, the fake tool and the harvester must agree on one artifact
+    /// path, and that agreement is what is under test — so `StoreLocation` has
+    /// to resolve somewhere writable. `TestHome` provides that once for the
+    /// process; this test only owns a scratch directory inside it.
+    ///
+    /// The database is explicitly per-test: `StoreLocation.databaseURL` is
+    /// shared now, and two suites must not open the same file.
     private func makeStack(extraEnv: [String: String] = [:]) async throws -> Stack {
-        let home = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("elliot-analysis-e2e-\(UUID().uuidString)", isDirectory: true)
-        setenv("ELLIOT_HOME", home.path, 1)
+        let home = TestHome.scratch("analysis-e2e")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         try StoreLocation.ensureDirectories()
 
         let repoRoot = home.appendingPathComponent("repo", isDirectory: true)
@@ -3550,7 +3592,7 @@ struct AnalysisEndToEndTests {
             to: sources.appendingPathComponent("ClaudeRunner.swift"), atomically: true, encoding: .utf8
         )
 
-        let store = try BoardStore.open()
+        let store = try BoardStore.open(at: home.appendingPathComponent("elliot.sqlite"))
         var environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
         environment["FAKE_CLAUDE_FIXTURE"] = TestPaths.streamFixture("analyze-success.ndjson")
         environment["FAKE_CLAUDE_STORIES"] = TestPaths.analysisFixture("e2e-bugs.json")
@@ -3700,7 +3742,40 @@ struct AnalysisEndToEndTests {
         #expect(report.kept == 2)
     }
 }
+
+}  // extension EndToEndSuites
 ```
+
+- [ ] **Step 4b: Nest the existing end-to-end suite under the same parent**
+
+In `ElliotKit/Tests/ElliotEngineTests/EndToEndTests.swift`, wrap the existing
+suite so the two cannot run at the same time — they share one process-global
+`ELLIOT_HOME`:
+
+```swift
+extension EndToEndSuites {
+
+@Suite("End to end", .serialized)
+struct EndToEndTests {
+    …unchanged…
+}
+
+}  // extension EndToEndSuites
+```
+
+And give it a home that is not the user's real one. Replace the two lines at the
+top of `Stack.make`:
+
+```swift
+        let home = TestHome.scratch("board-e2e")
+        try FileManager.default.createDirectory(
+            at: home.appendingPathComponent("runs"), withIntermediateDirectories: true
+        )
+        try StoreLocation.ensureDirectories()
+```
+
+Its `BoardStore.open(at:)` call already names an explicit path, so nothing else
+in that file changes.
 
 - [ ] **Step 5: Run the end-to-end suite**
 

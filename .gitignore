@@ -12,3 +12,8 @@ DerivedData/
 
 # Assembled app bundle
 dist/
+
+# Scratch for subagent-driven execution: ledger, task briefs, review packages.
+# The git history is the durable record; this is only the map used while a plan
+# is being executed.
+.superpowers/
