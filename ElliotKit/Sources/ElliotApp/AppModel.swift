@@ -20,6 +20,13 @@ public final class AppModel {
     public private(set) var isReady = false
     public private(set) var isImporting = false
 
+    /// One row per repository of the configured owners: GitHub's list, the disk
+    /// and the store, reconciled. The judgement is `RepoReconciler`'s — the page
+    /// renders it and never decides anything itself.
+    public private(set) var repoRows: [RepoRow] = []
+    public private(set) var layout: RepoTreeLayout = .portfolio
+    public private(set) var isReconciling = false
+
     public var showingAnalysis = false
     /// The analysis the window is showing. `nil` means it is still in setup.
     public private(set) var activeAnalysisID: UUID?
@@ -73,6 +80,7 @@ public final class AppModel {
     /// Repositories already imported this session. In memory on purpose: a
     /// relaunch re-importing costs two `gh` calls and cannot duplicate anything.
     private var importedThisSession: Set<UUID> = []
+    private var registry: RepoRegistryService?
     private var ipcServer: IPCServer?
     private var toolConfig: ToolConfig?
     private var analysisService: AnalysisService?
@@ -139,6 +147,11 @@ public final class AppModel {
             self.watcher = watcher
 
             importer = GitHubImportService(store: store, gh: ghClient, board: board)
+
+            // The tree root is a setting; `.portfolio` is only the default for a
+            // store that has never been told otherwise.
+            layout = (try? await store.layout()) ?? .portfolio
+            registry = RepoRegistryService(store: store, config: config)
 
             await refreshRepoChecks(using: preflight)
 
@@ -468,6 +481,46 @@ public final class AppModel {
         selectedRepoID = repo.id
         await refreshRepoChecks()
         await importIfNeeded(repoID: repo.id)
+    }
+
+    // MARK: - The repository tree
+
+    /// Re-reads GitHub, the disk and the store, and rebuilds every row.
+    ///
+    /// Whole-list rather than per-row: `clone` and `move` change more than the
+    /// row they were clicked on — a clone becomes registered, a move empties one
+    /// folder and fills another.
+    public func refreshRepoRows() async {
+        guard let registry, !isReconciling else { return }
+        isReconciling = true
+        repoRows = await registry.rows(layout: layout)
+        isReconciling = false
+    }
+
+    /// Applies exactly one fix, and says what happened either way.
+    ///
+    /// The outcome's sentence reaches `status` on success *and* on failure: a
+    /// fix that failed quietly reads exactly like one that worked, which is the
+    /// failure mode this page exists to remove.
+    public func apply(_ fix: RepoFix) async {
+        guard let registry else { return }
+        let outcome = await registry.apply(fix, layout: layout)
+        status = outcome.detail
+        await refreshRepoRows()
+    }
+
+    public func setRepositoriesRoot(_ path: String) async {
+        guard let store else { return }
+        let updated = RepoTreeLayout(root: path, owners: layout.owners)
+        do {
+            try await store.saveLayout(updated)
+        } catch {
+            status = error.localizedDescription
+            return
+        }
+        layout = updated
+        status = "Repository tree root is now \(updated.root)."
+        await refreshRepoRows()
     }
 
     // MARK: - GitHub import

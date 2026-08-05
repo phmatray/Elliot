@@ -121,6 +121,15 @@ public struct BoardView: View {
 
         ToolbarItem {
             NavigationLink {
+                RepositoriesView()
+            } label: {
+                Label("Repositories", systemImage: "square.stack.3d.up")
+            }
+            .help("Every repository of your accounts, and what is wrong with it")
+        }
+
+        ToolbarItem {
+            NavigationLink {
                 PreflightView()
             } label: {
                 Label("Preflight", systemImage: "checkmark.seal")
