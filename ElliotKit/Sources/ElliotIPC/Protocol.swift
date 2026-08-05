@@ -4,7 +4,10 @@ import Foundation
 /// Bumped whenever the wire format changes. A helper embedded in an old app
 /// bundle meeting a newer app fails loudly on `hello` rather than misbehaving
 /// halfway through a move.
-public let elliotProtocolVersion = 1
+///
+/// 2 — repository analysis: `analyzeRepo`, `listProposals`, `acceptProposals`,
+///     `rejectProposals`.
+public let elliotProtocolVersion = 2
 
 public enum ElliotRequest: Codable, Sendable {
     case hello(protocolVersion: Int, token: String, client: String)
@@ -13,6 +16,12 @@ public enum ElliotRequest: Codable, Sendable {
     case createCard(repo: String, title: String, body: String, story: StoryInput?, column: ElliotModel.Column)
     case moveCard(id: UUID, to: ElliotModel.Column, followUps: [String])
     case listRuns(cardID: UUID?, limit: Int)
+    /// Angles arrive as strings so an unknown one is a clear error message
+    /// rather than a decoding failure that loses the whole request.
+    case analyzeRepo(repo: String, angles: [String], maxStories: Int, instructions: String)
+    case listProposals(analysisID: UUID?, repo: String?, status: String?, limit: Int)
+    case acceptProposals(ids: [UUID])
+    case rejectProposals(ids: [UUID])
 
     /// The three parts of a user story, separately — so a skill generating
     /// stories from a repository can fill them in rather than hand over prose
@@ -45,6 +54,10 @@ public enum ElliotErrorCode: String, Codable, Sendable {
     case moveBlocked = "move_blocked"
     case readOnly = "read_only"
     case internalError = "internal_error"
+    case analysisNotFound = "analysis_not_found"
+    case proposalNotFound = "proposal_not_found"
+    case unknownAngle = "unknown_angle"
+    case analysisRefused = "analysis_refused"
 }
 
 public enum ElliotResponse: Codable, Sendable {
@@ -58,6 +71,9 @@ public enum ElliotPayload: Codable, Sendable {
     case card(CardDTO)
     case moved(MoveDTO)
     case runs([RunDTO])
+    case analysisStarted(AnalysisDTO)
+    case proposals([ProposalDTO])
+    case proposalsDecided(DecisionDTO)
 }
 
 // MARK: - Wire shapes
@@ -162,6 +178,86 @@ public struct RunDTO: Codable, Sendable, Hashable {
     }
 }
 
+public struct AnalysisRunDTO: Codable, Sendable, Hashable {
+    public var runID: UUID
+    public var angle: String
+    public var state: String
+
+    public init(runID: UUID, angle: String, state: String) {
+        self.runID = runID
+        self.angle = angle
+        self.state = state
+    }
+}
+
+public struct AnalysisDTO: Codable, Sendable, Hashable {
+    public var id: UUID
+    public var repo: String
+    public var angles: [String]
+    public var maxStoriesPerAngle: Int
+    public var createdAt: Date
+    public var runs: [AnalysisRunDTO]
+
+    public init(analysis: Analysis, repoName: String, runs: [AnalysisRunDTO]) {
+        id = analysis.id
+        repo = repoName
+        angles = analysis.angles.map(\.rawValue)
+        maxStoriesPerAngle = analysis.maxStoriesPerAngle
+        createdAt = analysis.createdAt
+        self.runs = runs
+    }
+}
+
+public struct ProposalDTO: Codable, Sendable, Hashable {
+    public var id: UUID
+    public var analysisID: UUID
+    public var repo: String
+    public var angle: String
+    public var title: String
+    public var story: CardDTO.StoryDTO
+    public var rationale: String
+    /// `path:line`, as cited. See `grounded` for whether they were found.
+    public var evidence: [String]
+    /// Every cited file was found in the repository. A proposal that is not
+    /// grounded may still be right — but it was not checkable.
+    public var grounded: Bool
+    public var effort: String
+    public var status: String
+    public var duplicateHint: String?
+    public var acceptedCardID: UUID?
+
+    public init(proposal: StoryProposal, repoName: String) {
+        id = proposal.id
+        analysisID = proposal.analysisID
+        repo = repoName
+        angle = proposal.angle.rawValue
+        title = proposal.title
+        story = CardDTO.StoryDTO(proposal.story)
+        rationale = proposal.rationale
+        evidence = proposal.evidence.map(\.display)
+        grounded = proposal.isGrounded
+        effort = proposal.effort.rawValue
+        status = proposal.status.rawValue
+        duplicateHint = proposal.duplicateOf?.label
+        acceptedCardID = proposal.acceptedCardID
+    }
+}
+
+public struct DecisionDTO: Codable, Sendable, Hashable {
+    public var decided: [UUID]
+    public var skipped: [UUID]
+    public var cards: [CardDTO]
+    /// Plain-language account for the agent to relay.
+    public var summary: String
+
+    public init(decided: [UUID], skipped: [UUID], cards: [CardDTO], summary: String) {
+        self.decided = decided
+        self.skipped = skipped
+        self.cards = cards
+        self.summary = summary
+    }
+}
+
 // MARK: - Framing
 
 /// One request or response per line of JSON, correlated by `id`.
@@ -179,6 +275,12 @@ public enum WireCodec {
     public static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
+        // Foundation's JSONEncoder does not otherwise promise a stable key
+        // order between two calls that encode the same keys — sortedKeys
+        // makes the wire format byte-for-byte reproducible, which the
+        // analysis round-trip tests rely on and which is a reasonable
+        // property for a wire protocol to have regardless.
+        encoder.outputFormatting = .sortedKeys
         return encoder
     }()
 

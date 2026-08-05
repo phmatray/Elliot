@@ -39,6 +39,7 @@ public final class AppModel {
     private var watcher: PRWatcher?
     private var ipcServer: IPCServer?
     private var toolConfig: ToolConfig?
+    private var analysisService: AnalysisService?
     private var observationTasks: [Task<Void, Never>] = []
 
     public init() {}
@@ -83,7 +84,11 @@ public final class AppModel {
             let preflight = PreflightService(environment: environment, config: config)
             globalChecks = await preflight.globalChecks()
 
-            startIPC(board: board, store: store)
+            let analysisService = AnalysisService(
+                store: store, launcher: scheduler, board: board, gh: ghClient
+            )
+            self.analysisService = analysisService
+            startIPC(board: board, store: store, analysis: analysisService)
 
             // Put the board back in touch with reality before anything is
             // dragged: runs died when the app last quit.
@@ -107,10 +112,10 @@ public final class AppModel {
         }
     }
 
-    private func startIPC(board: BoardService, store: BoardStore) {
+    private func startIPC(board: BoardService, store: BoardStore, analysis: AnalysisService) {
         do {
             let token = try IPCServer.loadOrCreateToken(at: StoreLocation.tokenURL)
-            let handler = MCPRequestHandler(store: store, board: board)
+            let handler = MCPRequestHandler(store: store, board: board, analysis: analysis)
             let server = IPCServer(
                 socketPath: StoreLocation.socketURL.path,
                 token: token
