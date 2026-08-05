@@ -32,7 +32,10 @@ public enum ProcessError: Error, LocalizedError {
 /// off to *after* the handler has already run, and then waits forever.
 private struct WaitState: @unchecked Sendable {
     var exited = false
-    var waiter: CheckedContinuation<Void, Never>?
+    /// A list rather than one slot: a second waiter must not overwrite — and so
+    /// orphan — the first. That is the same lost-wakeup this type exists to
+    /// prevent, and a single slot would leave it one call site away.
+    var waiters: [CheckedContinuation<Void, Never>] = []
 }
 
 /// Runs short-lived commands — `gh`, `git`, `zsh -lc` — and collects their
@@ -76,21 +79,22 @@ public enum ProcessRunner {
         // `run()`, or a fast child can exit before the handler exists.
         let waitState = Locked(WaitState())
         process.terminationHandler = { _ in
-            let parked = waitState.withLock { current -> CheckedContinuation<Void, Never>? in
+            let parked = waitState.withLock { current -> [CheckedContinuation<Void, Never>] in
                 current.exited = true
-                defer { current.waiter = nil }
-                return current.waiter
+                defer { current.waiters = [] }
+                return current.waiters
             }
-            parked?.resume()
+            for continuation in parked { continuation.resume() }
         }
 
-        // Only ever awaited sequentially (the group arm, then the post-timeout
-        // reap), so a single waiter slot is enough.
         let waitForExit: @Sendable () async -> Void = {
             await withCheckedContinuation { continuation in
+                // Checking the flag and parking happen under one lock, so the
+                // handler cannot slip between them and leave this waiting
+                // forever.
                 let alreadyExited = waitState.withLock { current -> Bool in
                     if current.exited { return true }
-                    current.waiter = continuation
+                    current.waiters.append(continuation)
                     return false
                 }
                 if alreadyExited { continuation.resume() }
