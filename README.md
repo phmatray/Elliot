@@ -53,7 +53,7 @@ The same four steps are available over MCP: `board_analyze_repo`,
 ## Build and run
 
 ```bash
-cd ElliotKit && swift test          # 408 tests, no Xcode needed
+cd ElliotKit && swift test          # 447 tests, no Xcode needed
 ./Scripts/build-app.sh              # assembles dist/Elliot.app
 open dist/Elliot.app
 ```
@@ -71,17 +71,63 @@ Re-run it if you move the app: the registration records an absolute path.
 
 ```
 ElliotModel     no dependencies    value types, the rule engine, prompt builder,
-                                   stream-json decoder, PR matcher
+                                   stream-json decoder, PR matcher,
+                                   RepoTreeLayout, RepoReconciler
 ElliotStore     GRDB               schema, migrations, the one atomic move
 ElliotProcess   —                  tool discovery, environment capture, spawning,
                                    line splitting, gh/git clients
 ElliotIPC       —                  wire protocol, unix socket server and client
 ElliotEngine    all of the above   BoardService, RunScheduler, verifiers,
-                                   PRWatcher, Reconciler, preflight
+                                   PRWatcher, Reconciler, preflight,
+                                   RepoTreeScanner, RepoRegistryService
 ElliotMCPKit    Model+IPC+Store     the MCP tools
 ElliotApp       SwiftUI            the board
 elliot-mcp      stdio              the helper Claude Code spawns
 ```
+
+## Repositories
+
+The board drives repositories you register one at a time. The **Repositories**
+page, next to Preflight in the toolbar, shows the whole fleet instead: every
+repository of the accounts you configure, what is wrong with it, and one button
+that fixes exactly that.
+
+A setting names the **tree root** (default `~/Repositories`), and the layout
+under it is `<owner>/<public|private>/<name>` — one level, exactly. Anything that
+does not match is **out of scope, not misplaced**: a sibling root like
+`_worktrees/`, a nested directory, an owner you do not manage. The distinction is
+the safety property. "Misplaced" offers to move a directory; a recursive walk
+that mistook a worktree for a clone would offer to move that too.
+
+Each row carries a verdict and the fixes it allows:
+
+| Verdict | What it means | The button |
+|---|---|---|
+| ok | cloned in the right place, and registered | — |
+| not cloned | on GitHub, no clone under the root | **Clone** |
+| not registered | cloned in the right place, unknown to Elliot | **Register** |
+| misplaced | cloned under the wrong owner or visibility folder | **Move to …** |
+| missing | registered, but nothing is at that path | **Forget** |
+| out of scope | a fork, archived, or outside the owner folders | — |
+
+Four rules hold the page together:
+
+- **One fix per click.** `clone` is additive; `move` relocates a directory in
+  your portfolio. Only one at a time keeps them at different distances from your
+  finger, and makes a failure attributable to one row.
+- **Move names its destination on the button**, refuses an occupied one, and
+  repoints the registration in the same step — so the store never points at a
+  path that was moved out from under it.
+- **Nothing deletes.** There is no `.delete` case in `RepoFix` and there must
+  never be one. **Forget** removes a registration and leaves the disk alone.
+  Nothing here pushes, commits, stashes, merges, fetches, pulls or switches a
+  branch either; keeping clones up to date is still to come.
+- **The page judges nothing.** Every verdict is computed by `RepoReconciler` in
+  `ElliotModel`, which is pure and tested. `ElliotApp` has no test target, so a
+  rule written in the view would be unprovable.
+
+Preflight gains a **Repository tree** check for the configured root, and names
+the command it used.
 
 ## Decisions worth knowing
 
@@ -217,11 +263,16 @@ matches nothing prints `warning: No matching test cases were run` and **exits
 Proof of concept. What works end to end: the board, the rule engine, the
 streaming runner with live logs and cancellation, `gh` verification, the PR
 watcher, crash reconciliation, preflight, the MCP server, the repository
-analysis that proposes stories, and the GitHub import — so the board shows the
+analysis that proposes stories, the GitHub import — so the board shows the
 work a repository already had, not only what was typed into Elliot after
-installing it.
+installing it — and the Repositories page, which reconciles the accounts you
+configure against the tree on disk and repairs a row at a time.
 
-Not done: registering a repository is UI-only (no CLI), the merge path has not
+Not done: keeping each clone up to date — `fetch`, ahead/behind, `pull --ff-only`
+— is the follow-up to the Repositories page and the only part that writes
+*inside* a working tree; the four fixes have been proven against temporary
+directories rather than a live portfolio, and `Clone` in particular has not yet
+been watched against a real `gh repo clone`. The merge path has not
 been exercised against a real pull request, the `.app` is ad-hoc signed rather
 than notarised, and the analysis has been proven end to end only against the
 fake `claude` — no real repository has been read yet. The import's two

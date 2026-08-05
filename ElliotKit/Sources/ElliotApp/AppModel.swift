@@ -125,9 +125,15 @@ public final class AppModel {
             observe(store: store)
             consumeSchedulerUpdates(scheduler)
 
+            // Loaded before preflight runs: the tree-root check reports on the
+            // configured root, and `.portfolio` is only the default for a store
+            // that has never been told otherwise.
+            layout = (try? await store.layout()) ?? .portfolio
+            registry = RepoRegistryService(store: store, config: config)
+
             status = "Checking your setup…"
             let preflight = PreflightService(environment: environment, config: config)
-            globalChecks = await preflight.globalChecks()
+            globalChecks = await preflight.globalChecks(layout: layout)
 
             let analysisService = AnalysisService(
                 store: store, launcher: scheduler, board: board, gh: ghClient
@@ -147,11 +153,6 @@ public final class AppModel {
             self.watcher = watcher
 
             importer = GitHubImportService(store: store, gh: ghClient, board: board)
-
-            // The tree root is a setting; `.portfolio` is only the default for a
-            // store that has never been told otherwise.
-            layout = (try? await store.layout()) ?? .portfolio
-            registry = RepoRegistryService(store: store, config: config)
 
             await refreshRepoChecks(using: preflight)
 
@@ -519,6 +520,12 @@ public final class AppModel {
             return
         }
         layout = updated
+        // Only the tree-root entry is recomputed. It is a pure filesystem check,
+        // where `refreshRepoChecks()` is five subprocesses per repository.
+        let check = PreflightService.repositoriesRootCheck(updated)
+        if let index = globalChecks.firstIndex(where: { $0.id == check.id }) {
+            globalChecks[index] = check
+        }
         status = "Repository tree root is now \(updated.root)."
         await refreshRepoRows()
     }
