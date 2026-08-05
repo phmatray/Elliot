@@ -18,6 +18,42 @@ struct ProcessRunnerTests {
         #expect(!result.timedOut)
     }
 
+    /// Concurrent commands each come back with their own output, entire.
+    ///
+    /// The collecting handler and the drain that follows the child's exit read
+    /// the same descriptor, and reading outside the lock while appending inside
+    /// it orders neither against the other: a handler that appends after the
+    /// result has been snapshotted loses its bytes, and one preempted between
+    /// its halves interleaves them with the drain's.
+    ///
+    /// Honest about its reach: that window is narrow — measured at three empty
+    /// results in 3840 commands, and only once the machine is oversubscribed —
+    /// so this catches a gross regression rather than the race itself. The
+    /// ordering guarantee is structural, held by the lock, not by this test.
+    @Test("Concurrent commands each return their own output, whole")
+    func concurrentOutputIsIntact() async throws {
+        let payload = String(repeating: "abcdefghij", count: 40)
+        let expected = payload + "\n"
+
+        for _ in 0..<8 {
+            await withTaskGroup(of: Void.self) { group in
+                for _ in 0..<16 {
+                    group.addTask {
+                        let result = try? await ProcessRunner.run(
+                            executable: "/bin/echo", arguments: [payload],
+                            environment: Self.environment
+                        )
+                        let stdout = result?.stdout ?? ""
+                        // Compared by length first, so a failure says how it
+                        // broke rather than printing 110 KB twice.
+                        #expect(stdout.count == expected.count, "got \(stdout.count) bytes")
+                        #expect(stdout == expected)
+                    }
+                }
+            }
+        }
+    }
+
     /// Waiting on a child must never park a thread of the cooperative pool.
     ///
     /// This is the regression guard for a run that hung forever. The blocking

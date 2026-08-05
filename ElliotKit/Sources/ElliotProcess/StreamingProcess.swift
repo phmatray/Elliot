@@ -72,50 +72,63 @@ public final class StreamingProcess: Sendable {
         // caught mid-flight by the child's exit yields its lines *after* the
         // drain has finished the stream, and an entire run arrives empty.
         outPipe.fileHandleForReading.readabilityHandler = { handle in
-            state.withLock { current in
-                guard !current.drained else { return }
+            let spent = state.withLock { current -> Bool in
+                guard !current.drained else { return true }
                 let chunk = handle.availableData
-                guard !chunk.isEmpty else { return }
+                guard !chunk.isEmpty else { return true }
                 // The durable sink gets the raw bytes before anything is parsed,
                 // so a decoding bug can never lose an event.
                 stdoutMirror?(chunk)
                 for line in current.buffer.append(chunk) { lineContinuation.yield(line) }
+                return false
             }
+            // Empty means end of file, and the source goes on firing at end of
+            // file — half a million times a second, each one now taking the
+            // lock. Detach as soon as the descriptor has nothing left to give.
+            if spent { handle.readabilityHandler = nil }
         }
 
         errPipe.fileHandleForReading.readabilityHandler = { handle in
-            state.withLock { current in
-                guard !current.drained else { return }
+            let spent = state.withLock { current -> Bool in
+                guard !current.drained else { return true }
                 let chunk = handle.availableData
-                guard !chunk.isEmpty else { return }
+                guard !chunk.isEmpty else { return true }
                 current.stderr.append(chunk)
+                return false
             }
+            if spent { handle.readabilityHandler = nil }
         }
 
         let terminationRequested = self.terminationRequested
         process.terminationHandler = { process in
-            // Detach the handlers *before* draining, so no new invocation is
-            // scheduled. One already running is handled by the lock below.
+            // Detaching stops a new invocation being scheduled; it does not wait
+            // for one already running. Closing the door under the lock does: a
+            // handler holds it across its whole read-append-yield, so once this
+            // returns none is in flight and no later one will read a byte. The
+            // descriptors are this handler's alone from here.
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
+            state.withLock { $0.drained = true }
+
+            // Drained with the lock released. A grandchild that inherited the
+            // write end keeps it open after the child is gone — fake-claude's
+            // `sleep` does exactly that, and SIGTERM reaches only the shell —
+            // and `waitForExit` takes this same lock on a cooperative thread.
+            // Blocking under it would park one for as long as the grandchild
+            // lives.
+            let rest = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let restErr = errPipe.fileHandleForReading.readDataToEndOfFile()
+            if !rest.isEmpty { stdoutMirror?(rest) }
 
             state.withLock { current in
-                let rest = outPipe.fileHandleForReading.readDataToEndOfFile()
-                if !rest.isEmpty {
-                    stdoutMirror?(rest)
-                    for line in current.buffer.append(rest) { lineContinuation.yield(line) }
-                }
-                current.stderr.append(errPipe.fileHandleForReading.readDataToEndOfFile())
+                for line in current.buffer.append(rest) { lineContinuation.yield(line) }
+                current.stderr.append(restErr)
 
                 // A process that ended without a trailing newline still has one
                 // last event waiting in the buffer.
                 if let tail = current.buffer.flush(), !tail.isEmpty {
                     lineContinuation.yield(tail)
                 }
-                // Closing the stream is the last thing done under the lock: a
-                // handler waiting on it will see `drained` and read nothing,
-                // rather than yielding into a stream nobody will ever receive.
-                current.drained = true
                 lineContinuation.finish()
             }
 

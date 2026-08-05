@@ -61,24 +61,49 @@ public enum ProcessRunner {
         // call blocks the thread it lands on, and `Task.detached` lands on the
         // cooperative pool — the fixed set of threads every `async` function in
         // the process shares.
+        //
+        // Reading the descriptor and appending what it gave happen under one
+        // lock, here and in the final drain below. Nothing else orders the two:
+        // a handler preempted between its read and its append interleaves its
+        // bytes with the drain's, or appends into a result already returned and
+        // loses them. Measured at three empty results in 3840 commands.
         outPipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            state.withLock { $0.stdout.append(chunk) }
+            let spent = state.withLock { current -> Bool in
+                guard !current.drained else { return true }
+                let chunk = handle.availableData
+                guard !chunk.isEmpty else { return true }
+                current.stdout.append(chunk)
+                return false
+            }
+            // Empty means end of file, and the source goes on firing at end of
+            // file — half a million times a second, each one now taking the
+            // lock. Detach as soon as the descriptor has nothing left to give.
+            if spent { handle.readabilityHandler = nil }
         }
         errPipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            state.withLock { $0.stderr.append(chunk) }
+            let spent = state.withLock { current -> Bool in
+                guard !current.drained else { return true }
+                let chunk = handle.availableData
+                guard !chunk.isEmpty else { return true }
+                current.stderr.append(chunk)
+                return false
+            }
+            if spent { handle.readabilityHandler = nil }
         }
 
         process.terminationHandler = { _ in
-            // Detach the handlers before draining: they read the same
-            // descriptors on their own queue, and racing them against
-            // `readDataToEndOfFile` swallows the tail of the output.
+            // Detaching stops a new invocation being scheduled; it does not wait
+            // for one already running. Closing the door under the lock does: a
+            // handler holds it across its whole read-and-append, so once this
+            // returns none is in flight and no later one will read a byte.
             outPipe.fileHandleForReading.readabilityHandler = nil
             errPipe.fileHandleForReading.readabilityHandler = nil
+            state.withLock { $0.drained = true }
 
+            // Drained with the lock released. A grandchild that inherited the
+            // write end holds it open for as long as it likes, and this lock is
+            // one an `async` caller takes: blocking under it would park a
+            // cooperative thread, which is the whole point of this file.
             let restOut = outPipe.fileHandleForReading.readDataToEndOfFile()
             let restErr = errPipe.fileHandleForReading.readDataToEndOfFile()
 
@@ -112,6 +137,13 @@ public enum ProcessRunner {
                     do { try await Task.sleep(for: timeout) } catch { return false }
                     guard process.isRunning else { return false }
                     process.terminate()
+                    // SIGTERM, then SIGKILL for a command that ignores it: the
+                    // exit is awaited below, so without the second rung a
+                    // wedged `gh` would be the very hang this file prevents.
+                    Task.detached {
+                        try? await Task.sleep(for: .seconds(5))
+                        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                    }
                     return true
                 }
             }
@@ -136,6 +168,9 @@ public enum ProcessRunner {
     private struct Collected: @unchecked Sendable {
         var stdout = Data()
         var stderr = Data()
+        /// Set once the descriptors belong to the final drain alone. Past this
+        /// point a handler still to run must not read a byte.
+        var drained = false
         var exited = false
         var waiter: CheckedContinuation<Void, Never>?
     }
