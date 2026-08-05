@@ -102,10 +102,18 @@ clean when `permission_denials` is empty too.
 on CI is legitimate. What is actionable is *silence* — 20 minutes without output
 marks the run stalled and asks.
 
-**Cancellation is a plain SIGTERM.** Claude Code handles that signal itself: it
-aborts the turn, terminates the process tree of any running Bash command, runs
-its SessionEnd hooks and exits 143. Reaching into the process group by hand
-would only pre-empt an orderly shutdown.
+**Cancellation is a plain SIGTERM — and it already reaches the group.**
+`terminate()` calls Foundation's `Process.terminate()`, and that does not stop
+at the child's own pid. Measured directly (`bash -c 'sleep 300 & sleep 300'`,
+and `Scripts/fake-claude.sh` with `FAKE_CLAUDE_MODE=hang`, both spawned through
+`Process` and stopped with `terminate()`): every descendant that shares the
+child's process group dies in the same instant the child does — a backgrounded
+`sleep` included. The one thing that survives, orphaned onto pid 1, is a
+descendant that has called `setsid()` and moved itself into its own session.
+So there is no "reach into the process group by hand" being declined here —
+Foundation already does it. Claude Code's own handling of the signal (aborting
+the turn, running its SessionEnd hooks, exiting 143) happens in its own
+process, not as a prerequisite for its ordinary Bash children's exit.
 
 **The app is the sole writer.** SQLite does not notify other processes of
 writes, so the helper opens the store read-only and routes every mutation back

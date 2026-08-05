@@ -2,11 +2,17 @@ import Foundation
 
 /// A long-running child whose stdout is consumed line by line as it arrives.
 ///
-/// Cancellation is a plain `terminate()` (SIGTERM). Claude Code handles that
-/// signal itself: it aborts the turn, **terminates the process tree of any
-/// running Bash command**, runs its SessionEnd hooks and exits 143. Reaching
-/// into the process group by hand would only pre-empt that orderly shutdown —
-/// and cost `git` the chance to release `index.lock`.
+/// Cancellation is a plain `terminate()` (SIGTERM) — and that already reaches
+/// the whole process group. Measured directly (`bash -c 'sleep 300 & sleep
+/// 300'`, and this package's own `fake-claude.sh` in `FAKE_CLAUDE_MODE=hang`,
+/// both spawned through `Process` and stopped with `terminate()`): an ordinary
+/// descendant that shares the child's process group dies in the same instant
+/// the child does. Only a descendant that has called `setsid()` and moved
+/// itself into its own session survives — orphaned, reparented to pid 1.
+/// There is no "reach into the process group by hand" left to do; Foundation
+/// already does it. Claude Code's own handling of the signal — aborting the
+/// turn, running its SessionEnd hooks, exiting 143 — happens in its own
+/// process, not as a prerequisite for its ordinary Bash children's exit.
 public final class StreamingProcess: Sendable {
     private let process: Process
     private let state = Locked(State())
@@ -110,12 +116,14 @@ public final class StreamingProcess: Sendable {
             errPipe.fileHandleForReading.readabilityHandler = nil
             state.withLock { $0.drained = true }
 
-            // Drained with the lock released. A grandchild that inherited the
-            // write end keeps it open after the child is gone — fake-claude's
-            // `sleep` does exactly that, and SIGTERM reaches only the shell —
-            // and `waitForExit` takes this same lock on a cooperative thread.
-            // Blocking under it would park one for as long as the grandchild
-            // lives.
+            // Drained with the lock released. `terminate()` already reaches the
+            // child's whole process group — measured directly, an ordinary
+            // descendant like fake-claude's looping `sleep` dies in the same
+            // instant as the shell — but a descendant that broke into its own
+            // session with `setsid()` would not, and would keep the write end
+            // open for as long as it lives. `waitForExit` takes this same lock
+            // on a cooperative thread, so blocking under it here would park one
+            // for exactly that long, on the rare process where it happens.
             let rest = outPipe.fileHandleForReading.readDataToEndOfFile()
             let restErr = errPipe.fileHandleForReading.readDataToEndOfFile()
             if !rest.isEmpty { stdoutMirror?(rest) }
