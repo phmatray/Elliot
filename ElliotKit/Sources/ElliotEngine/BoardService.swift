@@ -241,6 +241,42 @@ public actor BoardService: SystemMoving {
         return CreatedCard(card: card, alreadyExisted: false)
     }
 
+    /// Creates a card for something that already exists on GitHub.
+    ///
+    /// Deliberately not an argument on `createCard`: that one answers to the
+    /// user's New-story sheet and to `board_create_card`, and always starts in
+    /// Backlog with nothing filed. This one sets the column and the issue/PR
+    /// numbers in the **same write**, so a crash cannot leave a card the next
+    /// refresh would fail to recognise and would therefore duplicate.
+    ///
+    /// Still `BoardService`, so "the only thing that sets a card's column"
+    /// holds. It runs no rule because there is no *move*: the card did not
+    /// exist a moment ago.
+    @discardableResult
+    public func adoptCard(_ seed: CardSeed) async throws -> Card {
+        guard try await store.repo(id: seed.repoID) != nil else {
+            throw BoardError.repoNotFound(seed.repoID)
+        }
+        let now = Date()
+        let card = Card(
+            repoID: seed.repoID,
+            title: seed.title,
+            body: seed.body,
+            story: nil,
+            column: seed.column,
+            orderIndex: try await store.nextOrderIndex(repoID: seed.repoID, column: seed.column),
+            issueNumber: seed.issueNumber,
+            issueURL: seed.issueURL,
+            prNumber: seed.prNumber,
+            prURL: seed.prURL,
+            branch: seed.branch,
+            columnEnteredAt: now,
+            createdAt: seed.createdAt,
+            updatedAt: now)
+        try await store.saveCard(card)
+        return card
+    }
+
     /// A nil key means "no deduplication" — not "look for a card with no key".
     private func existingCard(forKey key: String?) async throws -> Card? {
         guard let key else { return nil }
