@@ -92,6 +92,18 @@ enum Metric {
     static let gutter: CGFloat = 10
 }
 
+enum Elapsed {
+    /// How long a run has been going, in the fact face's idiom. Shared by the
+    /// card strip and the analysis lens strip so a run reads the same wherever
+    /// it is watched.
+    static func short(from start: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        return seconds < 60
+            ? "\(seconds)s"
+            : "\(seconds / 60)m \(String(format: "%02d", seconds % 60))s"
+    }
+}
+
 /// The uppercase, letter-spaced console label used for column names and field
 /// captions.
 struct ConsoleLabel: View {

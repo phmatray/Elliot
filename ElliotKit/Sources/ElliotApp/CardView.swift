@@ -174,7 +174,7 @@ struct RunningStrip: View {
                 Spacer(minLength: 0)
                 if let started = run.startedAt {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Fact(text: elapsed(from: started, to: context.date), small: true)
+                        Fact(text: Elapsed.short(from: started, to: context.date), small: true)
                             .foregroundStyle(.tertiary)
                     }
                 }
@@ -198,12 +198,6 @@ struct RunningStrip: View {
         .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 
-    private func elapsed(from start: Date, to now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince(start)))
-        return seconds < 60
-            ? "\(seconds)s"
-            : "\(seconds / 60)m \(String(format: "%02d", seconds % 60))s"
-    }
 }
 
 /// A fact that is also a link. A real button, so it can be reached by keyboard

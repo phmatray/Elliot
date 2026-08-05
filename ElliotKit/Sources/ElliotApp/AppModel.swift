@@ -556,7 +556,7 @@ public final class AppModel {
             let cards = try await analysisService.accept(proposalIDs: ids)
             analysisNote = cards.isEmpty
                 ? "Nothing to accept — those were already decided."
-                : "Added \(cards.count) card(s) to Backlog. Nothing was filed on GitHub."
+                : "Added \(cards.count == 1 ? "1 card" : "\(cards.count) cards") to Backlog. Nothing was filed on GitHub."
         } catch {
             analysisNote = error.localizedDescription
         }
@@ -564,7 +564,7 @@ public final class AppModel {
 
     public func rejectProposals(ids: [UUID]) async {
         try? await analysisService?.reject(proposalIDs: ids)
-        analysisNote = "Rejected \(ids.count) proposal(s)."
+        analysisNote = ids.count == 1 ? "Rejected 1 proposal." : "Rejected \(ids.count) proposals."
     }
 
     /// The angles still working, for the window's header.
