@@ -146,6 +146,13 @@ public struct GitClient: Sendable {
             .hasPrefix(URL(fileURLWithPath: top).standardizedFileURL.path)
     }
 
+    /// The working tree's changes, exactly as `git status --porcelain` prints
+    /// them. Compared before and after an analysis: Elliot cannot stop a run
+    /// writing to your repository, so it notices instead.
+    public func porcelainStatus(cwd: String) async -> String {
+        (try? await run(["status", "--porcelain"], cwd: cwd)) ?? ""
+    }
+
     public func isClean(cwd: String) async -> Bool {
         let status = try? await run(["status", "--porcelain"], cwd: cwd)
         return (status ?? "dirty").isEmpty
