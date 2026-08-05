@@ -121,18 +121,22 @@ struct CardDetailView: View {
     @Environment(\.dismiss) private var dismiss
     let card: Card
 
-    @State private var draft: CardDraft?
+    @State private var editor = CardEditor()
     @State private var saveError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // `Binding($draft)` rather than a hand-rolled get/set: a getter that
-            // closed over the unwrapped local would keep reporting the value as
-            // it was when the body was last evaluated, so two mutations in one
-            // action would lose the first.
-            if let editable = Binding($draft) {
+            // A flag beside a non-optional draft, rather than `Optional<CardDraft>`
+            // plus `Binding($draft)`: that projection is backed by
+            // `BindingOperations.ForceUnwrapping`, which force-unwraps on every
+            // read, not just where it is built. `CardFieldsEditor` keeps it, so
+            // emptying the optional while the child is still mounted traps on the
+            // next layout pass — every Cancel, every successful Save. Scoping into
+            // `@State` reads through live state just as the projection did, so two
+            // mutations in one action still cannot lose the first.
+            if editor.isEditing {
                 Text("Editing").font(.title2.bold())
-                CardFieldsEditor(draft: editable)
+                CardFieldsEditor(draft: $editor.draft)
                 if let saveError {
                     Text(saveError).font(.caption).foregroundStyle(.orange)
                 }
@@ -142,15 +146,15 @@ struct CardDetailView: View {
 
             Spacer()
             HStack {
-                if draft == nil, card.issueNumber == nil {
-                    Button("Edit", systemImage: "pencil") { draft = CardDraft(card: card) }
+                if !editor.isEditing, card.issueNumber == nil {
+                    Button("Edit", systemImage: "pencil") { editor.begin(from: card) }
                 }
                 Spacer()
-                if let draft {
-                    Button("Cancel", role: .cancel) { self.draft = nil; saveError = nil }
-                    Button("Save") { save(draft) }
+                if editor.isEditing {
+                    Button("Cancel", role: .cancel) { editor.end(); saveError = nil }
+                    Button("Save") { save(editor.draft) }
                         .keyboardShortcut(.defaultAction)
-                        .disabled(!draft.isValid)
+                        .disabled(!editor.draft.isValid)
                 } else {
                     Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
                 }
@@ -208,7 +212,7 @@ struct CardDetailView: View {
     private func save(_ draft: CardDraft) {
         Task {
             if await model.updateCard(id: card.id, draft: draft) {
-                self.draft = nil
+                editor.end()
                 saveError = nil
             } else {
                 // Filed, or deleted, between opening the sheet and saving.
