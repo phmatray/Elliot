@@ -91,15 +91,30 @@ public struct GHClient: Sendable {
         )
     }
 
+    /// The fields `issues(repo:limit:)` asks for.
+    ///
+    /// Named rather than inlined so `Fixtures/gh/issues.json` can be held
+    /// against it: a captured payload is only a contract while the capture and
+    /// the request name the same fields, and nothing else would notice them
+    /// drifting apart — a field the client stops asking for arrives as `nil`,
+    /// which decodes perfectly.
+    static let issueListFields = "number,title,body,url,state,createdAt"
+
+    /// Every issue of a repo. `body` is requested because an imported card's
+    /// text is the issue's text.
     public func issues(repo: String, limit: Int = 100) async throws -> [GHIssue] {
         try await json(
             [GHIssue].self,
             arguments: ["issue", "list", "--repo", repo, "--state", "all",
-                        "--limit", String(limit), "--json", "number,title,url,state,createdAt"]
+                        "--limit", String(limit), "--json", Self.issueListFields]
         )
     }
 
     // MARK: - Pull requests
+
+    /// The fields `pullRequests(repo:limit:)` asks for — see `issueListFields`.
+    static let pullRequestListFields =
+        "number,url,title,body,headRefName,isDraft,state,createdAt,mergedAt"
 
     /// Every PR of a repo, recent first.
     ///
@@ -111,7 +126,7 @@ public struct GHClient: Sendable {
             [GHPullRequest].self,
             arguments: ["pr", "list", "--repo", repo, "--state", "all",
                         "--limit", String(limit),
-                        "--json", "number,url,title,body,headRefName,isDraft,state,createdAt,mergedAt"]
+                        "--json", Self.pullRequestListFields]
         )
     }
 

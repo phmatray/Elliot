@@ -77,18 +77,24 @@ private func rewindToV1(_ url: URL) throws {
         try db.execute(sql: #"ALTER TABLE "card" DROP COLUMN "idempotencyKey""#)
         try db.execute(sql: #"DROP TABLE "setting""#)
         try db.execute(sql: #"ALTER TABLE "repo" DROP COLUMN "visibility""#)
-        // Both post-v1 migrations, and asserted rather than assumed: `DELETE`
-        // of a row that is not there succeeds, so a stale identifier here would
-        // leave this whole file testing an upgrade that never runs.
+        try db.execute(sql: #"DROP INDEX "card_on_repo_issue""#)
+        try db.execute(sql: #"DROP INDEX "card_on_repo_pr""#)
+        try db.execute(sql: #"DROP TABLE "dismissedExternal""#)
+        // Every post-v1 migration this file undoes, and asserted rather than
+        // assumed: `DELETE` of a row that is not there succeeds, so a stale
+        // identifier here would leave this whole file testing an upgrade that
+        // never runs.
         try db.execute(
             sql: """
                 DELETE FROM "grdb_migrations"
-                WHERE "identifier" IN ('v2_repositoryLayout', 'v3_cardIdempotencyKey')
+                WHERE "identifier" IN (
+                    'v2_repositoryLayout', 'v3_cardIdempotencyKey', 'v5_githubImport'
+                )
                 """
         )
         precondition(
-            db.changesCount == 2,
-            "rewindToV1 removed \(db.changesCount) migration rows, expected 2"
+            db.changesCount == 3,
+            "rewindToV1 removed \(db.changesCount) migration rows, expected 3"
         )
     }
 }
@@ -168,6 +174,42 @@ struct SchemaUpgradeTests {
         }
         #expect(try await store.card(idempotencyKey: "K")?.orderIndex == 9)
         #expect(try await store.card(idempotencyKey: "not used") == nil)
+    }
+
+    @Test("The issue and pull-request indexes build over rows that were already there")
+    func importIndexesAfterUpgrade() async throws {
+        // The claim being tested is that the import migration cannot fail on a
+        // board that already holds work. A file born current never runs it over
+        // existing rows, so it is rewound first — the same reason this file
+        // exists at all.
+        let scratch = try Scratch()
+        let elliot = repo()
+        var filed = card(repoID: elliot.id, title: "Filed before the upgrade")
+        filed.issueNumber = 11
+        filed.prNumber = 20
+        do {
+            let old = try BoardStore.open(at: scratch.database)
+            try await old.saveRepo(elliot)
+            try await old.saveCard(filed)
+            // Two cards that filed nothing. The indexes are partial, so these
+            // must not collide with each other — on a real board they are the
+            // majority of the rows the migration runs over.
+            try await old.saveCard(card(repoID: elliot.id, orderIndex: 2048))
+            try await old.saveCard(card(repoID: elliot.id, orderIndex: 3072))
+        }
+        try rewindToV1(scratch.database)
+
+        let store = try BoardStore.open(at: scratch.database)
+        #expect(try await store.cards().count == 3)
+        #expect(try await store.card(id: filed.id)?.issueNumber == 11)
+        // And the index is live afterwards, not merely created.
+        var duplicate = card(repoID: elliot.id, orderIndex: 4096)
+        duplicate.issueNumber = 11
+        await #expect(throws: (any Error).self) {
+            try await store.saveCard(duplicate)
+        }
+        // Dismissals survive the upgrade as an empty table rather than a missing one.
+        #expect(try await store.dismissals(repoID: elliot.id).isEmpty)
     }
 
     // MARK: - What the helper refuses at the door

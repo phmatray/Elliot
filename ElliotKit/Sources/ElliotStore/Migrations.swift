@@ -50,6 +50,39 @@ enum Migrations {
         // while the table is briefly named skillRun_old.
         migrator.registerMigration("v4_analysis", foreignKeyChecks: .deferred, migrate: v4Analysis)
 
+        // v5, though the issue that asked for it called it v2: v2, v3 and v4 all
+        // reached `main` first, and a migration's name is its identity in
+        // `grdb_migrations`. Numbering it v2 would mean a second, different
+        // migration under a name every database in the field has already run.
+        migrator.registerMigration("v5_githubImport") { db in
+            // Ownership of an issue or a pull request is exclusive. Enforced by
+            // the database and not only by the planner, because an idempotent
+            // refresh is the whole point of the import and a duplicate card is
+            // indistinguishable from real work.
+            //
+            // Partial: a card that has filed nothing has NULL in both columns,
+            // and SQLite does not collide NULLs in a unique index.
+            try db.execute(sql: """
+                CREATE UNIQUE INDEX card_on_repo_issue ON card(repoID, issueNumber)
+                WHERE issueNumber IS NOT NULL
+                """)
+            try db.execute(sql: """
+                CREATE UNIQUE INDEX card_on_repo_pr ON card(repoID, prNumber)
+                WHERE prNumber IS NOT NULL
+                """)
+
+            // A card the user deleted must not come back on the next refresh.
+            // Keyed by number rather than card id: the card is gone.
+            try db.create(table: "dismissedExternal") { t in
+                t.column("repoID", .text).notNull()
+                    .references("repo", onDelete: .cascade)
+                t.column("kind", .text).notNull()
+                t.column("number", .integer).notNull()
+                t.column("dismissedAt", .datetime).notNull()
+                t.primaryKey(["repoID", "kind", "number"])
+            }
+        }
+
         return migrator
     }
 

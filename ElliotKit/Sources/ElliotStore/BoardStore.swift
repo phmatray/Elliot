@@ -513,6 +513,37 @@ public final class BoardStore: Sendable {
             .values(in: reader)
     }
 
+    // MARK: - Dismissals
+
+    public func dismissals(repoID: UUID) async throws -> Set<ExternalRef> {
+        try await reader.read { db in
+            let rows = try DismissalRecord
+                .filter(SQLColumn("repoID") == repoID.databaseKey)
+                .fetchAll(db)
+            return Set(
+                rows.compactMap { row in
+                    ExternalKind(rawValue: row.kind).map { ExternalRef(kind: $0, number: row.number) }
+                })
+        }
+    }
+
+    /// Idempotent: dismissing something already dismissed is not an error, and
+    /// the user may well delete a card a refresh brought back.
+    public func dismiss(_ ref: ExternalRef, repoID: UUID, now: Date = Date()) async throws {
+        try await requireWriter().write { db in
+            try DismissalRecord(
+                repoID: repoID, kind: ref.kind.rawValue,
+                number: ref.number, dismissedAt: now
+            ).upsert(db)
+        }
+    }
+
+    public func clearDismissals(repoID: UUID) async throws {
+        _ = try await requireWriter().write { db in
+            try DismissalRecord.filter(SQLColumn("repoID") == repoID.databaseKey).deleteAll(db)
+        }
+    }
+
     // MARK: - Audit
 
     public func audits(cardID: UUID, limit: Int = 100) async throws -> [MoveAudit] {
