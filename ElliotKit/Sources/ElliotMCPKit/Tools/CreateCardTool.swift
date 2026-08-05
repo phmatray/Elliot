@@ -4,8 +4,10 @@ import MCP
 
 /// Adds a card to the backlog.
 ///
-/// A write, so it is served only by the running app — never by writing to the
-/// database directly.
+/// A write is never served from the database. A card that appeared without the
+/// rule engine seeing it is the bug this architecture exists to prevent, so
+/// this goes over the socket or it fails — there is deliberately no offline
+/// path here, unlike every read.
 struct CreateCardTool: BoardTool {
     var tool: Tool {
         Tool(
@@ -15,6 +17,20 @@ struct CreateCardTool: BoardTool {
                 prefer supplying role / want / benefit and acceptance criteria separately \
                 rather than prose in `title`. Creating a card runs nothing on its own — \
                 moving it to `todo` is what files a GitHub issue.
+
+                Pass `idempotency_key` — any stable string you can derive again from the \
+                same idea — and a retry after a timeout returns the card you already made \
+                instead of a second one. The answer says `already_existed: true` when that \
+                happened. Without a key, two calls make two cards.
+
+                The key is unique across the **whole board**, not per repository. Derive it \
+                from the repository as well as the idea, or a sweep filing "add-license" in \
+                twenty repositories will create one card and report the other nineteen as \
+                already existing. Check the `repo` on the card that comes back.
+
+                There is no delete. A card created with the wrong text is corrected with \
+                board_update_card, and a card that turned out to be a bad idea is left in \
+                the backlog.
                 """,
             inputSchema: .object([
                 "type": .string("object"),
@@ -52,39 +68,70 @@ struct CreateCardTool: BoardTool {
                         "enum": .array(Column.allCases.map { .string($0.rawValue) }),
                         "default": .string("backlog"),
                     ]),
+                    "idempotency_key": .object([
+                        "type": .string("string"),
+                        "description": .string(
+                            "Stable key that makes this call safe to retry. Reusing it returns the existing card."
+                        ),
+                    ]),
                 ]),
                 "required": .array([.string("repo"), .string("title")]),
             ]),
-            annotations: .init(title: "Create a card", readOnlyHint: false, destructiveHint: false)
+            annotations: .init(
+                title: "Create a card",
+                readOnlyHint: false,
+                // Adds a row and starts nothing.
+                destructiveHint: false,
+                // Only with an idempotency_key, and the caller chooses whether
+                // to send one — so the honest static answer is "no".
+                idempotentHint: false,
+                openWorldHint: false
+            )
         )
     }
 
-    func call(_ args: [String: Value], bridge: AppBridge) async throws -> CallTool.Result {
+    func call(_ args: [String: Value], bridge: any BridgeProviding) async throws -> CallTool.Result {
         guard let repo = args["repo"]?.stringValue, let title = args["title"]?.stringValue else {
-            return .failure(code: "bad_argument", message: "repo and title are required.")
+            throw ToolFailure(code: "bad_argument", message: "repo and title are required.")
         }
-        let story: ElliotRequest.StoryInput? = {
-            let role = args["role"]?.stringValue ?? ""
-            let want = args["want"]?.stringValue ?? ""
-            let benefit = args["benefit"]?.stringValue ?? ""
-            guard !role.isEmpty || !want.isEmpty || !benefit.isEmpty else { return nil }
-            return .init(
-                role: role, want: want, benefit: benefit,
-                acceptanceCriteria: args["acceptance_criteria"]?.arrayValue?
-                    .compactMap(\.stringValue) ?? []
-            )
-        }()
 
-        let response = bridge.write(.createCard(
+        // `""` is what a client templating an optional field sends, and it means
+        // "no key". Passed through it would be a key like any other, and since
+        // the unique index counts an empty string as a value it would collide
+        // with the next one. The board also normalises it; a bad argument should
+        // not reach that far.
+        let key = args["idempotency_key"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 }
+
+        let response = await bridge.write(.createCard(
             repo: repo,
             title: title,
             body: args["body"]?.stringValue ?? "",
-            story: story,
-            column: args["column"]?.stringValue.flatMap(Column.init(rawValue:)) ?? .backlog
+            story: args.story(),
+            column: try args.column("column") ?? .backlog,
+            idempotencyKey: key
         ))
-        return .render(response) { payload in
-            guard case .card(let card) = payload else { return nil }
-            return ["card": .encoding(card)]
+        return try .render(response) { payload in
+            guard case .created(let created) = payload else { return nil }
+            var fields: [String: Value] = [
+                "card": try Value.encoding(created.card),
+                "already_existed": .bool(created.alreadyExisted),
+            ]
+            if created.alreadyExisted {
+                // The repository is named rather than left to be diffed out of
+                // the card. A key reused across repositories answers with the
+                // card it made in the *first* one, and a sweep that does not
+                // notice reports nineteen no-ops as nineteen successes. Said
+                // this way rather than as a comparison because `repo` may have
+                // been given as a checkout path, and only the board knows that
+                // the two name one repository.
+                ToolOutput.attachNote(
+                    &fields,
+                    "A card with this idempotency_key already existed in \(created.card.repo); "
+                        + "nothing was created. The key is unique board-wide, so check that is "
+                        + "the repository you meant."
+                )
+            }
+            return fields
         }
     }
 }

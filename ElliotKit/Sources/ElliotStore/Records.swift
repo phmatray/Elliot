@@ -33,6 +33,7 @@ extension Card: FetchableRecord, PersistableRecord {
         public static let orderIndex = GRDB.Column("orderIndex")
         public static let issueNumber = GRDB.Column("issueNumber")
         public static let prNumber = GRDB.Column("prNumber")
+        public static let idempotencyKey = GRDB.Column("idempotencyKey")
     }
 }
 

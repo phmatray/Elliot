@@ -45,13 +45,24 @@ let package = Package(
         .target(name: "TestSupport", path: "Tests/TestSupport"),
         .testTarget(name: "TestSupportTests", dependencies: ["TestSupport"]),
         .testTarget(name: "ElliotModelTests", dependencies: ["ElliotModel"]),
-        .testTarget(name: "ElliotStoreTests", dependencies: ["ElliotStore"]),
+        // GRDB is named rather than reached through ElliotStore: the migration
+        // tests build a database at the schema an older Elliot left behind, and
+        // that is raw SQL by necessity — the current record types cannot be
+        // written into a table that predates one of their columns.
+        .testTarget(
+            name: "ElliotStoreTests",
+            dependencies: ["ElliotStore", .product(name: "GRDB", package: "GRDB.swift")]
+        ),
         // Fixtures and the fake `claude` live at the repository root, not in a
         // resource bundle: the same files are used by hand from a terminal when
         // reproducing a run.
         .testTarget(name: "ElliotProcessTests", dependencies: ["ElliotProcess", "TestSupport"]),
         .testTarget(name: "ElliotEngineTests", dependencies: ["ElliotEngine", "TestSupport"]),
         .testTarget(name: "ElliotIPCTests", dependencies: ["ElliotIPC"]),
+        // Drives the tools through `BridgeProviding`, so the offline branches —
+        // the ones that never run on a machine where Elliot is up — are reached
+        // without a socket and without an app.
+        .testTarget(name: "ElliotMCPKitTests", dependencies: ["ElliotMCPKit"]),
     ],
     swiftLanguageModes: [.v6]
 )

@@ -76,4 +76,42 @@ struct ProcessRunnerTests {
         #expect(result.stderrData.count == 200_000)
         #expect(result.exitCode == 0)
     }
+
+    @Test("A child that exits before anyone waits is still reported")
+    func exitsImmediately() async throws {
+        // The other half of the same race: the concurrency test above proves a
+        // notification is not lost between siblings, this one proves it is not
+        // lost to speed. `/usr/bin/false` is what the end-to-end suites hand
+        // every verifier, so a child finishing before its waiter arrives is run
+        // hundreds of times per `swift test`.
+        try await withTimeout(.seconds(60)) {
+            for _ in 0..<20 {
+                let result = try await ProcessRunner.run(
+                    executable: "/usr/bin/false", arguments: [], environment: [:]
+                )
+                #expect(result.exitCode == 1)
+                #expect(!result.timedOut)
+            }
+        }
+    }
+
+    @Test("Something that is not an executable is refused before it is launched")
+    func refusesNonExecutable() async {
+        await #expect(throws: ProcessError.self) {
+            try await ProcessRunner.run(
+                executable: "/etc/hosts", arguments: [], environment: [:]
+            )
+        }
+    }
+
+    @Test("check throws on a non-zero exit and carries the stderr")
+    func checkThrows() async {
+        await #expect(throws: ProcessError.self) {
+            try await ProcessRunner.check(
+                executable: "/bin/sh",
+                arguments: ["-c", "echo nope 1>&2; exit 1"],
+                environment: [:]
+            )
+        }
+    }
 }

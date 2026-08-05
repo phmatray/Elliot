@@ -100,6 +100,31 @@ enum Migrations {
             }
         }
 
+        // v3 rather than a second v2: `v2_repositoryLayout` above has shipped on
+        // `main`, and a migration's name is its identity in `grdb_migrations`.
+        // Renaming a shipped one makes every database in the field try to run it
+        // again; this one has shipped nowhere, so it is the one that moves.
+        migrator.registerMigration("v3_cardIdempotencyKey") { db in
+            try db.alter(table: "card") { t in
+                t.add(column: "idempotencyKey", .text)
+            }
+            // The retry of a create that timed out on the way back may reach a
+            // different app process than the first attempt, so the "only one
+            // card" guarantee has to be in the schema. SQLite counts NULLs as
+            // distinct here, which is what lets every keyless card — all of the
+            // ones made in the UI — share the column without colliding.
+            //
+            // Unique on the key alone, not on `(repoID, idempotencyKey)`: the
+            // lookup names only the key, and a key that could repeat across
+            // repositories would answer with an arbitrary one of them.
+            try db.create(
+                index: "card_on_idempotencyKey",
+                on: "card",
+                columns: ["idempotencyKey"],
+                unique: true
+            )
+        }
+
         return migrator
     }
 }

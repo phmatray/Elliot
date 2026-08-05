@@ -34,6 +34,12 @@ private func card(title: String = "Run log", column: ElliotModel.Column = .backl
     )
 }
 
+/// A whole page of cards, for the stubs that only care that *something* came
+/// back. `total` matches the count so nothing reads as truncated by accident.
+private func page(_ cards: [CardDTO] = [], limit: Int = ElliotPaging.cardLimitDefault) -> CardPage {
+    CardPage(cards: cards, total: cards.count, limit: limit)
+}
+
 @Suite("IPC", .serialized)
 struct IPCTests {
 
@@ -44,7 +50,7 @@ struct IPCTests {
             guard case .listCards = request else {
                 return .failure(code: .internalError, message: "unexpected", hint: nil)
             }
-            return .ok(.cards([CardDTO(card: card(), repoName: "phmatray/Elliot")]))
+            return .ok(.cards(page([CardDTO(card: card(), repoName: "phmatray/Elliot")], limit: 50)))
         }
         defer { server.stop() }
 
@@ -55,9 +61,10 @@ struct IPCTests {
             Issue.record("expected cards, got \(response)")
             return
         }
-        #expect(cards.count == 1)
-        #expect(cards[0].title == "Run log")
-        #expect(cards[0].repo == "phmatray/Elliot")
+        #expect(cards.cards.count == 1)
+        #expect(cards.cards[0].title == "Run log")
+        #expect(cards.cards[0].repo == "phmatray/Elliot")
+        #expect(!cards.truncated)
     }
 
     @Test("A user story survives the wire in its three parts")
@@ -84,10 +91,11 @@ struct IPCTests {
                 role: "developer", want: "the run log", benefit: "faster diagnosis",
                 acceptanceCriteria: ["streams live"]
             ),
-            column: .backlog
+            column: .backlog,
+            idempotencyKey: nil
         ))
 
-        guard case .createCard(_, _, _, let input?, _) = await stored.last else {
+        guard case .createCard(_, _, _, let input?, _, _) = await stored.last else {
             Issue.record("story did not survive the request")
             return
         }
@@ -129,7 +137,7 @@ struct IPCTests {
     func unauthorized() throws {
         let path = temporarySocketPath()
         let server = try makeServer(path: path) { _ in
-            .ok(.cards([]))
+            .ok(.cards(page()))
         }
         defer { server.stop() }
 
@@ -145,7 +153,7 @@ struct IPCTests {
     @Test("A helper speaking an older protocol is told to re-register")
     func protocolMismatch() throws {
         let path = temporarySocketPath()
-        let server = try makeServer(path: path) { _ in .ok(.cards([])) }
+        let server = try makeServer(path: path) { _ in .ok(.cards(page())) }
         defer { server.stop() }
 
         let fd = try UnixSocket.connect(path: path)
@@ -153,7 +161,7 @@ struct IPCTests {
         try UnixSocket.write(fd: fd, data: WireCodec.encodeLine(Envelope(
             body: ElliotRequest.hello(protocolVersion: 999, token: token, client: "old-helper")
         )))
-        let line = try #require(UnixSocket.readLine(fd: fd))
+        let line = try #require(UnixSocket.LineReader(fd: fd).next())
         let response = try WireCodec.decode(Envelope<ElliotResponse>.self, from: line).body
 
         guard case .failure(let code, _, let hint) = response else {
@@ -180,7 +188,7 @@ struct IPCTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         #expect(!UnixSocket.isLive(path: path))
-        let server = try makeServer(path: path) { _ in .ok(.cards([])) }
+        let server = try makeServer(path: path) { _ in .ok(.cards(page())) }
         defer { server.stop() }
         #expect(UnixSocket.isLive(path: path))
     }
@@ -188,17 +196,17 @@ struct IPCTests {
     @Test("A second Elliot refuses to take over a live socket")
     func doubleStartRefused() throws {
         let path = temporarySocketPath()
-        let first = try makeServer(path: path) { _ in .ok(.cards([])) }
+        let first = try makeServer(path: path) { _ in .ok(.cards(page())) }
         defer { first.stop() }
 
-        let second = IPCServer(socketPath: path, token: token) { _ in .ok(.cards([])) }
+        let second = IPCServer(socketPath: path, token: token) { _ in .ok(.cards(page())) }
         #expect(throws: IPCServer.StartError.self) { try second.start() }
     }
 
     @Test("Several requests can share one connection")
     func multipleRequestsPerConnection() throws {
         let path = temporarySocketPath()
-        let server = try makeServer(path: path) { _ in .ok(.cards([])) }
+        let server = try makeServer(path: path) { _ in .ok(.cards(page())) }
         defer { server.stop() }
 
         let fd = try UnixSocket.connect(path: path)
@@ -206,13 +214,17 @@ struct IPCTests {
         try UnixSocket.write(fd: fd, data: WireCodec.encodeLine(Envelope(
             body: ElliotRequest.hello(protocolVersion: elliotProtocolVersion, token: token, client: "t")
         )))
-        _ = UnixSocket.readLine(fd: fd)
+        // One reader for the connection, as the client and the server both keep:
+        // a buffered read of one frame can already hold the front of the next,
+        // and a reader per frame would drop it.
+        let reader = UnixSocket.LineReader(fd: fd)
+        _ = reader.next()
 
         for _ in 0..<5 {
             try UnixSocket.write(fd: fd, data: WireCodec.encodeLine(Envelope(
                 body: ElliotRequest.listCards(repo: nil, column: nil, limit: 1)
             )))
-            let line = try #require(UnixSocket.readLine(fd: fd))
+            let line = try #require(reader.next())
             let response = try WireCodec.decode(Envelope<ElliotResponse>.self, from: line).body
             guard case .ok = response else {
                 Issue.record("expected ok")
@@ -221,11 +233,44 @@ struct IPCTests {
         }
     }
 
+    @Test("Frames that arrive in one read are handed back one at a time")
+    func bufferedFramesAreNotLost() throws {
+        // The buffered reader pulls up to 64 KB at a time, so three small frames
+        // written together arrive in a single `read()`. Anything that dropped
+        // the leftover would lose two requests without a word — and the server
+        // reads its whole conversation through one of these.
+        var pair: [Int32] = [0, 0]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+        // The writing end is closed on purpose below, and a descriptor closed
+        // twice is a descriptor another test may have been given in between.
+        defer {
+            close(pair[0])
+            if pair[1] >= 0 { close(pair[1]) }
+        }
+
+        try UnixSocket.write(fd: pair[1], data: Data("one\ntwo\nthree\n".utf8))
+        let reader = UnixSocket.LineReader(fd: pair[0])
+
+        #expect(reader.next().map { String(decoding: $0, as: UTF8.self) } == "one")
+        #expect(reader.next().map { String(decoding: $0, as: UTF8.self) } == "two")
+        #expect(reader.next().map { String(decoding: $0, as: UTF8.self) } == "three")
+
+        // A frame split across reads is still one frame.
+        try UnixSocket.write(fd: pair[1], data: Data("half".utf8))
+        try UnixSocket.write(fd: pair[1], data: Data("-and-half\n".utf8))
+        #expect(reader.next().map { String(decoding: $0, as: UTF8.self) } == "half-and-half")
+
+        // End of stream is nil, not an empty frame that decodes to nothing.
+        close(pair[1])
+        pair[1] = -1
+        #expect(reader.next() == nil)
+    }
+
     @Test("A large payload survives framing")
     func largePayload() throws {
         let path = temporarySocketPath()
         let many = (0..<500).map { CardDTO(card: card(title: "Card \($0)"), repoName: "phmatray/Elliot") }
-        let server = try makeServer(path: path) { _ in .ok(.cards(many)) }
+        let server = try makeServer(path: path) { _ in .ok(.cards(page(many, limit: 500))) }
         defer { server.stop() }
 
         let client = IPCClient(socketPath: path, token: token)
@@ -234,20 +279,20 @@ struct IPCTests {
             Issue.record("expected cards")
             return
         }
-        #expect(cards.count == 500)
-        #expect(cards.last?.title == "Card 499")
+        #expect(cards.cards.count == 500)
+        #expect(cards.cards.last?.title == "Card 499")
     }
 
     @Test("Malformed input is answered, not fatal")
     func malformedRequest() throws {
         let path = temporarySocketPath()
-        let server = try makeServer(path: path) { _ in .ok(.cards([])) }
+        let server = try makeServer(path: path) { _ in .ok(.cards(page())) }
         defer { server.stop() }
 
         let fd = try UnixSocket.connect(path: path)
         defer { close(fd) }
         try UnixSocket.write(fd: fd, data: Data("this is not json\n".utf8))
-        let line = try #require(UnixSocket.readLine(fd: fd))
+        let line = try #require(UnixSocket.LineReader(fd: fd).next())
         let response = try WireCodec.decode(Envelope<ElliotResponse>.self, from: line).body
         guard case .failure(let code, _, _) = response else {
             Issue.record("expected a failure")

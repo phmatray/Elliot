@@ -87,17 +87,47 @@ enum UnixSocket {
     }
 
     /// Reads until a newline. Returns nil at end of stream.
-    static func readLine(fd: Int32, limit: Int = 8 * 1024 * 1024) -> Data? {
-        var line = Data()
-        var byte: UInt8 = 0
-        while line.count < limit {
-            let n = read(fd, &byte, 1)
-            if n == 0 { return line.isEmpty ? nil : line }
-            if n < 0 { return line.isEmpty ? nil : line }
-            if byte == 0x0A { return line }
-            line.append(byte)
+    ///
+    /// One connection's worth of state, because a buffered read pulls the front
+    /// of the *next* frame in with the end of this one and dropping that would
+    /// lose a request. A free function cannot hold it.
+    ///
+    /// Buffered rather than a `read()` per byte: a card page is up to five
+    /// hundred rows, `IPCClient` opens a connection per request, and that was a
+    /// syscall per byte of every answer, twice — once on each side.
+    final class LineReader {
+        private let fd: Int32
+        private let limit: Int
+        private var pending = Data()
+
+        init(fd: Int32, limit: Int = 8 * 1024 * 1024) {
+            self.fd = fd
+            self.limit = limit
         }
-        return line
+
+        func next() -> Data? {
+            var chunk = [UInt8](repeating: 0, count: 64 * 1024)
+            while true {
+                if let newline = pending.firstIndex(of: 0x0A) {
+                    let line = Data(pending[pending.startIndex..<newline])
+                    pending = Data(pending[pending.index(after: newline)...])
+                    return line
+                }
+                // A frame this long is a client that has stopped framing.
+                if pending.count >= limit { return take() }
+
+                let n = chunk.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+                // Both ends of the stream, and the socket timeout, arrive here:
+                // whatever was already buffered is the answer, and nothing is.
+                guard n > 0 else { return pending.isEmpty ? nil : take() }
+                pending.append(contentsOf: chunk[0..<n])
+            }
+        }
+
+        private func take() -> Data {
+            defer { pending = Data() }
+            return pending
+        }
     }
 
     static func write(fd: Int32, data: Data) throws {

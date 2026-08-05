@@ -103,7 +103,7 @@ struct EndToEndTests {
                 benefit: "I can diagnose without a terminal",
                 acceptanceCriteria: ["the log streams live"]
             )
-        )
+        ).card
 
         let result = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
         guard case .moved(let runID?) = result else {
@@ -148,7 +148,7 @@ struct EndToEndTests {
         let stack = try await Stack.make(fixture: "denied.ndjson")
         defer { stack.cleanUp() }
 
-        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Push something")
+        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Push something").card
         _ = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
 
         let run = try await stack.awaitRun(cardID: card.id)
@@ -166,7 +166,7 @@ struct EndToEndTests {
         )
         defer { stack.cleanUp() }
 
-        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Anything")
+        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Anything").card
         _ = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
 
         let run = try await stack.awaitRun(cardID: card.id)
@@ -187,7 +187,7 @@ struct EndToEndTests {
         )
         defer { stack.cleanUp() }
 
-        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Long one")
+        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Long one").card
         guard case .moved(let runID?) = try await stack.board.move(
             cardID: card.id, to: .todo, origin: .userDrag
         ) else {
@@ -215,7 +215,7 @@ struct EndToEndTests {
         let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
         defer { stack.cleanUp() }
 
-        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Already running")
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Already running").card
         card.column = .inProgress
         card.issueNumber = 47
         card.prNumber = 279
@@ -232,7 +232,7 @@ struct EndToEndTests {
         let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
         defer { stack.cleanUp() }
 
-        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Interrupted")
+        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Interrupted").card
         var orphan = SkillRun(
             cardID: card.id, repoID: stack.repo.id, kind: .createIssue,
             prompt: "/ai-migration-kit:create-issue x", cwd: stack.repo.path,
