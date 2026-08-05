@@ -197,7 +197,9 @@ public struct ElliotMCPServer: Sendable {
             name: "board_list_proposals",
             description: """
                 List the user stories an analysis proposed. Give either \
-                analysis_id or repo. `grounded` is false when a story cites a \
+                analysis_id or repo. Defaults to status: proposed — the ones \
+                still needing a decision; pass status to see accepted or \
+                rejected ones too. `grounded` is false when a story cites a \
                 file that is not there — it may still be right, but it was not \
                 checkable. `duplicate_hint` flags a story that looks like \
                 something already on the board or already filed.
@@ -241,7 +243,10 @@ public struct ElliotMCPServer: Sendable {
             name: "board_reject_proposals",
             description: """
                 Mark proposals as rejected. They stay on the analysis so it still \
-                reads as what it found, including what was turned down.
+                reads as what it found, including what was turned down. \
+                `decided` in the result means the id named a proposal that \
+                exists, not that this call is what rejected it — one already \
+                decided by an earlier or concurrent call is reported the same way.
                 """,
             inputSchema: .object([
                 "type": .string("object"),
@@ -282,6 +287,19 @@ public struct ElliotMCPServer: Sendable {
 
     // MARK: - Tools
 
+    /// Matches `repo` against the offline snapshot the same way the running
+    /// app resolves it. A name that matches nothing must fail loudly: falling
+    /// through to `repoID: nil` would silently drop the filter and hand back
+    /// every repo's rows, in exactly the situation — Elliot not running —
+    /// where the caller has the least ability to notice.
+    static func repoNotFound(_ repo: String, in repos: [Repo]) -> CallTool.Result {
+        error(
+            code: "repo_not_found",
+            message: "No registered repository matches \"\(repo)\".",
+            hint: "Known: \(repos.map(\.nameWithOwner).joined(separator: ", "))"
+        )
+    }
+
     private func listCards(_ args: [String: Value]) async throws -> CallTool.Result {
         let repo = args["repo"]?.stringValue
         let column = args["column"]?.stringValue.flatMap(Column.init(rawValue:))
@@ -297,6 +315,9 @@ public struct ElliotMCPServer: Sendable {
             let repos = try await store.repos()
             let match = repo.flatMap { name in
                 repos.first { $0.nameWithOwner == name || $0.path == name }
+            }
+            if let repo, match == nil {
+                return Self.repoNotFound(repo, in: repos)
             }
             let cards = try await store.cards(repoID: match?.id, column: column).prefix(limit)
             let dtos = cards.map { card in
@@ -468,6 +489,9 @@ public struct ElliotMCPServer: Sendable {
             let repos = try await store.repos()
             let match = repo.flatMap { name in
                 repos.first { $0.nameWithOwner == name || $0.path == name }
+            }
+            if let repo, match == nil {
+                return Self.repoNotFound(repo, in: repos)
             }
             let proposals = try await store.proposals(
                 analysisID: analysisID,

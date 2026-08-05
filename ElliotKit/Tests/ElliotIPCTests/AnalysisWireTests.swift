@@ -1,10 +1,10 @@
-import ElliotMCPKit
 import ElliotModel
 import Foundation
 import MCP
 import Testing
 
 @testable import ElliotIPC
+@testable import ElliotMCPKit
 
 @Suite("Analysis wire format")
 struct AnalysisWireTests {
@@ -102,6 +102,7 @@ struct AnalysisMCPToolTests {
         #expect(tool("board_list_proposals")?.annotations.readOnlyHint == true)
         #expect(tool("board_analyze_repo")?.annotations.readOnlyHint == false)
         #expect(tool("board_accept_proposals")?.annotations.readOnlyHint == false)
+        #expect(tool("board_reject_proposals")?.annotations.readOnlyHint == false)
     }
 
     /// The descriptions are the only thing an agent reads before acting. Two
@@ -123,6 +124,21 @@ struct AnalysisMCPToolTests {
         #expect(accept.contains("github"))
     }
 
+    @Test("The list description says what status it defaults to")
+    func listProposalsDescriptionMentionsTheDefaultStatus() throws {
+        let listDescription = try #require(tool("board_list_proposals")?.description)
+        #expect(listDescription.lowercased().contains("proposed"))
+    }
+
+    /// `AnalysisService.reject` discards its per-id claim result, so `decided`
+    /// in the response is truthful only for accept. An agent reading the
+    /// static description before calling has no other way to learn that.
+    @Test("The reject description says decided doesn't mean this call was the one that decided it")
+    func rejectDescriptionCarriesTheDecidedCaveat() throws {
+        let rejectDescription = try #require(tool("board_reject_proposals")?.description)
+        #expect(rejectDescription.lowercased().contains("decided"))
+    }
+
     @Test("Every angle is offered in the schema")
     func schemaEnumeratesAngles() throws {
         let analyze = try #require(tool("board_analyze_repo"))
@@ -130,5 +146,33 @@ struct AnalysisMCPToolTests {
         for angle in AnalysisAngle.allCases {
             #expect(json.contains(angle.rawValue))
         }
+    }
+
+    /// The bug this guards: the offline branch of `board_list_proposals` and
+    /// `board_list_cards` used to let an unmatched `repo` silently fall
+    /// through to "no filter" rather than fail — returning every repo's rows
+    /// in exactly the situation where the caller has the least way to notice.
+    @Test("A repo that matches nothing fails loudly, naming what was asked and what is known")
+    func repoNotFoundNamesWhatWasAskedAndWhatIsKnown() throws {
+        let repos = [
+            Repo(path: "/tmp/elliot", nameWithOwner: "phmatray/Elliot", displayName: "Elliot"),
+            Repo(path: "/tmp/other", nameWithOwner: "phmatray/Other", displayName: "Other"),
+        ]
+        let result = ElliotMCPServer.repoNotFound("no/such-repo", in: repos)
+        #expect(result.isError == true)
+
+        let content = try #require(result.content.first)
+        guard case .text(let text, _, _) = content else {
+            Issue.record("Expected a text content block, got \(content)")
+            return
+        }
+        // Decoded, not raw-`contains`ed: JSONEncoder escapes "/" as "\/", which
+        // a plain substring check on the wire text would trip over.
+        let data = try #require(text.data(using: .utf8))
+        let fields = try WireCodec.decoder.decode([String: String].self, from: data)
+        #expect(fields["error"] == "repo_not_found")
+        #expect(fields["message"]?.contains("no/such-repo") == true)
+        #expect(fields["hint"]?.contains("phmatray/Elliot") == true)
+        #expect(fields["hint"]?.contains("phmatray/Other") == true)
     }
 }
