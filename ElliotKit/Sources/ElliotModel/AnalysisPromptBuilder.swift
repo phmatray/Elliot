@@ -21,6 +21,7 @@ public enum AnalysisPromptBuilder {
     ///   - angle: The lens the repository is read through.
     ///   - repoNameWithOwner: Repository identifier, e.g. "phmatray/Elliot".
     ///   - outputPath: Absolute path where the artifact is written; the prompt announces this.
+    ///     May contain spaces (e.g. `~/Library/Application Support/…`).
     ///   - existingTitles: User story titles already on the board or filed as issues. Must arrive
     ///     newest-first; the function takes the 80 most recent. (Task 9's caller sorts before
     ///     calling; an unsorted list silently shows the 80 oldest.)
@@ -116,9 +117,12 @@ public enum AnalysisPromptBuilder {
 
     /// The artifact path a prompt announces. The runtime counterpart of the
     /// property test, and the same thing the fake `claude` does in shell.
+    /// Parses to end of line and trims trailing whitespace, so paths with spaces
+    /// (e.g. `~/Library/Application Support/…`) are recovered whole.
     public static func outputPath(in prompt: String) -> String? {
         guard let range = prompt.range(of: outputMarker) else { return nil }
-        let tail = prompt[range.upperBound...].prefix { !$0.isWhitespace }
-        return tail.isEmpty ? nil : String(tail)
+        let tail = prompt[range.upperBound...].prefix { $0 != "\n" }
+        let path = String(tail).trimmingCharacters(in: .whitespaces)
+        return path.isEmpty ? nil : path
     }
 }

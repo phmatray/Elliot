@@ -116,4 +116,26 @@ struct AnalysisPromptBuilderTests {
         #expect(prompt.contains("Crash when /tmp/foo"))
         #expect(prompt.contains("Focus on and the IPC layer"))
     }
+
+    @Test("Paths with spaces (like the real default) are parsed whole")
+    func pathsWithSpacesAreParsedWhole() {
+        // The real default outputPath is ~/Library/Application Support/Elliot/analyses/A/B/stories.json
+        // which contains two spaces. The parser must recover the entire path, not stop at the first space.
+        let pathWithSpaces = "/Users/philippe/Library/Application Support/Elliot/analyses/A/B/stories.json"
+        let prompt = AnalysisPromptBuilder.prompt(
+            angle: .bugs,
+            repoNameWithOwner: "phmatray/Elliot",
+            outputPath: pathWithSpaces,
+            existingTitles: [],
+            maxStories: 8
+        )
+
+        // The path should be extracted whole, including all spaces.
+        let extracted = AnalysisPromptBuilder.outputPath(in: prompt)
+        #expect(extracted == pathWithSpaces)
+
+        // The marker should still appear exactly once.
+        let occurrences = prompt.components(separatedBy: AnalysisPromptBuilder.outputMarker).count - 1
+        #expect(occurrences == 1)
+    }
 }
