@@ -15,6 +15,18 @@ public enum AnalysisPromptBuilder {
     /// crowds out the briefing.
     public static let maxExistingTitles = 80
 
+    /// Builds the prompt for one analysis angle.
+    ///
+    /// - Parameters:
+    ///   - angle: The lens the repository is read through.
+    ///   - repoNameWithOwner: Repository identifier, e.g. "phmatray/Elliot".
+    ///   - outputPath: Absolute path where the artifact is written; the prompt announces this.
+    ///   - existingTitles: User story titles already on the board or filed as issues. Must arrive
+    ///     newest-first; the function takes the 80 most recent. (Task 9's caller sorts before
+    ///     calling; an unsorted list silently shows the 80 oldest.)
+    ///   - maxStories: Maximum number of proposals in the output.
+    ///   - extraInstructions: Free text from the person asking; embedded after the briefing.
+    ///   - githubTitlesAvailable: Whether the full list of GitHub issues was reachable.
     public static func prompt(
         angle: AnalysisAngle,
         repoNameWithOwner: String,
@@ -72,12 +84,13 @@ public enum AnalysisPromptBuilder {
             - Return fewer than \(maxStories) rather than padding the list.
             """)
 
-        let titles = Array(existingTitles.prefix(maxExistingTitles))
-        if !titles.isEmpty {
+        let sanitizedTitles = Array(existingTitles.prefix(maxExistingTitles))
+            .map { $0.replacingOccurrences(of: outputMarker, with: "") }
+        if !sanitizedTitles.isEmpty {
             var section = """
                 Already on the board or already filed — do not propose these again:
 
-                \(titles.map { "- \($0)" }.joined(separator: "\n"))
+                \(sanitizedTitles.map { "- \($0)" }.joined(separator: "\n"))
                 """
             if !githubTitlesAvailable {
                 // Saying the check was partial is better than letting the model
@@ -93,7 +106,7 @@ public enum AnalysisPromptBuilder {
             )
         }
 
-        let extra = extraInstructions.trimmed()
+        let extra = extraInstructions.trimmed().replacingOccurrences(of: outputMarker, with: "")
         if !extra.isEmpty {
             sections.append("Additional instructions from the person asking:\n\n\(extra)")
         }

@@ -92,4 +92,28 @@ struct AnalysisPromptBuilderTests {
     func noMarkerNoPath() {
         #expect(AnalysisPromptBuilder.outputPath(in: "nothing here") == nil)
     }
+
+    @Test("Free-text fields containing the marker are sanitized to preserve the invariant")
+    func markerInFreeTextIsSanitized() {
+        // The marker appearing in existingTitles (from GitHub issue titles or board cards)
+        // or extraInstructions (from user input) must not duplicate the marker in the prompt.
+        let titles = [
+            "Crash when \(AnalysisPromptBuilder.outputMarker)/tmp/foo",
+            "Normal title"
+        ]
+        let extra = "Focus on \(AnalysisPromptBuilder.outputMarker)and the IPC layer"
+        let prompt = build(titles: titles, extra: extra)
+
+        // The marker should still appear exactly once, at the artifact path announcement.
+        let occurrences = prompt.components(separatedBy: AnalysisPromptBuilder.outputMarker).count - 1
+        #expect(occurrences == 1)
+
+        // The path extraction should still work.
+        let path = AnalysisPromptBuilder.outputPath(in: prompt)
+        #expect(path == "/tmp/elliot/analyses/A/B/stories.json")
+
+        // The sanitized content (without the marker) should still be in the prompt.
+        #expect(prompt.contains("Crash when /tmp/foo"))
+        #expect(prompt.contains("Focus on and the IPC layer"))
+    }
 }
