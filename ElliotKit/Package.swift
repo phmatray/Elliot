@@ -46,7 +46,10 @@ let package = Package(
         // reproducing a run.
         .testTarget(name: "ElliotProcessTests", dependencies: ["ElliotProcess"]),
         .testTarget(name: "ElliotEngineTests", dependencies: ["ElliotEngine"]),
-        .testTarget(name: "ElliotIPCTests", dependencies: ["ElliotIPC"]),
+        .testTarget(
+            name: "ElliotIPCTests",
+            dependencies: ["ElliotIPC", "ElliotMCPKit", .product(name: "MCP", package: "swift-sdk")]
+        ),
     ],
     swiftLanguageModes: [.v6]
 )

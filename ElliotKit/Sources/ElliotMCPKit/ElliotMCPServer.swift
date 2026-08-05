@@ -146,6 +146,115 @@ public struct ElliotMCPServer: Sendable {
             ]),
             annotations: .init(title: "List runs", readOnlyHint: true)
         ),
+        Tool(
+            name: "board_analyze_repo",
+            description: """
+                Read a repository through one or more lenses and propose user \
+                stories. Each angle is its own `claude -p` run and takes minutes; \
+                this returns as soon as the runs are queued. Poll board_list_runs \
+                to follow them, then board_list_proposals to read what they found. \
+                Proposals are not cards: nothing reaches the board until \
+                board_accept_proposals is called.
+                """,
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "repo": .object([
+                        "type": .string("string"),
+                        "description": .string("Repository as owner/name, or an absolute path."),
+                    ]),
+                    "angles": .object([
+                        "type": .string("array"),
+                        "items": .object([
+                            "type": .string("string"),
+                            "enum": .array(AnalysisAngle.allCases.map { .string($0.rawValue) }),
+                        ]),
+                        "description": .string(
+                            "One run per angle. bugs = defects; quickWins = high value for one "
+                            + "sitting; features = capabilities the code is asking for; "
+                            + "techDebt = structure costing something now; tests = uncovered "
+                            + "invariants; docsAndDX = friction a newcomer hits."
+                        ),
+                    ]),
+                    "max_stories": .object([
+                        "type": .string("integer"),
+                        "description": .string("Cap per angle, 1–30."),
+                        "default": .int(8),
+                    ]),
+                    "instructions": .object([
+                        "type": .string("string"),
+                        "description": .string(
+                            "Extra direction folded into every angle's prompt, e.g. "
+                            + "\"concentrate on the process layer\"."
+                        ),
+                    ]),
+                ]),
+                "required": .array([.string("repo"), .string("angles")]),
+            ]),
+            annotations: .init(title: "Analyse a repository", readOnlyHint: false, destructiveHint: false)
+        ),
+        Tool(
+            name: "board_list_proposals",
+            description: """
+                List the user stories an analysis proposed. Give either \
+                analysis_id or repo. `grounded` is false when a story cites a \
+                file that is not there — it may still be right, but it was not \
+                checkable. `duplicate_hint` flags a story that looks like \
+                something already on the board or already filed.
+                """,
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "analysis_id": .object(["type": .string("string")]),
+                    "repo": .object(["type": .string("string")]),
+                    "status": .object([
+                        "type": .string("string"),
+                        "enum": .array(ProposalStatus.allCases.map { .string($0.rawValue) }),
+                        "default": .string("proposed"),
+                    ]),
+                    "limit": .object(["type": .string("integer"), "default": .int(100)]),
+                ]),
+            ]),
+            annotations: .init(title: "List proposals", readOnlyHint: true)
+        ),
+        Tool(
+            name: "board_accept_proposals",
+            description: """
+                Turn proposals into Backlog cards. This files nothing on GitHub: \
+                a card in Backlog runs nothing, and moving it to `todo` is what \
+                opens an issue. Proposals already accepted or rejected are \
+                skipped rather than duplicated.
+                """,
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "proposal_ids": .object([
+                        "type": .string("array"),
+                        "items": .object(["type": .string("string")]),
+                    ]),
+                ]),
+                "required": .array([.string("proposal_ids")]),
+            ]),
+            annotations: .init(title: "Accept proposals", readOnlyHint: false, destructiveHint: false)
+        ),
+        Tool(
+            name: "board_reject_proposals",
+            description: """
+                Mark proposals as rejected. They stay on the analysis so it still \
+                reads as what it found, including what was turned down.
+                """,
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "proposal_ids": .object([
+                        "type": .string("array"),
+                        "items": .object(["type": .string("string")]),
+                    ]),
+                ]),
+                "required": .array([.string("proposal_ids")]),
+            ]),
+            annotations: .init(title: "Reject proposals", readOnlyHint: false, destructiveHint: false)
+        ),
     ]
 
     // MARK: - Dispatch
@@ -159,6 +268,10 @@ public struct ElliotMCPServer: Sendable {
             case "board_create_card": return try await createCard(args)
             case "board_move_card": return try await moveCard(args)
             case "board_list_runs": return try await listRuns(args)
+            case "board_analyze_repo": return try await analyzeRepo(args)
+            case "board_list_proposals": return try await listProposals(args)
+            case "board_accept_proposals": return try await decideProposals(args, accept: true)
+            case "board_reject_proposals": return try await decideProposals(args, accept: false)
             default:
                 return Self.error(code: "unknown_tool", message: "No such tool: \(name)")
             }
@@ -294,6 +407,110 @@ public struct ElliotMCPServer: Sendable {
         case .offline(let store):
             let runs = try await store.runs(cardID: cardID, limit: limit).map(RunDTO.init)
             return Self.ok(["runs": Self.encode(runs), "source": .string("offline-db")])
+        }
+    }
+
+    private func analyzeRepo(_ args: [String: Value]) async throws -> CallTool.Result {
+        guard let repo = args["repo"]?.stringValue else {
+            return Self.error(code: "bad_argument", message: "repo is required.")
+        }
+        let angles = args["angles"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        guard !angles.isEmpty else {
+            return Self.error(
+                code: "bad_argument",
+                message: "angles must list at least one lens.",
+                hint: "One of: \(AnalysisAngle.allCases.map(\.rawValue).joined(separator: ", "))."
+            )
+        }
+
+        let response = bridge.write(.analyzeRepo(
+            repo: repo,
+            angles: angles,
+            maxStories: args["max_stories"]?.intValue ?? 8,
+            instructions: args["instructions"]?.stringValue ?? ""
+        ))
+        return Self.render(response) { payload in
+            guard case .analysisStarted(let analysis) = payload else { return nil }
+            return [
+                "analysis_id": .string(analysis.id.uuidString),
+                "repo": .string(analysis.repo),
+                "runs": Self.encode(analysis.runs),
+                "note": .string(
+                    "Each run takes minutes. Poll board_list_runs, then "
+                    + "board_list_proposals with this analysis_id."
+                ),
+            ]
+        }
+    }
+
+    private func listProposals(_ args: [String: Value]) async throws -> CallTool.Result {
+        let analysisID = args["analysis_id"]?.stringValue.flatMap(UUID.init(uuidString:))
+        let repo = args["repo"]?.stringValue
+        guard analysisID != nil || repo != nil else {
+            return Self.error(
+                code: "bad_argument", message: "Give either analysis_id or repo."
+            )
+        }
+        // Default to what still needs deciding: an agent asking "what did the
+        // analysis find" means the open ones.
+        let status = args["status"]?.stringValue ?? ProposalStatus.proposed.rawValue
+        let limit = args["limit"]?.intValue ?? 100
+
+        switch bridge.read(.listProposals(
+            analysisID: analysisID, repo: repo, status: status, limit: limit
+        )) {
+        case .live(let response):
+            return Self.render(response) { payload in
+                guard case .proposals(let proposals) = payload else { return nil }
+                return ["proposals": Self.encode(proposals), "source": .string("live")]
+            }
+        case .offline(let store):
+            let repos = try await store.repos()
+            let match = repo.flatMap { name in
+                repos.first { $0.nameWithOwner == name || $0.path == name }
+            }
+            let proposals = try await store.proposals(
+                analysisID: analysisID,
+                repoID: match?.id,
+                status: ProposalStatus(rawValue: status),
+                limit: limit
+            )
+            let dtos = proposals.map { proposal in
+                ProposalDTO(
+                    proposal: proposal,
+                    repoName: repos.first { $0.id == proposal.repoID }?.nameWithOwner ?? "?"
+                )
+            }
+            return Self.ok([
+                "proposals": Self.encode(dtos),
+                "source": .string("offline-db"),
+                "note": .string("Elliot is not running; this is a snapshot of its database."),
+            ])
+        }
+    }
+
+    private func decideProposals(_ args: [String: Value], accept: Bool) async throws -> CallTool.Result {
+        let ids = (args["proposal_ids"]?.arrayValue ?? [])
+            .compactMap { $0.stringValue.flatMap(UUID.init(uuidString:)) }
+        guard !ids.isEmpty else {
+            return Self.error(code: "bad_argument", message: "proposal_ids must contain UUIDs.")
+        }
+        let response = bridge.write(
+            accept ? .acceptProposals(ids: ids) : .rejectProposals(ids: ids)
+        )
+        return Self.render(response) { payload in
+            guard case .proposalsDecided(let decision) = payload else { return nil }
+            var fields: [String: Value] = [
+                "decided": .array(decision.decided.map { .string($0.uuidString) }),
+                "summary": .string(decision.summary),
+            ]
+            if !decision.skipped.isEmpty {
+                fields["skipped"] = .array(decision.skipped.map { .string($0.uuidString) })
+            }
+            if !decision.cards.isEmpty {
+                fields["cards"] = Self.encode(decision.cards)
+            }
+            return fields
         }
     }
 

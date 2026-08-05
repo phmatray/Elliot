@@ -1,5 +1,7 @@
+import ElliotMCPKit
 import ElliotModel
 import Foundation
+import MCP
 import Testing
 
 @testable import ElliotIPC
@@ -75,5 +77,56 @@ struct AnalysisWireTests {
         #expect(dto.angles == ["bugs", "tests"])
         #expect(dto.runs.count == 1)
         #expect(dto.repo == "phmatray/Elliot")
+    }
+}
+
+@Suite("Analysis MCP tools")
+struct AnalysisMCPToolTests {
+
+    private func tool(_ name: String) -> MCP.Tool? {
+        ElliotMCPServer.tools.first { $0.name == name }
+    }
+
+    @Test("The four analysis tools are declared", arguments: [
+        "board_analyze_repo", "board_list_proposals",
+        "board_accept_proposals", "board_reject_proposals",
+    ])
+    func toolsExist(name: String) {
+        #expect(tool(name) != nil)
+    }
+
+    @Test("Only listing proposals is a read")
+    func readOnlyHints() {
+        #expect(tool("board_list_proposals")?.annotations.readOnlyHint == true)
+        #expect(tool("board_analyze_repo")?.annotations.readOnlyHint == false)
+        #expect(tool("board_accept_proposals")?.annotations.readOnlyHint == false)
+    }
+
+    /// The descriptions are the only thing an agent reads before acting. Two
+    /// facts must be in them or it will guess wrong.
+    @Test("The descriptions say an analysis is slow and that accepting files nothing")
+    func descriptionsCarryTheTwoFactsThatMatter() throws {
+        // Broken into two steps rather than chained: `.lowercased()` right
+        // after an optional-chain `?.` is ambiguous once GRDB is in scope —
+        // `SQLSpecificExpressible.lowercased` is a same-named property, and
+        // the type checker picks it over `String.lowercased()`.
+        let analyzeDescription = try #require(tool("board_analyze_repo")?.description)
+        let analyze = analyzeDescription.lowercased()
+        #expect(analyze.contains("minute"))
+        #expect(analyze.contains("board_list_runs"))
+
+        let acceptDescription = try #require(tool("board_accept_proposals")?.description)
+        let accept = acceptDescription.lowercased()
+        #expect(accept.contains("backlog"))
+        #expect(accept.contains("github"))
+    }
+
+    @Test("Every angle is offered in the schema")
+    func schemaEnumeratesAngles() throws {
+        let analyze = try #require(tool("board_analyze_repo"))
+        let json = try #require(String(data: WireCodec.encoder.encode(analyze.inputSchema), encoding: .utf8))
+        for angle in AnalysisAngle.allCases {
+            #expect(json.contains(angle.rawValue))
+        }
     }
 }
