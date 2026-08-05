@@ -1,3 +1,4 @@
+import ElliotModel
 import SwiftUI
 
 /// The board's visual vocabulary, in one place.
@@ -19,34 +20,34 @@ enum Palette {
     /// A gesture here starts an autonomous run. Deliberately not the system
     /// accent — that is user-configurable, and a meaning that changes with a
     /// preference pane is not a meaning.
-    static let armed = dynamic(light: 0x5B3DF5, dark: 0xA996FF)
+    static let armed = dynamic(BrandColor.armed)
 
     /// Reserved for the one move that cannot be taken back: merging the pull
     /// request. Used by exactly one column and one confirm button, so its
     /// scarcity is what makes it legible.
-    static let irreversible = dynamic(light: 0xC0246A, dark: 0xFF7BB0)
+    static let irreversible = dynamic(BrandColor.irreversible)
 
     /// `gh` confirmed it. Not `.green`, which is also the system's tint for
     /// half a dozen unrelated affordances.
-    static let verified = dynamic(light: 0x0B7A5E, dark: 0x4BD6A8)
+    static let verified = dynamic(BrandColor.verified)
 
     /// A move was refused, or a run failed. Split from `attention` on purpose:
     /// the board previously used one orange for refusals, warnings, stalls and
     /// tool denials, which left it meaning only "something is off".
-    static let refused = dynamic(light: 0xA93226, dark: 0xFF8A75)
+    static let refused = dynamic(BrandColor.refused)
 
     /// Still alive, but wants a decision — stalled, or finished having been
     /// refused a tool.
-    static let attention = dynamic(light: 0x8A5A00, dark: 0xF0B429)
+    static let attention = dynamic(BrandColor.attention)
 
     /// Nothing happens on arrival. The absence of a signal is itself the
     /// signal.
     static let inert = Color.secondary
 
-    static func dynamic(light: UInt32, dark: UInt32) -> Color {
+    static func dynamic(_ brand: BrandColor) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
             let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            return NSColor(rgb: isDark ? dark : light)
+            return NSColor(rgb: isDark ? brand.dark : brand.light)
         })
     }
 }
