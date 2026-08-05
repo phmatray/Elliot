@@ -213,6 +213,19 @@ public final class BoardStore: Sendable {
         try await requireWriter().write { db in try analysis.save(db) }
     }
 
+    /// Saves an analysis and its queued runs in one transaction — the same
+    /// shape as `commitMove`: either every row lands or none does. A crash
+    /// between two separate writes here could leave an `Analysis` with fewer
+    /// `SkillRun` rows than it was queued with, and nothing walks `analysis.angles`
+    /// against its runs to notice; one transaction is what rules that out rather
+    /// than merely making it unlikely.
+    public func saveAnalysis(_ analysis: Analysis, runs: [SkillRun]) async throws {
+        try await requireWriter().write { db in
+            try analysis.save(db)
+            for run in runs { try run.insert(db) }
+        }
+    }
+
     public func analysis(id: UUID) async throws -> Analysis? {
         try await reader.read { db in try Analysis.fetchOne(db, key: id.databaseKey) }
     }
@@ -259,6 +272,31 @@ public final class BoardStore: Sendable {
 
     public func saveProposal(_ proposal: StoryProposal) async throws {
         try await saveProposals([proposal])
+    }
+
+    /// Flips a proposal from `.proposed` to `.accepted`, atomically: `true`
+    /// means this call won, `false` means it does not exist or another caller
+    /// already claimed it.
+    ///
+    /// `AnalysisService` is a reentrant actor — two concurrent `accept` calls
+    /// for the same id (a double-tap, a retried MCP call) can both be past a
+    /// `fetch → check .proposed` read before either has written. A single
+    /// conditional `UPDATE` is what makes that safe: SQLite serializes the two
+    /// writes, so only one `WHERE status = 'proposed'` can still match by the
+    /// time it runs, and the loser sees zero rows changed rather than a stale
+    /// read it has no way to know is stale.
+    public func claimProposal(id: UUID) async throws -> Bool {
+        try await requireWriter().write { db in
+            try db.execute(
+                sql: #"""
+                    UPDATE "storyProposal" SET "status" = ? WHERE "id" = ? AND "status" = ?
+                    """#,
+                arguments: [
+                    ProposalStatus.accepted.rawValue, id.databaseKey, ProposalStatus.proposed.rawValue,
+                ]
+            )
+            return db.changesCount > 0
+        }
     }
 
     public func proposal(id: UUID) async throws -> StoryProposal? {

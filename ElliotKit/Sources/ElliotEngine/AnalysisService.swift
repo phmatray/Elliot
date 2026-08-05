@@ -115,12 +115,12 @@ public actor AnalysisService {
             ))
         }
 
-        // The analysis and its runs land together; the scheduler is handed the
-        // ids only after. A crash in between leaves queued runs for the launch
-        // sweep rather than an analysis with nothing behind it — the same shape
+        // The analysis and its runs land in one transaction; the scheduler is
+        // handed the ids only after it commits. A crash in between leaves
+        // nothing behind — not a queued run with no analysis, and not an
+        // analysis with fewer runs than it was queued with — the same shape
         // as `commitMove`.
-        try await store.saveAnalysis(analysis)
-        for run in runs { try await store.saveRun(run) }
+        try await store.saveAnalysis(analysis, runs: runs)
         for run in runs { await launcher.launch(runID: run.id) }
 
         return Started(analysis: analysis, runs: runs)
@@ -182,21 +182,36 @@ public actor AnalysisService {
     public func accept(proposalIDs: [UUID]) async throws -> [Card] {
         var created: [Card] = []
         for id in proposalIDs {
+            // The claim is the compare-and-set: only the caller that flips
+            // proposed → accepted may create a card. `AnalysisService` is a
+            // reentrant actor, so a plain "fetch, check .proposed, write" here
+            // — as this used to be — lets two concurrent `accept` calls for the
+            // same id (a double-tap, a retried MCP call) both pass the check
+            // before either writes, and both create a card. A caller that
+            // loses the claim moves on, the same as it used to for an id that
+            // was already decided.
+            guard try await store.claimProposal(id: id) else { continue }
             guard var proposal = try await store.proposal(id: id) else { continue }
-            // Already decided: accepting twice must not make two cards.
-            guard proposal.status == .proposed else { continue }
 
-            let card = try await board.createCard(
-                repoID: proposal.repoID,
-                title: proposal.title,
-                body: proposal.rationale,
-                story: proposal.story,
-                column: .backlog
-            )
-            proposal.status = .accepted
-            proposal.acceptedCardID = card.id
-            try await store.saveProposal(proposal)
-            created.append(card)
+            do {
+                let card = try await board.createCard(
+                    repoID: proposal.repoID,
+                    title: proposal.title,
+                    body: proposal.rationale,
+                    story: proposal.story,
+                    column: .backlog
+                )
+                proposal.acceptedCardID = card.id
+                try await store.saveProposal(proposal)
+                created.append(card)
+            } catch {
+                // The claim already flipped this to `.accepted`; card creation
+                // failed after it. Give the proposal back rather than
+                // stranding it accepted with nothing behind it.
+                proposal.status = .proposed
+                try? await store.saveProposal(proposal)
+                throw error
+            }
         }
         return created
     }

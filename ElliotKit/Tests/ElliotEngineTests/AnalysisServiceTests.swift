@@ -76,18 +76,34 @@ struct AnalysisServiceTests {
         #expect(Set(paths).count == 3)
     }
 
-    @Test("The prompt lists what is already on the board")
+    @Test("The prompt lists what is already on the board, newest first")
     func promptCarriesExistingTitles() async throws {
         let fixture = try await makeFixture()
-        _ = try await fixture.board.createCard(
-            repoID: fixture.repo.id, title: "Cache the login shell environment"
-        )
+        let now = Date()
+        // Saved directly rather than through `board.createCard`, which always
+        // stamps `Date()`: the sort under test needs two real, distinct dates,
+        // not two calls close enough together to land in the same millisecond.
+        try await fixture.store.saveCard(Card(
+            repoID: fixture.repo.id, title: "Older: cache the login shell environment",
+            columnEnteredAt: now.addingTimeInterval(-3600),
+            createdAt: now.addingTimeInterval(-3600), updatedAt: now.addingTimeInterval(-3600)
+        ))
+        try await fixture.store.saveCard(Card(
+            repoID: fixture.repo.id, title: "Newer: retry the flaky verifier",
+            columnEnteredAt: now, createdAt: now, updatedAt: now
+        ))
+
         let started = try await fixture.service.start(
             repoID: fixture.repo.id, angles: [.bugs], origin: .manual
         )
-        #expect(started.runs[0].prompt.contains("Cache the login shell environment"))
+        let prompt = started.runs[0].prompt
+        #expect(prompt.contains("Older: cache the login shell environment"))
+        #expect(prompt.contains("Newer: retry the flaky verifier"))
+        let newer = try #require(prompt.range(of: "Newer: retry the flaky verifier"))
+        let older = try #require(prompt.range(of: "Older: cache the login shell environment"))
+        #expect(newer.lowerBound < older.lowerBound)
         // gh is unreachable here, so the prompt admits the check was partial.
-        #expect(started.runs[0].prompt.contains("could not be reached"))
+        #expect(prompt.contains("could not be reached"))
     }
 
     @Test("A second run of an angle already in flight is refused, not queued")
@@ -101,6 +117,11 @@ struct AnalysisServiceTests {
                 repoID: fixture.repo.id, angles: [.bugs, .tests], origin: .mcp(client: "x")
             )
         }
+        // Refused wholesale, by construction: `.tests` did not clash, but the
+        // second call never queued anything at all, itself included.
+        let runs = try await fixture.store.runs(repoID: fixture.repo.id)
+        #expect(runs.count == 1)
+        #expect(runs[0].analysisAngle == .bugs)
     }
 
     @Test("A disabled repository is refused, and no angles at all is refused")
@@ -166,6 +187,40 @@ struct AnalysisServiceTests {
         _ = try await fixture.service.accept(proposalIDs: [proposal.id])
         let second = try await fixture.service.accept(proposalIDs: [proposal.id])
         #expect(second.isEmpty)
+        #expect(try await fixture.store.cards(repoID: fixture.repo.id).count == 1)
+    }
+
+    @Test("Concurrent acceptances of the same proposal create exactly one card")
+    func acceptRacesToOneCard() async throws {
+        let fixture = try await makeFixture()
+        let started = try await fixture.service.start(
+            repoID: fixture.repo.id, angles: [.bugs], origin: .manual
+        )
+        let proposal = StoryProposal(
+            analysisID: started.analysis.id, runID: started.runs[0].id, repoID: fixture.repo.id,
+            angle: .bugs, title: "Race me",
+            story: UserStory(role: "dev", want: "w", benefit: "b"), createdAt: Date()
+        )
+        try await fixture.store.saveProposals([proposal])
+
+        // `AnalysisService` is a reentrant actor: `accept` awaits the store and
+        // the board more than once, so many concurrent callers for the same id
+        // — a double-tap, a retried MCP call — can each be scheduled between
+        // those suspension points. A `TaskGroup` of several attempts gives the
+        // scheduler real opportunities to interleave them, rather than hoping
+        // two `async let`s happen to overlap.
+        let service = fixture.service
+        let proposalID = proposal.id
+        let results = try await withThrowingTaskGroup(of: [Card].self) { group in
+            for _ in 0..<8 {
+                group.addTask { try await service.accept(proposalIDs: [proposalID]) }
+            }
+            var batches: [[Card]] = []
+            for try await batch in group { batches.append(batch) }
+            return batches
+        }
+
+        #expect(results.reduce(0) { $0 + $1.count } == 1)
         #expect(try await fixture.store.cards(repoID: fixture.repo.id).count == 1)
     }
 
