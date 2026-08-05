@@ -39,6 +39,11 @@ let package = Package(
             name: "ElliotMCPKit",
             dependencies: ["ElliotModel", "ElliotIPC", "ElliotStore", .product(name: "MCP", package: "swift-sdk")]
         ),
+        // Test-only, and depends on nothing: the suites' bounded waits live
+        // here so a wedged child fails its test in seconds instead of hanging
+        // `swift test` — and with it the SwiftPM build lock — indefinitely.
+        .target(name: "TestSupport", path: "Tests/TestSupport"),
+        .testTarget(name: "TestSupportTests", dependencies: ["TestSupport"]),
         .testTarget(name: "ElliotModelTests", dependencies: ["ElliotModel"]),
         .testTarget(name: "ElliotStoreTests", dependencies: ["ElliotStore"]),
         // Fixtures and the fake `claude` live at the repository root, not in a
