@@ -38,6 +38,7 @@ public enum ProposalDecoder {
     }
 
     private static func decode(jsonObject raw: Any, maxStories: Int) -> Harvest {
+        let cappedStories = max(0, maxStories)
         // A bare array is what was asked for; a wrapped one is what models
         // reach for anyway. Both are the same intent.
         let elements: [Any]
@@ -79,11 +80,11 @@ public enum ProposalDecoder {
             kept.append(story)
         }
 
-        if kept.count > maxStories {
+        if kept.count > cappedStories {
             dropped.append(
-                "\(kept.count - maxStories) stories over the cap of \(maxStories) were dropped."
+                "\(kept.count - cappedStories) stories over the cap of \(cappedStories) were dropped."
             )
-            kept = Array(kept.prefix(maxStories))
+            kept = Array(kept.prefix(cappedStories))
         }
 
         return Harvest(stories: kept, dropped: dropped)
@@ -110,13 +111,16 @@ public enum ProposalDecoder {
 
         while let open = remainder.range(of: "```") {
             let afterOpen = remainder[open.upperBound...]
-            // Drop a language tag if there is one.
-            let bodyStart = afterOpen.firstIndex(of: "\n").map(afterOpen.index(after:))
-                ?? afterOpen.startIndex
-            let body = afterOpen[bodyStart...]
-            guard let close = body.range(of: "```") else { break }
-            blocks.append(String(body[..<close.lowerBound]))
-            remainder = body[close.upperBound...]
+            // Find the closing ``` first, then look for a language tag only within
+            // that bounded region. This prevents single-line fences from consuming
+            // newlines in the following prose.
+            guard let close = afterOpen.range(of: "```") else { break }
+            let region = afterOpen[..<close.lowerBound]
+            let bodyStart = region.firstIndex(of: "\n").map(region.index(after:))
+                ?? region.startIndex
+            let body = String(region[bodyStart...])
+            blocks.append(body)
+            remainder = afterOpen[close.upperBound...]
         }
 
         return blocks.reversed().first { block in

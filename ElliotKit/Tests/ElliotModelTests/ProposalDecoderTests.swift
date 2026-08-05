@@ -99,6 +99,20 @@ struct ProposalDecoderTests {
         #expect(harvest.stories.map(\.title) == ["REAL"])
     }
 
+    @Test("Inline fences followed by prose do not consume later blocks")
+    func inlineFenceDoesNotSwallowTrailing() {
+        let text = """
+            Schema: ```{}```
+            Here is the real one:
+            ```json
+            [{"title":"REAL","role":"dev","want":"w","benefit":"b","evidence":["A.swift:1"]}]
+            ```
+            """
+        let harvest = ProposalDecoder.decode(resultText: text, maxStories: 8)
+        #expect(harvest.stories.count == 1)
+        #expect(harvest.stories[0].title == "REAL")
+    }
+
     @Test("Prose with no fenced block yields nothing and says so")
     func noFenceNoStories() {
         let harvest = ProposalDecoder.decode(resultText: "I could not find anything.", maxStories: 8)
