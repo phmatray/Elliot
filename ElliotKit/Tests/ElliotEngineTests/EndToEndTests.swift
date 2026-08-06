@@ -17,10 +17,39 @@ private enum TestPaths {
         .deletingLastPathComponent()   // repo root
 
     static let fakeClaude = repoRoot.appendingPathComponent("Scripts/fake-claude.sh").path
+    static let fakeGH = repoRoot.appendingPathComponent("Scripts/fake-gh.sh").path
 
     static func fixture(_ name: String) -> String {
         repoRoot.appendingPathComponent("Fixtures/stream-json/\(name)").path
     }
+
+    static func ghFixture(_ name: String) -> String {
+        repoRoot.appendingPathComponent("Fixtures/gh/\(name)").path
+    }
+}
+
+/// Writes a one-issue `gh issue list` payload whose `createdAt` is *now*.
+///
+/// `Verifier.verifyCreateIssue` only accepts an issue created since the run
+/// started, so this cannot be a checked-in fixture with a frozen date — a
+/// static file would make the test pass or fail according to the calendar.
+private func issuesFixtureCreatedNow(title: String, number: Int, at directory: URL) throws -> String {
+    let created = ISO8601DateFormatter().string(from: Date())
+    let json = """
+        [
+          {
+            "number": \(number),
+            "title": "\(title)",
+            "url": "https://github.com/phmatray/Elliot/issues/\(number)",
+            "state": "OPEN",
+            "createdAt": "\(created)",
+            "body": "Filed by the run under test."
+          }
+        ]
+        """
+    let path = directory.appendingPathComponent("issues-created-now.json")
+    try json.write(to: path, atomically: true, encoding: .utf8)
+    return path.path
 }
 
 /// The whole stack against a fake `claude`: a card is dragged, the rule engine
@@ -34,7 +63,8 @@ private struct Stack {
     var home: URL
 
     static func make(
-        fixture: String, extraEnv: [String: String] = [:], gitPath: String = "/usr/bin/false"
+        fixture: String, extraEnv: [String: String] = [:], gitPath: String = "/usr/bin/false",
+        ghPath: String = "/usr/bin/false"
     ) async throws -> Stack {
         let home = TestHome.scratch("board-e2e")
         try FileManager.default.createDirectory(
@@ -49,10 +79,11 @@ private struct Stack {
 
         let config = ToolConfig(
             claudePath: TestPaths.fakeClaude,
-            // `false` so every verification fails cleanly rather than reaching
-            // the network; this test is about the run mechanics. Callers that
-            // exercise the git sentinel pass a real `git` instead.
-            ghPath: "/usr/bin/false",
+            // `false` by default so every verification fails cleanly rather
+            // than reaching the network; this test is about the run mechanics.
+            // Callers that exercise the git sentinel pass a real `git` instead,
+            // and callers that need `gh` to *answer* pass `TestPaths.fakeGH`.
+            ghPath: ghPath,
             gitPath: gitPath,
             environment: environment
         )
@@ -165,6 +196,54 @@ struct EndToEndTests {
         let audits = try await stack.store.audits(cardID: card.id)
         #expect(audits.first?.origin == .userDrag)
         #expect(audits.first?.runID == runID)
+    }
+
+    /// Pins the behaviour the scheduler already had, so the refactor that moves
+    /// this decision into `ElliotModel` has something to be measured against.
+    /// It is `Reconciler` and `PRWatcher` that lacked the error-clearing, not
+    /// this path — see their own tests below.
+    @Test("A verified success clears the error a previous failure left on the card")
+    func schedulerClearsTheStaleErrorOnSuccess() async throws {
+        let ghHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("elliot-gh-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: ghHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: ghHome) }
+
+        let title = "Streaming run log inside the card"
+        let issues = try issuesFixtureCreatedNow(title: title, number: 4242, at: ghHome)
+
+        let stack = try await Stack.make(
+            fixture: "create-issue-success.ndjson",
+            extraEnv: ["FAKE_GH_ISSUES": issues],
+            ghPath: TestPaths.fakeGH
+        )
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(
+            repoID: stack.repo.id,
+            title: title,
+            story: UserStory(
+                role: "developer",
+                want: "to see the run log inside the card",
+                benefit: "I can diagnose without a terminal",
+                acceptanceCriteria: ["the log streams live"]
+            )
+        ).card
+
+        // The banner an earlier, failed attempt left behind.
+        card.lastError = "create-issue exited 1"
+        try await stack.store.saveCard(card)
+
+        _ = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        let run = try await stack.awaitRun(cardID: card.id)
+        #expect(run.state == .succeeded)
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.issueNumber == 4242)
+        #expect(after.issueURL == "https://github.com/phmatray/Elliot/issues/4242")
+        #expect(after.lastError == nil)
+        // `.issueCreated` implies no move: the card stays where the drag put it.
+        #expect(after.column == .todo)
     }
 
     @Test("A run refused a tool is not recorded as a plain success")
