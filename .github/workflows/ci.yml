@@ -10,6 +10,12 @@ on:
   push:
     branches: [main]
 
+# This job reads the repository and nothing else. Stating that here rather than inheriting it means
+# a later change to the repository or organisation default cannot silently hand `GITHUB_TOKEN`
+# write scope to a job that runs unreviewed code from a pull request.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     # NOT `macos-15`, though `Package.swift` says `swift-tools-version: 6.1` and
