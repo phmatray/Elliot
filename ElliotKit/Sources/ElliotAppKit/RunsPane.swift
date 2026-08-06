@@ -17,7 +17,9 @@ struct RunsPane: View {
         let runs = model.runsByCard[card.id] ?? []
 
         VStack(alignment: .leading, spacing: 8) {
-            if !runs.isEmpty {
+            if runs.isEmpty {
+                emptyState
+            } else {
                 HStack(spacing: 6) {
                     ConsoleLabel(text: "Runs")
                     Fact(text: "\(runs.count)", tint: Palette.quiet, small: true)
@@ -28,11 +30,98 @@ struct RunsPane: View {
             }
         }
     }
+
+    /// At three spans this pane is half the panel. Drawn blank it reads as
+    /// broken rather than as "nothing has run yet" — the same failure an empty
+    /// column had before it grew `ColumnView.dropHint`.
+    ///
+    /// The sentence is `RunsPane.emptyState(column:outcome:)`'s, and the
+    /// outcome handed to it is `model.preview` — the same call the next-step
+    /// button and every column caption make. So this cannot promise a run the
+    /// rule engine would refuse.
+    private var emptyState: some View {
+        let next = card.column.naturalNext
+        let copy = RunsPane.emptyState(
+            column: card.column,
+            outcome: next.map { model.preview(card, to: $0) }
+        )
+
+        return ContentUnavailableView(
+            copy.title, systemImage: "play.slash", description: Text(copy.message)
+        )
+        .frame(maxWidth: .infinity)
+    }
 }
 
 // MARK: - The fold, as pure functions
 
 extension RunsPane {
+
+    /// What the pane says when nothing has ever run against this card.
+    ///
+    /// **Derived, never tabulated.** There is no `switch` over the five columns
+    /// here, and there must not be: the answer to "what would produce a run"
+    /// already exists twice over — `Column.naturalNext` says where the card
+    /// goes next, and `Consequence.of` says what arriving there does — and both
+    /// are read from `evaluateMove`, the pure function `BoardService` actually
+    /// commits with. A hand-written "move it to To Do to file an issue" would
+    /// be a third copy of the transition matrix, and it would go on promising a
+    /// run for a card whose repository is switched off in Preflight.
+    ///
+    /// The four sentences it can produce are four *different states*, not four
+    /// phrasings:
+    ///
+    /// - a move that starts something — the reader is told which move and, in
+    ///   the column caption's own words, what it starts;
+    /// - a move that is refused — the caption already names the gap rather than
+    ///   the rule ("No issue yet — file it in To Do first"), so it is repeated
+    ///   verbatim instead of being softened;
+    /// - a move that is permitted and starts nothing, which is In Progress →
+    ///   In Review alone. Saying only "nothing runs" would leave a reader with
+    ///   no idea what does, so the destination's own `standingRule` finishes
+    ///   it: Elliot fills that column itself;
+    /// - no move at all, which is Done. "Nothing has run *yet*" would be a
+    ///   promise, so Done gets its own title as well as its own sentence.
+    ///
+    /// ⚠️ **Which branch is taken is decided by `naturalNext`, never by
+    /// `outcome`.** They were one `guard` for about ten minutes, and that
+    /// version answered "Backlog is the end of the board" to a `nil` outcome —
+    /// a flatly false sentence, reachable by a caller that simply had nothing
+    /// to preview. The terminal sentence is now only reachable for a column
+    /// that really is terminal, and a missing outcome gets a sentence that
+    /// claims nothing about what the move would do.
+    nonisolated static func emptyState(
+        column: ElliotModel.Column, outcome: MoveOutcome?
+    ) -> (title: String, message: String) {
+        guard let next = column.naturalNext else {
+            return (
+                "No runs recorded",
+                "\(column.displayName) is the end of the board — nothing runs from here."
+            )
+        }
+
+        let title = "Nothing has run yet"
+
+        guard let outcome else {
+            // Not reachable from the panel, which previews every move it has.
+            // Kept honest rather than clever: it names the move and promises
+            // nothing about it.
+            return (title, "Its first run would come from moving it to \(next.displayName).")
+        }
+
+        let consequence = Consequence.of(outcome)
+
+        if consequence.isRefused {
+            return (title, "Moving it to \(next.displayName) is refused. \(consequence.summary)")
+        }
+        if case .noAction = outcome {
+            return (title, "Nothing runs on the way to \(next.displayName). \(next.standingRule)")
+        }
+        return (
+            title,
+            "Move it to \(next.displayName) to start the first run. \(consequence.summary)"
+        )
+    }
 
     /// The tools this run was refused, from whichever half of the run knows yet.
     ///

@@ -17,8 +17,13 @@ import SwiftUI
 /// 2. **Colour is reserved for consequence.** Nothing here is a consequence —
 ///    an issue body is text someone typed — so nothing here spends a colour.
 ///    Every surface is `Surface.*` grey and every rule is `Surface.hairline`.
-///    That is why there is no syntax highlighting in a code fence and no green
-///    tick on a done task; see `CodeFenceBlock` and `TaskListBlock`.
+///    That is why there is no green tick on a done task; see `TaskListBlock`.
+///
+///    The one exception is syntax colour inside a **fenced** code block, which
+///    the approved mockup carries and which `CodeFenceBlock` implements. It is
+///    the one place in this file that spends an accent, it is bounded by the
+///    fence's own `Surface.well` ground, and the reasoning — including what it
+///    costs — is written out at `CodeTokenKind.tint`.
 ///
 /// Every block is one combined accessibility element whose label leads with its
 /// kind — `MarkdownAccessibility.label(for:)` is the whole of that decision, and
@@ -319,14 +324,52 @@ struct TaskListBlock: View {
 
 // MARK: - Code fence
 
+/// The three token kinds the approved mockup colours, mapped onto the palette.
+///
+/// The mapping is the mockup's, verbatim: its line 307 reads
+/// `.md-code .k{color:var(--armed)} .md-code .s{color:var(--verified)}
+/// .md-code .c{color:var(--text-3)}` — keyword is `armed`, string is
+/// `verified`, comment is the quiet greyscale tier.
+///
+/// ⚠️ **This spends two consequence accents on syntax, and that is a real
+/// cost, not a technicality.** `DesignSystem.swift` reserves colour for
+/// consequence: `armed` means *a gesture here starts an autonomous run*. A
+/// keyword drawn in it means nothing of the sort. The mockup does it and it was
+/// approved, so it ships — but it is scoped so the two readings cannot be
+/// confused:
+///
+/// - it exists **only inside a fence**, on the fence's own `Surface.well`
+///   ground and inside its hairline border, so a coloured token always sits on
+///   a surface that says "this whole region is machine output";
+/// - it never reaches an inline code span or a word of prose — `InlineRow`
+///   renders those and does not call the highlighter;
+/// - nothing coloured here is interactive, so no `armed` token here is ever
+///   next to a gesture that could be mistaken for arming one;
+/// - it adds **no sixth accent**. `BrandColor.consequences` still lists five,
+///   and `BrandColorTests` still holds that. This borrows two of them inside
+///   one bounded surface rather than minting anything.
+///
+/// If the fence ever grows a button, or syntax colour ever escapes the well,
+/// this is the trade that has been broken and this comment is the record of
+/// what was traded.
+private extension CodeTokenKind {
+    var tint: Color {
+        switch self {
+        case .keyword: Palette.armed
+        case .string: Palette.verified
+        case .comment: Palette.quiet
+        case .plain: .primary
+        }
+    }
+}
+
 /// Machine text on the machine ground.
 ///
-/// **No syntax colour, deliberately.** Highlighting would spend three or four
-/// hues on keywords and strings, and the app's second rule reserves colour for
-/// consequence: `armed` means a gesture starts an agent, `irreversible` means it
-/// merges. A palette that also paints YAML keys stops being readable as either.
-/// The fence is already legible as machine output through `Surface.well` and the
-/// fact face — that is the whole job the colour would have been doing.
+/// Syntax colour comes from `CodeHighlighter`, which lives in `ElliotModel` so
+/// the cues that decide what a keyword *is* are pure and unit-tested rather
+/// than written inside a SwiftUI body where nothing can hold them. This view
+/// only maps the kinds it is handed onto the palette — see the ⚠️ on
+/// `CodeTokenKind.tint` for what that mapping costs.
 ///
 /// Soft-wrapped rather than horizontally scrollable: the panel is narrow, and a
 /// line you have to scroll sideways to finish is a line nobody finishes.
@@ -350,9 +393,8 @@ private struct CodeFenceBlock: View {
                 }
             }
 
-            Text(code)
+            highlighted
                 .font(Type.log)
-                .foregroundStyle(.primary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -363,6 +405,23 @@ private struct CodeFenceBlock: View {
         .overlay {
             RoundedRectangle(cornerRadius: Metric.nestedRadius)
                 .strokeBorder(Surface.hairline, lineWidth: 1)
+        }
+    }
+
+    /// The fence as one `Text`, built by concatenating a segment per token.
+    ///
+    /// `Text(verbatim:)` at every segment, never `Text(_:)`: the latter takes a
+    /// `LocalizedStringKey`, so a fence containing `%d` or `%@` would be run
+    /// through string formatting and a fence containing an issue number could
+    /// be re-formatted for the reader's locale. This is source code — it is
+    /// shown exactly as the author wrote it or it is worthless.
+    ///
+    /// No `.foregroundStyle` on the whole run: each segment carries its own,
+    /// and `.plain` carries `.primary`, so nothing here falls through to a
+    /// colour it did not choose.
+    private var highlighted: Text {
+        CodeHighlighter.tokens(of: code).reduce(Text(verbatim: "")) { text, token in
+            text + Text(verbatim: token.text).foregroundStyle(token.kind.tint)
         }
     }
 }

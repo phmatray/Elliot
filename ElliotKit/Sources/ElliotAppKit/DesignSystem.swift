@@ -16,6 +16,15 @@ import SwiftUI
 ///    start an agent, `irreversible` one that will merge to a default branch on
 ///    github.com. Neither is used for anything else, so neither can be read as
 ///    decoration.
+///
+///    There is exactly **one** exception, and it is written down here rather
+///    than left for someone to discover: syntax colour inside a fenced code
+///    block spends `armed` on keywords and `verified` on strings, because the
+///    approved mockup does. It is bounded by the fence's own `Surface.well`
+///    ground, it never reaches an inline code span or a word of prose, and it
+///    adds no sixth accent. `CodeTokenKind.tint` in `MarkdownBlocks.swift`
+///    carries the full reasoning and what the trade costs. A second exception
+///    should be argued at least as hard as that one was.
 enum Palette {
     /// A gesture here starts an autonomous run. Deliberately not the system
     /// accent — that is user-configurable, and a meaning that changes with a
@@ -226,6 +235,23 @@ enum Metric {
     /// SwiftUI's radius.
     static let panelElevation: (radius: CGFloat, y: CGFloat, opacity: Double)
         = (radius: 14, y: 12, opacity: 0.10)
+
+    /// The grab area on the panel's outer edge, and the grip drawn in the
+    /// middle of it.
+    ///
+    /// Two numbers rather than one because they answer different questions.
+    /// `resizeStripWidth` is how far from the edge a *pointer* still counts as
+    /// on the handle; it is deliberately several times the grip it draws,
+    /// because a 2pt target is one nobody hits. It is not wider than this
+    /// because the strip sits inside the panel, over the outer edge of the
+    /// trailing pane — every point added is a point of that pane's scroll bar
+    /// taken away.
+    ///
+    /// `resizeGrip` is what is actually drawn: short, thin, centred, and quiet
+    /// enough at rest that it reads as an edge treatment rather than as a
+    /// control competing with the panel's content.
+    static let resizeStripWidth: CGFloat = 7
+    static let resizeGrip: (width: CGFloat, height: CGFloat) = (width: 2, height: 26)
 }
 
 enum Elapsed {

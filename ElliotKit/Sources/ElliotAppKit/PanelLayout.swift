@@ -113,6 +113,63 @@ enum PanelLayout {
         return columns + panel + Metric.gutter * (count + 2)
     }
 
+    // MARK: - Resizing
+
+    /// The only two widths the panel is designed at.
+    ///
+    /// Not a continuous range, and that is the point: at `narrow` one pane fits
+    /// behind a switch and at `wide` both fit side by side
+    /// (`showsBothPanes(spans:)`), and every width between them is a panel that
+    /// is too wide for one pane and too narrow for two. So the drag handle
+    /// snaps rather than tracks — a reader who lets go anywhere gets one of the
+    /// two layouts that were designed, never a stuck middle.
+    static let spanChoices = (narrow: 2, wide: 3)
+
+    /// Which span a drag on the panel's **outer** edge lands on when it is
+    /// released.
+    ///
+    /// `translation` is the drag's horizontal component in the board's own
+    /// coordinates — rightwards positive, exactly what `DragGesture` reports.
+    ///
+    /// ⚠️ `opensLeft` is not a detail. The handle lives on whichever edge is
+    /// *not* against the origin column — the trailing edge normally, the
+    /// leading edge for the flipped column (`opensLeft(of:)`) — so the same
+    /// physical gesture, "drag the edge away from the card", is a rightward
+    /// drag in one case and a leftward drag in the other. Without the flip a
+    /// reader on Done would find the handle working backwards.
+    ///
+    /// A drag of zero returns `spans` unchanged at either setting, so a click
+    /// on the handle that never moves can never resize the panel behind the
+    /// reader's back.
+    static func snappedSpans(
+        from spans: Int,
+        translation: CGFloat,
+        columnWidth: CGFloat,
+        opensLeft: Bool,
+        gutter: CGFloat = Metric.gutter
+    ) -> Int {
+        // A zero or negative column width is not a board; there is nothing to
+        // snap against and the reader's preference is left alone.
+        guard columnWidth > 0 else { return spans }
+
+        let widening = opensLeft ? -translation : translation
+        let width = panelWidth(columnWidth: columnWidth, spans: spans, gutter: gutter) + widening
+
+        let narrow = panelWidth(columnWidth: columnWidth, spans: spanChoices.narrow, gutter: gutter)
+        let wide = panelWidth(columnWidth: columnWidth, spans: spanChoices.wide, gutter: gutter)
+        let toNarrow = abs(width - narrow)
+        let toWide = abs(width - wide)
+
+        // Dead level — the drag ended exactly half a column short of either.
+        // Staying put is the only answer that does not pick for the reader; a
+        // span outside the two choices (which the menu cannot produce, but an
+        // integer preference can hold) resolves to the default instead.
+        if toNarrow == toWide {
+            return spans == spanChoices.narrow || spans == spanChoices.wide ? spans : spanChoices.wide
+        }
+        return toNarrow < toWide ? spanChoices.narrow : spanChoices.wide
+    }
+
     // MARK: - What the panel shows
 
     /// Whether both panes fit side by side.
