@@ -176,8 +176,11 @@ struct BoardFramingTests {
                     )
                     let expected = PanelLayout.frameOffsetX(
                         originMinX: originMinX,
-                        panelMinX: panelMinX ?? originMinX,
-                        flipped: origin != nil && PanelLayout.opensLeft(of: column)
+                        panelMinX: panelMinX,
+                        flipped: origin != nil && PanelLayout.opensLeft(of: column),
+                        columnWidth: columnWidth,
+                        panelWidth: panelWidth,
+                        viewportWidth: boardWidth
                     )
                     #expect(
                         subject.offsetX(boardWidth: boardWidth) == expected,
