@@ -92,6 +92,8 @@ before flipping a PR ready: -->
 | `ElliotKit/Package.resolved` | Renovate bumps it constantly | **regenerate** (`cd ElliotKit && swift package resolve`) — never hand-merge |
 | `ElliotKit/Sources/ElliotStore/Migrations.swift` | both sides append a migration | **union**, appending both `registerMigration` calls in landing order. **Never renumber or edit a migration that already shipped** — a v1 database must still upgrade, and there is a test that proves it |
 | `ElliotKit/Sources/ElliotAppKit/AppModel.swift` | the single wiring point every feature touches | **union** — new stored properties and methods are additive |
+| `ElliotKit/Sources/ElliotAppKit/BoardView.swift` | the board, its toolbar and its columns all live here, so any feature that shows something touches it | **union** — take both sides' modifiers and both sides' toolbar items. ⚠️ Never resolve by dropping a `reduceMotion ? nil :` gate or a `.zIndex`; both are load-bearing and neither looks it |
+| `ElliotKit/Sources/ElliotAppKit/DesignSystem.swift` | every feature that draws anything wants a token | **union** — the enums are additive. Do **not** union a new consequence accent in: `BrandColorTests` pins the five, and a sixth is a design decision, not a merge |
 | `Scripts/build-app.sh` (`CFBundleShortVersionString`) | the only version string in the repo | take the **higher** |
 | `README.md` | parallel features document themselves | **union** |
 | `ElliotKit/Tests/**` | both append tests | **union** |
@@ -118,6 +120,23 @@ before flipping a PR ready: -->
   it**: `./Scripts/build-app.sh && open -n --env ELLIOT_HOME=/tmp/elliot-check dist/Elliot.app`, then
   read the window's accessibility tree — the column captions, the toolbar and the status bar all carry
   labels, so "did the board survive" is a text diff rather than a squint.
+  - **The store the check runs against is seedable.** `ELLIOT_HOME` points the app at a scratch
+    directory, and with the app **closed** you can `sqlite3` a row into `repo` and `card` directly —
+    the sole-writer rule is about concurrent processes, not about fixtures. That is how you get a
+    card into **Done** without moving one there through the board, which would merge a real pull
+    request. Checkpoint the WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) before and after, or a still-open
+    instance will silently checkpoint your row away.
+  - **Drive it with `cua-driver`**, which reads the tree and clicks by element index without bringing
+    the app to the front. Re-snapshot before every click: element indices are per-snapshot.
+  - **What this actually caught, on #79, with 730 tests green and `swift build` clean:** the framing
+    scroll was a no-op — `onChange` ran inside the update that changed the selection, so it scrolled
+    the row that existed *before* the panel was inserted and clamped to zero. It was invisible in four
+    of five columns because the pair already fits there. **Check the last column**; it is the one
+    where the layout has nowhere to grow into. Second: clicking to deselect stopped working entirely,
+    because the panel widens the row past the viewport and an *enabled* `ScrollView` swallows a tap
+    that a disabled one passes through. Both were found by looking, and the second was only
+    *confirmed* to be a regression by building `origin/main` into a second worktree and driving the
+    identical gesture. When something looks broken, check whether it was already broken.
 - **One funnel.** `BoardService` is the *only* thing that changes a card's column. A drag and an MCP
   `board_move_card` must reach the same two methods; callers supply only an origin. Never add a second
   path that mutates a column.
