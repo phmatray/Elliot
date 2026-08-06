@@ -1,3 +1,4 @@
+import ElliotEngine
 import ElliotModel
 import SwiftUI
 
@@ -48,15 +49,19 @@ public struct OperationsView: View {
     /// a reader learns to stop seeing — and then misses on the day it turns red.
     @ViewBuilder
     private var preflightBand: some View {
-        let failing = model.globalChecks.filter { $0.status == .fail }
-            + model.repoChecks.values.flatMap { $0 }.filter { $0.status == .fail }
+        let failing = failingChecks
         if !failing.isEmpty {
             band("Something is broken") {
-                ForEach(failing, id: \.id) { check in
+                ForEach(failing, id: \.key) { entry in
                     Label {
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(check.title).font(Type.rowTitle)
-                            Text(check.detail)
+                            HStack(spacing: 6) {
+                                Text(entry.check.title).font(Type.rowTitle)
+                                if let repoName = entry.repoName {
+                                    Fact(text: repoName, tint: Palette.quiet, small: true)
+                                }
+                            }
+                            Text(entry.check.detail)
                                 .font(Type.prose)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -64,11 +69,52 @@ public struct OperationsView: View {
                     } icon: {
                         Image(systemName: "xmark.octagon.fill").foregroundStyle(Palette.refused)
                     }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(spoken(entry))
                 }
                 Button("Open Preflight") { openWindow(id: "preflight") }
                     .controlSize(.small)
             }
         }
+    }
+
+    private func spoken(_ entry: FailingCheck) -> String {
+        guard let repoName = entry.repoName else {
+            return "\(entry.check.title): \(entry.check.detail)"
+        }
+        return "\(entry.check.title), \(repoName): \(entry.check.detail)"
+    }
+
+    /// A failing check, and which repository it is about.
+    ///
+    /// The repository name is not decoration. `repoChecks` is keyed by
+    /// repository and several can fail the *same* check, so without it the band
+    /// draws two identical rows and reads as a rendering bug rather than as two
+    /// repositories with the same problem. Seen on screen before this shipped.
+    private struct FailingCheck {
+        var key: String
+        var repoName: String?
+        var check: CheckResult
+    }
+
+    /// Machine-wide checks first — a missing `gh` is why every repository below
+    /// it is also failing, and listing them the other way round buries the
+    /// cause under its own symptoms.
+    private var failingChecks: [FailingCheck] {
+        let global = model.globalChecks
+            .filter { $0.status == .fail }
+            .map { FailingCheck(key: "global.\($0.id)", repoName: nil, check: $0) }
+
+        let perRepo = model.repos.flatMap { repo in
+            (model.repoChecks[repo.id] ?? [])
+                .filter { $0.status == .fail }
+                .map {
+                    FailingCheck(
+                        key: "\(repo.id.uuidString).\($0.id)",
+                        repoName: repo.displayName, check: $0)
+                }
+        }
+        return global + perRepo
     }
 
     // MARK: - Workers
