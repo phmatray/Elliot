@@ -12,8 +12,11 @@ import MCP
 /// of the rules, and the copy is what drifts.
 ///
 /// Because that function is pure, the answer survives Elliot being down — the
-/// snapshot path ranks the same candidates the same way, through
-/// `OfflineBoard.nextPage`, and never through a second implementation.
+/// snapshot ranks the same candidates the same way, through `OfflineResponder`,
+/// and never through a second implementation. This is the tool the rest of the
+/// read surface was made to look like: it has had one body since it was
+/// written, and it is the only read tool none of the four recorded drifts
+/// touched.
 struct NextTool: BoardTool {
     var tool: Tool {
         Tool(
@@ -74,25 +77,10 @@ struct NextTool: BoardTool {
         // applied silently.
         let requested = try args.limit() ?? 0
 
-        switch await bridge.read(.next(repo: repo, limit: requested)) {
-        case .live(let response):
-            return try .render(response) { payload in
-                guard case .next(let page) = payload else { return nil }
-                return try ToolOutput.nextFields(page, source: "live", extraNote: nil)
-            }
-        case .offline(let store, let reason):
-            let (limit, cappedFrom) = ElliotPaging.clamp(
-                requested,
-                default: ElliotPaging.nextLimitDefault,
-                max: ElliotPaging.nextLimitMax
-            )
-            let page = try await OfflineBoard.nextPage(
-                store: store, repo: repo, limit: limit, cappedFrom: cappedFrom
-            )
-            let fields = try ToolOutput.nextFields(
-                page, source: "offline-db", extraNote: ToolOutput.offlineNote(reason)
-            )
-            return try .ok(fields)
+        let outcome = await bridge.read(.next(repo: repo, limit: requested))
+        return try .render(outcome) { payload in
+            guard case .next(let page) = payload else { return nil }
+            return try ToolOutput.nextFields(page)
         }
     }
 }

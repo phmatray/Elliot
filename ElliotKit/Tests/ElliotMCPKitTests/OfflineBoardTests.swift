@@ -457,7 +457,7 @@ struct OfflineBoardTests {
             isAppRunning: false,
             onRead: { request in
                 log.record(request)
-                return .offline(store, .appNotRunning)
+                return await StubBridge.snapshotOutcome(store, request)
             },
             onWrite: { _ in
                 .failure(code: .appUnavailable, message: "Elliot is not running.", hint: "Open Elliot.app.")

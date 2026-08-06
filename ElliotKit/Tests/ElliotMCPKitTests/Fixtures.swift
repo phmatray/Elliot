@@ -22,14 +22,17 @@ import Testing
 /// asserting against a stub.
 struct StubBridge: BridgeProviding {
     var isAppRunning = true
-    var onRead: @Sendable (ElliotRequest) -> BridgeOutcome = { _ in
+    /// `async` because the snapshot side now answers through `OfflineResponder`,
+    /// which reads the store. A non-async closure still satisfies it, so the
+    /// scripted stubs below are unchanged.
+    var onRead: @Sendable (ElliotRequest) async -> BridgeOutcome = { _ in
         .live(.failure(code: .internalError, message: "this test expected no read", hint: nil))
     }
     var onWrite: @Sendable (ElliotRequest) -> ElliotResponse = { _ in
         .failure(code: .internalError, message: "this test expected no write", hint: nil)
     }
 
-    func read(_ request: ElliotRequest) -> BridgeOutcome { onRead(request) }
+    func read(_ request: ElliotRequest) async -> BridgeOutcome { await onRead(request) }
     func write(_ request: ElliotRequest) -> ElliotResponse { onWrite(request) }
 }
 
@@ -62,16 +65,33 @@ extension StubBridge {
     ) -> StubBridge {
         StubBridge(
             isAppRunning: false,
-            onRead: { _ in .offline(store, reason) },
-            onWrite: { _ in
-                .failure(
-                    code: .appUnavailable,
-                    message: "Elliot is not running and could not be launched.",
-                    hint: "Open Elliot.app and try again."
-                )
-            }
+            onRead: { await snapshotOutcome(store, $0, reason: reason) },
+            onWrite: { _ in snapshotRefusesWrites }
         )
     }
+
+    /// One request answered from a snapshot: exactly what `AppBridge.read` does
+    /// once the socket has failed, minus the socket.
+    ///
+    /// Separate from `snapshot` because a few suites need to *record* the read
+    /// as well as answer it — to assert a write tool never reached the read side
+    /// at all — and a recorder that also had to know how a snapshot answers
+    /// would be a second copy of this line.
+    static func snapshotOutcome(
+        _ store: BoardStore,
+        _ request: ElliotRequest,
+        reason: SnapshotReason = .appNotRunning
+    ) async -> BridgeOutcome {
+        .offline(await OfflineResponder(store: store).respond(to: request), reason)
+    }
+
+    /// What a down app says to a write. A constant so the several stubs that
+    /// need it cannot drift into refusing it differently.
+    static let snapshotRefusesWrites = ElliotResponse.failure(
+        code: .appUnavailable,
+        message: "Elliot is not running and could not be launched.",
+        hint: "Open Elliot.app and try again."
+    )
 }
 
 /// What the bridge was actually asked.

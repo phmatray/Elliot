@@ -83,59 +83,24 @@ struct ListRunsTool: BoardTool {
         // what caps the page, and it is what reports having capped it.
         let requested = try args.limit() ?? 0
 
-        switch await bridge.read(.listRuns(cardID: cardID, limit: requested)) {
-        case .live(let response):
-            return try .render(response) { payload in
-                guard case .runs(let page) = payload else { return nil }
-                var fields = ToolOutput.pageFields(
-                    total: page.total, limit: page.limit,
-                    truncated: page.truncated, cappedFrom: page.limitCappedFrom
-                )
-                fields["runs"] = try Value.encoding(page.runs)
-                fields["source"] = .string("live")
-                ToolOutput.attachNote(&fields, ToolOutput.pageNote(
-                    shown: page.runs.count, total: page.total,
-                    truncated: page.truncated, limit: page.limit, cappedFrom: page.limitCappedFrom
-                ))
-                return fields
-            }
-
-        case .offline(let store, let reason):
-            // The same refusal the running app makes, for the same reason: "this
-            // card has no runs" and "there is no such card" are different
-            // answers, and only one of them means keep waiting. Filtering on an
-            // id that matches nothing answers the first when the truth is the
-            // second — which is finding 3 again, one tool over.
-            if let cardID, try await store.card(id: cardID) == nil {
-                throw ToolFailure(
-                    code: ElliotErrorCode.cardNotFound.rawValue,
-                    message: "No card with id \(cardID).",
-                    hint: "board_list_cards lists the cards this board holds."
-                )
-            }
-            let (limit, cappedFrom) = ElliotPaging.clamp(
-                requested,
-                default: ElliotPaging.runLimitDefault,
-                max: ElliotPaging.runLimitMax
-            )
-            let runs = try await store.runs(cardID: cardID, limit: limit).map { RunDTO(run: $0) }
-            let total = try await store.runCount(cardID: cardID)
-            let page = RunPage(runs: runs, total: total, limit: limit, limitCappedFrom: cappedFrom)
+        // The card-not-found refusal — "this card has no runs" and "there is no
+        // such card" are different answers, and only one of them means keep
+        // waiting — is `OfflineResponder`'s now, in the same words the running
+        // app uses. It was hand-thrown here, and it had to be taught to this
+        // tool separately after being fixed one tool over.
+        let outcome = await bridge.read(.listRuns(cardID: cardID, limit: requested))
+        return try .render(outcome) { payload in
+            guard case .runs(let page) = payload else { return nil }
             var fields = ToolOutput.pageFields(
                 total: page.total, limit: page.limit,
                 truncated: page.truncated, cappedFrom: page.limitCappedFrom
             )
             fields["runs"] = try Value.encoding(page.runs)
-            fields["source"] = .string("offline-db")
-            ToolOutput.attachNote(
-                &fields,
-                ToolOutput.offlineNote(reason),
-                ToolOutput.pageNote(
-                    shown: page.runs.count, total: page.total,
-                    truncated: page.truncated, limit: page.limit, cappedFrom: page.limitCappedFrom
-                )
-            )
-            return try .ok(fields)
+            ToolOutput.attachNote(&fields, ToolOutput.pageNote(
+                shown: page.runs.count, total: page.total,
+                truncated: page.truncated, limit: page.limit, cappedFrom: page.limitCappedFrom
+            ))
+            return fields
         }
     }
 }

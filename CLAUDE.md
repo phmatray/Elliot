@@ -134,10 +134,39 @@ The one difference that is *real* stays a parameter: `Attribution.live` records 
 move versus the board catching up after not running — it is persisted in `MoveAudit` and rendered
 from there, so collapsing the two would rewrite history rather than simplify code.
 
+**A read is answered once, as an `ElliotResponse`, and a tool only renders it.** `BridgeOutcome` has
+two cases and both carry a response: `.live` is what the app sent back, `.offline(response, reason)`
+is what `OfflineResponder` (`ElliotMCPKit/OfflineResponder.swift`) answered from the read-only
+snapshot. A tool never sees a `BoardStore`. `CallTool.Result.render(_ outcome:_ body:)` attaches
+`source` and the snapshot note — **prepending** it to whatever note the body wrote, since
+`board_list_cards` and `board_list_runs` attach a page note too — and the body contributes only the
+fields that are its own.
+
+`.offline` carried a `BoardStore` until #141, and the six sites that unpacked it each held a second
+implementation of the app's query: the clamp, the repo filter, the DTO assembly, the refusals. The
+drift is not hypothetical — it is recorded in the comments of the code that fixed it, four times, one
+tool at a time. `ListRunsTool` had to be taught that an unknown card is a refusal and not an empty
+page (*"which is finding 3 again, one tool over"*); `ListCardsTool` and then `ListProposalsTool` that
+an unknown repository is not "no filter" (*"collapsing them is what made a typo return the whole
+board as a success"*); `GetCardTool` that a snapshot leaving `activeRunID` nil *"would report every
+held card as movable"*. Each was found separately and the next tool started from zero, because
+nothing in the reply tells an agent which branch served it. `respond(to:)` switches **exhaustively
+over `ElliotRequest` with no `default`**, so a read case added to the wire has to be answered from
+the snapshot before the helper builds; `OfflineParityTests` (in `ElliotEngineTests`, which is the
+only target that can import both) drives one seeded board through `MCPRequestHandler.handle` and
+`OfflineResponder.respond` and compares the encoded bytes.
+
+What the two cannot do is share code: `MCPRequestHandler` lives in `ElliotEngine`, and the invariant
+above forbids importing it here. They share a **vocabulary**, which is what makes the parity test
+possible — the honest limit of the fix, and the reason the test exists rather than a comment asking
+for care.
+
 **The app is the sole writer.** SQLite does not notify other processes of writes, so `elliot-mcp` opens
 the store read-only and routes every mutation back over the unix socket. A read may fall back to
 `source: offline-db`; a **write never falls back** — writing a column change straight to the database
-would move a card without firing its rule.
+would move a card without firing its rule. `OfflineResponder` holds the same line one layer down: its
+write cases return `read_only`, spelled out one line each rather than swept into a `default`, because
+a `default` is exactly what would silently answer a *read* case nobody had implemented.
 
 **Rules belong in `ElliotModel`.** Views render and dispatch; they do not judge. This is still the
 rule, but since #72 it is a preference with a reason rather than a workaround: `AppModel` and the
