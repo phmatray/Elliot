@@ -304,6 +304,20 @@ public final class BoardStore: Sendable {
         try await requireWriter().write { [card] db in try card.save(db) }
     }
 
+    /// Runs the v6 backfill again. Idempotent — it only writes rows whose
+    /// `angle` is still NULL — and exists so a test can assert what the
+    /// migration does without reaching into `grdb_migrations`.
+    ///
+    /// Deliberately not `updatedAt`-touching: giving a card its lens back is
+    /// recovering a fact it always had, not editing it, and bumping the
+    /// timestamp would reorder every backfilled card against work that really
+    /// did change.
+    public func backfillCardAngles() async throws {
+        try await requireWriter().write { db in
+            try db.execute(sql: Migrations.backfillCardAnglesSQL)
+        }
+    }
+
     public func deleteCard(id: UUID) async throws {
         _ = try await requireWriter().write { db in try Card.deleteOne(db, key: id.databaseKey) }
     }
