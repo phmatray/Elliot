@@ -38,6 +38,7 @@ public final class AppModel {
     /// them, each carrying the rule holding it. Pushed by the scheduler on every
     /// drain — nothing polls.
     public private(set) var queue: [QueuedRun] = []
+    public private(set) var isQueuePaused = false
 
     public private(set) var ceiling: SpendCeiling = .off
     public private(set) var spentToday: Spend = .nothing
@@ -610,7 +611,42 @@ public final class AppModel {
     func refreshOccupancy() async {
         guard let scheduler else { return }
         occupancy = await scheduler.occupancy
+        isQueuePaused = await scheduler.paused
         await refreshSpend()
+    }
+
+    // MARK: - Queue commands
+
+    /// Pause, resume, empty, or push one run to the front.
+    ///
+    /// Thin on purpose: every one of these is the scheduler's decision, and a
+    /// second copy of the reasoning here is how the board and the engine start
+    /// disagreeing about what the queue is doing.
+    public func pauseQueue() async {
+        await scheduler?.pause()
+        await refreshOccupancy()
+    }
+
+    public func resumeQueue() async {
+        await scheduler?.resume()
+        await refreshOccupancy()
+    }
+
+    /// Says how many were discarded. A command that empties something must
+    /// report what it emptied, or an accidental press is indistinguishable from
+    /// a queue that was already empty.
+    public func drainQueue() async {
+        guard let scheduler else { return }
+        let cleared = await scheduler.drain()
+        status = cleared == 0
+            ? "Nothing was waiting."
+            : "Discarded \(cleared == 1 ? "1 queued run" : "\(cleared) queued runs"). Nothing running was stopped."
+        await refreshOccupancy()
+    }
+
+    public func promoteQueued(runID: UUID) async {
+        await scheduler?.promote(runID: runID)
+        await refreshOccupancy()
     }
 
     /// Saves the ceiling and applies it, in that order, for the same reason
