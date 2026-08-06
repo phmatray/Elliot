@@ -64,6 +64,23 @@ public final class AppModel {
     /// were sitting in the database the entire time.
     public private(set) var hasLoadedRepos = false
 
+    /// Why the repository list could not be read, when it could not be.
+    ///
+    /// Recorded rather than swallowed (#118). Cleared by any delivery that
+    /// succeeds, so it names a live problem rather than a historical one.
+    public private(set) var startupFailure: String?
+
+    /// Which of the board's four screens is the true one.
+    ///
+    /// Asked of `ElliotModel` rather than decided here, because the defect this
+    /// answers was two surfaces reading two facts with nothing owning the pair.
+    /// The view renders what this returns; it does not choose.
+    public var boardPhase: BoardPhase {
+        BoardPhase.of(
+            hasLoadedRepos: hasLoadedRepos, isReady: isReady,
+            repoCount: repos.count, failure: startupFailure)
+    }
+
     /// Sheet and inspector state, here rather than in a view, because a menu
     /// command cannot reach a view's `@State`.
     ///
@@ -372,12 +389,29 @@ public final class AppModel {
                         // empty store is a loaded store, and the board's real
                         // empty state must be reachable.
                         self?.hasLoadedRepos = true
+                        // A delivery that arrives is the answer to whatever
+                        // failed before it. Left set, a transient error would
+                        // keep accusing a store that is now being read.
+                        self?.startupFailure = nil
                         if self?.selectedRepoID == nil { self?.selectedRepoID = repos.first?.id }
                     }
                 }
             } catch {
-                // Repos change rarely; a dropped observation is not worth a
-                // banner of its own.
+                // The old comment here reasoned about *frequency* — "repos
+                // change rarely, a dropped observation is not worth a banner" —
+                // when what decides this is *severity*. A dropped update is
+                // cosmetic; a failure on the **first** delivery is terminal,
+                // because `hasLoadedRepos` is only ever set inside the loop, so
+                // it stays false for the life of the process and the board sits
+                // on "Still starting" for ever with "Ready." underneath (#118).
+                //
+                // Recorded rather than shown directly: `BoardPhase` decides
+                // whether this takes the screen or sits beside repositories
+                // already loaded, so a late failure cannot blank a working
+                // board.
+                await MainActor.run {
+                    self?.startupFailure = error.localizedDescription
+                }
             }
         })
     }
