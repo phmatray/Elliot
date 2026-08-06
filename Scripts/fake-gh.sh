@@ -9,9 +9,13 @@
 #   FAKE_GH_ISSUES     path to a JSON file printed for `issue list` (default [])
 #   FAKE_GH_PRS        path to a JSON file printed for `pr list`    (default [])
 #   FAKE_GH_MODE       ok   = print the fixtures (default)
-#                      fail = write to stderr and exit non-zero, so a test can
-#                             prove one unreachable repository does not abort a
-#                             pass over the others
+#                      fail = write to stderr and exit non-zero
+#   FAKE_GH_FAIL_REPO  fail only when `--repo` is this exact value, and answer
+#                      normally for every other repository. `importAll` shares
+#                      one `GHClient` across a pass, so this is the only way to
+#                      express "this repository is unreachable and that one is
+#                      not" — which is the actual claim #17's criterion 7 makes
+#                      and a blanket FAKE_GH_MODE=fail cannot test
 #   FAKE_GH_EXIT       exit code used by `fail` (default 1)
 #   FAKE_GH_ARGV_OUT   file to dump argv into, one argument per line, so a test
 #                      can assert what was actually asked of `gh`
@@ -42,6 +46,19 @@ fi
 if [ "${FAKE_GH_MODE:-ok}" = "fail" ]; then
   echo "fake-gh: simulated failure" >&2
   exit "${FAKE_GH_EXIT:-1}"
+fi
+
+# Fail for one named repository only. The value is read from the argument after
+# `--repo`, which is how `GHClient` always passes it.
+if [ -n "${FAKE_GH_FAIL_REPO:-}" ]; then
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--repo" ] && [ "$arg" = "$FAKE_GH_FAIL_REPO" ]; then
+      echo "fake-gh: simulated failure for $arg" >&2
+      exit "${FAKE_GH_EXIT:-1}"
+    fi
+    prev="$arg"
+  done
 fi
 
 # `gh issue list …` / `gh pr list …` — dispatch on the first two arguments.

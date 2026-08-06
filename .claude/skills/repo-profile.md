@@ -225,7 +225,10 @@ before flipping a PR ready: -->
   is equally usable by hand from a terminal when reproducing a run.
 - **`gh` is fakeable too — do not plan around it being untestable.** `Scripts/fake-gh.sh` answers
   `issue list` and `pr list` from `Fixtures/gh/*.json` (`FAKE_GH_ISSUES`, `FAKE_GH_PRS`,
-  `FAKE_GH_MODE=ok|fail`, `FAKE_GH_EXIT`, `FAKE_GH_ARGV_OUT`). `GHClient` spawns `ToolConfig.ghPath`,
+  `FAKE_GH_MODE=ok|fail`, `FAKE_GH_FAIL_REPO`, `FAKE_GH_EXIT`, `FAKE_GH_ARGV_OUT`). `FAKE_GH_FAIL_REPO`
+  fails for one `--repo` only, which is the only way to test that an unreachable repository does not
+  cost a healthy one its refresh — `importAll` shares one client across the pass.
+  `GHClient` spawns `ToolConfig.ghPath`,
   so a test just points that at the script; no protocol and no production change are needed, and the
   real subprocess and real ISO-8601 decode stay under test. This entry exists because the opposite
   conclusion was drawn once: #40 judged the import untestable and turned three of #17's acceptance

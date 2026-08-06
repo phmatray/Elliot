@@ -285,36 +285,58 @@ struct GitHubImportFromFakeGHTests {
         #expect(try await s.store.cards(repoID: s.repo.id).isEmpty)
     }
 
-    @Test("importAll keeps going: one unreachable repository does not cost the others their refresh")
+    /// #17's criterion 7, stated exactly: in **one** pass, the unreachable
+    /// repository fails and the healthy one is imported anyway.
+    ///
+    /// `importAll` shares a single `GHClient` across the pass, so a blanket
+    /// `FAKE_GH_MODE=fail` can only show that both fail. `FAKE_GH_FAIL_REPO`
+    /// makes the fake answer per `--repo`, which is what lets the two outcomes
+    /// happen side by side.
+    @Test("importAll keeps going: one unreachable repository does not cost the other its refresh")
     func oneBadRepoDoesNotAbortThePass() async throws {
-        // Both repositories live in one store, but only one `GHClient` can be
-        // wired into a service — so the unreachable one is expressed as a
-        // repository whose *own* import is run against a failing fake, and the
-        // pass is asserted on the summaries `importAll` returns.
-        let s = try await stack(mode: "fail")
+        let store = try BoardStore.inMemory()
+        let launcher = RecordingLauncher()
+        let board = BoardService(store: store, launcher: launcher)
+
+        let broken = Repo(
+            path: "/tmp/elliot-broken-\(UUID().uuidString)",
+            nameWithOwner: "phmatray/Broken", displayName: "Broken")
         let healthy = Repo(
             path: "/tmp/elliot-healthy-\(UUID().uuidString)",
             nameWithOwner: "phmatray/Healthy", displayName: "Healthy")
-        try await s.store.saveRepo(healthy)
+        try await store.saveRepo(broken)
+        try await store.saveRepo(healthy)
 
-        let broken = s.repo
-        let failing = s.service
+        let config = ToolConfig(
+            claudePath: "", ghPath: Paths.fakeGH, gitPath: "",
+            environment: [
+                "FAKE_GH_ISSUES": Paths.fixture("issues-basic.json"),
+                "FAKE_GH_PRS": Paths.fixture("prs-basic.json"),
+                "FAKE_GH_FAIL_REPO": "phmatray/Broken",
+            ])
+        let service = GitHubImportService(
+            store: store, gh: GHClient(config: config), board: board)
+
         let summaries = try await withTimeout(.seconds(30)) {
-            await failing.importAll([broken, healthy])
+            await service.importAll([broken, healthy])
         }
 
         #expect(summaries.count == 2, "every repository is reported, including the one that failed")
-        #expect(summaries[0].failure != nil)
-        #expect(summaries[1].failure != nil, "same fake, so both fail — the point is that both ran")
 
-        // And with a working fake, the same two-repository pass imports both:
-        // the failure above is the fake's, not the loop giving up.
-        let working = rewired(s, issues: "issues-basic.json", prs: "prs-basic.json")
-        let ok = try await withTimeout(.seconds(30)) { await working.importAll([broken, healthy]) }
-        #expect(ok.count == 2)
-        #expect(ok.allSatisfy { $0.failure == nil })
-        #expect(try await s.store.cards(repoID: broken.id).count == 3)
-        #expect(try await s.store.cards(repoID: healthy.id).count == 3)
+        // Matched by name, not by position — `importAll` filters on `isEnabled`
+        // so position is not an identity, which the disabled-repo case proves.
+        let brokenSummary = try #require(summaries.first { $0.repoName == "Broken" })
+        let healthySummary = try #require(summaries.first { $0.repoName == "Healthy" })
+
+        #expect(brokenSummary.failure != nil, "the unreachable one says so")
+        #expect(brokenSummary.created == 0)
+        #expect(healthySummary.failure == nil, "and the reachable one was still refreshed")
+        #expect(healthySummary.created == 3)
+
+        // The board bears it out: one repository has its cards, the other none.
+        #expect(try await store.cards(repoID: healthy.id).count == 3)
+        #expect(try await store.cards(repoID: broken.id).isEmpty)
+        #expect(await launcher.launched.isEmpty)
     }
 
     @Test("A disabled repository is skipped by importAll without being reported as failed")
