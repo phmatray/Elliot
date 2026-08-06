@@ -31,7 +31,7 @@ public struct AnalysisWindow: View {
     @State private var instructions = ""
     @State private var maxStories = 8
     @State private var selection: Set<UUID> = []
-    @State private var editing: StoryProposal?
+    @State private var editingID: UUID?
     @State private var past: [Analysis] = []
     /// `nil` until the reader opens or closes the strip themselves.
     @State private var lensesExpanded: Bool?
@@ -56,9 +56,6 @@ public struct AnalysisWindow: View {
         // and the buttons moved the buttons out from under the cursor that had
         // just pressed one.
         .frame(minWidth: 760, idealWidth: 900, minHeight: 560, idealHeight: 760)
-        .sheet(item: $editing) { proposal in
-            ProposalEditor(proposal: proposal)
-        }
         .task { past = await model.recentAnalyses() }
     }
 
@@ -282,21 +279,29 @@ public struct AnalysisWindow: View {
             }
 
             ForEach(group) { proposal in
-                ProposalRow(
-                    proposal: proposal,
-                    isSelected: selection.contains(proposal.id),
-                    repoPath: repo?.path,
-                    toggle: {
-                        if selection.contains(proposal.id) {
-                            selection.remove(proposal.id)
-                        } else {
-                            selection.insert(proposal.id)
-                        }
-                    },
-                    edit: { editing = proposal },
-                    accept: { Task { await model.acceptProposals(ids: [proposal.id]) } },
-                    reject: { Task { await model.rejectProposals(ids: [proposal.id]) } }
-                )
+                // The row grows into a form rather than being covered by one.
+                // This list is walked to triage up to thirty proposals, and a
+                // sheet covered the very thing being sorted.
+                if editingID == proposal.id {
+                    ProposalEditor(proposal: proposal) { editingID = nil }
+                        .id(proposal.id)
+                } else {
+                    ProposalRow(
+                        proposal: proposal,
+                        isSelected: selection.contains(proposal.id),
+                        repoPath: repo?.path,
+                        toggle: {
+                            if selection.contains(proposal.id) {
+                                selection.remove(proposal.id)
+                            } else {
+                                selection.insert(proposal.id)
+                            }
+                        },
+                        edit: { editingID = proposal.id },
+                        accept: { Task { await model.acceptProposals(ids: [proposal.id]) } },
+                        reject: { Task { await model.rejectProposals(ids: [proposal.id]) } }
+                    )
+                }
             }
         }
     }
@@ -404,7 +409,7 @@ public struct AnalysisWindow: View {
                 // Editing was reachable by hover and by context menu, neither
                 // of which a keyboard can open on macOS.
                 Button("Edit…") {
-                    editing = proposed.first { selection.contains($0.id) }
+                    editingID = proposed.first { selection.contains($0.id) }?.id
                 }
                 .disabled(selection.count != 1)
 
@@ -835,21 +840,28 @@ struct EvidenceLink: View {
 /// rejecting and retyping.
 struct ProposalEditor: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
 
     @State private var draft: StoryProposal
     @State private var criteria: [String]
+    /// Called when the editor is finished with, saved or not. The list owns
+    /// which row is being edited; this view only says it is done.
+    private let done: () -> Void
 
-    init(proposal: StoryProposal) {
+    init(proposal: StoryProposal, done: @escaping () -> Void) {
+        self.done = done
         _draft = State(initialValue: proposal)
         _criteria = State(initialValue: proposal.story.acceptanceCriteria.isEmpty
             ? [""]
             : proposal.story.acceptanceCriteria)
     }
 
-    /// The fields scroll; the title and the buttons do not. A lens that returns
-    /// eight acceptance criteria opened this sheet already overflowing, with
-    /// Save below the bottom edge and no way to resize a macOS sheet.
+    /// Inline in the list, not over it.
+    ///
+    /// It has no scroll view and no fixed height any more: as a sheet it needed
+    /// both, because eight acceptance criteria opened it already overflowing
+    /// with Save below the bottom edge and no way to resize a macOS sheet. In
+    /// the list the enclosing scroll view is the one the reader is already
+    /// using, and the row is simply as tall as it needs to be.
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
@@ -863,8 +875,7 @@ struct ProposalEditor: View {
 
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 14) {
                     VStack(alignment: .leading, spacing: 4) {
                         ConsoleLabel(text: "Board label")
                         TextField("Short name for the card", text: $draft.title)
@@ -910,16 +921,15 @@ struct ProposalEditor: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                }
-                .padding(18)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Divider()
 
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Cancel", role: .cancel) { done() }
                 Button("Save") {
                     var edited = draft
                     edited.story.acceptanceCriteria = criteria
@@ -927,7 +937,7 @@ struct ProposalEditor: View {
                         .filter { !$0.isEmpty }
                     Task {
                         await model.updateProposal(edited)
-                        dismiss()
+                        done()
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -935,7 +945,15 @@ struct ProposalEditor: View {
             }
             .padding(18)
         }
-        .frame(width: 580, height: 560)
+        .background(Surface.recess)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .overlay {
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(Surface.washBorder(Palette.armed), lineWidth: 1)
+        }
+        // Escape cancels the edit. Without it the key would fall through to the
+        // window, which is the wrong thing to close while a row is open.
+        .onExitCommand { done() }
     }
 
     private func field(_ label: String, placeholder: String, text: Binding<String>) -> some View {
