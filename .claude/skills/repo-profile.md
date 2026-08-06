@@ -32,13 +32,15 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**820 tests in 95 suites**, measured on `main` at
-  `c99ebb1` on 2026-08-06; needs no Xcode, no API token, no network — the end-to-end suite drives
+- **Full test:** `cd ElliotKit && swift test` (**996 tests in 116 suites**, measured on `main` at
+  `7b8436c` on 2026-08-06; needs no Xcode, no API token, no network — the end-to-end suite drives
   `Scripts/fake-claude.sh` instead of the real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
-    wrong here twice.** It said 408 while the suite ran 517, then 517 while it ran 788. It moved
+    wrong here three times.** It said 408 while the suite ran 517, then 517 while it ran 788. It moved
     788 → 820 *during the pull request that corrected it*, when `main` gained three suites and the
-    branch was synced. **Trust the run, and correct the line when you notice the gap.**
+    branch was synced. It then said 820 while `main` ran **996 in 116** — a gap of 176 tests and 21
+    suites, i.e. the line had gone stale faster than anyone was reading it.
+    **Trust the run, and correct the line when you notice the gap.**
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
