@@ -195,9 +195,10 @@ enum Metric {
     /// Below this the five columns start scrolling instead of shrinking
     /// further — a card title needs about this much to stay readable.
     static let minColumnWidth: CGFloat = 226
-    /// Wide enough for a branch name set in the fact face without wrapping,
-    /// and narrow enough that all five columns still fit beside it.
-    static let inspectorWidth: CGFloat = 344
+    // The detail panel deliberately has no constant width here. It is measured
+    // *in columns* — `PanelLayout.panelWidth(columnWidth:spans:)` — which is
+    // what makes it read as belonging to the column it opened from rather than
+    // as a fixed strip at the far edge of the window.
     /// Fixed, because the status bar now carries live numbers that change
     /// width. Left to size itself it has grown and shoved the whole board
     /// upwards before, and a strip that jitters as a cost ticks is worse than

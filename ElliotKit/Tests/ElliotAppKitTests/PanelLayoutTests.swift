@@ -260,6 +260,170 @@ struct PanelLayoutTests {
         }
     }
 
+    // MARK: - 8. Where a slot sits in the row
+
+    @Test("A slot's leading edge is the gutter plus everything before it")
+    func minXWalksTheRow() {
+        for boardWidth in boardWidths {
+            let column = PanelLayout.columnWidth(boardWidth: boardWidth)
+            let panel = PanelLayout.panelWidth(columnWidth: column, spans: 3)
+            let closed = PanelLayout.boardOrder(selected: nil)
+
+            // Closed: five columns, the first one a gutter in — the row's own
+            // padding — and each one a column and a gutter after the last.
+            for (index, slot) in closed.enumerated() {
+                #expect(
+                    PanelLayout.minX(
+                        of: slot, in: closed, columnWidth: column, panelWidth: panel
+                    ) == Metric.gutter + CGFloat(index) * (column + Metric.gutter)
+                )
+            }
+            // And there is no panel to find in it. `nil`, not `0`: zero is a
+            // position, and a caller that scrolled to it would scroll to the
+            // leading edge of the board and look like it had worked.
+            #expect(
+                PanelLayout.minX(
+                    of: .panel, in: closed, columnWidth: column, panelWidth: panel
+                ) == nil
+            )
+        }
+    }
+
+    @Test("The row `minX` walks is the row `contentWidth` measures")
+    func minXAgreesWithContentWidth() {
+        // The reason this is worth asserting: the scroll predicate is built on
+        // `contentWidth` and the framing on `minX`. If they described two
+        // different rows the board could frame a pair it had also decided was
+        // unreachable — and neither `swift build` nor `swift test` would say so.
+        for boardWidth in boardWidths {
+            for spans in [2, 3] {
+                let column = PanelLayout.columnWidth(boardWidth: boardWidth)
+                let panel = PanelLayout.panelWidth(columnWidth: column, spans: spans)
+
+                for selected in [nil] + ElliotModel.Column.allCases.map(Optional.some) {
+                    let slots = PanelLayout.boardOrder(selected: selected)
+                    guard let last = slots.last,
+                          let lastMinX = PanelLayout.minX(
+                              of: last, in: slots, columnWidth: column, panelWidth: panel
+                          )
+                    else { Issue.record("empty board order"); return }
+
+                    // The trailing edge of the last slot, plus the row's own
+                    // trailing padding, is the whole content width.
+                    let width = last == .panel ? panel : column
+                    #expect(
+                        lastMinX + width + Metric.gutter
+                            == PanelLayout.contentWidth(
+                                boardWidth: boardWidth, spans: selected == nil ? nil : spans
+                            )
+                    )
+                }
+            }
+        }
+    }
+
+    @Test("The panel sits one gutter from its origin column, on the side it opens")
+    func minXPutsThePanelBesideItsOrigin() {
+        for boardWidth in boardWidths {
+            let column = PanelLayout.columnWidth(boardWidth: boardWidth)
+            let panel = PanelLayout.panelWidth(columnWidth: column, spans: 3)
+
+            for selected in ElliotModel.Column.allCases {
+                let slots = PanelLayout.boardOrder(selected: selected)
+                guard let originMinX = PanelLayout.minX(
+                          of: .column(selected), in: slots,
+                          columnWidth: column, panelWidth: panel
+                      ),
+                      let panelMinX = PanelLayout.minX(
+                          of: .panel, in: slots, columnWidth: column, panelWidth: panel
+                      )
+                else { Issue.record("no pair for \(selected)"); return }
+
+                if PanelLayout.opensLeft(of: selected) {
+                    // Done: the panel comes first, so the column starts a panel
+                    // and a gutter after it.
+                    #expect(originMinX - panelMinX == panel + Metric.gutter)
+                } else {
+                    #expect(panelMinX - originMinX == column + Metric.gutter)
+                }
+            }
+        }
+    }
+
+    // MARK: - 9. Framing the pair
+
+    @Test("Framing leads the pair by 96pt, or by everything there is")
+    func framingLeadsThePair() {
+        for boardWidth in boardWidths {
+            for spans in [2, 3] {
+                for selected in ElliotModel.Column.allCases {
+                    let pair = framed(boardWidth: boardWidth, spans: spans, selected: selected)
+
+                    // The lead in full, except at the leading edge of the board
+                    // where there is not 96pt of row to give.
+                    #expect(pair.offset >= 0)
+                    #expect(pair.leadingMinX - pair.offset == min(96, pair.leadingMinX))
+                }
+            }
+        }
+    }
+
+    @Test("The framed pair fits the window, except at the narrowest one")
+    func framedPairFitsTheViewport() {
+        // The one measurement that is not free: the lead costs 96pt of
+        // viewport, and at the 1000pt minimum window with the panel at three
+        // spans the pair is 934pt — 1030 with the lead, which is 30pt more than
+        // there is. Every other combination fits outright.
+        //
+        // Pinned rather than smoothed over: the shortfall belongs to the lead,
+        // not to the panel, and a reader who wants the pair whole at that size
+        // has Narrow details (2 spans, 794pt with the lead). Anyone changing
+        // the lead or the span default should have to change this number too.
+        for boardWidth in boardWidths {
+            for spans in [2, 3] {
+                for selected in ElliotModel.Column.allCases {
+                    let pair = framed(boardWidth: boardWidth, spans: spans, selected: selected)
+                    let overflow = pair.trailingMaxX - (pair.offset + boardWidth)
+
+                    if boardWidth == 1_000, spans == 3, pair.offset > 0 {
+                        #expect(overflow == 30)
+                        // Without the lead it would fit: the pair itself is
+                        // narrower than the window.
+                        #expect(pair.trailingMaxX - pair.leadingMinX < boardWidth)
+                    } else {
+                        #expect(overflow <= 0)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The framed pair at one board width, one span setting and one selection:
+    /// where it starts, where it ends, and where the board scrolls to show it.
+    private func framed(
+        boardWidth: CGFloat, spans: Int, selected: ElliotModel.Column
+    ) -> (offset: CGFloat, leadingMinX: CGFloat, trailingMaxX: CGFloat) {
+        let column = PanelLayout.columnWidth(boardWidth: boardWidth)
+        let panel = PanelLayout.panelWidth(columnWidth: column, spans: spans)
+        let slots = PanelLayout.boardOrder(selected: selected)
+        let flipped = PanelLayout.opensLeft(of: selected)
+
+        let originMinX = PanelLayout.minX(
+            of: .column(selected), in: slots, columnWidth: column, panelWidth: panel
+        ) ?? 0
+        let panelMinX = PanelLayout.minX(
+            of: .panel, in: slots, columnWidth: column, panelWidth: panel
+        ) ?? 0
+
+        return (
+            offset: PanelLayout.frameOffsetX(
+                originMinX: originMinX, panelMinX: panelMinX, flipped: flipped
+            ),
+            leadingMinX: flipped ? panelMinX : originMinX,
+            trailingMaxX: flipped ? originMinX + column : panelMinX + panel
+        )
+    }
+
     // MARK: - The tether
 
     @Test("The tether reaches the gutter plus the column's own list padding")

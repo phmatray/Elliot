@@ -189,6 +189,33 @@ enum PanelLayout {
         return slots
     }
 
+    /// Where a slot's leading edge falls inside the board's row, or `nil` if
+    /// that slot is not in this order at all.
+    ///
+    /// The row is an `HStack` of **known** widths — five columns of one width,
+    /// one panel of another, one gutter between each pair and one more as the
+    /// row's own padding — so where a slot sits is arithmetic rather than a
+    /// measurement. That matters for more than tidiness: framing runs in the
+    /// same update that inserts the panel, and a measurement taken then
+    /// describes the row as it was a moment ago. This answers before the layout
+    /// has run.
+    ///
+    /// `nil` rather than `0` for a slot that is not there: zero is a position,
+    /// and a caller that scrolled to it would scroll to the leading edge of the
+    /// board and look like it had worked.
+    static func minX(
+        of target: BoardSlot, in slots: [BoardSlot],
+        columnWidth: CGFloat, panelWidth: CGFloat, gutter: CGFloat = Metric.gutter
+    ) -> CGFloat? {
+        guard let index = slots.firstIndex(of: target) else { return nil }
+        // The row's own padding is one gutter, so the first slot starts there.
+        var x = gutter
+        for slot in slots[..<index] {
+            x += (slot == .panel ? panelWidth : columnWidth) + gutter
+        }
+        return x
+    }
+
     // MARK: - Caret and tether
 
     /// Where the caret sits inside the panel, in the panel's own coordinates.

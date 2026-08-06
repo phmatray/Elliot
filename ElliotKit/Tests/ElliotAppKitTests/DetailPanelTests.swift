@@ -187,8 +187,8 @@ struct DetailPanelTests {
         #expect(PanelLayout.panelWidth(columnWidth: column, spans: 3) == 968)
         #expect(PanelLayout.panelWidth(columnWidth: column, spans: 2) == 642)
 
-        // Wider than the strip it replaces at both settings — `Metric
-        // .inspectorWidth` was 344pt however large the window was.
+        // Wider than the strip it replaces at both settings — that one was a
+        // constant 344pt however large the window was.
         for span in [2, 3] {
             #expect(PanelLayout.panelWidth(columnWidth: column, spans: span) > 344)
         }
