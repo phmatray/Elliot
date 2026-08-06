@@ -114,6 +114,118 @@ struct SchedulerLimitsAdmissionTests {
     }
 }
 
+/// `canStart` used to return a bare `Bool`. These cover the reason it now keeps
+/// — the half that turns a queue that has stopped moving from a mystery into a
+/// sentence.
+@Suite("Queue refusal — which rule is holding a run")
+struct QueueRefusalAdmissionTests {
+
+    private func scheduler(_ limits: SchedulerLimits = .default) throws -> RunScheduler {
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            gitPath: "/usr/bin/true", environment: [:]
+        )
+        return RunScheduler(
+            store: store, toolConfig: config,
+            verifier: Verifier(gh: .init(config: config)), limits: limits
+        )
+    }
+
+    private func run(_ kind: SkillKind, repo: UUID = UUID()) -> SkillRun {
+        SkillRun(
+            cardID: UUID(), repoID: repo, kind: kind, prompt: "x", cwd: "/tmp",
+            logPath: "/tmp/a", stderrPath: "/tmp/b", createdAt: Date()
+        )
+    }
+
+    @Test("An admissible run has no reason not to start")
+    func admissibleHasNoRefusal() async throws {
+        let scheduler = try scheduler()
+        #expect(await scheduler.refusal(for: run(.implementIssue), overBudget: false) == nil)
+    }
+
+    @Test("A merge in the repository is named as such, not as a full cap")
+    func mergeInRepoIsNamed() async throws {
+        let scheduler = try scheduler(SchedulerLimits(maxConcurrent: 8, maxConcurrentAnalyses: 8))
+        let repo = UUID()
+        await scheduler.testOnlyMarkInFlight(run(.mergePR, repo: repo))
+        // Caps are wide open, so if this said "cap reached" it would be sending
+        // the user to raise a limit that is not the problem.
+        #expect(
+            await scheduler.refusal(for: run(.implementIssue, repo: repo), overBudget: false)
+                == .mergeInFlightInRepo
+        )
+    }
+
+    @Test("The writer cap reports the numbers it is enforcing")
+    func writerCapCarriesNumbers() async throws {
+        let scheduler = try scheduler(SchedulerLimits(maxConcurrent: 2, maxConcurrentAnalyses: 3))
+        await scheduler.testOnlyMarkInFlight(run(.implementIssue))
+        await scheduler.testOnlyMarkInFlight(run(.implementIssue))
+        #expect(
+            await scheduler.refusal(for: run(.implementIssue), overBudget: false)
+                == .writerCapReached(inFlight: 2, cap: 2)
+        )
+    }
+
+    @Test("The analysis cap is reported separately from the writer cap")
+    func analysisCapIsItsOwnReason() async throws {
+        let scheduler = try scheduler(SchedulerLimits(maxConcurrent: 4, maxConcurrentAnalyses: 1))
+        await scheduler.testOnlyMarkInFlight(run(.analyzeRepo))
+        #expect(
+            await scheduler.refusal(for: run(.analyzeRepo), overBudget: false)
+                == .analysisCapReached(inFlight: 1, cap: 1)
+        )
+        // And a writer is still admissible: the lanes are separate.
+        #expect(await scheduler.refusal(for: run(.implementIssue), overBudget: false) == nil)
+    }
+
+    @Test("A second create-issue in one repository is named for what it is")
+    func duplicateCreateIssue() async throws {
+        let scheduler = try scheduler(SchedulerLimits(maxConcurrent: 8, maxConcurrentAnalyses: 8))
+        let repo = UUID()
+        await scheduler.testOnlyMarkInFlight(run(.createIssue, repo: repo))
+        #expect(
+            await scheduler.refusal(for: run(.createIssue, repo: repo), overBudget: false)
+                == .duplicateCreateIssueInRepo
+        )
+        // Only in the same repository — elsewhere it is free to run.
+        #expect(await scheduler.refusal(for: run(.createIssue), overBudget: false) == nil)
+    }
+
+    @Test("A merge waiting on an analysis says so, rather than blaming a cap")
+    func mergeWaitsForIdle() async throws {
+        let scheduler = try scheduler(SchedulerLimits(maxConcurrent: 8, maxConcurrentAnalyses: 8))
+        let repo = UUID()
+        await scheduler.testOnlyMarkInFlight(run(.analyzeRepo, repo: repo))
+        #expect(
+            await scheduler.refusal(for: run(.mergePR, repo: repo), overBudget: false)
+                == .mergeWaitsForRepoToBeIdle
+        )
+    }
+
+    @Test("Over budget outranks every other reason")
+    func budgetOutranks() async throws {
+        // Ordering matters: telling someone to raise the writer cap when the
+        // real block is the day's ceiling sends them to fix the wrong thing.
+        let scheduler = try scheduler(SchedulerLimits(maxConcurrent: 1, maxConcurrentAnalyses: 1))
+        await scheduler.testOnlyMarkInFlight(run(.implementIssue))
+        #expect(
+            await scheduler.refusal(for: run(.implementIssue), overBudget: true)
+                == .dailyCeilingReached
+        )
+    }
+
+    @Test("canStart still answers the same question, so old callers are unchanged")
+    func boolShimAgrees() async throws {
+        let scheduler = try scheduler(SchedulerLimits(maxConcurrent: 1, maxConcurrentAnalyses: 1))
+        #expect(await scheduler.canStart(run(.implementIssue)) == true)
+        await scheduler.testOnlyMarkInFlight(run(.implementIssue))
+        #expect(await scheduler.canStart(run(.implementIssue)) == false)
+    }
+}
+
 /// The daily ceiling, at the one place it acts: admission.
 @Suite("Spend ceiling — admission")
 struct SpendCeilingAdmissionTests {
