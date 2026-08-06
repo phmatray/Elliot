@@ -237,6 +237,13 @@ public final class AppModel {
     private var toolConfig: ToolConfig?
     private var analysisService: AnalysisService?
     private var observationTasks: [Task<Void, Never>] = []
+    /// Posts what the pure policy decides. Built by a factory that hands back a
+    /// no-op when there is no bundle to post from, so `swift run ElliotApp` and
+    /// `swift test` never reach `UNUserNotificationCenter`.
+    private var presenter: NotificationPresenter?
+    /// When this launch began. The audit observation starts here so relaunching
+    /// does not replay a week of history as a week of banners.
+    private let launchedAt = Date()
     private var proposalObservation: Task<Void, Never>?
 
     public init() {}
@@ -305,6 +312,15 @@ public final class AppModel {
             status = "Checking your setup…"
             let preflight = PreflightService(environment: environment, config: config)
             globalChecks = await preflight.globalChecks(layout: layout)
+
+            let presenter = NotificationPresenter(delivery: makeNotificationDelivery())
+            self.presenter = presenter
+            // Asked once, on launch, and never nagged about again. A denial
+            // degrades Elliot to exactly what it was before this feature.
+            await presenter.requestAuthorizationIfNeeded()
+            // Read back from the system rather than inferred from what the
+            // request returned — see `UserNotificationDelivery.summary`.
+            globalChecks.append(await presenter.authorizationSummary())
 
             let analysisService = AnalysisService(
                 store: store, launcher: scheduler, board: board, gh: ghClient
@@ -404,9 +420,70 @@ public final class AppModel {
         ipcServer?.stop()
     }
 
+    // MARK: - Notifications
+
+    /// Turns a scheduler update into a `NotificationEvent`, or drops it.
+    ///
+    /// Re-reads the run from the store rather than trusting the update's own
+    /// `state` and `outcome`: the notification body is built from
+    /// `verifiedOutcome`, and the row is where the verifier wrote it. A card or
+    /// repository that has since been deleted drops the event silently — that
+    /// is not an error, and a banner about a card you removed would be worse
+    /// than saying nothing.
+    private func notify(runID: UUID, stalled: Bool) {
+        guard presenter != nil, let store else { return }
+        Task { [weak self] in
+            guard
+                let run = try? await store.run(id: runID),
+                let cardID = run.cardID,
+                let card = try? await store.card(id: cardID),
+                let repo = try? await store.repo(id: card.repoID)
+            else { return }
+            let event: NotificationEvent = stalled
+                ? .runStalled(run: run, card: card, repo: repo)
+                : .runFinished(run: run, card: card, repo: repo)
+            await self?.presenterHandle(event)
+        }
+    }
+
+    private func presenterHandle(_ event: NotificationEvent) async {
+        await presenter?.handle(event)
+    }
+
+    /// The board's own moves, read from the trail that records *why*.
+    ///
+    /// Watching cards instead would see a column change and have to guess who
+    /// caused it, and that guess is how a user's own drag becomes a
+    /// notification telling them what they just did. `since: launchedAt` so a
+    /// relaunch replays nothing.
+    private func observeMoveAudits(store: BoardStore) {
+        let auditObservation = store.observeMoveAudits(since: launchedAt)
+        observationTasks.append(Task { [weak self] in
+            var seen = Set<UUID>()
+            do {
+                for try await audits in auditObservation {
+                    for audit in audits where !seen.contains(audit.id) {
+                        seen.insert(audit.id)
+                        guard
+                            let card = try? await store.card(id: audit.cardID),
+                            let repo = try? await store.repo(id: card.repoID)
+                        else { continue }
+                        await self?.presenterHandle(
+                            .systemMove(audit: audit, card: card, repo: repo)
+                        )
+                    }
+                }
+            } catch {
+                // The board is unaffected; only this channel stopped.
+                await MainActor.run { self?.status = "Stopped following the move trail." }
+            }
+        })
+    }
+
     // MARK: - Observation
 
     private func observe(store: BoardStore) {
+        observeMoveAudits(store: store)
         let cardObservation = store.observeCards()
         observationTasks.append(Task { [weak self] in
             do {
@@ -529,11 +606,13 @@ public final class AppModel {
             // `markStalled`'s own, so the two cannot disagree about which runs
             // may stall.
             markStalled(runID: runID)
-        case .runFinished(_, let cardID, _, _):
+            notify(runID: runID, stalled: true)
+        case .runFinished(let runID, let cardID, _, _):
             // A run takes minutes and nobody watches it for all of them. One
             // Dock bounce, only when Elliot is not the front app — no
             // notification permission, and nothing to dismiss.
             if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
+            notify(runID: runID, stalled: false)
             // `cardID` is nil for an analysis run: it belongs to a repository,
             // not to a card.
             if let cardID { Task { await self.refreshRuns(cardID: cardID) } }
