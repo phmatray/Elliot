@@ -1,0 +1,10 @@
+# Fixtures are inputs to a parser, so their bytes are the test.
+#
+# `Fixtures/issues/adversarial.md` carries CRLF line endings deliberately —
+# `IssueMarkdownParserTests` asserts the parser survives them. Git's default
+# text handling normalised those 17 CRLF pairs to LF on the way into the object
+# store, so the fixture kept its CRLF only in the working copy where it was
+# written: a fresh clone got pure LF, and the assertion passed while testing
+# nothing. `-text` disables that conversion, so what the test reads is what was
+# committed.
+Fixtures/** -text
