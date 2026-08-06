@@ -108,13 +108,23 @@ struct BoardFramingTests {
         #expect(try #require(after.offsetX(boardWidth: boardWidth)) > 0)
     }
 
-    @Test("The offset is invariant to the panel's width, and says so on purpose")
+    @Test("The offset is invariant to the panel's width while the lead fits")
     func offsetIsInvariantToThePanelsWidth() {
         // Stated rather than left to be rediscovered. `PanelLayout.minX` sums
         // the slots ahead of its target and no panel is ever among them, so
-        // `spans` cannot move this number. If that ever stops being true — a
-        // panel placed two columns along, say — this fails, and the trigger that
-        // already carries `spans` will be the reason nothing else has to change.
+        // `spans` cannot move the *leading edge*. If that ever stops being true
+        // — a panel placed two columns along, say — this fails, and the trigger
+        // that already carries `spans` will be the reason nothing else has to
+        // change.
+        //
+        // ⚠️ It is invariant to `spans` only where the full lead fits, and that
+        // qualifier was bought by #93. The offset is the leading edge minus the
+        // lead, and the lead is now capped by what the viewport has left after
+        // the pair — which is a function of the panel's width, and so of
+        // `spans`. At 1640pt there is room at either setting and the two agree;
+        // the counter-case below is the width where they do not, and it is
+        // asserted so that this test reads as a bounded claim rather than an
+        // absolute one someone later finds to be false.
         for column in ElliotModel.Column.allCases {
             let wide = framing(column: column, origin: column, spans: 3)
             let narrow = framing(column: column, origin: column, spans: 2)
@@ -123,6 +133,29 @@ struct BoardFramingTests {
                 "\(column)"
             )
         }
+    }
+
+    @Test("At the minimum window the offset does depend on the panel's width")
+    func offsetDependsOnSpansWhereTheLeadIsClamped() throws {
+        // The other side of the claim above, and the reason it is qualified. At
+        // 1000pt the pair at three spans leaves 66pt for a 96pt lead, so the
+        // lead is clamped and the offset moves; at two spans there is room to
+        // spare and it is not. In Review is used because it is past the fold, so
+        // its offset is a real scroll rather than a clamp to zero.
+        let narrowWindow: CGFloat = 1_000
+        let wide = try #require(
+            framing(column: .inReview, origin: .inReview, spans: 3)
+                .offsetX(boardWidth: narrowWindow))
+        let narrow = try #require(
+            framing(column: .inReview, origin: .inReview, spans: 2)
+                .offsetX(boardWidth: narrowWindow))
+
+        #expect(wide != narrow, "the clamp did not reach the framing")
+        // Both share a leading edge — `minX` sums no panel ahead of a
+        // non-flipped column — so the whole difference is the lead. Narrow keeps
+        // all 96pt of it; wide gives up 30 and therefore scrolls 30pt *further*
+        // right, which is exactly the strip that used to hang off the window.
+        #expect(wide - narrow == 30)
     }
 
     // MARK: - What it must still answer to
@@ -176,8 +209,11 @@ struct BoardFramingTests {
                     )
                     let expected = PanelLayout.frameOffsetX(
                         originMinX: originMinX,
-                        panelMinX: panelMinX ?? originMinX,
-                        flipped: origin != nil && PanelLayout.opensLeft(of: column)
+                        panelMinX: panelMinX,
+                        flipped: origin != nil && PanelLayout.opensLeft(of: column),
+                        columnWidth: columnWidth,
+                        panelWidth: panelWidth,
+                        viewportWidth: boardWidth
                     )
                     #expect(
                         subject.offsetX(boardWidth: boardWidth) == expected,
