@@ -172,6 +172,53 @@ struct AnalysisServiceTests {
         #expect(back.acceptedCardID == cards[0].id)
     }
 
+    /// The point of the whole change: the lens chosen before the run is still
+    /// attached to the work after it. Two proposals from different lenses, so a
+    /// hardcoded angle would not pass.
+    @Test("Accepting a proposal puts its lens on the card")
+    func acceptCarriesTheAngle() async throws {
+        let fixture = try await makeFixture()
+        let started = try await fixture.service.start(
+            repoID: fixture.repo.id, angles: [.bugs, .techDebt], origin: .manual
+        )
+
+        func proposal(_ angle: AnalysisAngle, _ title: String) -> StoryProposal {
+            StoryProposal(
+                analysisID: started.analysis.id, runID: started.runs[0].id,
+                repoID: fixture.repo.id, angle: angle, title: title,
+                story: UserStory(role: "maintainer", want: title, benefit: "it is better"),
+                createdAt: Date()
+            )
+        }
+        let bug = proposal(.bugs, "Bound the await")
+        let debt = proposal(.techDebt, "Split the file")
+        try await fixture.store.saveProposals([bug, debt])
+
+        let cards = try await fixture.service.accept(proposalIDs: [bug.id, debt.id])
+
+        #expect(cards.count == 2)
+        #expect(cards.first { $0.title == "Bound the await" }?.angle == .bugs)
+        #expect(cards.first { $0.title == "Split the file" }?.angle == .techDebt)
+
+        // And it is on the row, not only on the value that was handed back —
+        // the card is read from the store on every launch, and an angle that
+        // never reached SQLite would vanish at the next one.
+        let stored = try await fixture.store.cards(repoID: fixture.repo.id)
+        #expect(stored.first { $0.title == "Bound the await" }?.angle == .bugs)
+        #expect(stored.first { $0.title == "Split the file" }?.angle == .techDebt)
+    }
+
+    /// The other half of the claim: a card the board makes for itself still has
+    /// no lens, because it was not found through one.
+    @Test("A card created directly has no lens")
+    func directCreateHasNoAngle() async throws {
+        let fixture = try await makeFixture()
+        let created = try await fixture.board.createCard(
+            repoID: fixture.repo.id, title: "Written by hand"
+        )
+        #expect(created.card.angle == nil)
+    }
+
     @Test("Accepting the same proposal twice creates one card")
     func acceptIsIdempotent() async throws {
         let fixture = try await makeFixture()
