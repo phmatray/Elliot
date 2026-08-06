@@ -38,6 +38,11 @@ public final class AppModel {
     /// them, each carrying the rule holding it. Pushed by the scheduler on every
     /// drain — nothing polls.
     public private(set) var queue: [QueuedRun] = []
+
+    /// The most recent runs across the whole board, independent of what is
+    /// selected. `runsByCard` is loaded per selected card and is right to be —
+    /// this is the shallower path an overview needs.
+    public private(set) var recentRuns: [SkillRun] = []
     public private(set) var isQueuePaused = false
 
     public private(set) var ceiling: SpendCeiling = .off
@@ -613,6 +618,7 @@ public final class AppModel {
         occupancy = await scheduler.occupancy
         isQueuePaused = await scheduler.paused
         await refreshSpend()
+        await refreshRecentRuns()
     }
 
     // MARK: - Queue commands
@@ -663,6 +669,11 @@ public final class AppModel {
         ceiling = new
         await scheduler?.setCeiling(new)
         await refreshSpend()
+    }
+
+    func refreshRecentRuns() async {
+        guard let store else { return }
+        recentRuns = (try? await store.recentRuns(limit: 50)) ?? []
     }
 
     func refreshSpend() async {
