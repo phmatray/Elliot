@@ -5,6 +5,7 @@ import ElliotModel
 import ElliotProcess
 import ElliotStore
 import Foundation
+import OSLog
 import Observation
 
 /// The app's root object: it wires the store, the engine and the MCP socket
@@ -12,6 +13,13 @@ import Observation
 @MainActor
 @Observable
 public final class AppModel {
+    /// Where a failure goes when nobody is looking at the window.
+    ///
+    /// One subsystem for the app, so a bug report can be asked for
+    /// `log show --predicate 'subsystem == "dev.phmatray.elliot"'` and get
+    /// everything rather than a category someone has to guess.
+    nonisolated static let log = Logger(subsystem: "dev.phmatray.elliot", category: "AppModel")
+
     public private(set) var repos: [Repo] = []
     public private(set) var cards: [Card] = []
     public private(set) var runsByCard: [UUID: [SkillRun]] = [:]
@@ -63,6 +71,23 @@ public final class AppModel {
     /// repository yet" for the whole of startup, to a user whose repositories
     /// were sitting in the database the entire time.
     public private(set) var hasLoadedRepos = false
+
+    /// Why the repository list could not be read, when it could not be.
+    ///
+    /// Recorded rather than swallowed (#118). Cleared by any delivery that
+    /// succeeds, so it names a live problem rather than a historical one.
+    public private(set) var startupFailure: String?
+
+    /// Which of the board's four screens is the true one.
+    ///
+    /// Asked of `ElliotModel` rather than decided here, because the defect this
+    /// answers was two surfaces reading two facts with nothing owning the pair.
+    /// The view renders what this returns; it does not choose.
+    public var boardPhase: BoardPhase {
+        BoardPhase.of(
+            hasLoadedRepos: hasLoadedRepos, isReady: isReady,
+            repoCount: repos.count, failure: startupFailure)
+    }
 
     /// Sheet and inspector state, here rather than in a view, because a menu
     /// command cannot reach a view's `@State`.
@@ -404,12 +429,45 @@ public final class AppModel {
                         // empty store is a loaded store, and the board's real
                         // empty state must be reachable.
                         self?.hasLoadedRepos = true
+                        // A delivery that arrives is the answer to whatever
+                        // failed before it. Left set, a transient error would
+                        // keep accusing a store that is now being read.
+                        self?.startupFailure = nil
                         if self?.selectedRepoID == nil { self?.selectedRepoID = repos.first?.id }
                     }
                 }
             } catch {
-                // Repos change rarely; a dropped observation is not worth a
-                // banner of its own.
+                // The old comment here reasoned about *frequency* — "repos
+                // change rarely, a dropped observation is not worth a banner" —
+                // when what decides this is *severity*. A dropped update is
+                // cosmetic; a failure on the **first** delivery is terminal,
+                // because `hasLoadedRepos` is only ever set inside the loop, so
+                // it stays false for the life of the process and the board sits
+                // on "Still starting" for ever with "Ready." underneath (#118).
+                //
+                // Recorded rather than shown directly: `BoardPhase` decides
+                // whether this takes the screen or sits beside repositories
+                // already loaded, so a late failure cannot blank a working
+                // board.
+                //
+                // Logged as well as recorded, because criterion 3 asks for both
+                // and they answer different people: the screen tells whoever is
+                // looking at it, `log stream --predicate 'subsystem ==
+                // "dev.phmatray.elliot"'` tells whoever is holding a bug report
+                // and cannot see the screen. It is also the only signal
+                // available when the window itself cannot be read.
+                // ⚠️ `privacy: .public` is load-bearing. `Logger` redacts an
+                // interpolated non-literal by default, so this line read
+                // "repository observation failed: <private>" — a log saying
+                // something went wrong without saying what, which is the exact
+                // shape of the defect being fixed. Verified by reading it back
+                // from `log show`, not by assuming. A GRDB decode error names a
+                // column and a type; it carries no user content.
+                Self.log.error(
+                    "repository observation failed: \(error.localizedDescription, privacy: .public)")
+                await MainActor.run {
+                    self?.startupFailure = error.localizedDescription
+                }
             }
         })
     }
