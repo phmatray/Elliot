@@ -44,6 +44,22 @@
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
     A signal 10/11 abort is a suite-level crash, not an assertion — re-run before concluding anything
     about your change, and do not read it as a broken toolchain.
+  - ⛔ **Never trust a `swift test` run in a worktree that has been `git checkout`-ed across commits
+    without clearing `.build`. Sample from a clean build, or you are testing new sources against
+    stale objects.** On 2026-08-06 this produced **three entirely fictional test failures and a
+    confident bisect that convicted an innocent commit** — `rm -rf .build` at the same SHA passed
+    926/926, three times running. A `git bisect`-by-hand across six commits in one worktree is
+    exactly the shape that triggers it, and SwiftPM gives no warning.
+    - **The tell, and it is a reliable one: an assertion that cannot fail, failing.** The giveaway
+      was `#expect(run.analysisAngle == nil)` reporting `(run.analysisAngle → nil) == nil` — for a
+      single optional that is not a defect any code could produce. Instrumenting it printed
+      `raw = nil, isNil = true, type = Optional<AnalysisAngle>` and the expectation then *passed*,
+      because editing the file forced a real recompile. **When a failure is logically impossible,
+      suspect the binary before the code.**
+    - This is not one person's slip. **Two people hit it independently within four hours, in
+      opposite directions** — one inventing failures that did not exist, the other wrongly clearing
+      a real SIGBUS as a build artefact. It is a property of the tooling, so it is written here
+      rather than learned a third time.
 - **Single-suite filter (per-task, fast):** `cd ElliotKit && swift test --filter <Suite>` — e.g.
   `--filter ElliotModelTests`, or a single suite/test name (**swift-testing**, `@Test`/`@Suite`, not XCTest)
 - **App bundle:** `./Scripts/build-app.sh` — assembles `dist/Elliot.app` from the two SwiftPM
