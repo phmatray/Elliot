@@ -1,0 +1,74 @@
+# TEMPORARY — measurement only, for issue #116. Task 5 of that plan deletes it.
+#
+# Triggers on push to this issue's branch and nothing else. It must never gate a pull request, and
+# `workflow_dispatch` is unavailable because a dispatchable workflow has to exist on the default
+# branch first — `.github/` does not exist on `main` at all until #21 lands.
+#
+# The question. The manifest says `swift-tools-version: 6.1` and nothing has ever built the package
+# on a 6.1 toolchain; `macos-15` carries Apple Swift 6.1.2. Run 31118743562 died at the FIRST error,
+# in `ElliotStore`, which every other target depends on — so nothing past it was type-checked and
+# "one error" is a lower bound of unknown tightness.
+#
+# Two things this probe does that the previous one (run 31123727599) did not:
+#
+#   1. It builds the TEST targets too. `swift build` compiles library and executable targets only,
+#      so a green `swift build` leaves `ElliotModelTests`, `ElliotEngineTests`, `ElliotAppKitTests`
+#      and the rest entirely unmeasured — and those are substantial. The two runs are reported
+#      separately because they are two different floors, and conflating them is how the first one
+#      rotted.
+#   2. It runs against current `main`. The earlier probe branch is ~4 000 lines behind, so its
+#      count described a tree that no longer exists.
+name: floor-probe
+
+on:
+  push:
+    branches: [fix/116-swift-floor]
+
+permissions:
+  contents: read
+
+jobs:
+  swift-61:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Its own step: this whole issue exists because a label was assumed to imply a version.
+      - name: Toolchain
+        run: |
+          swift --version
+          sw_vers
+
+      # `continue-on-error` throughout: the job is a probe, not a gate. A failure must still leave a
+      # readable log for the counting step below.
+      - name: swift build (library + executable targets)
+        continue-on-error: true
+        working-directory: ElliotKit
+        run: |
+          set -o pipefail
+          swift build 2>&1 | tee /tmp/build.log
+
+      - name: swift build --build-tests (adds the test targets)
+        continue-on-error: true
+        working-directory: ElliotKit
+        run: |
+          set -o pipefail
+          swift build --build-tests 2>&1 | tee /tmp/build-tests.log
+
+      # The whole point of the probe: the complete list, not the first line.
+      - name: Every error, deduplicated
+        if: always()
+        run: |
+          for log in /tmp/build.log /tmp/build-tests.log; do
+            echo "############ $log ############"
+            [ -f "$log" ] || { echo "(step never ran)"; continue; }
+            echo "=== error lines ==="
+            grep -E '^[^ ].*: error: ' "$log" | sort -u || echo "(none)"
+            echo "=== count of distinct error lines ==="
+            grep -E '^[^ ].*: error: ' "$log" | sort -u | wc -l
+            echo "=== distinct files ==="
+            grep -oE '^/[^:]+\.swift' "$log" | sort -u || echo "(none)"
+            echo "=== modules the compiler reached ==="
+            grep -oE 'Compiling [A-Za-z]+' "$log" | sort -u || echo "(none)"
+          done
