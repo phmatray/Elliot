@@ -503,6 +503,54 @@ public struct VerifiedOutcomeDTO: Codable, Sendable, Hashable {
     }
 }
 
+/// What an analysis run had to say about itself, flattened for the wire.
+///
+/// Its own type rather than `AnalysisRunReport` re-exported, for the reason
+/// `VerifiedOutcomeDTO` is its own type: what an agent reads must not be a
+/// model type's synthesised `Codable`, or renaming a field in `ElliotModel`
+/// changes the wire with nothing at the boundary to fail.
+public struct AnalysisReportDTO: Codable, Sendable, Hashable {
+    /// `artifact` when the stories came from the file the prompt asked for,
+    /// `resultText` when they had to be recovered from the closing message,
+    /// `none` when there were none to read.
+    public var source: String
+    /// Proposals that survived validation.
+    public var kept: Int
+    /// Why each dropped story was dropped. Shown, never swallowed.
+    public var dropped: [String]
+    /// The git sentinel, and it is tri-state on purpose.
+    ///
+    /// **Absent** means nobody checked: the baseline lives only in the running
+    /// app, so a run orphaned by a crash has nothing to compare against.
+    /// `false` means it was checked and the tree was untouched. Reading absent
+    /// as clean is asserting something about a repository nobody looked at.
+    public var workingTreeChanged: Bool?
+    /// `git status --porcelain` after the run, present only when it moved.
+    public var workingTreeDiff: String?
+
+    public init(
+        source: String,
+        kept: Int = 0,
+        dropped: [String] = [],
+        workingTreeChanged: Bool? = nil,
+        workingTreeDiff: String? = nil
+    ) {
+        self.source = source
+        self.kept = kept
+        self.dropped = dropped
+        self.workingTreeChanged = workingTreeChanged
+        self.workingTreeDiff = workingTreeDiff
+    }
+
+    public init(_ report: AnalysisRunReport) {
+        source = report.harvestSource.rawValue
+        kept = report.kept
+        dropped = report.dropped
+        workingTreeChanged = report.workingTreeChanged
+        workingTreeDiff = report.workingTreeDiff
+    }
+}
+
 public struct RunDTO: Codable, Sendable, Hashable {
     public var id: UUID
     /// Null for an analysis run, which reads a repository and has no card.

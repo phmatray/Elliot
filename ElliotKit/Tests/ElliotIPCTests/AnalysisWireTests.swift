@@ -84,6 +84,52 @@ struct AnalysisWireTests {
         #expect(dto.runs.count == 1)
         #expect(dto.repo == "phmatray/Elliot")
     }
+
+    @Test("A report DTO maps every field of the model it comes from")
+    func reportMapsModel() {
+        let dto = AnalysisReportDTO(AnalysisRunReport(
+            harvestSource: .resultText,
+            kept: 2,
+            dropped: ["story 3: no acceptance criteria"],
+            workingTreeChanged: true,
+            workingTreeDiff: " M Sources/A.swift"
+        ))
+
+        #expect(dto.source == "resultText")
+        #expect(dto.kept == 2)
+        #expect(dto.dropped == ["story 3: no acceptance criteria"])
+        #expect(dto.workingTreeChanged == true)
+        #expect(dto.workingTreeDiff == " M Sources/A.swift")
+    }
+
+    /// The sentinel is worth nothing if the wire flattens it. `nil` means the
+    /// baseline died with the app and nobody looked; `false` means someone
+    /// looked and the tree was untouched. An agent that reads the first as the
+    /// second reports a repository as clean on no evidence at all.
+    @Test("Never-checked and checked-and-clean are different bytes")
+    func workingTreeTriStateSurvivesTheCodec() throws {
+        let unchecked = AnalysisReportDTO(
+            AnalysisRunReport(harvestSource: .artifact, kept: 3, dropped: ["no evidence"])
+        )
+        let clean = AnalysisReportDTO(
+            AnalysisRunReport(harvestSource: .artifact, kept: 3, workingTreeChanged: false)
+        )
+
+        #expect(unchecked.workingTreeChanged == nil)
+        #expect(clean.workingTreeChanged == false)
+
+        let uncheckedJSON = String(decoding: try WireCodec.encoder.encode(unchecked), as: UTF8.self)
+        let cleanJSON = String(decoding: try WireCodec.encoder.encode(clean), as: UTF8.self)
+        #expect(!uncheckedJSON.contains("workingTreeChanged"))
+        #expect(cleanJSON.contains("\"workingTreeChanged\":false"))
+
+        // And back, so the absence is still an absence on the other side.
+        let back = try WireCodec.decoder.decode(
+            AnalysisReportDTO.self, from: Data(uncheckedJSON.utf8)
+        )
+        #expect(back.workingTreeChanged == nil)
+        #expect(back == unchecked)
+    }
 }
 
 @Suite("Analysis MCP tools")
