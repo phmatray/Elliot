@@ -77,7 +77,13 @@ public struct PreflightService: Sendable {
                     ? [located?.resolvedPath ?? path, located?.version].compactMap { $0 }.joined(separator: " — ")
                     : "Not found. An app launched from the Finder does not inherit your shell PATH.",
                 command: "command -v \(tool)",
-                fixHint: found ? nil : "Point Elliot at the binary in Settings."
+                // Names the real remedy. There is no Settings screen anywhere
+                // in this product and nothing that persists a tool path, so the
+                // previous hint sent the one user who most needs help to a
+                // window that does not exist.
+                fixHint: found
+                    ? nil
+                    : "Elliot reads your login shell's PATH. Put \(tool) on it, then press Check again."
             ))
         }
 

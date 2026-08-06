@@ -77,12 +77,22 @@ struct InspectorView: View {
             HStack(spacing: 6) {
                 ConsoleLabel(text: card.column.displayName, tint: card.column.railTint)
                 if let repo = model.repo(for: card) {
-                    Fact(text: repo.nameWithOwner, small: true).foregroundStyle(.tertiary)
+                    Fact(text: repo.nameWithOwner, tint: Palette.quiet, small: true)
                 }
                 Spacer()
-                Text(inColumnFor(card))
-                    .font(Type.factSmall)
-                    .foregroundStyle(.tertiary)
+                Fact(text: "here \(Elapsed.age(of: card.columnEnteredAt))",
+                     tint: Palette.quiet, small: true)
+            }
+
+            // In Review is the only column Elliot fills by itself, and a card
+            // that turned up there explained nothing about how. The decision
+            // was `PRWatcher`'s and was already recorded; this only reads it
+            // back.
+            if let note = arrivalNote(card) {
+                Text(note)
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.inert)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if !editor.isEditing, card.issueNumber == nil {
@@ -93,15 +103,11 @@ struct InspectorView: View {
         .padding(14)
     }
 
-    /// How long this card has sat where it is. `columnEnteredAt` was recorded
-    /// from the start and never shown; a card stuck three days in review is the
-    /// single most useful thing a pipeline can tell you.
-    private func inColumnFor(_ card: Card) -> String {
-        let seconds = Date.now.timeIntervalSince(card.columnEnteredAt)
-        let days = Int(seconds / 86_400), hours = Int(seconds / 3_600)
-        if days >= 1 { return "here \(days)d" }
-        if hours >= 1 { return "here \(hours)h" }
-        return "here \(max(1, Int(seconds / 60)))m"
+    /// Only for the move that actually put the card where it is now — an older
+    /// audit describes a column it has since left.
+    private func arrivalNote(_ card: Card) -> String? {
+        guard let audit = model.lastMove[card.id], audit.to == card.column else { return nil }
+        return audit.origin.arrivalNote
     }
 
     // MARK: - Next step
@@ -120,7 +126,7 @@ struct InspectorView: View {
                         Image(systemName: consequence.isRefused ? "hand.raised.fill" : "arrow.right")
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Move to \(next.displayName)")
-                                .font(.system(size: 12, weight: .medium))
+                                .font(Type.rowTitle)
                             Text(consequence.summary)
                                 .font(Type.prose)
                                 .foregroundStyle(.secondary)
@@ -130,11 +136,12 @@ struct InspectorView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
-                    .background(consequence.tint.opacity(consequence.isRefused ? 0.08 : 0.13))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .background(Surface.wash(consequence.tint)
+                        .opacity(consequence.isRefused ? 0.6 : 1))
+                    .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(consequence.tint.opacity(0.35), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: Metric.cardRadius)
+                            .strokeBorder(Surface.washBorder(consequence.tint), lineWidth: 1)
                     }
                 }
                 .buttonStyle(.plain)
@@ -151,8 +158,10 @@ struct InspectorView: View {
         if let story = card.story {
             VStack(alignment: .leading, spacing: 6) {
                 ConsoleLabel(text: "Story")
+                // A point larger than the card glances at it: this is where
+                // the story is read rather than recognised.
                 Text(story.narrative)
-                    .font(.system(size: 12))
+                    .font(Type.bodyProse)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
 
@@ -160,7 +169,7 @@ struct InspectorView: View {
                     ConsoleLabel(text: "Acceptance criteria").padding(.top, 4)
                     ForEach(Array(story.acceptanceCriteria.enumerated()), id: \.offset) { index, item in
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Fact(text: "\(index + 1)", small: true).foregroundStyle(.tertiary)
+                            Fact(text: "\(index + 1)", tint: Palette.quiet, small: true)
                             Text(item)
                                 .font(Type.prose)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -172,7 +181,7 @@ struct InspectorView: View {
             VStack(alignment: .leading, spacing: 6) {
                 ConsoleLabel(text: "Note")
                 Text(card.body)
-                    .font(.system(size: 12))
+                    .font(Type.bodyProse)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
@@ -275,6 +284,7 @@ struct InspectorView: View {
 
 struct RunRow: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let run: SkillRun
     let liveLines: [String]
     @State private var expanded = false
@@ -291,8 +301,7 @@ struct RunRow: View {
                 Text(run.kind.skillName).font(Type.fact).foregroundStyle(.primary)
                 Spacer()
                 if let cost = run.totalCostUSD {
-                    Fact(text: String(format: "$%.4f", cost), small: true)
-                        .foregroundStyle(.tertiary)
+                    Fact(text: String(format: "$%.4f", cost), tint: Palette.quiet, small: true)
                         .help("What this run cost")
                 }
             }
@@ -333,7 +342,7 @@ struct RunRow: View {
             HStack(spacing: 8) {
                 Button(expanded ? "Hide log" : "Show log") { expanded.toggle() }
                     .controlSize(.small)
-                if run.state.isActive {
+                if run.state.isCancellable {
                     Button("Cancel run") { Task { await model.cancelRun(id: run.id) } }
                         .controlSize(.small)
                 }
@@ -352,8 +361,8 @@ struct RunRow: View {
             if expanded { logView }
         }
         .padding(9)
-        .background(Color.secondary.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .background(Surface.recess)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
     }
 
     private var logView: some View {
@@ -375,11 +384,16 @@ struct RunRow: View {
                 .onChange(of: logLines.count) {
                     // A live tail that does not follow is a log you have to
                     // chase with the scrollbar.
-                    withAnimation { proxy.scrollTo(logLines.count - 1, anchor: .bottom) }
+                    // Gated: this is the panel you open to read a run the app
+                    // documents as lasting hours, and it animated on every
+                    // appended line.
+                    withAnimation(reduceMotion ? nil : .default) {
+                        proxy.scrollTo(logLines.count - 1, anchor: .bottom)
+                    }
                 }
             }
             .background(Color(nsColor: .textBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .clipShape(RoundedRectangle(cornerRadius: Metric.nestedRadius))
 
             Text(run.logPath)
                 .font(Type.factSmall)

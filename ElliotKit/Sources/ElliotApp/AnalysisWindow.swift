@@ -20,6 +20,7 @@ import SwiftUI
 struct AnalysisWindow: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var angles: Set<AnalysisAngle> = [.bugs, .quickWins]
     @State private var instructions = ""
@@ -41,20 +42,15 @@ struct AnalysisWindow: View {
                 review
             }
 
-            if let note = model.analysisNote {
-                Divider()
-                Label(note, systemImage: "info.circle")
-                    .font(Type.prose)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
             Divider()
             footer
         }
-        .frame(width: 880, height: 720)
+        // A window, not a modal sheet: this screen starts up to six concurrent
+        // runs and then watches them for minutes. The note that used to live
+        // above the footer is now *in* it — inserting a row between the list
+        // and the buttons moved the buttons out from under the cursor that had
+        // just pressed one.
+        .frame(minWidth: 760, idealWidth: 900, minHeight: 560, idealHeight: 760)
         .sheet(item: $editing) { proposal in
             ProposalEditor(proposal: proposal)
         }
@@ -127,7 +123,7 @@ struct AnalysisWindow: View {
                     ConsoleLabel(text: "Limit")
                     Stepper(value: $maxStories, in: 1...30) {
                         Text("Keep at most \(maxStories) stories from each lens")
-                            .font(.system(size: 12))
+                            .font(Type.bodyProse)
                     }
                     .fixedSize()
                 }
@@ -138,13 +134,14 @@ struct AnalysisWindow: View {
                         .font(Type.prose)
                         .foregroundStyle(.secondary)
                     TextEditor(text: $instructions)
-                        .font(.system(size: 12))
+                        .font(Type.bodyProse)
                         .scrollContentBackground(.hidden)
                         .padding(4)
                         .frame(height: 68)
                         .background(Color(nsColor: .textBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
+                        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+                        .overlay(RoundedRectangle(cornerRadius: Metric.cardRadius)
+                            .strokeBorder(.separator))
                 }
             }
             .padding(16)
@@ -211,7 +208,7 @@ struct AnalysisWindow: View {
         let recovered = reports.filter { $0.harvestSource == .resultText }.count
 
         HStack(spacing: 8) {
-            Fact(text: "\(model.analysisRuns.count) lenses", small: true).foregroundStyle(.secondary)
+            Fact(text: "\(model.analysisRuns.count) lenses", small: true)
             Fact(text: "\(kept) kept", tint: Palette.verified, small: true)
             if dropped > 0 {
                 Fact(text: "\(dropped) dropped", tint: Palette.attention, small: true)
@@ -251,6 +248,9 @@ struct AnalysisWindow: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Accepting or rejecting a row made it vanish instantly, so a list
+            // of twelve became a list of eleven with no sign of which one went.
+            .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: proposed.map(\.id))
         }
     }
 
@@ -259,7 +259,7 @@ struct AnalysisWindow: View {
             HStack(spacing: 6) {
                 Text(angle.symbol)
                 ConsoleLabel(text: angle.title, tint: .primary)
-                Fact(text: "\(group.count)", small: true).foregroundStyle(.tertiary)
+                Fact(text: "\(group.count)", tint: Palette.quiet, small: true)
                 Spacer()
                 Button(allSelected(group) ? "Clear" : "Select all") {
                     let ids = group.map(\.id)
@@ -269,9 +269,11 @@ struct AnalysisWindow: View {
                         selection.formUnion(ids)
                     }
                 }
+                // No accent: choosing rows starts nothing and merges nothing.
+                // The five accents mean consequence, and spending three of them
+                // on triage controls is what made them stop reading as one.
                 .buttonStyle(.plain)
                 .font(Type.prose)
-                .foregroundStyle(Palette.armed)
             }
 
             ForEach(group) { proposal in
@@ -303,7 +305,6 @@ struct AnalysisWindow: View {
     private var selectionBar: some View {
         HStack(spacing: 10) {
             Fact(text: "\(selection.count) of \(proposed.count) selected", small: true)
-                .foregroundStyle(.secondary)
             Spacer()
             let grounded = proposed.filter(\.isGrounded).map(\.id)
             Button("Select the \(grounded.count) grounded") {
@@ -311,13 +312,11 @@ struct AnalysisWindow: View {
             }
             .buttonStyle(.plain)
             .font(Type.prose)
-            .foregroundStyle(Palette.verified)
             .disabled(grounded.isEmpty)
 
             Button("Clear") { selection = [] }
                 .buttonStyle(.plain)
                 .font(Type.prose)
-                .foregroundStyle(.secondary)
                 .disabled(selection.isEmpty)
         }
     }
@@ -328,7 +327,7 @@ struct AnalysisWindow: View {
         VStack(alignment: .leading, spacing: 6) {
             if waiting.isEmpty {
                 Label("Nothing left to decide.", systemImage: "checkmark.circle")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(Type.cardTitle)
                 Text("Every proposal has been accepted or rejected. Close this window and the accepted ones are waiting in Backlog.")
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
@@ -337,7 +336,7 @@ struct AnalysisWindow: View {
                     "Reading — \(waiting.map(\.title).joined(separator: ", "))",
                     systemImage: "hourglass"
                 )
-                .font(.system(size: 13, weight: .medium))
+                .font(Type.cardTitle)
                 Text("Proposals appear here lens by lens, as each run finishes. You can accept the first ones while the rest are still reading.")
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
@@ -359,7 +358,16 @@ struct AnalysisWindow: View {
                     .font(Type.prose)
                     .foregroundStyle(angles.isEmpty ? Palette.refused : Palette.armed)
             } else if !selection.isEmpty {
-                Fact(text: "\(selection.count) selected", tint: Palette.armed)
+                // A count of your own clicks is not a consequence, so it
+                // carries no accent.
+                Fact(text: "\(selection.count) selected")
+            } else if let note = model.analysisNote {
+                Label(note, systemImage: "info.circle")
+                    .font(Type.prose)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .id(note)
+                    .transition(.opacity)
             }
 
             Spacer()
@@ -383,15 +391,28 @@ struct AnalysisWindow: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(angles.isEmpty || model.selectedRepoID == nil)
+                // The one genuinely armed control on this screen — it starts N
+                // unattended runs — and it was the only one with no tint, while
+                // six inert triage buttons had one each.
+                .tint(Palette.armed)
             } else {
-                Button("Reject") {
+                // Editing was reachable by hover and by context menu, neither
+                // of which a keyboard can open on macOS.
+                Button("Edit…") {
+                    editing = proposed.first { selection.contains($0.id) }
+                }
+                .disabled(selection.count != 1)
+
+                Button(selection.isEmpty ? "Reject" : "Reject \(selection.count)") {
                     let ids = Array(selection)
                     selection = []
                     Task { await model.rejectProposals(ids: ids) }
                 }
                 .disabled(selection.isEmpty)
 
-                Button(selection.isEmpty ? "Add to Backlog" : "Add \(selection.count) to Backlog") {
+                // One verb per act. The row buttons, the context menu and this
+                // all say "Accept"; "Add to Backlog" was a third name for it.
+                Button(selection.isEmpty ? "Accept" : "Accept \(selection.count)") {
                     let ids = Array(selection)
                     selection = []
                     Task { await model.acceptProposals(ids: ids) }
@@ -401,6 +422,7 @@ struct AnalysisWindow: View {
             }
         }
         .padding(16)
+        .animation(.snappy(duration: 0.18), value: model.analysisNote)
     }
 
     private var startConsequence: String {
@@ -426,7 +448,7 @@ struct LensTile: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(angle.symbol)
-                    Text(angle.title).font(.system(size: 12, weight: .medium))
+                    Text(angle.title).font(Type.rowTitle)
                     Spacer()
                     Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
                         .font(.system(size: 12))
@@ -440,11 +462,13 @@ struct LensTile: View {
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isOn ? Palette.armed.opacity(0.1) : Color.secondary.opacity(0.05))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .background(isOn ? Surface.wash(Palette.armed) : Surface.recess)
+            .clipShape(RoundedRectangle(cornerRadius: Metric.panelRadius))
             .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(isOn ? Palette.armed.opacity(0.5) : Color(nsColor: .separatorColor))
+                RoundedRectangle(cornerRadius: Metric.panelRadius)
+                    .strokeBorder(isOn
+                        ? Surface.washBorder(Palette.armed)
+                        : Color(nsColor: .separatorColor))
             }
         }
         .buttonStyle(.plain)
@@ -466,7 +490,7 @@ struct LensRunRow: View {
             HStack(spacing: 8) {
                 Text(run.analysisAngle?.symbol ?? "•")
                 Text(run.analysisAngle?.title ?? "Run")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(Type.rowTitle)
                     .frame(width: 96, alignment: .leading)
 
                 if run.state.isTerminal {
@@ -477,8 +501,8 @@ struct LensRunRow: View {
                     ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
                     if let started = run.startedAt {
                         TimelineView(.periodic(from: .now, by: 1)) { context in
-                            Fact(text: Elapsed.short(from: started, to: context.date), small: true)
-                                .foregroundStyle(.tertiary)
+                            Fact(text: Elapsed.short(from: started, to: context.date),
+                                 tint: Palette.quiet, small: true)
                         }
                     }
                 }
@@ -492,8 +516,7 @@ struct LensRunRow: View {
                 // The setup screen warns that each lens costs a full read of
                 // the repository. This is that warning, settled.
                 if let cost = run.totalCostUSD {
-                    Fact(text: String(format: "$%.4f", cost), small: true)
-                        .foregroundStyle(.tertiary)
+                    Fact(text: String(format: "$%.4f", cost), tint: Palette.quiet, small: true)
                 }
                 if !run.state.isTerminal {
                     Button("Cancel") { Task { await model.cancelRun(id: run.id) } }
@@ -543,8 +566,8 @@ struct LensRunRow: View {
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .background(Surface.recess)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
     }
 
     /// `workingTreeChanged` is tri-state, not a plain `Bool`: `nil` means the
@@ -569,8 +592,8 @@ struct LensRunRow: View {
             .foregroundStyle(Palette.refused)
             .padding(6)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.refused.opacity(0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .background(Surface.wash(Palette.refused))
+            .clipShape(RoundedRectangle(cornerRadius: Metric.nestedRadius))
         case false:
             EmptyView()
         case nil:
@@ -595,6 +618,7 @@ struct ProposalRow: View {
     let reject: () -> Void
 
     @State private var hovering = false
+    @State private var showingCriteria = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -605,7 +629,7 @@ struct ProposalRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(proposal.title)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(Type.cardTitle)
                         .fixedSize(horizontal: false, vertical: true)
                     EffortChip(effort: proposal.effort)
                     Spacer(minLength: 0)
@@ -613,15 +637,12 @@ struct ProposalRow: View {
                         Button("Edit", action: edit)
                             .buttonStyle(.plain)
                             .font(Type.prose)
-                            .foregroundStyle(Palette.armed)
                         Button("Reject", action: reject)
                             .buttonStyle(.plain)
                             .font(Type.prose)
-                            .foregroundStyle(Palette.refused)
                         Button("Accept", action: accept)
                             .buttonStyle(.plain)
                             .font(Type.prose)
-                            .foregroundStyle(Palette.verified)
                     }
                 }
 
@@ -644,6 +665,11 @@ struct ProposalRow: View {
                         Image(systemName: proposal.isGrounded ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                             .font(.system(size: 9))
                             .foregroundStyle(proposal.isGrounded ? Palette.verified : Palette.refused)
+                            // Grounding is this feature's `verifiedOutcome` —
+                            // the difference between a story that was found and
+                            // one that was written. It was carried by colour
+                            // alone.
+                            .accessibilityLabel(groundingLabel)
                         ForEach(proposal.evidence, id: \.self) { evidence in
                             EvidenceLink(evidence: evidence, repoPath: repoPath)
                         }
@@ -655,11 +681,31 @@ struct ProposalRow: View {
                         .foregroundStyle(Palette.refused)
                 }
 
+                // These were a tooltip. The dropped-stories list one panel up
+                // is a disclosure for exactly this reason — its own comment
+                // says a tooltip is neither shown nor discoverable — and these
+                // are the criteria you are deciding to accept.
                 if !proposal.story.acceptanceCriteria.isEmpty {
-                    Text("\(proposal.story.acceptanceCriteria.count) acceptance criteria")
-                        .font(Type.factSmall)
-                        .foregroundStyle(.tertiary)
-                        .help(proposal.story.acceptanceCriteria.joined(separator: "\n"))
+                    DisclosureGroup(isExpanded: $showingCriteria) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            ForEach(
+                                Array(proposal.story.acceptanceCriteria.enumerated()), id: \.offset
+                            ) { index, item in
+                                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                    Fact(text: "\(index + 1)", tint: Palette.quiet, small: true)
+                                    Text(item)
+                                        .font(Type.prose)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                        .padding(.top, 2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    } label: {
+                        Text("\(proposal.story.acceptanceCriteria.count) acceptance criteria")
+                            .font(Type.factSmall)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
 
                 if let hint = proposal.duplicateOf?.label {
@@ -672,12 +718,13 @@ struct ProposalRow: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isSelected ? Palette.armed.opacity(0.08) : Color.secondary.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .background(isSelected ? Surface.wash(Palette.armed) : Surface.recess)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: 7)
-                .strokeBorder(isSelected ? Palette.armed.opacity(0.5) : Color.clear)
+            RoundedRectangle(cornerRadius: Metric.cardRadius)
+                .strokeBorder(isSelected ? Surface.washBorder(Palette.armed) : Color.clear)
         }
+        .transition(.opacity.combined(with: .scale(scale: 0.98)))
         .onHover { hovering = $0 }
         // The row's three actions appear on hover, which is fine for a pointer
         // and nothing at all for a keyboard or VoiceOver. The context menu is
@@ -695,6 +742,14 @@ struct ProposalRow: View {
         .accessibilityAction(named: "Edit before accepting", edit)
         .accessibilityAction(named: "Reject", reject)
     }
+
+    private var groundingLabel: String {
+        if proposal.isGrounded { return "Grounded — every cited file exists" }
+        let missing = proposal.evidence.filter { !$0.exists }.count
+        return missing == 1
+            ? "1 cited file is not in the repository"
+            : "\(missing) cited files are not in the repository"
+    }
 }
 
 struct EffortChip: View {
@@ -705,7 +760,7 @@ struct EffortChip: View {
             .font(Type.factSmall)
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .background(Color.secondary.opacity(0.15))
+            .background(Surface.chipFill)
             .foregroundStyle(.secondary)
             .clipShape(Capsule())
             .help("The analysis's own guess at the size of this change")
@@ -719,26 +774,42 @@ struct EvidenceLink: View {
     let repoPath: String?
 
     var body: some View {
-        Button {
-            guard let repoPath else { return }
-            let full = (repoPath as NSString).appendingPathComponent(evidence.path)
-            NSWorkspace.shared.selectFile(full, inFileViewerRootedAtPath: repoPath)
-        } label: {
-            Text(short)
-                .font(Type.factSmall)
-                .strikethrough(!evidence.exists)
-                .foregroundStyle(evidence.exists ? Color.secondary : Palette.refused)
-                .lineLimit(1)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(Color.secondary.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 4))
+        // Two states rather than one disabled button: a disabled control is
+        // skipped by VoiceOver, so "this file does not exist" — the strongest
+        // signal on the screen that a story may have been invented — was
+        // carried by a strikethrough and a tooltip and nothing else.
+        if evidence.exists, let repoPath {
+            Button {
+                let full = (repoPath as NSString).appendingPathComponent(evidence.path)
+                NSWorkspace.shared.selectFile(full, inFileViewerRootedAtPath: repoPath)
+            } label: {
+                chip
+            }
+            .buttonStyle(.plain)
+            .help("\(evidence.display) — click to reveal it in the Finder")
+            .accessibilityLabel("\(evidence.display), present in the repository")
+            .accessibilityHint("Reveals it in the Finder")
+        } else {
+            chip
+                .help(evidence.exists
+                    ? evidence.display
+                    : "\(evidence.display) is not in the repository. This story may have been invented.")
+                .accessibilityLabel(evidence.exists
+                    ? evidence.display
+                    : "\(evidence.display), not in the repository")
         }
-        .buttonStyle(.plain)
-        .disabled(!evidence.exists || repoPath == nil)
-        .help(evidence.exists
-            ? "\(evidence.display) — click to reveal it in the Finder"
-            : "\(evidence.display) is not in the repository. This story may have been invented.")
+    }
+
+    private var chip: some View {
+        Text(short)
+            .font(Type.factSmall)
+            .strikethrough(!evidence.exists)
+            .foregroundStyle(evidence.exists ? Color.secondary : Palette.refused)
+            .lineLimit(1)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Surface.chipFill)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 
     /// The file name and line, not the whole path.
@@ -771,62 +842,76 @@ struct ProposalEditor: View {
             : proposal.story.acceptanceCriteria)
     }
 
+    /// The fields scroll; the title and the buttons do not. A lens that returns
+    /// eight acceptance criteria opened this sheet already overflowing, with
+    /// Save below the bottom edge and no way to resize a macOS sheet.
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Edit proposal").font(Type.sheetTitle)
                 Text("What you save here is what reaches the board.")
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(18)
 
-            VStack(alignment: .leading, spacing: 4) {
-                ConsoleLabel(text: "Board label")
-                TextField("Short name for the card", text: $draft.title)
-                    .textFieldStyle(.roundedBorder)
-            }
+            Divider()
 
-            VStack(alignment: .leading, spacing: 8) {
-                field("As a", placeholder: "developer", text: $draft.story.role)
-                field("I want", placeholder: "to see the run log inside the card", text: $draft.story.want)
-                field("So that", placeholder: "I can diagnose without opening a terminal", text: $draft.story.benefit)
-            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ConsoleLabel(text: "Board label")
+                        TextField("Short name for the card", text: $draft.title)
+                            .textFieldStyle(.roundedBorder)
+                    }
 
-            VStack(alignment: .leading, spacing: 6) {
-                ConsoleLabel(text: "Acceptance criteria")
-                ForEach(criteria.indices, id: \.self) { index in
-                    HStack(spacing: 6) {
-                        TextField("What has to be true when it is done", text: Binding(
-                            get: { criteria.indices.contains(index) ? criteria[index] : "" },
-                            set: { if criteria.indices.contains(index) { criteria[index] = $0 } }
-                        ))
-                        .textFieldStyle(.roundedBorder)
-                        Button {
-                            criteria.remove(at: index)
-                            if criteria.isEmpty { criteria = [""] }
-                        } label: {
-                            Image(systemName: "minus.circle")
+                    VStack(alignment: .leading, spacing: 8) {
+                        field("As a", placeholder: "developer", text: $draft.story.role)
+                        field("I want", placeholder: "to see the run log inside the card", text: $draft.story.want)
+                        field("So that", placeholder: "I can diagnose without opening a terminal", text: $draft.story.benefit)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        ConsoleLabel(text: "Acceptance criteria")
+                        ForEach(criteria.indices, id: \.self) { index in
+                            HStack(spacing: 6) {
+                                TextField("What has to be true when it is done", text: Binding(
+                                    get: { criteria.indices.contains(index) ? criteria[index] : "" },
+                                    set: { if criteria.indices.contains(index) { criteria[index] = $0 } }
+                                ))
+                                .textFieldStyle(.roundedBorder)
+                                Button {
+                                    criteria.remove(at: index)
+                                    if criteria.isEmpty { criteria = [""] }
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Remove criterion \(index + 1)")
+                            }
                         }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Remove criterion \(index + 1)")
+                        Button("Add criterion", systemImage: "plus") { criteria.append("") }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                    }
+
+                    if !draft.evidence.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ConsoleLabel(text: "Evidence")
+                            Text(draft.evidence.map(\.display).joined(separator: "   "))
+                                .font(Type.factSmall)
+                                .foregroundStyle(.tertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
-                Button("Add criterion", systemImage: "plus") { criteria.append("") }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if !draft.evidence.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ConsoleLabel(text: "Evidence")
-                    Text(draft.evidence.map(\.display).joined(separator: "   "))
-                        .font(Type.factSmall)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
+            Divider()
 
-            Spacer(minLength: 0)
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
@@ -843,8 +928,8 @@ struct ProposalEditor: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(!draft.story.isComplete || draft.title.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            .padding(18)
         }
-        .padding(18)
         .frame(width: 580, height: 560)
     }
 

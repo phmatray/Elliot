@@ -28,13 +28,14 @@ struct CardFieldsEditor: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ConsoleLabel(text: "Note")
                     TextEditor(text: $draft.note)
-                        .font(.system(size: 12))
+                        .font(Type.bodyProse)
                         .scrollContentBackground(.hidden)
                         .padding(4)
                         .frame(height: 130)
                         .background(Color(nsColor: .textBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
+                        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+                        .overlay(RoundedRectangle(cornerRadius: Metric.cardRadius)
+                            .strokeBorder(.separator))
                 }
             }
 
@@ -50,8 +51,8 @@ struct CardFieldsEditor: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                         .padding(8)
-                        .background(Color.secondary.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .background(Surface.recess)
+                        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
                 }
             }
         }

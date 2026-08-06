@@ -108,3 +108,62 @@ public extension Card {
         return !story.isComplete
     }
 }
+
+/// How long a card has sat where it is, when that is worth saying.
+///
+/// `columnEnteredAt` has been recorded since the first migration and read in
+/// exactly one place — the inspector, whose own comment calls a card stuck
+/// three days in review "the single most useful thing a pipeline can tell
+/// you". It was invisible on the board, which is where you actually look.
+///
+/// The judgement lives here rather than in the view for the usual reason:
+/// `ElliotApp` has no test target, so a threshold written in a SwiftUI body is
+/// a rule nothing can prove.
+public enum Stagnation: Sendable, Equatable {
+    /// Sitting, but not yet long enough to mean anything.
+    case waiting(days: Int)
+    /// Long enough that it is probably not moving on its own.
+    case stalled(days: Int)
+
+    /// Day-grained on purpose: this is an age, and an age that ticks is a
+    /// stopwatch. `RunningStrip` already owns the second-by-second clock.
+    public var shortLabel: String {
+        switch self {
+        case .waiting(let days), .stalled(let days): "\(days)d"
+        }
+    }
+
+    public var days: Int {
+        switch self {
+        case .waiting(let days), .stalled(let days): days
+        }
+    }
+}
+
+public extension Card {
+    /// Below this a card is simply in play, not stagnant.
+    internal static let waitingThresholdDays = 1
+    /// At or past this it has stopped being a queue and started being a pile.
+    internal static let stalledThresholdDays = 3
+
+    /// How long this card has been in its column, or `nil` when that says
+    /// nothing.
+    ///
+    /// Backlog and Done are excluded by design, not by omission: a backlog is
+    /// *meant* to hold things for weeks, and a merged card is finished. Age
+    /// only carries information for the three columns a card is passing
+    /// through.
+    ///
+    /// One honest limit: a card imported from GitHub gets `columnEnteredAt =
+    /// now`, so a two-year-old issue reads as fresh until it next moves. The
+    /// field records when Elliot saw it arrive, which is all it ever claimed.
+    func stagnation(now: Date) -> Stagnation? {
+        switch column {
+        case .backlog, .done: return nil
+        case .todo, .inProgress, .inReview: break
+        }
+        let days = Int(now.timeIntervalSince(columnEnteredAt) / 86_400)
+        guard days >= Self.waitingThresholdDays else { return nil }
+        return days >= Self.stalledThresholdDays ? .stalled(days: days) : .waiting(days: days)
+    }
+}

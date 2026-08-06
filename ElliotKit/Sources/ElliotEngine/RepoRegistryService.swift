@@ -77,7 +77,12 @@ public struct RepoRegistryService: Sendable {
                     detail: "Forgotten, with its cards. The clone on disk is untouched.")
             }
         } catch {
-            return RepoFixOutcome(succeeded: false, detail: error.localizedDescription)
+            // Name the act that failed. A bare `localizedDescription` beside a
+            // row of buttons does not say which button produced it.
+            return RepoFixOutcome(
+                succeeded: false,
+                detail: "Could not \(fix.label.lowercased()): \(error.localizedDescription)"
+            )
         }
     }
 
