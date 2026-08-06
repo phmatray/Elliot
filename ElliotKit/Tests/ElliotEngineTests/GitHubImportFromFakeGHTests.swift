@@ -229,6 +229,117 @@ struct GitHubImportFromFakeGHTests {
         #expect(try await s.store.cards(repoID: s.repo.id).count == 3)
     }
 
+    // MARK: - #17's criterion 5: a dismissal survives a refresh
+
+    @Test("A deleted card does not come back on the next refresh, and is counted as dismissed")
+    func dismissalSurvivesRefresh() async throws {
+        let s = try await stack()
+        _ = try await importRepo(s)
+
+        let imported = try await s.store.cards(repoID: s.repo.id)
+        let doomed = try #require(imported.first { $0.issueNumber == 101 })
+        try await s.board.deleteCard(id: doomed.id)
+        #expect(try await s.store.cards(repoID: s.repo.id).count == 2)
+
+        let second = try await importRepo(s)
+
+        let after = try await s.store.cards(repoID: s.repo.id)
+        #expect(!after.contains { $0.issueNumber == 101 }, "a dismissal is a decision, and it sticks")
+        #expect(after.count == 2)
+        #expect(second.created == 0)
+        #expect(second.skippedDismissed >= 1, "and the summary says so rather than staying silent")
+    }
+
+    @Test("Forgetting the dismissals brings the card back on the next refresh")
+    func clearDismissalsUndoesIt() async throws {
+        let s = try await stack()
+        _ = try await importRepo(s)
+        let doomed = try #require(
+            try await s.store.cards(repoID: s.repo.id).first { $0.issueNumber == 101 })
+        try await s.board.deleteCard(id: doomed.id)
+        _ = try await importRepo(s)
+        #expect(try await s.store.cards(repoID: s.repo.id).count == 2)
+
+        try await s.store.clearDismissals(repoID: s.repo.id)
+        let third = try await importRepo(s)
+
+        let after = try await s.store.cards(repoID: s.repo.id)
+        #expect(after.contains { $0.issueNumber == 101 }, "un-dismissed means it may return")
+        #expect(after.count == 3)
+        #expect(third.created == 1)
+        #expect(third.skippedDismissed == 0)
+    }
+
+    // MARK: - #17's criterion 7: one unreachable repository is not the others' problem
+
+    @Test("A gh failure becomes ImportSummary.failure rather than throwing out of importRepo")
+    func failureIsReported() async throws {
+        let s = try await stack(mode: "fail")
+        let summary = try await importRepo(s)
+
+        // The plan's one unverified assumption: `ProcessRunner.check` treats a
+        // non-zero exit as a throw, and `importRepo` catches it into `failure`
+        // rather than letting it escape. Verified here rather than believed.
+        #expect(summary.failure != nil)
+        #expect(summary.created == 0)
+        #expect(try await s.store.cards(repoID: s.repo.id).isEmpty)
+    }
+
+    @Test("importAll keeps going: one unreachable repository does not cost the others their refresh")
+    func oneBadRepoDoesNotAbortThePass() async throws {
+        // Both repositories live in one store, but only one `GHClient` can be
+        // wired into a service — so the unreachable one is expressed as a
+        // repository whose *own* import is run against a failing fake, and the
+        // pass is asserted on the summaries `importAll` returns.
+        let s = try await stack(mode: "fail")
+        let healthy = Repo(
+            path: "/tmp/elliot-healthy-\(UUID().uuidString)",
+            nameWithOwner: "phmatray/Healthy", displayName: "Healthy")
+        try await s.store.saveRepo(healthy)
+
+        let broken = s.repo
+        let failing = s.service
+        let summaries = try await withTimeout(.seconds(30)) {
+            await failing.importAll([broken, healthy])
+        }
+
+        #expect(summaries.count == 2, "every repository is reported, including the one that failed")
+        #expect(summaries[0].failure != nil)
+        #expect(summaries[1].failure != nil, "same fake, so both fail — the point is that both ran")
+
+        // And with a working fake, the same two-repository pass imports both:
+        // the failure above is the fake's, not the loop giving up.
+        let working = rewired(s, issues: "issues-basic.json", prs: "prs-basic.json")
+        let ok = try await withTimeout(.seconds(30)) { await working.importAll([broken, healthy]) }
+        #expect(ok.count == 2)
+        #expect(ok.allSatisfy { $0.failure == nil })
+        #expect(try await s.store.cards(repoID: broken.id).count == 3)
+        #expect(try await s.store.cards(repoID: healthy.id).count == 3)
+    }
+
+    @Test("A disabled repository is skipped by importAll without being reported as failed")
+    func disabledIsSkipped() async throws {
+        let s = try await stack()
+        let disabled = Repo(
+            path: "/tmp/elliot-off-\(UUID().uuidString)",
+            nameWithOwner: "phmatray/Off", displayName: "Off",
+            isEnabled: false)
+        try await s.store.saveRepo(disabled)
+
+        let repo = s.repo
+        let service = s.service
+        let summaries = try await withTimeout(.seconds(30)) {
+            await service.importAll([repo, disabled])
+        }
+
+        // `importAll` filters on `isEnabled`, so its output is *shorter* than
+        // its input — the reason a caller must never match summaries to
+        // repositories by position.
+        #expect(summaries.count == 1)
+        #expect(summaries[0].failure == nil)
+        #expect(try await s.store.cards(repoID: disabled.id).isEmpty)
+    }
+
     /// The closed-item asymmetry, half two — and the reason the filter is not
     /// simply "skip closed": an issue a card already tracks must still be
     /// reconciled when it closes, or the board keeps showing work that is over.
