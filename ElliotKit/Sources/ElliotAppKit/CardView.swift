@@ -26,7 +26,7 @@ struct CardView: View {
             }
 
             if let run = activeRun {
-                RunningStrip(run: run, lastLine: model.liveLog[run.id]?.last)
+                RunningStrip(run: run, lastLine: lastLine(of: run))
             } else if let receipt = lastReceipt {
                 // What `gh` established, not what the agent said about itself.
                 HStack(spacing: 5) {
@@ -136,6 +136,17 @@ struct CardView: View {
 
     private var isSelected: Bool { model.selectedCardID == card.id }
     private var activeRun: SkillRun? { model.activeRuns[card.id] }
+
+    /// The most recent event of this run that says anything in one line.
+    ///
+    /// Searched backwards rather than taken from the end: `liveLog` holds every
+    /// event now, and most of them — a successful tool result, a `system` line,
+    /// a partial — collapse to nothing. Taking the last event outright would
+    /// blank the strip every time one of those arrived last.
+    private func lastLine(of run: SkillRun) -> String? {
+        guard let events = model.liveLog[run.id] else { return nil }
+        return events.reversed().lazy.compactMap(AppModel.describe).first
+    }
 
     private var refusalMessage: String? {
         model.refusal?.cardID == card.id ? model.refusal?.message : nil

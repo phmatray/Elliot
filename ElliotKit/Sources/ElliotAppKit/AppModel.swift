@@ -52,9 +52,14 @@ public final class AppModel {
     /// Whatever the window needs to say about the last action.
     public private(set) var analysisNote: String?
 
-    /// Live tail per run, for the card's log view. Bounded — the file on disk
-    /// is the complete record.
-    public private(set) var liveLog: [UUID: [String]] = [:]
+    /// Live tail per run, for the card's strip and the panel's log. Bounded —
+    /// the file on disk is the complete record.
+    ///
+    /// Events rather than rendered lines. Collapsing to `String` here threw
+    /// away the tool-use id a result has to be nested under, the whole of an
+    /// agent turn after its first line, and every successful tool call — and it
+    /// threw them away in the model, before any view could ask for them.
+    public private(set) var liveLog: [UUID: [StreamEvent]] = [:]
 
     /// The run currently holding each card, for every card at once.
     ///
@@ -294,30 +299,35 @@ public final class AppModel {
         })
     }
 
-    private func apply(_ update: SchedulerUpdate) {
+    /// Internal rather than private: the 300-entry cap below, and the
+    /// accumulation it bounds, are unreachable from a test otherwise — and that
+    /// cap is the only thing between a run that talks for an hour and an
+    /// unbounded array held in memory.
+    func apply(_ update: SchedulerUpdate) {
         switch update {
         case .runStarted(let runID, _):
-            liveLog[runID] = ["▸ started"]
+            // Emptied rather than seeded with a line: the tail carries events
+            // now, and "started" is not one. `RunningStrip` and `RunRow` both
+            // already show the run's state from the run itself.
+            liveLog[runID] = []
             Task {
                 await self.refreshActiveRuns()
                 await self.refreshAnalysisRuns()
             }
         case .runOutput(let runID, let event):
-            var lines = liveLog[runID] ?? []
-            if let rendered = Self.describe(event) {
-                lines.append(rendered)
-                // The file on disk keeps everything; this is just the tail.
-                if lines.count > 300 { lines.removeFirst(lines.count - 300) }
-                liveLog[runID] = lines
-            }
-        case .runStalled(let runID, let since):
-            var lines = liveLog[runID] ?? []
-            lines.append("⏳ no output since \(since.formatted(date: .omitted, time: .standard))")
-            liveLog[runID] = lines
-        case .runFinished(let runID, let cardID, let state, _):
-            var lines = liveLog[runID] ?? []
-            lines.append("■ \(state.rawValue)")
-            liveLog[runID] = lines
+            var events = liveLog[runID] ?? []
+            events.append(event)
+            // The file on disk keeps everything; this is just the tail. The
+            // oldest go, never the newest — a tail that dropped its own end
+            // would stop following the run.
+            if events.count > 300 { events.removeFirst(events.count - 300) }
+            liveLog[runID] = events
+        case .runStalled:
+            // Silence is not an event, and there is no `StreamEvent` for it.
+            // `RunningStrip` says so from `run.state`, which `markStalled` has
+            // already written.
+            break
+        case .runFinished(_, let cardID, _, _):
             // A run takes minutes and nobody watches it for all of them. One
             // Dock bounce, only when Elliot is not the front app — no
             // notification permission, and nothing to dismiss.
@@ -332,6 +342,13 @@ public final class AppModel {
         }
     }
 
+    /// One event collapsed to one line, for `CardView`'s running strip and
+    /// nowhere else.
+    ///
+    /// A card shows a single line of a run in flight, so a collapse is the
+    /// right answer *there* — it is the wrong answer everywhere a log is read,
+    /// which is why the panel folds `liveLog` into `RunLogRow`s instead. Keep
+    /// this narrow: widening it back is how the log became a `[String]`.
     static func describe(_ event: StreamEvent) -> String? {
         switch event {
         case .systemInit(let info):
@@ -367,6 +384,27 @@ public final class AppModel {
     }
 
     public var selectedCard: Card? { card(id: selectedCardID) }
+
+    /// The card's issue body, parsed into blocks — memoised per card, and
+    /// invalidated by the body itself rather than by a notification.
+    ///
+    /// Memoised because this is called during `body` evaluation: re-parsing a
+    /// long issue on every render is real work, and this repository's own
+    /// issues run to hundreds of lines. Keyed on the body as well as the card
+    /// so an edit or a re-import cannot be served a stale parse — the body is
+    /// the input, so comparing it is the whole of the cache's correctness.
+    func issueDocument(for card: Card) -> IssueDocument {
+        if let cached = parsedBodies[card.id], cached.body == card.body { return cached.document }
+        let document = IssueMarkdownParser.parse(card.body)
+        parsedBodies[card.id] = (body: card.body, document: document)
+        return document
+    }
+
+    /// `@ObservationIgnored` deliberately: `issueDocument(for:)` runs inside
+    /// `body`, and a tracked mutation there would invalidate the very view that
+    /// just read it. Nothing observes the cache — the cards do the observing.
+    @ObservationIgnored
+    private var parsedBodies: [UUID: (body: String, document: IssueDocument)] = [:]
 
     /// What moving this card to that column *would* do, decided now, without
     /// touching the database.

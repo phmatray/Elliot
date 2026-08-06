@@ -1,3 +1,4 @@
+import ElliotEngine
 import ElliotModel
 import Foundation
 import Testing
@@ -222,6 +223,90 @@ struct AppModelTests {
 
     // MARK: - Log rendering
 
+    /// These two used to assert what `AppModel.describe` produced for the log —
+    /// which is to say, what the log *lost*: `describe` returns nil for a
+    /// successful tool result, for `.system`, `.partial`, `.unknown` and
+    /// `.malformed`, and drops every line of an agent turn after the first.
+    /// A negative is a poor thing to pin a renderer to, so they now state
+    /// positively which row each event produces. `describe` itself is still
+    /// asserted, one section down, where it is still the right answer.
+    @Test("Every event kind produces its own typed row")
+    func eventsBecomeTypedRows() {
+        // Decoded rather than constructed: `SystemInit`'s memberwise
+        // initialiser is internal to `ElliotModel`, and a real init line is a
+        // better fixture than a hand-built one anyway.
+        let initLine = Data(
+            #"{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"claude"}"#.utf8
+        )
+        let result = RunResult(subtype: "success", isError: false, text: "done")
+        let rows = RunLog.rows(
+            from: StreamEventDecoder.decodeAll(line: initLine) + [
+                .assistantText("hello\nworld"),
+                .assistantToolUse(name: "Bash", id: "t1", inputPreview: "ls"),
+                .system(subtype: "anything", raw: Data()),
+                .partial(text: "hel"),
+                .unknown(type: "whatever", raw: Data("{}".utf8)),
+                .result(result),
+            ],
+            denials: ["WebFetch"]
+        )
+
+        // Six: five events that carry something, plus the denial. `.system` and
+        // `.partial` carry none, and that is the only thing dropped.
+        #expect(rows.count == 6)
+
+        guard case .session(let seen) = rows[0] else {
+            Issue.record("a system_init becomes a session row, got \(rows[0])")
+            return
+        }
+        #expect(seen.sessionID == "s1")
+
+        // The whole turn, not its first line: this is what the flattened tail
+        // was throwing away.
+        #expect(rows[1] == .agentText("hello\nworld"))
+        #expect(rows[2] == .toolUse(name: "Bash", id: "t1", input: "ls", outcome: nil))
+        #expect(rows[3] == .unreadable(text: "{}"))
+        // A refusal has no event of its own — it arrives inside the terminal
+        // result — and it lands immediately *before* the terminal row: the log
+        // only learns of it when the run ends, and a row after the last one
+        // would read as something that happened afterwards.
+        #expect(rows[4] == .denial(toolName: "WebFetch"))
+        #expect(rows[5] == .terminal(result))
+    }
+
+    @Test("A tool result lands on its own call — the successful one too")
+    func toolResultsNestUnderTheirCall() {
+        let rows = RunLog.rows(from: [
+            .assistantToolUse(name: "Bash", id: "t1", inputPreview: "ls"),
+            .assistantToolUse(name: "Read", id: "t2", inputPreview: "a.swift"),
+            // Out of order on purpose: two tools can be in flight at once, and
+            // the fold matches by id rather than by arrival.
+            .toolResult(toolUseID: "t2", isError: true, preview: "boom"),
+            .toolResult(toolUseID: "t1", isError: false, preview: "fine"),
+            .toolResult(toolUseID: "gone", isError: false, preview: "orphan"),
+        ])
+
+        // A successful tool call is a row now. `describe` returned nil for it,
+        // so the run read as though the call had never happened.
+        #expect(rows[0] == .toolUse(
+            name: "Bash", id: "t1", input: "ls",
+            outcome: ToolOutcome(isError: false, preview: "fine")
+        ))
+        #expect(rows[1] == .toolUse(
+            name: "Read", id: "t2", input: "a.swift",
+            outcome: ToolOutcome(isError: true, preview: "boom")
+        ))
+        #expect(rows[2] == .orphanResult(ToolOutcome(isError: false, preview: "orphan")))
+        #expect(rows.count == 3)
+    }
+
+    // MARK: - The card's running strip
+
+    /// `describe` survives the retyping of `liveLog`, narrowed to the one place
+    /// a single collapsed string is still the right answer: `CardView`'s
+    /// one-line strip on a card with a run in flight. Its assertions are
+    /// unchanged; only what they are said to be *about* has moved, from the log
+    /// to the strip.
     @Test("A stream event becomes one readable line, or none")
     func describeRendersTheLine() {
         #expect(AppModel.describe(.assistantText("hello\nworld")) == "hello")
@@ -234,10 +319,66 @@ struct AppModelTests {
 
     @Test("A failed tool result is shown; a successful one is not")
     func describeKeepsFailures() {
-        // The log is a tail, not a transcript: a successful tool call is noise,
-        // and a failed one is the line worth seeing.
+        // On a *card* this is still right: one line has room for the call that
+        // went wrong and none for the ones that went fine. The panel's log,
+        // which has room, keeps both — see `toolResultsNestUnderTheirCall`.
         #expect(AppModel.describe(.toolResult(toolUseID: "1", isError: false, preview: "fine")) == nil)
         let failed = AppModel.describe(.toolResult(toolUseID: "1", isError: true, preview: "boom"))
         #expect(failed?.hasPrefix("✗") == true)
+    }
+
+    // MARK: - The live tail is bounded
+
+    @Test("The live tail keeps the last 300 events and drops the oldest")
+    func liveLogCapsAtThreeHundred() {
+        let model = model(repos: [], cards: [])
+        let runID = UUID()
+
+        // 301, so the cap has to act exactly once and the assertion below can
+        // name which end went.
+        for index in 0...300 {
+            model.apply(.runOutput(runID: runID, event: .assistantText("line \(index)")))
+        }
+
+        let events = model.liveLog[runID] ?? []
+        #expect(events.count == 300)
+        // The oldest goes. A tail that dropped its newest would stop following
+        // the run while still looking full.
+        #expect(events.first == .assistantText("line 1"))
+        #expect(events.last == .assistantText("line 300"))
+        #expect(events.contains(.assistantText("line 0")) == false, "the first event should be gone")
+    }
+
+    @Test("A run starting empties its tail rather than seeding it with a line")
+    func runStartedClearsTheTail() {
+        let model = model(repos: [], cards: [])
+        let runID = UUID()
+        model.apply(.runOutput(runID: runID, event: .assistantText("stale")))
+
+        model.apply(.runStarted(runID: runID, cardID: nil))
+        #expect(model.liveLog[runID] == [])
+    }
+
+    // MARK: - Parsed issue bodies
+
+    @Test("An issue body is parsed once per body, and again when it changes")
+    func issueDocumentIsMemoisedOnTheBody() {
+        let a = repo("Elliot")
+        var subject = card("filed", repoID: a.id, column: .todo, order: 1, issue: 47)
+        subject.body = "## Acceptance criteria\n\n1. It builds\n2. It runs\n"
+        let model = model(repos: [a], cards: [subject])
+
+        let first = model.issueDocument(for: subject)
+        #expect(first.acceptanceCriteria.map(\.plain) == ["It builds", "It runs"])
+        // Identical rather than merely equal in spirit: this is the memo being
+        // returned, and `IssueDocument` is `Hashable`, so equality is the only
+        // handle a value type gives.
+        #expect(model.issueDocument(for: subject) == first)
+
+        // The key is the body, not the card: an edit or a re-import must not be
+        // served the previous parse.
+        var edited = subject
+        edited.body = "## Acceptance criteria\n\n1. Something else\n"
+        #expect(model.issueDocument(for: edited).acceptanceCriteria.map(\.plain) == ["Something else"])
     }
 }

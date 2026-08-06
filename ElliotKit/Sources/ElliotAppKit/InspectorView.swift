@@ -291,7 +291,7 @@ struct RunRow: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let run: SkillRun
-    let liveLines: [String]
+    let liveLines: [StreamEvent]
     @State private var expanded = false
 
     var body: some View {
@@ -411,26 +411,55 @@ struct RunRow: View {
 
     /// The live tail while it runs; the file on disk once it has finished.
     ///
-    /// Both go through `AppModel.describe`, so a run does not change
+    /// Both are folded by `RunLog.rows(from:)`, so a run does not change
     /// appearance the moment it ends — the tail used to be readable lines and
     /// the file on disk raw NDJSON, which made the log look like a different
     /// artefact depending on when you opened it.
+    ///
+    /// One `Text` per row is a placeholder: #79's runs pane renders a view per
+    /// row kind. The fold is here already because it is what makes that
+    /// possible — the rows carry the tool-use ids a flattened tail had thrown
+    /// away.
     private var logLines: [String] {
-        if !liveLines.isEmpty { return liveLines }
-        guard let text = try? String(contentsOfFile: run.logPath, encoding: .utf8) else {
+        let events = liveLines.isEmpty ? diskEvents : liveLines
+        guard !events.isEmpty else {
             return ["(no log on disk — it may have been cleaned up)"]
         }
-        let rendered = text
+        let rows = RunLog.rows(from: events, denials: run.permissionDenials)
+        return rows.isEmpty ? ["(log is empty)"] : rows.suffix(300).map(Self.line)
+    }
+
+    /// The whole log, decoded. `decodeAll` rather than `decode`: an assistant
+    /// turn that carries prose *and* a tool call is two rows, and the one-event
+    /// form would silently keep only the first.
+    private var diskEvents: [StreamEvent] {
+        guard let text = try? String(contentsOfFile: run.logPath, encoding: .utf8) else { return [] }
+        return text
             .split(separator: "\n")
-            .compactMap { line -> String? in
-                guard let event = StreamEventDecoder.decode(line: Data(line.utf8)) else {
-                    // Not a stream event: show it as written rather than
-                    // dropping it. A line the decoder cannot read is exactly
-                    // the line worth seeing.
-                    return String(line.prefix(400))
-                }
-                return AppModel.describe(event)
-            }
-        return rendered.isEmpty ? ["(log is empty)"] : Array(rendered.suffix(300))
+            .flatMap { StreamEventDecoder.decodeAll(line: Data($0.utf8)) }
+    }
+
+    private static func line(_ row: RunLogRow) -> String {
+        switch row {
+        case .session(let info):
+            "▸ \(info.model ?? "claude") in \(info.cwd ?? "?")"
+        case .agentText(let text):
+            text.split(separator: "\n").first.map(String.init) ?? ""
+        case .toolUse(let name, _, let input, let outcome):
+            "⚙ \(name) \(input.prefix(120))" + Self.tail(of: outcome)
+        case .denial(let toolName):
+            "⛔ refused \(toolName)"
+        case .orphanResult(let outcome):
+            "\(outcome.isError ? "✗" : "✓") \(outcome.preview.prefix(120))"
+        case .terminal(let result):
+            "■ \(result.isClean ? "done" : "finished with issues") — \(result.text?.prefix(200) ?? "")"
+        case .unreadable(let text):
+            String(text.prefix(400))
+        }
+    }
+
+    private static func tail(of outcome: ToolOutcome?) -> String {
+        guard let outcome else { return " …" }
+        return outcome.isError ? "  ✗ \(outcome.preview.prefix(120))" : "  ✓"
     }
 }
