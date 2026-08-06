@@ -422,6 +422,20 @@ public final class AppModel {
 
     // MARK: - Notifications
 
+    /// Selecting from a notification click, kept apart from ordinary selection
+    /// so the intent is legible: a click may arrive for a card that has since
+    /// been deleted, and that selects nothing rather than clearing what the
+    /// user was looking at.
+    public func selectRepoFromNotification(_ repoID: UUID) {
+        guard repos.contains(where: { $0.id == repoID }) else { return }
+        selectedRepoID = repoID
+    }
+
+    public func selectCardFromNotification(_ cardID: UUID) {
+        guard cards.contains(where: { $0.id == cardID }) else { return }
+        selectedCardID = cardID
+    }
+
     /// Turns a scheduler update into a `NotificationEvent`, or drops it.
     ///
     /// Re-reads the run from the store rather than trusting the update's own
@@ -1381,6 +1395,31 @@ public final class AppModel {
     public func refreshAnalysisRuns() async {
         guard let store, let id = activeAnalysisID else { return }
         analysisRuns = (try? await store.runs(analysisID: id)) ?? []
+        await notifyIfAnalysisFinished(id: id, store: store)
+    }
+
+    /// Ids of analyses already announced, so six angles produce one banner.
+    ///
+    /// An analysis is many runs; this fires when the **last** of them reaches a
+    /// terminal state. Announcing per angle would be six notifications for one
+    /// act, which is the fastest way to make a channel worth muting.
+    private var announcedAnalyses: Set<UUID> = []
+
+    private func notifyIfAnalysisFinished(id: UUID, store: BoardStore) async {
+        guard !announcedAnalyses.contains(id) else { return }
+        // An empty list is a analysis that has not started, not one that
+        // finished — `allSatisfy` on nothing is true, and would announce it.
+        guard !analysisRuns.isEmpty, analysisRuns.allSatisfy(\.state.isTerminal) else { return }
+        announcedAnalyses.insert(id)
+
+        guard
+            let repoID = analysisRuns.first?.repoID,
+            let repo = try? await store.repo(id: repoID)
+        else { return }
+        // What the harvest actually kept, counted from the store rather than
+        // from whatever the agents said they found.
+        let kept = (try? await store.proposals(analysisID: id))?.count ?? 0
+        await presenterHandle(.analysisFinished(analysisID: id, repo: repo, proposalCount: kept))
     }
 
     public func recentAnalyses() async -> [Analysis] {
