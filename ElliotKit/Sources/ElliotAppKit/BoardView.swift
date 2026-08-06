@@ -347,7 +347,7 @@ struct StatusBar: View {
                 tint: model.occupancy.writers > 0 ? Palette.armed : Palette.quiet,
                 help: "How many runs are going, against the limit. Click to change it.",
                 spoken: "\(model.occupancy.writers) of \(model.limits.maxConcurrent) workers busy",
-                window: "preflight"
+                window: "operations"
             )
 
             // Only when there is one. A permanent "0 queued" is furniture, and
@@ -360,7 +360,7 @@ struct StatusBar: View {
                     spoken: model.isQueuePaused
                         ? "\(model.queue.count) queued, paused"
                         : "\(model.queue.count) runs queued",
-                    window: "nextSteps"
+                    window: "operations"
                 )
             }
 
@@ -369,7 +369,7 @@ struct StatusBar: View {
                 tint: model.isOverDailyCeiling ? Palette.refused : Palette.quiet,
                 help: "Spent today — \(model.spentToday.sentence()). Click to set a ceiling.",
                 spoken: "spent today, \(model.spentToday.sentence())",
-                window: "preflight"
+                window: "operations"
             )
 
             // Elliot wrote this hint, so it is not set in the fact face.
