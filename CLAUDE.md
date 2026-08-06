@@ -139,8 +139,39 @@ open -n --env ELLIOT_HOME=/tmp/elliot-check dist/Elliot.app   # an isolated stor
 
 and then read the window's accessibility tree — the column captions, the toolbar and the status bar
 all carry labels, so "did the board survive" is a text diff rather than a squint. When in doubt,
-build the same check from `main` and compare: that A/B is what proved the 143×144 restored window
-size predates #72 rather than being caused by it.
+build the same check from `main` and compare.
+
+**A secondary window is verifiable too — it opens off-screen, it does not fail to open.** Every PR
+from #75 to #89 carried some version of *"opening a `Window` scene needs the app frontmost, which the
+automation driver refuses"*, and it was never true. A background `openWindow` does open the window; it
+just lands off-screen because the app is not frontmost. The trap is the enumeration, not the window:
+**list all of a pid's windows, never only the ones reporting `is_on_screen`.** Measured on a running
+build, six `Window` scenes declared in `ElliotApp.swift`, two of them open:
+
+```
+id=2737  on_screen=False  820x720 @ (454,215)  title='Preflight'
+id=2730  on_screen=False  900x700 @ (459,220)  title='Repositories'
+id=2727  on_screen=True   143x164 @ (15,803)   title='Elliot'
+```
+
+Both secondary windows are **at their full designed size** and both say `is_on_screen: False`. Filter
+on that flag and they are simply gone — which is exactly how "it didn't open" got written down nine
+times. The cost was real: #83 and #84 merged with *"not verified on screen"* in their bodies, and #84
+shipped a launch crash (`Fatal error: No Observable object of type AppModel found`) that sat on `main`
+until #85 happened to look. Reading the Operations window this way is what found the duplicate rows
+fixed in `ac6e460`, on the one screen that had been held back as unverifiable.
+
+**The 143×164 board window in that listing is the same thing, and it is the Stage Manager strip — not
+`minWidth` being ignored.** #74 reported a 143×144 restored board and called for its own issue; #75's
+body corrected it and CLAUDE.md never caught up. The listing settles it: the same process, in the same
+launch, is showing a 900×700 window, so nothing is clamping the app's widths. Only the board is parked
+in the strip, because the app is not frontmost. Nothing to fix.
+
+⚠️ **An empty accessibility tree is not an empty window.** Reading the tree needs the automation driver
+to hold macOS Accessibility permission; without it every window of every app returns zero elements and
+a `degraded` flag, which reads exactly like "the window has nothing in it" — the same false negative,
+one layer down. Before believing a blank tree, snapshot a known-good app (Finder will do) as a control.
+If that is blank too, the finding is about your permissions, not about the change under review.
 
 ### Board transitions
 
