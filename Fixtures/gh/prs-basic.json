@@ -1,0 +1,24 @@
+[
+  {
+    "number": 201,
+    "url": "https://github.com/phmatray/Elliot/pull/201",
+    "title": "feat(app): the thing issue 102 asked for",
+    "body": "Ready for review.",
+    "headRefName": "feat/102-the-thing",
+    "isDraft": false,
+    "state": "OPEN",
+    "createdAt": "2026-08-02T09:00:00Z",
+    "mergedAt": null
+  },
+  {
+    "number": 202,
+    "url": "https://github.com/phmatray/Elliot/pull/202",
+    "title": "feat(app): the thing issue 103 asked for",
+    "body": "Still a draft.",
+    "headRefName": "feat/103-still-drafting",
+    "isDraft": true,
+    "state": "OPEN",
+    "createdAt": "2026-08-02T10:00:00Z",
+    "mergedAt": null
+  }
+]

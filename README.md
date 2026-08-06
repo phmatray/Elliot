@@ -271,6 +271,17 @@ spending a token or touching GitHub. The fake is driven by environment
 variables (`FAKE_CLAUDE_FIXTURE`, `_DELAY_MS`, `_MODE=hang|trap|crash`,
 `_ARGV_OUT`) and is equally usable by hand from a terminal.
 
+`gh` has the same treatment in `Scripts/fake-gh.sh`, which answers `issue list`
+and `pr list` from `Fixtures/gh/*.json` (`FAKE_GH_ISSUES`, `FAKE_GH_PRS`,
+`FAKE_GH_MODE=ok|fail`, `FAKE_GH_ARGV_OUT`). That is how the GitHub import is
+tested end to end — real subprocess, real JSON decode, real store writes —
+without `gh` existing on the machine:
+
+```bash
+FAKE_GH_ISSUES=Fixtures/gh/issues-basic.json \
+  ./Scripts/fake-gh.sh issue list --repo x --json number | python3 -m json.tool
+```
+
 Two invariants carry most of the weight:
 
 - the first digit run of an `implement-issue` prompt is the issue number,
