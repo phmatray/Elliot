@@ -98,6 +98,41 @@ struct PanelFitTests {
         }
     }
 
+    /// The table that goes on the issue, derived here rather than by hand.
+    ///
+    /// It is pinned because a summary written out in a comment thread is a
+    /// *rendering* of the formula, and this repository has been caught more than
+    /// once reporting a rendering's defects as facts about the thing rendered.
+    /// Drafting this table by hand did indeed put one cell — 1000pt, wide — at
+    /// 1892 instead of 1898; the assertion below is what caught it.
+    @Test("The published overflow table is what the formulas actually say")
+    func theOverflowTableIsDerived() {
+        let expected: [CGFloat: (columns: CGFloat, shut: CGFloat, narrow: CGFloat, wide: CGFloat)] = [
+            1000: (226, 1190, 1662, 1898),
+            1510: (290, 1510, 2110, 2410),
+            1640: (316, 1640, 2292, 2618),
+        ]
+        for (boardWidth, row) in expected {
+            #expect(PanelLayout.columnWidth(boardWidth: boardWidth) == row.columns, "at \(boardWidth)")
+            #expect(
+                PanelLayout.contentWidth(boardWidth: boardWidth, spans: nil) == row.shut,
+                "shut at \(boardWidth)"
+            )
+            #expect(
+                PanelLayout.contentWidth(
+                    boardWidth: boardWidth, spans: PanelLayout.spanChoices.narrow
+                ) == row.narrow,
+                "narrow at \(boardWidth)"
+            )
+            #expect(
+                PanelLayout.contentWidth(
+                    boardWidth: boardWidth, spans: PanelLayout.spanChoices.wide
+                ) == row.wide,
+                "wide at \(boardWidth)"
+            )
+        }
+    }
+
     /// What criterion 2 would actually cost, stated as the number a human has to
     /// rule on rather than as a recommendation.
     ///
