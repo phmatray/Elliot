@@ -305,7 +305,7 @@ struct RunRow: View {
                 Text(run.kind.skillName).font(Type.fact).foregroundStyle(.primary)
                 Spacer()
                 if let cost = run.totalCostUSD {
-                    Fact(text: String(format: "$%.4f", cost), tint: Palette.quiet, small: true)
+                    Fact(text: MoneyFormat.usd(cost), tint: Palette.quiet, small: true)
                         .help("What this run cost")
                 }
             }
