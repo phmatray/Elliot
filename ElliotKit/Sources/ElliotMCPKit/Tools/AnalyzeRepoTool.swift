@@ -59,7 +59,13 @@ struct AnalyzeRepoTool: BoardTool {
                 title: "Analyse a repository",
                 readOnlyHint: false,
                 destructiveHint: false,
-                openWorldHint: false
+                // Starts one unattended `claude -p` run per angle in a real
+                // checkout, under the repository's own permission mode. That is
+                // the same class of act as board_move_card, and this said
+                // `false` until #27 — the tool's own description said "each
+                // angle is its own `claude -p` run" on the line above while the
+                // annotation claimed a closed world.
+                openWorldHint: true
             )
         )
     }
