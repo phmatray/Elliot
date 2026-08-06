@@ -9,13 +9,15 @@ import Testing
 @Suite("Analysis wire format")
 struct AnalysisWireTests {
 
-    /// 3, not 2: this work was written against an unreleased 2, and 2 reached
-    /// `main` first carrying a different set of changes. A helper claiming 2 is
-    /// therefore one that cannot analyse anything, and the handshake has to be
-    /// able to say so.
+    /// 4: a run now carries its analysis, its angle and its harvest report.
+    /// Additive in JSON, and bumped anyway — a 4 helper meeting a 3 app finds
+    /// `workingTreeChanged` absent on every analysis run and reports "the
+    /// sentinel never ran". That is a claim about the user's repository,
+    /// produced by the age of their app bundle, and refusing the pairing is
+    /// what the handshake is for.
     @Test("The protocol version moved, so an old helper fails loudly")
     func versionBumped() {
-        #expect(elliotProtocolVersion == 3)
+        #expect(elliotProtocolVersion == 4)
     }
 
     @Test("Every new request round-trips through the wire codec", arguments: [
@@ -83,6 +85,132 @@ struct AnalysisWireTests {
         #expect(dto.angles == ["bugs", "tests"])
         #expect(dto.runs.count == 1)
         #expect(dto.repo == "phmatray/Elliot")
+    }
+
+    @Test("A report DTO maps every field of the model it comes from")
+    func reportMapsModel() {
+        let dto = AnalysisReportDTO(AnalysisRunReport(
+            harvestSource: .resultText,
+            kept: 2,
+            dropped: ["story 3: no acceptance criteria"],
+            workingTreeChanged: true,
+            workingTreeDiff: " M Sources/A.swift"
+        ))
+
+        #expect(dto.source == "resultText")
+        #expect(dto.kept == 2)
+        #expect(dto.dropped == ["story 3: no acceptance criteria"])
+        #expect(dto.workingTreeChanged == true)
+        #expect(dto.workingTreeDiff == " M Sources/A.swift")
+    }
+
+    /// The sentinel is worth nothing if the wire flattens it. `nil` means the
+    /// baseline died with the app and nobody looked; `false` means someone
+    /// looked and the tree was untouched. An agent that reads the first as the
+    /// second reports a repository as clean on no evidence at all.
+    @Test("Never-checked and checked-and-clean are different bytes")
+    func workingTreeTriStateSurvivesTheCodec() throws {
+        let unchecked = AnalysisReportDTO(
+            AnalysisRunReport(harvestSource: .artifact, kept: 3, dropped: ["no evidence"])
+        )
+        let clean = AnalysisReportDTO(
+            AnalysisRunReport(harvestSource: .artifact, kept: 3, workingTreeChanged: false)
+        )
+
+        #expect(unchecked.workingTreeChanged == nil)
+        #expect(clean.workingTreeChanged == false)
+
+        let uncheckedJSON = String(decoding: try WireCodec.encoder.encode(unchecked), as: UTF8.self)
+        let cleanJSON = String(decoding: try WireCodec.encoder.encode(clean), as: UTF8.self)
+        #expect(!uncheckedJSON.contains("workingTreeChanged"))
+        #expect(cleanJSON.contains("\"workingTreeChanged\":false"))
+
+        // And back, so the absence is still an absence on the other side.
+        let back = try WireCodec.decoder.decode(
+            AnalysisReportDTO.self, from: Data(uncheckedJSON.utf8)
+        )
+        #expect(back.workingTreeChanged == nil)
+        #expect(back == unchecked)
+    }
+
+    @Test("A run DTO built from an analysis run says which analysis and which angle")
+    func analysisRunIsIdentifiable() throws {
+        let analysisID = UUID()
+        let run = SkillRun.analysis(
+            repoID: UUID(),
+            analysisID: analysisID,
+            analysisAngle: .techDebt,
+            prompt: "read this repository",
+            cwd: "/tmp/repo",
+            state: .succeeded,
+            logPath: "/tmp/run.ndjson",
+            stderrPath: "/tmp/run.err",
+            analysisReport: AnalysisRunReport(
+                harvestSource: .artifact, kept: 4, workingTreeChanged: false
+            ),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+
+        let dto = RunDTO(run: run)
+
+        #expect(dto.cardID == nil)
+        #expect(dto.analysisID == analysisID)
+        #expect(dto.angle == "techDebt")
+        #expect(dto.analysisReport?.source == "artifact")
+        #expect(dto.analysisReport?.kept == 4)
+        #expect(dto.analysisReport?.workingTreeChanged == false)
+
+        // Two readings of one repository are told apart by the angle, so the
+        // angle has to still be there on the other side of the socket.
+        let line = try WireCodec.encodeLine(Envelope(body: dto))
+        let back = try WireCodec.decode(Envelope<RunDTO>.self, from: line.dropLast())
+        #expect(back.body == dto)
+    }
+
+    @Test("A run DTO built from a card run carries no analysis fields")
+    func cardRunHasNoAnalysisFields() {
+        let run = SkillRun.card(
+            cardID: UUID(),
+            repoID: UUID(),
+            kind: .createIssue,
+            prompt: "/ai-migration-kit:create-issue",
+            cwd: "/tmp/repo",
+            logPath: "/tmp/run.ndjson",
+            stderrPath: "/tmp/run.err",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+
+        let dto = RunDTO(run: run)
+
+        #expect(dto.analysisID == nil)
+        #expect(dto.angle == nil)
+        #expect(dto.analysisReport == nil)
+    }
+
+    /// The memberwise initialiser declared `cardID: UUID` while the property is
+    /// `UUID?`, so the one kind of run that has no card could not be built with
+    /// it. Nothing called it, which is why nothing caught it.
+    @Test("The memberwise initialiser can express an analysis run")
+    func memberwiseInitTakesNoCard() {
+        let analysisID = UUID()
+
+        let dto = RunDTO(
+            id: UUID(),
+            cardID: nil,
+            analysisID: analysisID,
+            angle: "bugs",
+            kind: "analyze-repo",
+            state: "succeeded",
+            isTerminal: true,
+            isActive: false,
+            prompt: "read this repository",
+            logPath: "/tmp/a.ndjson",
+            stderrPath: "/tmp/a.err"
+        )
+
+        #expect(dto.cardID == nil)
+        #expect(dto.analysisID == analysisID)
+        #expect(dto.angle == "bugs")
     }
 }
 

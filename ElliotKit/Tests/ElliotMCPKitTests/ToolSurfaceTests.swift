@@ -278,4 +278,18 @@ struct ToolSurfaceTests {
         #expect(!ElliotBuild.version.isEmpty)
         #expect(!ElliotBuild.version.contains("unknown"))
     }
+
+    @Test("Both run tools describe what an analysis run carries")
+    func runToolsDocumentTheAnalysisFields() throws {
+        let list = try #require(tool("board_list_runs").description)
+        let wait = try #require(tool("board_await_run").description)
+
+        #expect(list.contains("angle"))
+        #expect(list.contains("analysisReport"))
+        // The distinction the whole tri-state exists for, stated where an
+        // agent reads it before it reads any run at all.
+        #expect(list.contains("workingTreeChanged"))
+        #expect(list.contains("absent"))
+        #expect(wait.contains("analysisReport"))
+    }
 }

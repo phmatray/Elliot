@@ -166,9 +166,29 @@ public extension ElliotMCPServer {
             name: run.id.uuidString,
             uri: "\(runLogScheme)\(run.id.uuidString)/log",
             title: "\(run.kind) · \(run.state)",
-            description: "NDJSON transcript of the \(run.kind) run started for card \(run.cardID).",
+            description: logDescription(run),
             mimeType: "application/x-ndjson"
         )
+    }
+
+    /// What a run's log is, said in terms of what the run is.
+    ///
+    /// Branching rather than interpolating: `\(run.cardID)` on a `UUID?` is
+    /// Swift's debug description, so this read `for card Optional(…)` on a card
+    /// run and `for card nil` on an analysis one — shipped to an agent, as
+    /// prose, on every resource `listResources` returned.
+    ///
+    /// Internal rather than private so the assertion above can be made against
+    /// the string itself, instead of against a `Resource` built four layers up.
+    internal static func logDescription(_ run: RunDTO) -> String {
+        if let cardID = run.cardID {
+            return "NDJSON transcript of the \(run.kind) run for card \(cardID)."
+        }
+        if let angle = run.angle {
+            return "NDJSON transcript of the \(run.kind) run that read this repository "
+                + "through the \(angle) angle."
+        }
+        return "NDJSON transcript of the \(run.kind) run."
     }
 
     private static func runID(fromLogURI uri: String) -> UUID? {

@@ -225,6 +225,36 @@ func makeRun(
     )
 }
 
+/// An analysis run: no card, an angle, and — once it has finished — a report.
+///
+/// Its own helper rather than a flag on `makeRun`, for the same reason
+/// `SkillRun.analysis` is separate from `SkillRun.card`: the fields that only
+/// make sense for one kind never come apart from each other.
+func makeAnalysisRun(
+    repoID: UUID,
+    id: UUID = UUID(),
+    analysisID: UUID = UUID(),
+    angle: AnalysisAngle = .bugs,
+    state: RunState = .succeeded,
+    report: AnalysisRunReport? = nil,
+    createdAt: Date = epoch
+) -> SkillRun {
+    SkillRun.analysis(
+        id: id,
+        repoID: repoID,
+        analysisID: analysisID,
+        analysisAngle: angle,
+        prompt: "read this repository through the \(angle.rawValue) lens",
+        cwd: "/tmp",
+        state: state,
+        startedAt: createdAt,
+        logPath: "/tmp/\(id.uuidString).ndjson",
+        stderrPath: "/tmp/\(id.uuidString).stderr",
+        analysisReport: report,
+        createdAt: createdAt
+    )
+}
+
 /// An in-memory board, seeded in dependency order because the schema has real
 /// foreign keys.
 func makeStore(
