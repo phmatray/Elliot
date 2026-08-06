@@ -672,7 +672,7 @@ public final class AppModel {
     /// spelled the same way: a run that finished between the idle watcher
     /// noticing the silence and this arriving must keep the outcome it reached,
     /// not be dragged back to a non-terminal state by a late notice.
-    static func stalling(_ runID: UUID, _ run: SkillRun) -> SkillRun {
+    nonisolated static func stalling(_ runID: UUID, _ run: SkillRun) -> SkillRun {
         guard run.id == runID, run.state == .running else { return run }
         var stalled = run
         stalled.state = .stalled
