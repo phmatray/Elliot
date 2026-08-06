@@ -21,9 +21,6 @@ cd ElliotKit && swift build                      # library + both executables
 cd ElliotKit && swift test                       # whole suite; no Xcode, no tokens, no GitHub
 cd ElliotKit && swift test --filter BoardServiceTests   # one suite
 
-swift format --in-place --recursive ElliotKit/Sources ElliotKit/Tests
-swift format lint --strict --recursive ElliotKit/Sources ElliotKit/Tests
-
 ./Scripts/build-app.sh                           # assembles dist/Elliot.app (SwiftPM emits no bundle)
 open dist/Elliot.app                             # launch from Finder, not a terminal — see PATH below
 claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp"
@@ -37,6 +34,43 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
 - **There is no CI.** No `.github/workflows/`, no branch protection. A pull request here is judged by a
   local `swift test` only — "wait for green CI" is not a thing that can happen in this repo.
 - Re-run `claude mcp add` after moving the app: the registration records an absolute path.
+
+### ⛔ Do not run `swift format` over the tree
+
+**This code is formatted by hand.** `swift-format`'s pretty-printer cannot reproduce it, and running
+it across the package rewrites the package.
+
+These two commands were documented here until #71 and both were harmful:
+
+```bash
+swift format --in-place --recursive ElliotKit/Sources ElliotKit/Tests   # ⛔ rewrites ~84 files
+swift format lint --strict --recursive ElliotKit/Sources ElliotKit/Tests # ⛔ 22 463 violations
+```
+
+Measured on a clean checkout at commit `8c021e8`: with no configuration the formatter reindented
+**140 files from 4 spaces to 2** — the whole package — and `lint --strict` reported **22 463
+violations**, 21 145 of them `Indentation`. Neither could be used to judge anything, and the
+reformat looked like a formatting pass rather than a mistake, so it would ride along inside whatever
+pull request happened to be open.
+
+`.swift-format` now pins 4 spaces and 110 columns, which bounds an accidental run to a reflow
+instead of a reindentation of everything. It does **not** make the formatter safe: the disagreement
+is the printer's layout, not its width. Measured at 100, 110 and 160 columns the churn was 108, 89
+and 84 files — width changes almost nothing, because what the printer wants is different, e.g.
+
+```swift
+-        return candidates          // written by hand
++        return                     // what swift-format produces, at every width tried
++            candidates
+             .enumerated()
+```
+
+So: **format the lines you wrote, by hand, to match their neighbours.** If you want to check one
+file you just touched, `swift format lint <file>` is readable; the tree-wide form is not.
+
+Adopting the formatter wholesale is a live option and a one-way door: it costs a single ~1 600-line
+reformat commit and buys a real guard forever. It has not been taken, and it is not a decision to
+make inside a feature branch.
 
 ## Architecture
 
