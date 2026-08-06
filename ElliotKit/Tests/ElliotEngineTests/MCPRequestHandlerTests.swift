@@ -444,4 +444,121 @@ struct MCPRequestHandlerTests {
         )))
         #expect(refusal.code == .repoNotFound)
     }
+
+    @Test("Accepting a fresh proposal decides it and hands back its card")
+    func acceptDecidesAndCreates() async throws {
+        let f = try await Fixture.make()
+        let proposal = try await f.proposal(title: "One", analysisID: UUID())
+
+        guard case .ok(.proposalsDecided(let decision)) = await f.handler.handle(
+            .acceptProposals(ids: [proposal.id])
+        ) else {
+            Issue.record("expected a decision")
+            return
+        }
+        #expect(decision.decided == [proposal.id])
+        #expect(decision.skipped.isEmpty)
+        #expect(decision.cards.count == 1)
+        #expect(decision.cards.first?.title == "One")
+        #expect(try await f.store.proposal(id: proposal.id)?.status == .accepted)
+    }
+
+    @Test("An id another caller already accepted is skipped, not decided")
+    func acceptSkipsWhatAnotherCallerDecided() async throws {
+        let f = try await Fixture.make()
+        let proposal = try await f.proposal(title: "Taken", analysisID: UUID())
+
+        // Stand in for the caller that won the claim: flip the status the same
+        // way `AnalysisService.accept` does, and point the proposal at a card
+        // this call will never be handed back. No concurrency needed — the
+        // claim is a compare-and-set, so losing it is a state, not a race.
+        let theirCard = try await f.board.createCard(
+            repoID: f.repo.id, title: "Taken", body: "by someone else"
+        ).card
+        #expect(try await f.store.claimProposal(id: proposal.id, to: .accepted))
+        var claimed = try #require(try await f.store.proposal(id: proposal.id))
+        claimed.acceptedCardID = theirCard.id
+        try await f.store.saveProposal(claimed)
+
+        guard case .ok(.proposalsDecided(let decision)) = await f.handler.handle(
+            .acceptProposals(ids: [proposal.id])
+        ) else {
+            Issue.record("expected a decision")
+            return
+        }
+        // It is `.accepted` in the database and it has a card — just not one of
+        // *these* cards. Reporting it as decided would make `decided` and
+        // `cards` disagree about what this response contains.
+        #expect(decision.decided.isEmpty)
+        #expect(decision.skipped == [proposal.id])
+        #expect(decision.cards.isEmpty)
+    }
+
+    @Test("An id that names no proposal is skipped by accept")
+    func acceptSkipsUnknownID() async throws {
+        let f = try await Fixture.make()
+        let ghost = UUID()
+        guard case .ok(.proposalsDecided(let decision)) = await f.handler.handle(
+            .acceptProposals(ids: [ghost])
+        ) else {
+            Issue.record("expected a decision")
+            return
+        }
+        #expect(decision.decided.isEmpty)
+        #expect(decision.skipped == [ghost])
+    }
+
+    @Test("Accept splits a mixed batch into decided and skipped, in the order asked")
+    func acceptSplitsAMixedBatch() async throws {
+        let f = try await Fixture.make()
+        let fresh = try await f.proposal(title: "Fresh", analysisID: UUID())
+        let ghost = UUID()
+
+        guard case .ok(.proposalsDecided(let decision)) = await f.handler.handle(
+            .acceptProposals(ids: [ghost, fresh.id])
+        ) else {
+            Issue.record("expected a decision")
+            return
+        }
+        #expect(decision.decided == [fresh.id])
+        #expect(decision.skipped == [ghost])
+        #expect(decision.cards.count == 1)
+    }
+
+    @Test("Reject means only that the id named a proposal that exists")
+    func rejectDecidesWhatExists() async throws {
+        let f = try await Fixture.make()
+        let proposal = try await f.proposal(title: "One", analysisID: UUID())
+        let ghost = UUID()
+
+        guard case .ok(.proposalsDecided(let decision)) = await f.handler.handle(
+            .rejectProposals(ids: [proposal.id, ghost])
+        ) else {
+            Issue.record("expected a decision")
+            return
+        }
+        #expect(decision.decided == [proposal.id])
+        #expect(decision.skipped == [ghost])
+        #expect(decision.cards.isEmpty)
+        #expect(try await f.store.proposal(id: proposal.id)?.status == .rejected)
+    }
+
+    @Test("Reject reports an already-decided id as decided, and says so in the summary")
+    func rejectDoesNotClaimItMovedAnything() async throws {
+        let f = try await Fixture.make()
+        let proposal = try await f.proposal(title: "Taken", analysisID: UUID())
+        #expect(try await f.store.claimProposal(id: proposal.id, to: .accepted))
+
+        guard case .ok(.proposalsDecided(let decision)) = await f.handler.handle(
+            .rejectProposals(ids: [proposal.id])
+        ) else {
+            Issue.record("expected a decision")
+            return
+        }
+        // `decided` here means "exists", not "this call rejected it" — and the
+        // proposal stays `.accepted`, because the claim was already spent.
+        #expect(decision.decided == [proposal.id])
+        #expect(decision.summary.contains("concurrent"))
+        #expect(try await f.store.proposal(id: proposal.id)?.status == .accepted)
+    }
 }
