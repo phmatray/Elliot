@@ -1,0 +1,40 @@
+name: CI
+
+# `branches: [main]` is correct *here* because `main` genuinely is this repository's default
+# branch. The same two lines are a latent bug in any repository whose default is something else
+# — the job is then silently skipped on every pull request, which looks exactly like a repository
+# that has no CI at all. If the default branch is ever renamed, rename it here too.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    # The suite is deterministic and runs in about half a second; the minutes are checkout and
+    # toolchain. A job that runs long is a hang, not a slow test — bound it so it goes red
+    # instead of sitting in the queue.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Its own line, so a runner-image toolchain drift reads as a version rather than as a
+      # mystery compile error further down.
+      - name: Toolchain
+        run: swift --version
+
+      # The end-to-end suite spawns this script instead of the real `claude`. git carries the
+      # mode bit, but assert it rather than assume it — a lost +x presents as a spawn failure.
+      - name: fake-claude is executable
+        run: test -x Scripts/fake-claude.sh
+
+      - name: Build
+        run: swift build
+        working-directory: ElliotKit
+
+      - name: Test
+        run: swift test
+        working-directory: ElliotKit
