@@ -14,6 +14,10 @@ public struct RepositoriesView: View {
 
     @Environment(AppModel.self) private var model
 
+    /// Collapsed by default: on a healthy portfolio the report is two hundred
+    /// lines saying "up to date", and the sentence above it is the answer.
+    @State private var isReportExpanded = false
+
     public var body: some View {
         Group {
             if model.isReady {
@@ -73,6 +77,12 @@ public struct RepositoriesView: View {
                 .controlSize(.small)
                 .disabled(model.isReconciling)
                 .help("Re-read GitHub, the disk and the board")
+                Button("Sync", systemImage: "arrow.triangle.2.circlepath") {
+                    Task { await model.syncAll() }
+                }
+                .controlSize(.small)
+                .disabled(model.isReconciling || behindCount == 0)
+                .help(syncHelp)
             }
             Text(countSentence)
                 .font(Type.prose)
@@ -81,6 +91,37 @@ public struct RepositoriesView: View {
             // The outcome sentence used to go to `status`, which lives in the
             // board's status bar — a different window from the button that
             // produced it. A fix that failed read exactly like one that worked.
+            // What the sweep decided *not* to do. The list below shows each
+            // row's own verdict, so this block exists for the one question it
+            // cannot answer — a repository the sweep passed over looks exactly
+            // like one that was never in it.
+            if let summary = model.lastSyncSummary {
+                DisclosureGroup(isExpanded: $isReportExpanded) {
+                    // Bounded, and scrolled rather than truncated: on a real
+                    // portfolio `skipped` holds two hundred entries, and a
+                    // header free to grow to fit them would eat the page. Every
+                    // one is still in there — a report that quietly dropped the
+                    // tail would be the failure it is meant to expose.
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(summary.failed, id: \.0) { id, reason in
+                                reportLine(id: id, reason: reason, refused: true)
+                            }
+                            ForEach(summary.skipped, id: \.0) { id, reason in
+                                reportLine(id: id, reason: reason, refused: false)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 160)
+                } label: {
+                    Text(summary.sentence)
+                        .font(Type.prose)
+                        .foregroundStyle(summary.failed.isEmpty ? Color.secondary : Palette.refused)
+                }
+                .accessibilityLabel("Last sync: \(summary.sentence)")
+            }
+
             if let outcome = model.lastFixOutcome {
                 Label(
                     outcome.detail,
@@ -96,6 +137,34 @@ public struct RepositoriesView: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.bar)
+    }
+
+    /// One line of the sweep's report: what it is, and why it was left out.
+    private func reportLine(id: String, reason: String, refused: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(id)
+                .font(Type.factSmall)
+                .foregroundStyle(refused ? Palette.refused : .secondary)
+            Text(reason)
+                .font(Type.prose)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// How many rows the sweep would actually act on — asked of `RepoIssue`, so
+    /// the number on the button and the rows `syncAll` picks cannot disagree.
+    private var behindCount: Int {
+        model.repoRows.count { $0.issue.isBehind }
+    }
+
+    private var syncHelp: String {
+        behindCount == 0
+            ? "Nothing is behind — there is nothing to fast-forward."
+            : "Fast-forward the \(behindCount) clone(s) that are behind, eight at a time. "
+                + "Anything carrying local work — uncommitted changes, unpushed commits, a "
+                + "detached HEAD — is skipped and named. Never merges, never moves a directory."
     }
 
     private var countSentence: String {
@@ -180,6 +249,9 @@ public struct RepositoriesView: View {
             "Let Elliot drive the checkout at \(path)."
         case .forget:
             "Remove the registration and this repository's cards. The clone on disk is untouched."
+        case .pull(let path):
+            "Fast-forward \(path) to its upstream. Never merges, never rebases, and refuses outright "
+                + "if anything there is uncommitted."
         }
     }
 
@@ -214,6 +286,13 @@ public struct RepositoriesView: View {
         case .outOfScope(.fork): "fork"
         case .outOfScope(.archived): "archived"
         case .outOfScope(.otherRoot): "out of scope"
+        case .behind(let count): "behind by \(count)"
+        case .dirty: "dirty"
+        case .ahead: "ahead"
+        case .diverged: "diverged"
+        case .detached: "detached"
+        case .noRemote: "no remote"
+        case .unreadable: "unreadable"
         }
     }
 

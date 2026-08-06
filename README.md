@@ -120,13 +120,48 @@ Each row carries a verdict and the fixes it allows:
 | not registered | cloned in the right place, unknown to Elliot | **Register** |
 | misplaced | cloned under the wrong owner or visibility folder | **Move to …** |
 | missing | registered, but nothing is at that path | **Forget** |
-| out of scope | a fork, archived, or outside the owner folders | — |
+| out of scope | a fork, archived, a linked worktree, or outside the owner folders | — |
+| behind by *n* | clean, attached, and *n* commits behind its upstream | **Pull** |
+| dirty | uncommitted changes | — |
+| ahead | local commits not pushed | — |
+| diverged | commits on both sides | — |
+| detached | HEAD is a commit, not a branch | — |
+| no remote | no upstream branch to compare against | — |
+| unreadable | git could not be asked | — |
 
-Four rules hold the page together:
+The last seven come from a **probe** that runs after the reconcile and refines
+every row it called `ok`. It asks git, eight clones at a time, and the order it
+asks in *is* the safety property: worktree, then detached, then dirty, and only
+then the counts. A clone that is both dirty and behind reads **dirty**, because
+that is the one Sync must refuse.
+
+The probe fetches before it counts, and that is not ceremony. `git rev-list
+@{u}...HEAD` reads a **local** ref: without a preceding fetch it answers
+`behind: 0` for a clone that is in fact behind. That is how this portfolio once
+measured 200 of 244 clones as current while they were not — the clones did not
+know.
+
+**Sync** is the one batch on the page. It fast-forwards every clone that is
+strictly behind — eight at a time — and reports `N pulled · M skipped · K
+failed`, naming every repository it left out and why. `dirty`, `ahead`,
+`diverged` and `detached` are all refused, because each of the four means a
+human has work in that tree and Elliot has nothing to say about work in
+progress beyond *I left it alone*. **Sync never merges, never rebases, never
+stashes, and never moves a directory**: the pull is `--ff-only` or it fails, and
+`move` stays a per-row click.
+
+That is also why a batch is allowed here at all. The question is not "batch or
+not" but "does every action in the batch refuse itself when it is unsafe?"
+`--ff-only` does; `moveItem` does not.
+
+Five rules hold the page together:
 
 - **One fix per click.** `clone` is additive; `move` relocates a directory in
   your portfolio. Only one at a time keeps them at different distances from your
   finger, and makes a failure attributable to one row.
+- **Nothing is dropped from a sweep silently.** Every row Sync passes over is
+  named with its reason, because a repository quietly missing from a report
+  reads exactly like one that succeeded.
 - **Move names its destination on the button**, refuses an occupied one, and
   repoints the registration in the same step — so the store never points at a
   path that was moved out from under it.
@@ -134,11 +169,12 @@ Four rules hold the page together:
   must never be one. **Forget** removes a registration and leaves the checkout
   alone — though it does drop that repository's cards, because `card.repoID`
   cascades, and the button says so. Nothing here pushes, commits, stashes,
-  merges, fetches, pulls or switches a branch either; keeping clones up to date
-  is still to come.
-- **The page judges nothing.** Every verdict is computed by `RepoReconciler` in
-  `ElliotModel`, which is pure and tested. `ElliotApp` has no test target, so a
-  rule written in the view would be unprovable.
+  merges, rebases or switches a branch either. It fetches and it fast-forwards,
+  and those are the only two things it will ever do inside a working tree.
+- **The page judges nothing.** Every verdict is computed in `ElliotModel` and
+  `ElliotEngine`, both pure enough to test; what counts as "behind" is
+  `RepoIssue.isBehind`, asked once and shared, so the count on the Sync button
+  cannot promise something the sweep will not do.
 
 Preflight gains a **Repository tree** check for the configured root, and names
 the command it used.
