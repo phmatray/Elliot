@@ -113,24 +113,49 @@ public final class BoardStore: Sendable {
     private static let layoutKey = "repositoryLayout"
 
     public func layout() async throws -> RepoTreeLayout? {
-        let json = try await reader.read { db in
-            try String.fetchOne(
-                db, sql: #"SELECT "value" FROM "setting" WHERE "key" = ?"#,
-                arguments: [Self.layoutKey])
-        }
-        guard let data = json?.data(using: .utf8) else { return nil }
-        return try JSONDecoder().decode(RepoTreeLayout.self, from: data)
+        try await setting(Self.layoutKey, as: RepoTreeLayout.self)
     }
 
     public func saveLayout(_ layout: RepoTreeLayout) async throws {
-        let json = String(decoding: try JSONEncoder().encode(layout), as: UTF8.self)
+        try await saveSetting(Self.layoutKey, layout)
+    }
+
+    private static let limitsKey = "schedulerLimits"
+
+    /// `nil` when nothing has been chosen — the caller applies
+    /// `SchedulerLimits.default`, so an existing store behaves as it always did.
+    public func limits() async throws -> SchedulerLimits? {
+        try await setting(Self.limitsKey, as: SchedulerLimits.self)
+    }
+
+    public func saveLimits(_ limits: SchedulerLimits) async throws {
+        try await saveSetting(Self.limitsKey, limits)
+    }
+
+    /// The two halves of the settings pair, written once.
+    ///
+    /// `layout` had its own copy of both, and the scheduler limits would have
+    /// made a second — at which point the next setting makes a third and one of
+    /// them forgets the upsert.
+    private func setting<T: Decodable>(_ key: String, as type: T.Type) async throws -> T? {
+        let json = try await reader.read { db in
+            try String.fetchOne(
+                db, sql: #"SELECT "value" FROM "setting" WHERE "key" = ?"#,
+                arguments: [key])
+        }
+        guard let data = json?.data(using: .utf8) else { return nil }
+        return try JSONDecoder().decode(type, from: data)
+    }
+
+    private func saveSetting(_ key: String, _ value: some Encodable) async throws {
+        let json = String(decoding: try JSONEncoder().encode(value), as: UTF8.self)
         try await requireWriter().write { db in
             try db.execute(
                 sql: #"""
                     INSERT INTO "setting" ("key", "value") VALUES (?, ?)
                     ON CONFLICT("key") DO UPDATE SET "value" = excluded."value"
                     """#,
-                arguments: [Self.layoutKey, json])
+                arguments: [key, json])
         }
     }
 
