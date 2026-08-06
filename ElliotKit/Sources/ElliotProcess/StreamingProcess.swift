@@ -185,14 +185,21 @@ public final class StreamingProcess: Sendable {
         guard process.isRunning else { return }
         terminationRequested.withLock { $0 = true }
 
-        let process = self.process, state = self.state
+        let process = self.process
         ProcessTermination.terminate(process, hardKillAfter: grace) {
-            // Both halves, because they close different windows: the state says
-            // this object has already published an exit, and `isRunning` covers
-            // the stretch between the child being reaped and the termination
-            // handler getting as far as publishing — the final drain can sit in
-            // the middle of it for as long as a stray descendant holds a pipe.
-            state.withLock { $0.exit == nil } && process.isRunning
+            // Deliberately `isRunning` alone, and deliberately not `state`:
+            // `ProcessRunner` consults its exit flag here and this one must not.
+            // That lock is held across `stdoutMirror`, which is a synchronous
+            // write to the run's log file, so reading it would let a slow — or
+            // wedged — disk delay the one signal that is supposed to be
+            // unconditional. A backstop that can block on the log it is trying
+            // to close out is not a backstop.
+            //
+            // Nothing is lost by it. The flag is set inside the termination
+            // handler, which only runs once Foundation has already reaped the
+            // child, so `isRunning` has gone false strictly earlier: the extra
+            // term could never have vetoed a kill this one allows.
+            process.isRunning
         }
     }
 }

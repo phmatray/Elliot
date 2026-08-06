@@ -26,11 +26,16 @@ public enum ProcessTermination {
     /// the hint therefore costs nothing — it is already gone when the backstop
     /// wakes, `isAlive` says so, and no second signal is sent.
     ///
-    /// `isAlive` rather than a bare `process.isRunning` because the caller can
-    /// answer it under the same lock that publishes the child's exit. Testing
-    /// `isRunning` and then killing is two steps with a reaped pid possible in
-    /// between, and a pid the kernel has recycled belongs to somebody else by
-    /// the time the signal lands.
+    /// `isAlive` rather than a bare `process.isRunning` so the caller decides
+    /// what liveness means for it — `ProcessRunner` answers under the lock that
+    /// publishes the exit, `StreamingProcess` must not, and the reasons are
+    /// written at both call sites.
+    ///
+    /// Honest about its reach: the lock is released before the `kill`, so this
+    /// narrows the window between deciding and signalling rather than closing
+    /// it. Closing it would mean holding a lock the reaper also takes, and the
+    /// reaper is Foundation's, not ours. What it does buy is that the decision
+    /// is the caller's own record of the child rather than a second opinion.
     static func terminate(
         _ process: Process,
         hardKillAfter grace: Duration = hardKillGrace,

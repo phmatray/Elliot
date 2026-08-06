@@ -145,9 +145,16 @@ public enum ProcessRunner {
                     // grace are `StreamingProcess`'s too — the two spawners
                     // must not disagree about when a child is hopeless.
                     ProcessTermination.terminate(process, hardKillAfter: hardKillAfter) {
-                        // Under the lock that publishes the exit, so the kill
-                        // cannot land on a pid this run has already reaped and
-                        // the kernel has handed to somebody else.
+                        // Under the lock that publishes the exit, so the
+                        // decision is this run's own record of the child rather
+                        // than a second opinion about it. Belt and braces, not
+                        // a guarantee: the lock is released before the signal,
+                        // and only Foundation's reaper could close that gap.
+                        //
+                        // Safe to read here in a way it would not be in
+                        // `StreamingProcess`, whose lock covers a write to the
+                        // run's log file. This one is only ever held across
+                        // appends to two `Data` buffers.
                         state.withLock { !$0.exited } && process.isRunning
                     }
                     return true
