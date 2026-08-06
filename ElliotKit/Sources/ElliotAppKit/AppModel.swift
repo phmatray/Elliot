@@ -616,7 +616,7 @@ public final class AppModel {
             // it off `run.state`. Both halves are true and the conclusion is
             // not: **nothing re-reads a run row on its own.** The store held
             // `.stalled` and every copy the screen draws from — `activeRuns`,
-            // `recentRuns`, `runsByCard`, `analysisRuns` — went on holding
+            // `recentRuns`, `runsByCard`, `analysis?.runs` — went on holding
             // `.running`, so the card kept its spinner and "No output for a
             // while" was drawn by nobody.
             //
@@ -654,7 +654,7 @@ public final class AppModel {
     ///
     /// Four collections hold runs and any of them can be the one on screen:
     /// `activeRuns` feeds the card's `RunningStrip`, `runsByCard` the selected
-    /// card's Runs pane, `recentRuns` the overview, `analysisRuns` the analysis
+    /// card's Runs pane, `recentRuns` the overview, `analysis?.runs` the analysis
     /// window. Marking three of four is a stall that shows on some screens and
     /// not others, which is worse than one that shows nowhere — so this walks
     /// all four, through one function.
@@ -1391,22 +1391,22 @@ public final class AppModel {
         // lands rather than all at once when the last one does.
         guard let store else { return }
         let observation = store.observeProposals(analysisID: id)
-        analysis?.observation = ObservationHandle(
-            Task { [weak self] in
-                do {
-                    for try await proposals in observation {
-                        await MainActor.run {
-                            guard let self, AnalysisSession.accepts(self.analysis, rowsFor: id) else { return }
-                            self.analysis?.proposals = proposals
-                        }
-                    }
-                } catch {
+        let task = Task { [weak self] in
+            do {
+                for try await proposals in observation {
                     await MainActor.run {
                         guard let self, AnalysisSession.accepts(self.analysis, rowsFor: id) else { return }
-                        self.analysis?.note = error.localizedDescription
+                        self.analysis?.proposals = proposals
                     }
                 }
-            })
+            } catch {
+                await MainActor.run {
+                    guard let self, AnalysisSession.accepts(self.analysis, rowsFor: id) else { return }
+                    self.analysis?.note = error.localizedDescription
+                }
+            }
+        }
+        analysis?.observation = ObservationHandle(task)
     }
 
     public func closeAnalysis() { analysis = nil }
@@ -1536,16 +1536,6 @@ public final class AppModel {
         session.note = note
         analysis = session
     }
-
-    // MARK: - Temporary read-only shims (deleted in the next commit)
-    //
-    // `AnalysisWindow` reads these in 13 places. Keeping them for one commit
-    // means this commit builds and its tests pass; there is no CI here, so a
-    // tree that does not compile is a tree a reviewer cannot judge at all.
-    var activeAnalysisID: UUID? { analysis?.id }
-    var analysisRuns: [SkillRun] { analysis?.runs ?? [] }
-    var proposals: [StoryProposal] { analysis?.proposals ?? [] }
-    var analysisNote: String? { analysis?.note }
 
     /// Puts a real store behind the model without `start()`.
     ///
