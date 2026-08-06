@@ -426,9 +426,36 @@ public final class BoardStore: Sendable {
             .values(in: reader)
     }
 
-    public func observeRepos() -> AsyncValueObservation<[Repo]> {
+    /// Every repository row, decoded **one at a time**.
+    ///
+    /// `fetchAll` decodes the whole set or throws, so a single row Elliot cannot
+    /// read used to cost the entire list — and with it the board, which sat on
+    /// "Still starting" for ever (#118). Row by row, one bad row costs one
+    /// repository.
+    ///
+    /// The count of skipped rows is carried out with the good ones rather than
+    /// dropped, because dropping it silently would be the same defect with a
+    /// smaller radius: a board quietly showing fewer repositories than exist is
+    /// still a board saying "fine" when the answer is "I could not read this".
+    ///
+    /// `try?` is deliberate and narrow. It swallows nothing — the row is
+    /// counted, and the count is rendered — and there is no useful distinction
+    /// to draw between the ways a row can fail to decode, because none of them
+    /// leaves anything on the row worth reporting.
+    public func observeRepos() -> AsyncValueObservation<RepoScan> {
         ValueObservation
-            .tracking { db in try Repo.order(SQLColumn("displayName")).fetchAll(db) }
+            .tracking { db in
+                var repos: [Repo] = []
+                var unreadable = 0
+                for row in try Row.fetchAll(db, Repo.order(SQLColumn("displayName"))) {
+                    if let repo = try? Repo(row: row) {
+                        repos.append(repo)
+                    } else {
+                        unreadable += 1
+                    }
+                }
+                return RepoScan(repos: repos, unreadable: unreadable)
+            }
             .removeDuplicates()
             .values(in: reader)
     }

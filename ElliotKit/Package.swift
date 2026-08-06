@@ -76,7 +76,9 @@ let package = Package(
         // written into a table that predates one of their columns.
         .testTarget(
             name: "ElliotStoreTests",
-            dependencies: ["ElliotStore", .product(name: "GRDB", package: "GRDB.swift")]
+            dependencies: [
+                "ElliotStore", "TestSupport", .product(name: "GRDB", package: "GRDB.swift"),
+            ]
         ),
         // Fixtures and the fake `claude` live at the repository root, not in a
         // resource bundle: the same files are used by hand from a terminal when

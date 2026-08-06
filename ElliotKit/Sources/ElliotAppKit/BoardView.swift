@@ -515,9 +515,26 @@ public struct BoardView: View {
     @ViewBuilder
     private var unreachableBanner: some View {
         let failures = model.visibleImportFailures
+        let skipped = BoardPhase.skippedNote(model.unreadableRepoCount)
 
-        if !failures.isEmpty {
+        if !failures.isEmpty || skipped != nil {
             VStack(alignment: .leading, spacing: 2) {
+                // Rows the store could not decode. Beside the repositories that
+                // *did* read, not instead of them — one bad row costs one
+                // repository, and saying so is what keeps that from being the
+                // same defect with a smaller radius (#118, criterion 4).
+                //
+                // No Retry: re-reading will fail the same way. The row needs
+                // repairing, which is not something the board can offer.
+                if let skipped {
+                    HStack(spacing: 6) {
+                        Image(systemName: "questionmark.circle.fill")
+                            .foregroundStyle(Palette.attention)
+                        Text(skipped)
+                            .font(Type.rowTitle)
+                        Spacer(minLength: 8)
+                    }
+                }
                 ForEach(failures, id: \.repo.id) { entry in
                     HStack(spacing: 6) {
                         Image(systemName: "exclamationmark.triangle.fill")
