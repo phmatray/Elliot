@@ -486,7 +486,7 @@ public final class AppModel {
                 await refreshActiveRuns()
             case .needsInput(.followUps(let pr)):
                 refusal = nil
-                pendingFollowUps = PendingMerge(cardID: cardID, prNumber: pr)
+                armPendingMerge(cardID: cardID, prNumber: pr)
             case .blocked(let block):
                 // Shown on the card, not only in the status bar: the reason a
                 // gesture did nothing belongs where the gesture was made.
@@ -537,6 +537,27 @@ public final class AppModel {
         } catch {
             status = error.localizedDescription
         }
+    }
+
+    /// Puts the merge confirmation somewhere the user can actually see it.
+    ///
+    /// The panel only draws for a selected card and only when it is open, so the
+    /// order here is the difference between a confirmation and a merge with
+    /// nowhere to confirm it — the one way moving this out of a sheet could fail
+    /// *closed*. A drag selects the card on its way past; the Card menu's
+    /// Advance and the panel's own Next step button do not, and a sheet did not
+    /// care.
+    ///
+    /// Its own method so `swift test` can prove the three happen together.
+    func armPendingMerge(cardID: UUID, prNumber: Int) {
+        selectedCardID = cardID
+        showingInspector = true
+        pendingFollowUps = PendingMerge(cardID: cardID, prNumber: prNumber)
+    }
+
+    /// Abandons a merge the user decided against, without moving the card.
+    public func cancelPendingMerge() {
+        pendingFollowUps = nil
     }
 
     public func confirmMerge(cardID: UUID, followUps: [String]) async {

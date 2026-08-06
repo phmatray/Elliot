@@ -84,7 +84,7 @@ struct ElliotApp: App {
             // The shortcut lives here rather than on the toolbar button: a menu
             // item is the discoverable half of a keyboard shortcut, and the
             // toolbar was carrying ⌘N invisibly.
-            NewStoryMenuItem()
+            NewStoryMenuItem(model: model)
                 .disabled(model.repos.isEmpty)
         }
 
@@ -146,8 +146,15 @@ struct ElliotApp: App {
 /// environment value and `Commands` is not a view hierarchy that can read one.
 /// The shortcut stays here and not on the toolbar button — a shortcut declared
 /// in two places is matched reliably in neither.
+///
+/// ⚠️ The model is **passed in, never read from the environment**. `Commands` is
+/// not under the `.environment(model)` that each `Window`'s content carries, so
+/// `@Environment(AppModel.self)` here compiles, passes every test, and kills the
+/// app at launch with "No Observable object of type AppModel found". It did
+/// exactly that in #64, and only launching the app found it. `openWindow` is
+/// safe because it is a built-in environment value that `Commands` does provide.
 private struct NewStoryMenuItem: View {
-    @Environment(AppModel.self) private var model
+    let model: AppModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
