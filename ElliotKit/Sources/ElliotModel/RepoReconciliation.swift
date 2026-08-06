@@ -24,6 +24,17 @@ public enum RepoIssue: Sendable, Hashable {
     case unreadable(String)
 
     public enum OutOfScope: Sendable, Hashable { case fork, archived, otherRoot }
+
+    /// The one verdict a sweep acts on.
+    ///
+    /// Here rather than spelled out at each of its three call sites — the fix a
+    /// probe offers, the rows `syncAll` selects, and the count that enables the
+    /// button. Three copies of "what counts as behind" is three chances for the
+    /// button to promise something the sweep will not do.
+    public var isBehind: Bool {
+        if case .behind = self { return true }
+        return false
+    }
 }
 
 /// The one thing a row's button does. Nothing here deletes.

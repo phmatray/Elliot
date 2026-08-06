@@ -144,6 +144,29 @@ struct RepoRegistryServiceSyncTests {
         #expect(await service.probe([RepoRow(id: "o/r", path: clone, issue: .ok)])[0].issue == .ok)
     }
 
+    @Test("Only .behind is behind — the definition the button and the sweep share")
+    func onlyBehindIsBehind() {
+        #expect(RepoIssue.behind(by: 1).isBehind)
+        #expect(RepoIssue.behind(by: 99).isBehind)
+        let others: [RepoIssue] = [
+            .ok, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable("x"),
+            .notCloned, .notRegistered, .missing, .misplaced(expected: "/x"),
+            .outOfScope(.fork), .outOfScope(.archived), .outOfScope(.otherRoot),
+        ]
+        #expect(others.allSatisfy { !$0.isBehind })
+    }
+
+    @Test("The summary's sentence mentions failures only when there are some")
+    func sentenceHidesAZeroItDoesNotHave() {
+        let clean = SyncSummary(
+            attempted: 3, succeeded: 3, skipped: [("o/a", "Up to date.")], failed: [])
+        #expect(clean.sentence == "3 pulled · 1 skipped")
+
+        let broken = SyncSummary(
+            attempted: 2, succeeded: 1, skipped: [], failed: [("o/b", "refused")])
+        #expect(broken.sentence == "1 pulled · 0 skipped · 1 failed")
+    }
+
     @Test("A sweep of nothing is a summary of zeroes, not a crash")
     func emptySweep() async throws {
         let service = RepoRegistryService(store: try BoardStore.inMemory(), config: syncTestConfig())

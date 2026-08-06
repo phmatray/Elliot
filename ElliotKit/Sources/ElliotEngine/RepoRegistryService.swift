@@ -182,7 +182,7 @@ public struct RepoRegistryService: Sendable {
         var refined = row
         refined.issue = issue
         refined.detail = Self.explain(issue, path: path)
-        refined.fixes = Self.isBehind(issue) ? [.pull(path: path)] : []
+        refined.fixes = issue.isBehind ? [.pull(path: path)] : []
         return refined
     }
 
@@ -218,7 +218,7 @@ public struct RepoRegistryService: Sendable {
         var pullable: [(id: String, path: String)] = []
         var skipped: [(String, String)] = []
         for row in rows {
-            if case .behind = row.issue, let path = row.path {
+            if row.issue.isBehind, let path = row.path {
                 pullable.append((row.id, path))
             } else {
                 skipped.append((row.id, Self.whyNotSwept(row)))
@@ -264,15 +264,10 @@ public struct RepoRegistryService: Sendable {
     /// summary exists to prevent.
     private static func whyNotSwept(_ row: RepoRow) -> String {
         if !row.detail.isEmpty { return row.detail }
-        if case .behind = row.issue, row.path == nil {
+        if row.issue.isBehind, row.path == nil {
             return "Behind, but Elliot holds no path for it."
         }
         return "Not behind."
-    }
-
-    private static func isBehind(_ issue: RepoIssue) -> Bool {
-        if case .behind = issue { return true }
-        return false
     }
 
     private static func explain(_ issue: RepoIssue, path: String) -> String {
