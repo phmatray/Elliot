@@ -640,23 +640,40 @@ public final class AppModel {
     /// Drop a card between two of its new neighbours.
     ///
     /// `orderIndex` is a `Double` so an insert is `(prev + next) / 2` rather
-    /// than a renumbering — the store has always supported this, and the board
-    /// simply never offered it.
+    /// than a renumbering — the store has always supported this, and until #49
+    /// the board simply never offered it.
+    ///
+    /// **Where the drop lands is decided by `CardReorder.placement`, not here.**
+    /// It used to be three `if`s in this method, which meant the self-drop guard
+    /// #47's review asked for would have lived somewhere no test could see it.
+    /// This method now does only the two things a model layer must: perform the
+    /// column move when the placement says one is needed, and write.
     public func reorder(cardID: UUID, in column: ElliotModel.Column, above target: Card?) async {
         guard let board, let moving = card(id: cardID) else { return }
-        let ordered = cards(in: column).filter { $0.id != cardID }
 
-        let index = target.flatMap { t in ordered.firstIndex { $0.id == t.id } } ?? ordered.count
-        let previous = index > 0 ? ordered[index - 1].orderIndex : nil
-        let next = index < ordered.count ? ordered[index].orderIndex : nil
+        let placement = CardReorder.placement(
+            moving: moving, onto: target, in: column, columnCards: cards(in: column))
+
+        let previous: Double?
+        let next: Double?
+        switch placement {
+        case .none:
+            // A card dropped on itself. Nothing is written — not even the index
+            // it already has.
+            return
+        case .reorder(let p, let n):
+            (previous, next) = (p, n)
+        case .moveThenReorder(let destination, let p, let n):
+            // Crossing columns is a move first — it may file an issue, open a
+            // pull request or merge one — and only then a placement. A refused
+            // move places nothing, which is why this returns rather than
+            // falling through.
+            await move(cardID: cardID, to: destination)
+            guard refusal == nil, card(id: cardID)?.column == destination else { return }
+            (previous, next) = (p, n)
+        }
 
         do {
-            if moving.column != column {
-                // Crossing columns is a move first — it may file an issue or
-                // merge a pull request — and only then a placement.
-                await move(cardID: cardID, to: column)
-                guard refusal == nil, card(id: cardID)?.column == column else { return }
-            }
             try await board.reorder(cardID: cardID, between: previous, and: next)
         } catch {
             status = error.localizedDescription
