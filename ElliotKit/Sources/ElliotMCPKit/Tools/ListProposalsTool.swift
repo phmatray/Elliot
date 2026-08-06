@@ -38,7 +38,13 @@ struct ListProposalsTool: BoardTool {
                     "limit": .object(["type": .string("integer"), "default": .int(100)]),
                 ]),
             ]),
-            annotations: .init(title: "List proposals", readOnlyHint: true, openWorldHint: false)
+            annotations: .init(
+                title: "List proposals",
+                readOnlyHint: true,
+                // Rows an earlier board_analyze_repo wrote. That tool is the one
+                // annotated open; reading what it left behind is not.
+                openWorldHint: false
+            )
         )
     }
 

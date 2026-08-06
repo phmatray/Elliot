@@ -69,7 +69,9 @@ struct MoveCardTool: BoardTool {
                 destructiveHint: true,
                 // A second call is a second move, and can be a second run.
                 idempotentHint: false,
-                // Reaches github.com.
+                // Starts an unattended agent that files issues, opens pull
+                // requests and merges them. The clearest `true` on the surface,
+                // and the one whose signal every other tool's answer protects.
                 openWorldHint: true
             )
         )

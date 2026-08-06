@@ -45,7 +45,11 @@ struct CancelRunTool: BoardTool {
                 // Half-done work stays half-done.
                 destructiveHint: true,
                 idempotentHint: true,
-                // The run it stops is mid-conversation with github.com.
+                // Steers, rather than merely watching: the run it stops is
+                // mid-conversation with github.com, and a merge-pr aborted
+                // halfway leaves a state on github.com that this call caused.
+                // board_await_run watches the same run and cannot change what
+                // it does, which is why that one is `false` and this is not.
                 openWorldHint: true
             )
         )

@@ -33,6 +33,9 @@ struct AcceptProposalsTool: BoardTool {
                 title: "Accept proposals",
                 readOnlyHint: false,
                 destructiveHint: false,
+                // Stored proposals in, board cards out — both local rows, and
+                // no run starts. The cards reach github.com when they are
+                // moved, by the tool that says so.
                 openWorldHint: false
             )
         )
