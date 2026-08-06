@@ -290,25 +290,33 @@ struct AnalysisMCPToolTests {
             Repo(path: "/tmp/elliot", nameWithOwner: "phmatray/Elliot", displayName: "Elliot"),
             Repo(path: "/tmp/other", nameWithOwner: "phmatray/Other", displayName: "Other"),
         ]
-        // The refusal every offline branch shares, asserted at its one
+        // The refusal every offline read shares, asserted at its one
         // implementation: a tool reaching for its own lookup instead is exactly
-        // how the fall-through came back the first time.
-        #expect(throws: ToolFailure.self) {
-            try OfflineBoard.filter("no/such-repo", in: repos)
-        }
-        do {
-            _ = try OfflineBoard.filter("no/such-repo", in: repos)
+        // how the fall-through came back the first time. It answers with an
+        // `ElliotResponse` now rather than throwing a `ToolFailure`, because the
+        // snapshot speaks the wire's vocabulary — the words are unchanged, and
+        // `OfflineParityTests` holds them against the running app's.
+        guard case .unknown(let refused) = OfflineResponder.filter("no/such-repo", in: repos),
+            case .failure(let code, let message, let hint) = refused
+        else {
             Issue.record("expected an unknown repository to be refused")
-        } catch let failure as ToolFailure {
-            #expect(failure.code == "repo_not_found")
-            #expect(failure.message.contains("no/such-repo"))
-            #expect(failure.hint?.contains("phmatray/Elliot") == true)
-            #expect(failure.hint?.contains("phmatray/Other") == true)
+            return
         }
+        #expect(code == .repoNotFound)
+        #expect(message.contains("no/such-repo"))
+        #expect(hint?.contains("phmatray/Elliot") == true)
+        #expect(hint?.contains("phmatray/Other") == true)
 
         // And a name that does match still resolves, so the guard above is
         // refusing the unknown rather than refusing everything.
-        #expect(try OfflineBoard.filter("phmatray/Other", in: repos).repoID == repos[1].id)
-        #expect(try OfflineBoard.filter(nil, in: repos).repoID == nil)
+        guard case .one(let match) = OfflineResponder.filter("phmatray/Other", in: repos) else {
+            Issue.record("expected a known repository to resolve")
+            return
+        }
+        #expect(match.id == repos[1].id)
+        guard case .all = OfflineResponder.filter(nil, in: repos) else {
+            Issue.record("expected no name to mean no filter")
+            return
+        }
     }
 }

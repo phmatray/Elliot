@@ -156,8 +156,25 @@ struct OfflineResponder: Sendable {
         let page = ElliotPaging.clamp(
             limit, default: ElliotPaging.nextLimitDefault, max: ElliotPaging.nextLimitMax
         )
-        return .ok(.next(try await OfflineBoard.nextPage(
-            store: store, repoID: repoID, limit: page.limit, cappedFrom: page.cappedFrom
+        // Unlimited on purpose, as `BoardService.nextSteps` does it: the limit
+        // cuts the *ranked* answer, and a limit applied before ranking would
+        // hide the one ready card behind ten blocked ones.
+        let cards = try await store.cards(repoID: repoID)
+        let active = try await store.activeRuns(cardIDs: cards.map(\.id))
+
+        let steps = rankNextSteps(
+            nextCandidates(cards: cards, repos: repos, activeRunIDs: active.mapValues(\.id))
+        )
+        let shown = Array(steps.prefix(page.limit))
+        let items = shown.indices.map { index in
+            NextDTO(step: shown[index], rank: index + 1, activeRunID: active[shown[index].card.id]?.id)
+        }
+        return .ok(.next(NextPage(
+            items: items,
+            total: steps.count,
+            limit: page.limit,
+            readyCount: steps.filter(\.isReady).count,
+            limitCappedFrom: page.cappedFrom
         )))
     }
 
