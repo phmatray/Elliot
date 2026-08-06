@@ -21,6 +21,9 @@
 #                          path the prompt announces (ELLIOT_OUTPUT=…)
 #   FAKE_CLAUDE_TOUCH      path, relative to cwd, to write to — used to prove
 #                          the git sentinel notices a run that edits the repo
+#   FAKE_CLAUDE_BURST      emit N filler events immediately before the fixture,
+#                          so the pipe still holds more than it can carry when
+#                          this process exits — the window issue #26 probes
 #
 # Every mode exits 143 on SIGTERM, as Claude Code documents for its own
 # shutdown. `hang` used not to trap at all, which left orphans holding the
@@ -97,6 +100,27 @@ delay_ms="${FAKE_CLAUDE_DELAY_MS:-0}"
 delay_s=""
 if [ "$delay_ms" -gt 0 ]; then
   printf -v delay_s '%d.%03d' "$((delay_ms / 1000))" "$((delay_ms % 1000))"
+fi
+
+# A burst of filler events immediately before the fixture, so that far more is
+# still in the pipe than it can hold at the moment this process exits. That is
+# the only state in which the streaming reader and the final drain can contend
+# for the same descriptor, and the tail at risk is the fixture's own last line —
+# the terminal `result` event the whole run is judged by. See issue #26.
+#
+# `seq -f` and not a loop, and not `seq | sed` either. Both of those were tried
+# and neither burst: a bash loop spends 4 000 `printf` round trips, and a pipe
+# through `sed` trickles line by line, so in both cases the reader keeps up and
+# the pipe is empty again by the time the process exits — which is precisely the
+# state where nothing can contend and the test proves nothing. Measured: with
+# the historical defect reintroduced, the `sed` form passed and this one fails.
+# One process, one burst, written as fast as the kernel will take it.
+#
+# Placed *outside* the replay loop below, which must keep the fixture as its
+# own stdin.
+if [ "${FAKE_CLAUDE_BURST:-0}" -gt 0 ]; then
+  seq -f '{"type":"assistant","message":{"content":[{"type":"text","text":"burst %.0f"}]}}' \
+    1 "$FAKE_CLAUDE_BURST"
 fi
 
 if [ -n "${FAKE_CLAUDE_FIXTURE:-}" ] && [ -f "$FAKE_CLAUDE_FIXTURE" ]; then
