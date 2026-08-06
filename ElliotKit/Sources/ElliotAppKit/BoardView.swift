@@ -52,9 +52,6 @@ public struct BoardView: View {
         .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.selectedCardID)
         .toolbar { toolbarContent }
         .navigationTitle("Elliot")
-        .sheet(isPresented: $model.showingNewCard) {
-            NewCardSheet(repoID: model.selectedRepoID ?? model.repos.first?.id)
-        }
         .sheet(item: $model.pendingFollowUps) { pending in
             FollowUpSheet(pending: pending)
         }
@@ -141,7 +138,8 @@ public struct BoardView: View {
 
         ToolbarItem {
             Button {
-                model.showingNewCard = true
+                model.newCardRepoID = model.defaultRepoIDForNewCard
+                openWindow(id: "newStory")
             } label: {
                 Label("New story", systemImage: "plus")
             }

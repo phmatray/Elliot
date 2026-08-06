@@ -5,20 +5,28 @@ import SwiftUI
 /// Writing a backlog item. The three story fields are the point: the backlog
 /// holds user stories, and keeping the parts separate is what will let a skill
 /// generate them from a repository later.
-struct NewCardSheet: View {
+///
+/// A window rather than the fixed 580x580 sheet this was. The sheet had already
+/// grown an internal `ScrollView` because at three or four acceptance criteria —
+/// the documented normal path — it pushed its own buttons off the bottom, and a
+/// macOS sheet cannot be resized. The scroll view stays, because a long story
+/// should scroll rather than force the window taller than the screen; what has
+/// gone is the ceiling it was fighting.
+///
+/// `public` only because `ElliotApp` names it in a `Scene`.
+public struct NewCardWindow: View {
+    public init() {}
+
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
 
-    let repoID: UUID?
-
     @State private var draft = CardDraft()
 
-    /// The fields scroll; the buttons do not.
-    ///
-    /// A sheet is not user-resizable, so a fixed height around an unbounded
-    /// `ForEach` of acceptance criteria pushed its own actions off the bottom —
-    /// at three or four criteria, which is the documented normal path.
-    var body: some View {
+    /// Read from the model rather than passed in: a `Window` scene cannot be
+    /// handed a parameter the way a sheet's closure could.
+    private var repoID: UUID? { model.newCardRepoID ?? model.defaultRepoIDForNewCard }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -46,7 +54,8 @@ struct NewCardSheet: View {
             }
             .padding(18)
         }
-        .frame(width: 580, height: 580)
+        .frame(minWidth: 460, minHeight: 420)
+        .navigationTitle("New story")
     }
 
     private var repoName: String? {
