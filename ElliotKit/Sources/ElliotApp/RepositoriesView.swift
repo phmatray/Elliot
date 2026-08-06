@@ -75,6 +75,21 @@ struct RepositoriesView: View {
             Text(countSentence)
                 .font(Type.prose)
                 .foregroundStyle(.secondary)
+
+            // The outcome sentence used to go to `status`, which lives in the
+            // board's status bar — a different window from the button that
+            // produced it. A fix that failed read exactly like one that worked.
+            if let outcome = model.lastFixOutcome {
+                Label(
+                    outcome.detail,
+                    systemImage: outcome.succeeded
+                        ? "checkmark.circle"
+                        : "exclamationmark.triangle.fill"
+                )
+                .font(Type.prose)
+                .foregroundStyle(outcome.succeeded ? Color.secondary : Palette.refused)
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -108,19 +123,23 @@ struct RepositoriesView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(row.nameWithOwner.map(displayName) ?? row.id)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(Type.cardTitle)
                     Fact(text: verdict(row.issue), tint: tint(row.issue), small: true)
                 }
                 if let nameWithOwner = row.nameWithOwner {
-                    Fact(text: nameWithOwner, small: true).foregroundStyle(.tertiary)
+                    Fact(text: nameWithOwner, tint: Palette.quiet, small: true)
                 }
                 Text(row.detail)
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let path = row.path {
+                    // A path on disk is machine-established, so it belongs in
+                    // the fact face like every other one. This was the file's
+                    // only semantic system font; the trade is a little Dynamic
+                    // Type scaling for rule-1 consistency.
                     Text(path)
-                        .font(.caption2)
+                        .font(Type.factSmall)
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)

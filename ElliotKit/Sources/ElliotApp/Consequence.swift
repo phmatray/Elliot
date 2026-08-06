@@ -12,14 +12,27 @@ import SwiftUI
 struct Consequence {
     /// One line, active voice, saying exactly what happens.
     var summary: String
+    /// The same act in the present tense, for after the gesture is made.
+    ///
+    /// A control keeps its name through the whole flow: the column that
+    /// promised "Files a GitHub issue." should report "Filing the issue…", not
+    /// the generic "Started a run." that named none of the three.
+    var running: String
     var tint: Color
     /// Refused moves are stated but not offered.
     var isRefused: Bool
     /// Merging is the only move that cannot be undone from here.
     var isIrreversible: Bool
 
-    init(summary: String, tint: Color, isRefused: Bool = false, isIrreversible: Bool = false) {
+    init(
+        summary: String,
+        running: String = "",
+        tint: Color,
+        isRefused: Bool = false,
+        isIrreversible: Bool = false
+    ) {
         self.summary = summary
+        self.running = running
         self.tint = tint
         self.isRefused = isRefused
         self.isIrreversible = isIrreversible
@@ -34,11 +47,24 @@ struct Consequence {
         case .action(let action):
             switch action {
             case .createIssue:
-                Consequence(summary: "Files a GitHub issue.", tint: Palette.armed)
+                Consequence(
+                    summary: "Files a GitHub issue.",
+                    running: "Filing the issue…",
+                    tint: Palette.armed
+                )
             case .implementIssue(let issue):
-                Consequence(summary: "Implements #\(issue) and opens a pull request.", tint: Palette.armed)
+                Consequence(
+                    summary: "Implements #\(issue) and opens a pull request.",
+                    running: "Implementing #\(issue)…",
+                    tint: Palette.armed
+                )
             case .mergePR(let pr, _):
-                Consequence(summary: "Merges PR \(pr).", tint: Palette.irreversible, isIrreversible: true)
+                Consequence(
+                    summary: "Merges PR \(pr).",
+                    running: "Merging PR \(pr)…",
+                    tint: Palette.irreversible,
+                    isIrreversible: true
+                )
             }
 
         case .needsInput(.followUps(let pr)):
@@ -46,6 +72,7 @@ struct Consequence {
             // appears first, and only then does the merge run.
             Consequence(
                 summary: "Asks for follow-ups, then merges PR \(pr).",
+                running: "Merging PR \(pr)…",
                 tint: Palette.irreversible,
                 isIrreversible: true
             )
@@ -70,6 +97,23 @@ struct Consequence {
         case .missingPRNumber: "No pull request yet — implement it first."
         case .repoDisabled: "This repository is switched off in Preflight."
         case .runAlreadyInFlight: "A run is already working on this card."
+        }
+    }
+}
+
+extension MoveOrigin {
+    /// Who put the card here, when the answer is "not you".
+    ///
+    /// In Review is the only column Elliot fills by itself, and a card that
+    /// appeared there explained nothing about how it arrived. Display copy, not
+    /// a rule: the decision was `PRWatcher`'s and is already recorded.
+    var arrivalNote: String? {
+        guard case .system(let reason) = self else { return nil }
+        switch reason {
+        case .prBecameReady: return "Elliot moved this here — the pull request went ready."
+        case .prMergedExternally: return "Elliot moved this here — it was merged on GitHub."
+        case .reconciliation: return "Elliot moved this here — recovered after a restart."
+        case .githubImport: return "Elliot placed this here — imported from GitHub."
         }
     }
 }
@@ -132,13 +176,19 @@ extension RunState {
     }
 
     /// Sentence case, and phrased as what happened rather than a state name.
+    ///
+    /// `succeeded` says "finished without errors" rather than "Succeeded"
+    /// because that is all the process told us. In `RunRow` this label sits
+    /// three lines above the `gh` receipt, which may well read "Not merged —
+    /// …": a clean exit and a successful outcome are exactly the two things
+    /// this app refuses to conflate.
     var label: String {
         switch self {
         case .queued: "Queued"
         case .running: "Running"
         case .cancelling: "Cancelling"
         case .stalled: "No output"
-        case .succeeded: "Succeeded"
+        case .succeeded: "Finished without errors"
         case .completedWithDenials: "Finished, tools refused"
         case .failed: "Failed"
         case .cancelled: "Cancelled"

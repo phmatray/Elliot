@@ -67,6 +67,26 @@ struct UserStoryTests {
         #expect(UserStory(role: "dev", want: "", benefit: "").shortTitle == "dev")
     }
 
+    @Test("The card summary carries the benefit, which is the clause nothing else shows")
+    func cardSummaryPrefersBenefit() {
+        let story = UserStory(role: "dev", want: "see the run log", benefit: "I diagnose faster")
+        #expect(story.cardSummary == "So that I diagnose faster")
+        // The label the card sets above it is the want clause, so repeating it
+        // here would spend both lines saying one thing.
+        #expect(story.shortTitle == "See the run log")
+    }
+
+    @Test("Without a benefit the card summary falls back to the want clause")
+    func cardSummaryFallsBackToWant() {
+        #expect(UserStory(role: "dev", want: "see the run log", benefit: " ").cardSummary
+            == "See the run log")
+    }
+
+    @Test("An empty story summarises to nothing rather than to a broken sentence")
+    func cardSummaryOfEmptyStory() {
+        #expect(UserStory(role: "", want: "", benefit: "").cardSummary.isEmpty)
+    }
+
     @Test("A card prefers its story over its label when filing")
     func cardIdeaPrefersStory() {
         var card = Card(

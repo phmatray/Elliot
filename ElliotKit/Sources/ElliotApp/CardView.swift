@@ -13,8 +13,13 @@ struct CardView: View {
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            if let story = card.story, activeRun == nil {
-                Text(story.narrative)
+            // The benefit, not the narrative. The label above already restates
+            // the want clause, so the narrative spent both of these lines
+            // re-reading the title through 23 fixed characters of "As a
+            // developer, I want …" and truncated away the only clause nothing
+            // else on the card carries.
+            if let story = card.story, activeRun == nil, !story.cardSummary.isEmpty {
+                Text(story.cardSummary)
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -24,24 +29,37 @@ struct CardView: View {
                 RunningStrip(run: run, lastLine: model.liveLog[run.id]?.last)
             } else if let receipt = lastReceipt {
                 // What `gh` established, not what the agent said about itself.
-                Label {
-                    Text(receipt.text).font(Type.fact)
-                } icon: {
-                    Image(systemName: receipt.icon).font(.system(size: 10))
+                HStack(spacing: 5) {
+                    Label {
+                        Text(receipt.text).font(Type.fact)
+                    } icon: {
+                        Image(systemName: receipt.icon).font(.system(size: 10))
+                    }
+                    .foregroundStyle(receipt.tint)
+                    .lineLimit(1)
+                    // A receipt with no time cannot be told from one produced a
+                    // week ago.
+                    if let ended = lastReceiptEndedAt {
+                        Fact(text: Elapsed.age(of: ended), tint: Palette.quiet, small: true)
+                    }
                 }
-                .foregroundStyle(receipt.tint)
-                .lineLimit(1)
+                .transition(.opacity)
             }
 
-            if !facts.isEmpty || repoName != nil {
+            if !facts.isEmpty || repoName != nil || stagnation != nil {
                 HStack(spacing: 5) {
                     ForEach(facts, id: \.text) { fact in
                         LinkBadge(text: fact.text, systemImage: fact.icon, url: fact.url)
                     }
                     Spacer(minLength: 0)
+                    // Not in `facts`: every element of that array renders as a
+                    // `LinkBadge` button, and an age is not a link.
+                    if let stagnation {
+                        Fact(text: stagnation.shortLabel, tint: Palette.quiet, small: true)
+                            .help("In \(card.column.displayName) for \(stagnation.days) days")
+                    }
                     if let repoName {
-                        Fact(text: repoName, small: true)
-                            .foregroundStyle(.tertiary)
+                        Fact(text: repoName, tint: Palette.quiet, small: true)
                             .lineLimit(1)
                     }
                 }
@@ -78,6 +96,10 @@ struct CardView: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Select to see what each column would do with this card.")
+        // `RefusalNote` renders inside an element `.combine` has already been
+        // passed, so the reason a gesture did nothing was drawn on the card and
+        // unreachable from it.
+        .accessibilityValue(refusalMessage ?? "")
         // Carrying the button trait without an action makes the card look
         // operable to assistive technology and do nothing when operated. The
         // tap gesture is invisible to it; this is the same act, exposed.
@@ -88,7 +110,9 @@ struct CardView: View {
 
     @ViewBuilder
     private var menu: some View {
-        if let run = activeRun {
+        // Not merely `activeRun`: a run already cancelling has had its
+        // SIGTERM, so a second Cancel is a button that does nothing.
+        if let run = activeRun, run.state.isCancellable {
             Button("Cancel run", systemImage: "stop.circle") {
                 Task { await model.cancelRun(id: run.id) }
             }
@@ -113,16 +137,37 @@ struct CardView: View {
     private var isSelected: Bool { model.selectedCardID == card.id }
     private var activeRun: SkillRun? { model.activeRuns[card.id] }
 
+    private var refusalMessage: String? {
+        model.refusal?.cardID == card.id ? model.refusal?.message : nil
+    }
+
+    /// How long this card has sat where it is, when that says anything.
+    ///
+    /// Suppressed while a run is in flight — `RunningStrip` owns the clock
+    /// then, and two elapsed times on one card read as one contradicting the
+    /// other. `Date.now` is read during `body`, so this refreshes on the next
+    /// render rather than on a timer; at day granularity that is enough, and it
+    /// is the reason not to state this in minutes.
+    private var stagnation: Stagnation? {
+        guard activeRun == nil else { return nil }
+        return card.stagnation(now: .now)
+    }
+
     private var isBlockedRepo: Bool {
         model.repo(for: card).map { model.isBlocked($0) } == true
     }
 
     /// The verdict of the most recent finished run.
     private var lastReceipt: (text: String, tint: Color, icon: String)? {
+        lastVerifiedRun?.verifiedOutcome?.receipt
+    }
+
+    /// When that verdict was reached.
+    private var lastReceiptEndedAt: Date? { lastVerifiedRun?.endedAt }
+
+    private var lastVerifiedRun: SkillRun? {
         model.runsByCard[card.id]?
-            .first { $0.state.isTerminal && $0.verifiedOutcome != nil }?
-            .verifiedOutcome?
-            .receipt
+            .first { $0.state.isTerminal && $0.verifiedOutcome != nil }
     }
 
     private struct CardFact {
@@ -167,10 +212,26 @@ struct RunningStrip: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
-                ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
+                // Queued, running and cancelling used to share one spinner, so
+                // pressing Cancel changed nothing on screen. A spinner means
+                // output is arriving; anything else says which state it is in.
+                if run.state == .running {
+                    ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
+                } else {
+                    Image(systemName: run.state.icon)
+                        .font(.system(size: 10))
+                        .foregroundStyle(run.state.tint)
+                        .frame(width: 12, height: 12)
+                }
                 Text(run.kind.skillName)
                     .font(Type.fact)
                     .foregroundStyle(run.state.tint)
+                if run.state != .running {
+                    Text(run.state.label)
+                        .font(Type.prose)
+                        .foregroundStyle(run.state.tint)
+                        .lineLimit(1)
+                }
                 Spacer(minLength: 0)
                 if let started = run.startedAt {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -182,7 +243,7 @@ struct RunningStrip: View {
             if let lastLine, !lastLine.isEmpty {
                 Text(lastLine)
                     .font(Type.factSmall)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Palette.quiet)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -194,8 +255,8 @@ struct RunningStrip: View {
         }
         .padding(6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(run.state.tint.opacity(0.09))
-        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .background(Surface.wash(run.state.tint))
+        .clipShape(RoundedRectangle(cornerRadius: Metric.nestedRadius))
     }
 
 }
@@ -221,7 +282,7 @@ struct LinkBadge: View {
             }
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
-            .background(Color.secondary.opacity(hovering && url != nil ? 0.22 : 0.12))
+            .background(hovering && url != nil ? Surface.chipFillHover : Surface.chipFill)
             .foregroundStyle(.secondary)
             .clipShape(Capsule())
         }
@@ -249,7 +310,12 @@ struct RefusalNote: View {
             Button {
                 dismiss()
             } label: {
-                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                // An 8 pt glyph is an 8 pt target. The frame gives it a real
+                // one without changing how it looks.
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Dismiss")
@@ -257,7 +323,7 @@ struct RefusalNote: View {
         .foregroundStyle(Palette.refused)
         .padding(6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.refused.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .background(Surface.wash(Palette.refused))
+        .clipShape(RoundedRectangle(cornerRadius: Metric.nestedRadius))
     }
 }

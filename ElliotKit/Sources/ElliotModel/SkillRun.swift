@@ -23,6 +23,11 @@ public enum RunState: String, Codable, CaseIterable, Sendable, Hashable {
 
     /// A run in one of these states holds its card: no further move is allowed.
     public var isActive: Bool { !isTerminal }
+
+    /// Still worth offering a stop to. A run already winding down is not —
+    /// `cancelling` means the SIGTERM has gone out, so a second Cancel changes
+    /// nothing and reads as a button that does not work.
+    public var isCancellable: Bool { isActive && self != .cancelling }
 }
 
 /// What `gh` says actually happened, as opposed to what the agent said.

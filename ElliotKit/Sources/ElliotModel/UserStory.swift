@@ -51,6 +51,21 @@ public struct UserStory: Codable, Sendable, Hashable {
         return b.isEmpty ? role.trimmed() : b.firstCharacterUppercased()
     }
 
+    /// What the card shows under its label.
+    ///
+    /// Not the narrative: the board label already restates the `want` clause
+    /// — `Card.displayTitle` falls back to `shortTitle`, which *is* the want —
+    /// so a card that shows the narrative spends both its lines re-reading its
+    /// own title through 23 fixed characters of "As a developer, I want …" and
+    /// truncates away the benefit, the one clause nothing else on the card
+    /// carries. The full narrative stays in the inspector, where there is room
+    /// for it.
+    public var cardSummary: String {
+        let b = benefit.trimmed()
+        guard b.isEmpty else { return "So that " + b }
+        return want.trimmed().firstCharacterUppercased()
+    }
+
     /// Narrative plus criteria, as the free text `create-issue` reads.
     public var issueBody: String {
         guard !acceptanceCriteria.isEmpty else { return narrative }

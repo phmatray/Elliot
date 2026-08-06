@@ -13,19 +13,30 @@ struct NewCardSheet: View {
 
     @State private var draft = CardDraft()
 
+    /// The fields scroll; the buttons do not.
+    ///
+    /// A sheet is not user-resizable, so a fixed height around an unbounded
+    /// `ForEach` of acceptance criteria pushed its own actions off the bottom —
+    /// at three or four criteria, which is the documented normal path.
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("New story").font(Type.sheetTitle)
-                Text(repoName.map { "Filed against \($0) when you move it to To Do." }
-                    ?? "Nothing runs yet — moving it to To Do files the issue.")
-                    .font(Type.prose)
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("New story").font(Type.sheetTitle)
+                        Text(repoName.map { "Filed against \($0) when you move it to To Do." }
+                            ?? "Nothing runs yet — moving it to To Do files the issue.")
+                            .font(Type.prose)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    CardFieldsEditor(draft: $draft)
+                }
+                .padding(18)
             }
 
-            CardFieldsEditor(draft: $draft)
+            Divider()
 
-            Spacer(minLength: 0)
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
@@ -33,8 +44,8 @@ struct NewCardSheet: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(repoID == nil || !draft.isValid)
             }
+            .padding(18)
         }
-        .padding(18)
         .frame(width: 580, height: 580)
     }
 
@@ -62,8 +73,12 @@ struct FollowUpSheet: View {
     let pending: AppModel.PendingMerge
     @State private var items: [String] = [""]
 
+    /// The follow-ups scroll; the merge button does not.
+    ///
+    /// This is the sheet that carries the one irreversible act in the product,
+    /// and "Add another" used to push that button out of its own window.
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Image(systemName: "flame.fill").foregroundStyle(Palette.irreversible)
@@ -74,40 +89,46 @@ struct FollowUpSheet: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .padding(18)
 
             Divider()
 
-            VStack(alignment: .leading, spacing: 6) {
-                ConsoleLabel(text: "Follow-ups")
-                Text("Each line becomes a new issue after the merge lands. Leave it empty if there are none.")
-                    .font(Type.prose)
-                    .foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ConsoleLabel(text: "Follow-ups")
+                    Text("Each line becomes a new issue after the merge lands. Leave it empty if there are none.")
+                        .font(Type.prose)
+                        .foregroundStyle(.secondary)
 
-                ForEach(items.indices, id: \.self) { index in
-                    HStack(spacing: 6) {
-                        TextField("What still needs doing…", text: Binding(
-                            get: { items.indices.contains(index) ? items[index] : "" },
-                            set: { if items.indices.contains(index) { items[index] = $0 } }
-                        ))
-                        .textFieldStyle(.roundedBorder)
-                        Button {
-                            items.remove(at: index)
-                            if items.isEmpty { items = [""] }
-                        } label: {
-                            Image(systemName: "minus.circle")
+                    ForEach(items.indices, id: \.self) { index in
+                        HStack(spacing: 6) {
+                            TextField("What still needs doing…", text: Binding(
+                                get: { items.indices.contains(index) ? items[index] : "" },
+                                set: { if items.indices.contains(index) { items[index] = $0 } }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            Button {
+                                items.remove(at: index)
+                                if items.isEmpty { items = [""] }
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Remove follow-up \(index + 1)")
                         }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Remove follow-up \(index + 1)")
                     }
+                    Button("Add another", systemImage: "plus") { items.append("") }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
                 }
-                Button("Add another", systemImage: "plus") { items.append("") }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Spacer(minLength: 0)
+            Divider()
+
             HStack {
-                Text(cleaned.isEmpty ? "No follow-ups will be filed." : "\(cleaned.count) issue(s) will be filed.")
+                Text(followUpSentence)
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -121,9 +142,19 @@ struct FollowUpSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .tint(Palette.irreversible)
             }
+            .padding(18)
         }
-        .padding(18)
         .frame(width: 540, height: 440)
+    }
+
+    /// Restates the ordering the section above promises: the issues are filed
+    /// *after* the merge lands, not instead of it.
+    private var followUpSentence: String {
+        switch cleaned.count {
+        case 0: "No follow-ups will be filed."
+        case 1: "1 issue will be filed after the merge."
+        default: "\(cleaned.count) issues will be filed after the merge."
+        }
     }
 
     private var cleaned: [String] {

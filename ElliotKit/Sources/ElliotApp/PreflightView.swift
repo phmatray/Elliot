@@ -6,6 +6,8 @@ import SwiftUI
 struct PreflightView: View {
     @Environment(AppModel.self) private var model
     @State private var copied = false
+    /// Per-check override of the default open-if-failing state.
+    @State private var expansion: [String: Bool] = [:]
 
     var body: some View {
         ScrollView {
@@ -73,7 +75,7 @@ struct PreflightView: View {
                 .foregroundStyle(failing.isEmpty ? (warning.isEmpty ? Palette.verified : Palette.attention) : Palette.refused)
             VStack(alignment: .leading, spacing: 1) {
                 Text(headline(failing: failing.count, warning: warning.count))
-                    .font(.system(size: 13, weight: .medium))
+                    .font(Type.cardTitle)
                 Text("\(all.count) checks across this machine and \(model.repos.count) repositor\(model.repos.count == 1 ? "y" : "ies").")
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
@@ -82,8 +84,8 @@ struct PreflightView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.07))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(Surface.recess)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.panelRadius))
     }
 
     private func headline(failing: Int, warning: Int) -> String {
@@ -104,8 +106,8 @@ struct PreflightView: View {
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
+                .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+                .overlay(RoundedRectangle(cornerRadius: Metric.cardRadius).strokeBorder(.separator))
             HStack {
                 Button(copied ? "Copied" : "Copy command", systemImage: copied ? "checkmark" : "doc.on.doc") {
                     NSPasteboard.general.clearContents()
@@ -115,6 +117,13 @@ struct PreflightView: View {
                 .controlSize(.small)
                 Spacer()
             }
+            // "Copied" was permanent, so the button stopped naming what it
+            // does. Structured, so it cancels if the window closes mid-count.
+            .task(id: copied) {
+                guard copied else { return }
+                try? await Task.sleep(for: .seconds(2))
+                copied = false
+            }
             // The registration records an absolute path, so moving the app
             // silently breaks the server.
             Text("Run it again if you move Elliot.app — the path is recorded verbatim.")
@@ -123,16 +132,16 @@ struct PreflightView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(Surface.recess)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.panelRadius))
     }
 
     private func repoSection(_ repo: Repo) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(repo.displayName).font(.system(size: 13, weight: .medium))
-                    Fact(text: repo.nameWithOwner, small: true).foregroundStyle(.tertiary)
+                    Text(repo.displayName).font(Type.cardTitle)
+                    Fact(text: repo.nameWithOwner, tint: Palette.quiet, small: true)
                 }
                 Spacer()
                 Toggle("Enabled", isOn: Binding(
@@ -164,8 +173,8 @@ struct PreflightView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(Surface.recess)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.panelRadius))
         .opacity(repo.isEnabled ? 1 : 0.6)
     }
 
@@ -179,8 +188,18 @@ struct PreflightView: View {
     private func checkList(_ results: [CheckResult]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(results) { result in
-                DisclosureGroup {
+                DisclosureGroup(isExpanded: expansion(for: result)) {
                     VStack(alignment: .leading, spacing: 4) {
+                        // The detail lives here, not in the label: it was
+                        // `lineLimit(1)` on a row that also carried the title,
+                        // so the sentence saying *what is wrong* was the first
+                        // thing truncated. It also means a check with neither
+                        // command nor hint no longer expands to an empty box.
+                        Text(result.detail)
+                            .font(Type.prose)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                         if let command = result.command {
                             // Showing the command means the verdict can be
                             // checked rather than trusted.
@@ -204,15 +223,32 @@ struct PreflightView: View {
                         Image(systemName: icon(result.status))
                             .font(.system(size: 11))
                             .foregroundStyle(tint(result.status))
-                        Text(result.title).font(.system(size: 12, weight: .medium))
-                        Text(result.detail)
-                            .font(Type.prose)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            // The verdict was carried by colour and shape
+                            // alone. `RepositoriesView` already names the same
+                            // three symbols for the same reason.
+                            .accessibilityLabel(word(result.status))
+                        Text(result.title).font(Type.rowTitle)
                         Spacer()
                     }
                 }
             }
+        }
+    }
+
+    /// Open on arrival when the check is failing — that is the one you came
+    /// for — and remembers your own collapse afterwards.
+    private func expansion(for result: CheckResult) -> Binding<Bool> {
+        Binding(
+            get: { expansion[result.id] ?? (result.status == .fail) },
+            set: { expansion[result.id] = $0 }
+        )
+    }
+
+    private func word(_ status: CheckStatus) -> String {
+        switch status {
+        case .pass: "passed"
+        case .warn: "warning"
+        case .fail: "failed"
         }
     }
 

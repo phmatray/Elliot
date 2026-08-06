@@ -1,3 +1,4 @@
+import AppKit
 import ElliotEngine
 import ElliotIPC
 import ElliotModel
@@ -27,7 +28,23 @@ public final class AppModel {
     public private(set) var layout: RepoTreeLayout = .portfolio
     public private(set) var isReconciling = false
 
-    public var showingAnalysis = false
+    /// Whether the repository observation has delivered once.
+    ///
+    /// Distinct from `isReady`, which waits on the shell capture, three tool
+    /// lookups and a preflight sweep. Without it the board asserted "No
+    /// repository yet" for the whole of startup, to a user whose repositories
+    /// were sitting in the database the entire time.
+    public private(set) var hasLoadedRepos = false
+
+    /// Sheet and inspector state, here rather than in a view, because a menu
+    /// command cannot reach a view's `@State`.
+    ///
+    /// Analysis is deliberately absent: it is a `Window` scene now, so its
+    /// presentation is `openWindow`'s business and there is no flag to keep in
+    /// step with it.
+    public var showingNewCard = false
+    public var showingInspector = true
+
     /// The analysis the window is showing. `nil` means it is still in setup.
     public private(set) var activeAnalysisID: UUID?
     public private(set) var analysisRuns: [SkillRun] = []
@@ -66,6 +83,35 @@ public final class AppModel {
 
     public func dismissRefusal() { refusal = nil }
 
+    /// The card that most recently landed somewhere, so the board can scroll to
+    /// it.
+    ///
+    /// The stamp is load-bearing: a bare `UUID?` would not fire `onChange` when
+    /// the same card lands twice in a row, which is the ordinary case of
+    /// walking one card across the board.
+    public struct Landing: Equatable, Sendable {
+        public var cardID: UUID
+        public var stamp: UUID
+    }
+
+    public private(set) var lastLanded: Landing?
+
+    /// What the last repository fix actually did.
+    ///
+    /// Its sentence used to go to `status`, which lives in the board's status
+    /// bar — a different window from the button that was pressed. A fix that
+    /// failed quietly read exactly like one that worked.
+    public struct FixOutcome: Equatable, Sendable {
+        public var detail: String
+        public var succeeded: Bool
+    }
+
+    public private(set) var lastFixOutcome: FixOutcome?
+
+    /// The most recent audited move per card, so the inspector can say who made
+    /// it. `BoardStore.audits` had no non-test caller before this.
+    public private(set) var lastMove: [UUID: MoveAudit] = [:]
+
     public struct PendingMerge: Identifiable, Sendable {
         public var id: UUID { cardID }
         public var cardID: UUID
@@ -92,10 +138,21 @@ public final class AppModel {
     // MARK: - Startup
 
     public func start() async {
+        // A window rebuild must not start a second engine. Without this a
+        // reopen re-registers the observations, re-`start()`s `IPCServer` on
+        // the same socket, overwrites `watcher` without stopping the first
+        // `PRWatcher`, and runs a second concurrent `Reconciler.sweep()` — in a
+        // process whose whole design rests on being the sole writer.
+        guard store == nil else { return }
         do {
             try StoreLocation.ensureDirectories()
             let store = try BoardStore.open()
             self.store = store
+
+            // Before the shell capture, not after: observing needs only the
+            // store, and everything below it takes seconds. The board used to
+            // assert "No repository yet" through all of it.
+            observe(store: store)
 
             status = "Reading your shell environment…"
             // Captured, never inherited: launched from the Finder this process
@@ -122,7 +179,6 @@ public final class AppModel {
             self.scheduler = scheduler
             self.board = board
 
-            observe(store: store)
             consumeSchedulerUpdates(scheduler)
 
             // Loaded before preflight runs: the tree-root check reports on the
@@ -159,7 +215,7 @@ public final class AppModel {
             isReady = true
             status = summary == .init()
                 ? "Ready."
-                : "Ready — recovered \(summary.orphanedRuns) interrupted run(s)."
+                : "Ready — recovered \(summary.orphanedRuns == 1 ? "1 interrupted run" : "\(summary.orphanedRuns) interrupted runs")."
         } catch {
             status = "Could not start: \(error.localizedDescription)"
         }
@@ -215,6 +271,10 @@ public final class AppModel {
                 for try await repos in repoObservation {
                     await MainActor.run {
                         self?.repos = repos
+                        // Set on every delivery, including an empty one: an
+                        // empty store is a loaded store, and the board's real
+                        // empty state must be reachable.
+                        self?.hasLoadedRepos = true
                         if self?.selectedRepoID == nil { self?.selectedRepoID = repos.first?.id }
                     }
                 }
@@ -258,6 +318,10 @@ public final class AppModel {
             var lines = liveLog[runID] ?? []
             lines.append("■ \(state.rawValue)")
             liveLog[runID] = lines
+            // A run takes minutes and nobody watches it for all of them. One
+            // Dock bounce, only when Elliot is not the front app — no
+            // notification permission, and nothing to dismiss.
+            if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
             // `cardID` is nil for an analysis run: it belongs to a repository,
             // not to a card.
             if let cardID { Task { await self.refreshRuns(cardID: cardID) } }
@@ -327,15 +391,46 @@ public final class AppModel {
         )
     }
 
+    /// Answers a drop synchronously, so a refused drag snaps back instead of
+    /// being accepted and then contradicted a round trip later.
+    ///
+    /// `dropDestination` must return a `Bool` now; `move` is async, so it
+    /// returned `true` — "accepted" — for every drop, including the ones it was
+    /// about to refuse. The card animated into its new column and then jumped
+    /// back with a note on it.
+    ///
+    /// Nothing new is decided here: the verdict is `evaluateMove`'s, reached
+    /// through `preview`, which is the same pure function `BoardService` commits
+    /// with.
+    public func refuse(cardID: UUID, to column: ElliotModel.Column) -> Bool {
+        guard let card = card(id: cardID) else { return true }
+        guard case .blocked(let block) = preview(card, to: column) else { return false }
+        refusal = Refusal(cardID: cardID, message: Self.explain(block))
+        status = Self.explain(block)
+        return true
+    }
+
     /// A drag. Goes through exactly the same two calls the MCP tool uses.
     public func move(cardID: UUID, to column: ElliotModel.Column) async {
         guard let board else { return }
+        // Captured before the move: by the time `board.move` returns, the
+        // card's column and `activeRuns` have both changed, so asking then
+        // would describe the world after the act rather than the act.
+        let predicted = card(id: cardID).map { Consequence.of(preview($0, to: column)) }
         do {
             let result = try await board.move(cardID: cardID, to: column, origin: .userDrag)
             switch result {
             case .moved(let runID):
                 refusal = nil
-                status = runID == nil ? "Moved." : "Started a run."
+                lastLanded = Landing(cardID: cardID, stamp: UUID())
+                if runID == nil {
+                    status = "Moved to \(column.displayName). Nothing ran."
+                } else {
+                    // The column promised a specific act; say that act is
+                    // happening, not that "a run" started.
+                    let running = predicted?.running ?? ""
+                    status = running.isEmpty ? "Started a run." : running
+                }
                 await refreshActiveRuns()
             case .needsInput(.followUps(let pr)):
                 refusal = nil
@@ -453,6 +548,9 @@ public final class AppModel {
 
     public func refreshRuns(cardID: UUID) async {
         runsByCard[cardID] = (try? await store?.runs(cardID: cardID, limit: 20)) ?? []
+        // Read here rather than from a new call site: `CardView.task` and the
+        // inspector already call this per card.
+        lastMove[cardID] = (try? await store?.audits(cardID: cardID, limit: 1))??.first
     }
 
     /// One query for the whole board rather than one per card.
@@ -494,6 +592,7 @@ public final class AppModel {
     public func refreshRepoRows() async {
         guard let registry, !isReconciling else { return }
         isReconciling = true
+        lastFixOutcome = nil
         repoRows = await registry.rows(layout: layout)
         isReconciling = false
     }
@@ -508,6 +607,9 @@ public final class AppModel {
         let outcome = await registry.apply(fix, layout: layout)
         status = outcome.detail
         await refreshRepoRows()
+        // After the refresh, which clears it: this is the sentence the page
+        // itself shows, and `status` is on a different screen.
+        lastFixOutcome = FixOutcome(detail: outcome.detail, succeeded: outcome.succeeded)
     }
 
     public func setRepositoriesRoot(_ path: String) async {
@@ -667,17 +769,21 @@ public final class AppModel {
 
     public func acceptProposals(ids: [UUID]) async {
         guard let analysisService else { return }
+        // Cleared before the await, not after: replacing one sentence with
+        // another in place reads as nothing having happened.
+        analysisNote = nil
         do {
             let cards = try await analysisService.accept(proposalIDs: ids)
             analysisNote = cards.isEmpty
                 ? "Nothing to accept — those were already decided."
-                : "Added \(cards.count == 1 ? "1 card" : "\(cards.count) cards") to Backlog. Nothing was filed on GitHub."
+                : "Accepted \(cards.count == 1 ? "1 story" : "\(cards.count) stories") — waiting in Backlog. Nothing was filed on GitHub."
         } catch {
             analysisNote = error.localizedDescription
         }
     }
 
     public func rejectProposals(ids: [UUID]) async {
+        analysisNote = nil
         try? await analysisService?.reject(proposalIDs: ids)
         analysisNote = ids.count == 1 ? "Rejected 1 proposal." : "Rejected \(ids.count) proposals."
     }

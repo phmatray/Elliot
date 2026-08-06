@@ -5,8 +5,9 @@ import UniformTypeIdentifiers
 
 public struct BoardView: View {
     @Environment(AppModel.self) private var model
-    @State private var showingNewCard = false
-    @State private var showingInspector = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openWindow) private var openWindow
+    @FocusState private var boardFocused: Bool
 
     public init() {}
 
@@ -14,33 +15,38 @@ public struct BoardView: View {
         @Bindable var model = model
 
         VStack(spacing: 0) {
-            if model.repos.isEmpty {
+            // Three states, not two. The board used to assert "No repository
+            // yet" for the whole of startup — through the login-shell capture,
+            // three tool lookups and a preflight sweep — to a user whose
+            // repositories were in the database the entire time.
+            if !model.hasLoadedRepos {
+                startingState
+            } else if model.repos.isEmpty {
                 emptyState
             } else {
-                HStack(spacing: 0) {
-                    columns
-                    if showingInspector, model.selectedCard != nil {
-                        Divider()
-                        InspectorView()
-                            .frame(width: Metric.inspectorWidth)
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                    }
-                }
+                columns
             }
             Divider()
             StatusBar()
         }
-        .animation(.snappy(duration: 0.22), value: model.selectedCardID)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.selectedCardID)
+        // The platform inspector, not a hand-rolled panel: the fixed 344 pt
+        // frame forced the board to scroll on a laptop display whenever details
+        // were open, and could not be dragged narrower.
+        .inspector(isPresented: Binding(
+            get: { model.showingInspector && model.selectedCard != nil },
+            set: { model.showingInspector = $0 }
+        )) {
+            InspectorView()
+                .inspectorColumnWidth(min: 300, ideal: Metric.inspectorWidth, max: 520)
+        }
         .toolbar { toolbarContent }
         .navigationTitle("Elliot")
-        .sheet(isPresented: $showingNewCard) {
+        .sheet(isPresented: $model.showingNewCard) {
             NewCardSheet(repoID: model.selectedRepoID ?? model.repos.first?.id)
         }
         .sheet(item: $model.pendingFollowUps) { pending in
             FollowUpSheet(pending: pending)
-        }
-        .sheet(isPresented: $model.showingAnalysis) {
-            AnalysisWindow()
         }
         .task(id: model.selectedRepoID) {
             await model.importIfNeeded(repoID: model.selectedRepoID)
@@ -48,11 +54,65 @@ public struct BoardView: View {
         // The board keeps focus so a card can be moved without the mouse.
         .focusable()
         .focusEffectDisabled()
+        .focused($boardFocused)
+        .defaultFocus($boardFocused, true)
         .onKeyPress(.escape) {
             guard model.selectedCardID != nil else { return .ignored }
             model.selectedCardID = nil
             return .handled
         }
+        // Picking a card was pointer-only, which made every affordance built
+        // for the keyboard — ⌘→, ⌘←, Escape, the whole Card menu — depend on a
+        // pointer first. The arrows only move the selection; ⌘-arrow still owns
+        // moving a card, and no rule leaves ElliotModel.
+        .onKeyPress(.downArrow) { stepCard(by: 1) }
+        .onKeyPress(.upArrow) { stepCard(by: -1) }
+        .onKeyPress(.leftArrow) { stepColumn(by: -1) }
+        .onKeyPress(.rightArrow) { stepColumn(by: 1) }
+        // A refusal is the one status change a screen-reader user has no other
+        // way to learn: the note is drawn on a card they may not be on. Only
+        // refusals — announcing `status` wholesale would turn VoiceOver into a
+        // ticker of import progress.
+        .onChange(of: model.refusal) { _, refusal in
+            guard let refusal else { return }
+            AccessibilityNotification.Announcement(refusal.message).post()
+        }
+    }
+
+    // MARK: - Keyboard selection
+
+    /// Move the selection up or down within its column.
+    private func stepCard(by delta: Int) -> KeyPress.Result {
+        let column = model.selectedCard?.column ?? .backlog
+        let cards = model.cards(in: column)
+        guard !cards.isEmpty else { return .ignored }
+        guard let current = model.selectedCard,
+              let index = cards.firstIndex(where: { $0.id == current.id })
+        else {
+            model.selectedCardID = cards.first?.id
+            return .handled
+        }
+        model.selectedCardID = cards[min(max(index + delta, 0), cards.count - 1)].id
+        return .handled
+    }
+
+    /// Move the selection sideways, skipping columns that hold nothing. If
+    /// every column that way is empty the selection stays put — jumping
+    /// somewhere arbitrary is worse than not moving.
+    private func stepColumn(by delta: Int) -> KeyPress.Result {
+        let order = ElliotModel.Column.allCases
+        let from = model.selectedCard?.column ?? (delta > 0 ? .backlog : .done)
+        guard let index = order.firstIndex(of: from) else { return .ignored }
+
+        var candidate = model.selectedCard == nil ? index : index + delta
+        while order.indices.contains(candidate) {
+            if let first = model.cards(in: order[candidate]).first {
+                model.selectedCardID = first.id
+                return .handled
+            }
+            candidate += delta
+        }
+        return .ignored
     }
 
     @ToolbarContentBuilder
@@ -71,13 +131,14 @@ public struct BoardView: View {
 
         ToolbarItem {
             Button {
-                showingNewCard = true
+                model.showingNewCard = true
             } label: {
                 Label("New story", systemImage: "plus")
             }
             .disabled(model.repos.isEmpty)
-            .help("Write a new backlog story (⌘N)")
-            .keyboardShortcut("n")
+            // No `.keyboardShortcut` here: the File menu owns ⌘N, and a
+            // shortcut declared in two places is matched reliably in neither.
+            .help("Write a new backlog story")
         }
 
         ToolbarItem {
@@ -93,26 +154,28 @@ public struct BoardView: View {
             .menuStyle(.button)
             .fixedSize()
             .disabled(model.repos.isEmpty || model.isImporting)
-            .keyboardShortcut("r")
-            .help("Bring this repository's GitHub issues and pull requests onto the board.")
+            .help(model.selectedRepoID == nil
+                ? "Bring every repository's GitHub issues and pull requests onto the board."
+                : "Bring this repository's GitHub issues and pull requests onto the board.")
         }
 
         ToolbarItem {
             Button {
-                model.showingAnalysis = true
+                openWindow(id: "analysis")
             } label: {
                 Label("Analyse", systemImage: "sparkle.magnifyingglass")
             }
             .disabled(model.selectedRepoID == nil || isSelectedRepoBlocked)
-            .help(model.selectedRepoID == nil
-                ? "Pick a single repository to analyse."
-                : "Read this repository through several lenses and propose stories.")
+            .help(analyseHelp)
         }
 
         ToolbarItem {
-            Button {
-                showingInspector.toggle()
-            } label: {
+            // A toggle, not a button: it has two states and the toolbar was
+            // showing one icon for both.
+            Toggle(isOn: Binding(
+                get: { model.showingInspector },
+                set: { model.showingInspector = $0 }
+            )) {
                 Label("Details", systemImage: "sidebar.right")
             }
             .disabled(model.selectedCard == nil)
@@ -120,8 +183,8 @@ public struct BoardView: View {
         }
 
         ToolbarItem {
-            NavigationLink {
-                RepositoriesView()
+            Button {
+                openWindow(id: "repositories")
             } label: {
                 Label("Repositories", systemImage: "square.stack.3d.up")
             }
@@ -129,13 +192,29 @@ public struct BoardView: View {
         }
 
         ToolbarItem {
-            NavigationLink {
-                PreflightView()
+            Button {
+                openWindow(id: "preflight")
             } label: {
                 Label("Preflight", systemImage: "checkmark.seal")
             }
             .help("Check the tools and repositories Elliot depends on")
         }
+    }
+
+    /// Says which gate is closed, rather than repeating the one that is open.
+    ///
+    /// The button is disabled for three different reasons and the tooltip named
+    /// only the first, so a blocked or switched-off repository produced a
+    /// disabled control whose explanation was about something else.
+    private var analyseHelp: String {
+        guard let id = model.selectedRepoID,
+              let repo = model.repos.first(where: { $0.id == id })
+        else { return "Pick a single repository to analyse." }
+        if !repo.isEnabled { return Consequence.reason(.repoDisabled) }
+        if model.isBlocked(repo) {
+            return "A Preflight check is failing for this repository — fix it there first."
+        }
+        return "Read this repository through several lenses and propose stories."
     }
 
     private var columns: some View {
@@ -163,7 +242,19 @@ public struct BoardView: View {
                 // and the card you just selected could be the one off-screen.
                 .onChange(of: model.selectedCardID) {
                     guard let card = model.selectedCard else { return }
-                    withAnimation { proxy.scrollTo(card.column, anchor: .center) }
+                    withAnimation(reduceMotion ? nil : .default) {
+                        proxy.scrollTo(card.column, anchor: .center)
+                    }
+                }
+                // A second handler, because `nudgeSelection` never touches
+                // `selectedCardID`: ⌘→ advanced a card into a column the board
+                // did not follow it to. Kept separate from the handler above so
+                // each comment stays true to what it covers.
+                .onChange(of: model.selectedCard?.column) {
+                    guard let card = model.selectedCard else { return }
+                    withAnimation(reduceMotion ? nil : .default) {
+                        proxy.scrollTo(card.column, anchor: .center)
+                    }
                 }
             }
         }
@@ -173,6 +264,15 @@ public struct BoardView: View {
         // console goes quiet without hunting for a close button.
         .contentShape(Rectangle())
         .onTapGesture { model.selectedCardID = nil }
+    }
+
+    /// Startup, said in the same words `RepositoriesView` already uses for it,
+    /// so the two screens stop disagreeing about one launch.
+    private var startingState: some View {
+        ContentUnavailableView(
+            "Still starting", systemImage: "hourglass", description: Text(model.status)
+        )
+        .frame(maxHeight: .infinity)
     }
 
     private var emptyState: some View {
@@ -216,9 +316,14 @@ struct StatusBar: View {
             if !model.isReady || model.isImporting {
                 ProgressView().controlSize(.small)
             }
+            // `refreshFromGitHub` joins one sentence per repository, which
+            // used to wrap and grow `.bar`, shoving the whole board upwards.
             Text(model.status)
                 .font(Type.prose)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(model.status)
 
             Spacer()
 
@@ -229,11 +334,12 @@ struct StatusBar: View {
                     small: true
                 )
             }
-            if model.selectedCard != nil {
-                Text("⌘→ advance · ⌘← back · esc deselect")
-                    .font(Type.factSmall)
-                    .foregroundStyle(.tertiary)
-            }
+            // Elliot wrote this hint, so it is not set in the fact face.
+            Text(model.selectedCard == nil
+                ? "↑↓←→ pick a card"
+                : "⌘→ advance · ⌘← back · esc deselect")
+                .font(Type.prose)
+                .foregroundStyle(Palette.quiet)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -245,6 +351,7 @@ struct StatusBar: View {
 
 struct ColumnView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let column: ElliotModel.Column
     let width: CGFloat
     @State private var isTargeted = false
@@ -265,6 +372,12 @@ struct ColumnView: View {
         }
         .dropDestination(for: String.self) { items, _ in
             guard let id = items.first.flatMap(UUID.init(uuidString:)) else { return false }
+            // Answered now, not a round trip later. `move` is async, so this
+            // closure used to return `true` — "accepted" — for drops it was
+            // about to refuse: the card animated in, then jumped back with a
+            // note on it. Returning `false` makes the drag snap back, which is
+            // what a refusal looks like on this platform.
+            guard !model.refuse(cardID: id, to: column) else { return false }
             Task { await model.move(cardID: id, to: column) }
             return true
         } isTargeted: { targeted in
@@ -272,7 +385,7 @@ struct ColumnView: View {
             // selected, so a refused column simply does not light up.
             isTargeted = targeted && !isRefused
         }
-        .animation(.snappy(duration: 0.18), value: isTargeted)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: isTargeted)
     }
 
     /// The column's standing cost, always visible. Two points of colour, and
@@ -288,8 +401,7 @@ struct ColumnView: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 ConsoleLabel(text: column.displayName, tint: .primary)
-                Fact(text: "\(cards.count)", small: true)
-                    .foregroundStyle(.tertiary)
+                Fact(text: "\(cards.count)", tint: Palette.quiet, small: true)
                 Spacer()
                 if column.isConsequential {
                     Image(systemName: column == .done ? "flame.fill" : "bolt.fill")
@@ -316,28 +428,55 @@ struct ColumnView: View {
     }
 
     private var list: some View {
-        ScrollView {
-            LazyVStack(spacing: 6) {
-                ForEach(cards) { card in
-                    CardView(card: card)
-                        .onDrag {
-                            // An action closure, not a view builder: safe to
-                            // record the selection here, and it means starting
-                            // a drag arms the console for the card in hand.
-                            model.selectedCardID = card.id
-                            return NSItemProvider(object: card.id.uuidString as NSString)
-                        }
-                }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(cards) { card in
+                        CardView(card: card)
+                            .id(card.id)
+                            .onDrag {
+                                // An action closure, not a view builder: safe
+                                // to record the selection here, and it means
+                                // starting a drag arms the console for the card
+                                // in hand.
+                                model.selectedCardID = card.id
+                                return NSItemProvider(object: card.id.uuidString as NSString)
+                            }
+                            // Moving a card is the app's only gesture, and it
+                            // used to be a teleport: the card vanished from one
+                            // column and appeared in another with no motion
+                            // connecting the two.
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .offset(x: -14)),
+                                removal: .opacity.combined(with: .scale(scale: 0.97))
+                            ))
+                    }
 
-                if cards.isEmpty {
-                    dropHint
+                    if cards.isEmpty {
+                        dropHint.transition(.opacity)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 10)
+                .frame(maxWidth: .infinity, alignment: .top)
+                // On the list itself, not the board: this is about membership
+                // of *this* column changing.
+                .animation(reduceMotion ? nil : .snappy(duration: 0.24), value: cards.map(\.id))
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            // A dropped card landed at the bottom of a column nothing scrolled,
+            // so a full column swallowed it. The guard keeps the other four
+            // columns still. No colour flash is needed — the card that just
+            // landed is already selected and already wears the armed border.
+            .onChange(of: model.lastLanded) {
+                guard let landed = model.lastLanded,
+                      cards.contains(where: { $0.id == landed.cardID })
+                else { return }
+                withAnimation(reduceMotion ? nil : .default) {
+                    proxy.scrollTo(landed.cardID, anchor: .center)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 10)
-            .frame(maxWidth: .infinity, alignment: .top)
         }
-        .scrollBounceBehavior(.basedOnSize)
     }
 
     /// An empty column used to be blank, which reads as broken rather than
@@ -350,10 +489,22 @@ struct ColumnView: View {
             .foregroundStyle(.quaternary)
             .frame(height: 56)
             .overlay {
-                Text(column == .backlog ? "Nothing here yet" : "Drop a card here")
+                Text(hintText)
                     .font(Type.prose)
                     .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 6)
             }
+    }
+
+    /// An empty column should not invite a drop it will refuse. The tint stays
+    /// quiet: the header above already carries the refusal in `Palette.refused`,
+    /// and a second coloured refusal in one column is the dilution the palette
+    /// guards against.
+    private var hintText: String {
+        if isRefused { return "Not this card" }
+        if column == .backlog { return "No stories yet — ⌘N writes one" }
+        return "Drop a card here"
     }
 
     private var cards: [Card] { model.cards(in: column) }
@@ -372,15 +523,21 @@ struct ColumnView: View {
         return consequence.isRefused ? Palette.refused : consequence.tint
     }
 
+    /// `consequence` is `nil` for the card's *own* column, so both of these
+    /// fell through to `Palette.armed` — dragging a card over the column it is
+    /// already in painted that column in the app's most loaded colour, and then
+    /// the drop was refused with "Already here." `Palette.inert` is the
+    /// documented "nothing happens on arrival" tone and the standing rail tint
+    /// of Backlog and In Review, so no accent is added here.
     private var background: some ShapeStyle {
-        if isTargeted { return AnyShapeStyle((consequence?.tint ?? Palette.armed).opacity(0.12)) }
-        if isRefused { return AnyShapeStyle(Color.secondary.opacity(0.03)) }
-        return AnyShapeStyle(Color.secondary.opacity(0.07))
+        if isTargeted { return AnyShapeStyle(Surface.wash(consequence?.tint ?? Palette.inert)) }
+        if isRefused { return AnyShapeStyle(Surface.recessFaint) }
+        return AnyShapeStyle(Surface.recess)
     }
 
     private var borderTint: Color {
-        if isTargeted { return consequence?.tint ?? Palette.armed }
+        if isTargeted { return consequence?.tint ?? Palette.inert }
         guard let consequence, !consequence.isRefused else { return .clear }
-        return consequence.tint.opacity(0.45)
+        return Surface.washBorder(consequence.tint)
     }
 }
