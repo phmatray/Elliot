@@ -178,8 +178,9 @@ extension RunState {
     /// Sentence case, and phrased as what happened rather than a state name.
     ///
     /// `succeeded` says "finished without errors" rather than "Succeeded"
-    /// because that is all the process told us. In `RunRow` this label sits
-    /// three lines above the `gh` receipt, which may well read "Not merged —
+    /// because that is all the process told us. In `RunBox` this label sits
+    /// directly above the verdict block, whose `gh` side may well read "Not
+    /// merged —
     /// …": a clean exit and a successful outcome are exactly the two things
     /// this app refuses to conflate.
     var label: String {

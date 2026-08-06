@@ -52,7 +52,7 @@ struct InspectorView: View {
                         nextStep(card)
                         IssuePane(card: card)
                         provenance(card)
-                        runs(card)
+                        RunsPane(card: card)
                     }
                 }
                 .padding(14)
@@ -171,6 +171,14 @@ struct InspectorView: View {
     // holds — and `IssuePane.sections(for:document:)` now decides that as data
     // a test can read.
 
+    // MARK: - Runs
+    //
+    // Now `RunsPane`, and for a reason of the same shape: `RunRow` rendered the
+    // whole log as one `Text` per line at 11pt monospace, so the agent's prose
+    // and what `gh` established were set in the same face — the one distinction
+    // the app is built on, unmade on screen. `RunsPane` draws a view per
+    // `RunLogRow` and carries the verdict block.
+
     // MARK: - Provenance
 
     /// Everything here was read back from `gh` — never parsed out of what the
@@ -221,21 +229,6 @@ struct InspectorView: View {
         }
     }
 
-    // MARK: - Runs
-
-    @ViewBuilder
-    private func runs(_ card: Card) -> some View {
-        let runs = model.runsByCard[card.id] ?? []
-        if !runs.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                ConsoleLabel(text: "Runs")
-                ForEach(runs) { run in
-                    RunRow(run: run, liveLines: model.liveLog[run.id] ?? [])
-                }
-            }
-        }
-    }
-
     // MARK: - Editing
 
     private func editorActions(_ card: Card) -> some View {
@@ -260,184 +253,5 @@ struct InspectorView: View {
                 saveError = model.status
             }
         }
-    }
-}
-
-// MARK: - One run
-
-struct RunRow: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let run: SkillRun
-    let liveLines: [StreamEvent]
-    @State private var expanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            // Two rows rather than one: at the inspector's width a long state
-            // name ("Finished, tools refused") and a cost cannot share a line
-            // without one of them wrapping mid-phrase.
-            HStack(spacing: 6) {
-                Image(systemName: run.state.icon)
-                    .font(.system(size: 11))
-                    .foregroundStyle(run.state.tint)
-                Text(run.kind.skillName).font(Type.fact).foregroundStyle(.primary)
-                Spacer()
-                if let cost = run.totalCostUSD {
-                    Fact(text: MoneyFormat.usd(cost), tint: Palette.quiet, small: true)
-                        .help("What this run cost")
-                }
-            }
-            Text(run.state.label)
-                .font(Type.prose)
-                .foregroundStyle(run.state.tint)
-
-            // The verdict `gh` returned. The app's rule is to judge a run by
-            // this and never by `resultText`; showing only the state name and
-            // the prose made that impossible to follow.
-            if let outcome = run.verifiedOutcome {
-                let receipt = outcome.receipt
-                Label {
-                    Text(receipt.text).font(Type.fact)
-                } icon: {
-                    Image(systemName: receipt.icon).font(.system(size: 10))
-                }
-                .foregroundStyle(receipt.tint)
-                .fixedSize(horizontal: false, vertical: true)
-            } else if run.state.isTerminal {
-                Label("Nothing verified for this run", systemImage: "questionmark.circle")
-                    .font(Type.prose)
-                    .foregroundStyle(Palette.attention)
-            }
-
-            if !run.permissionDenials.isEmpty {
-                // A run can end "success" having been refused a tool and
-                // silently worked around the gap.
-                Label(
-                    "Refused tools: \(run.permissionDenials.joined(separator: ", "))",
-                    systemImage: "lock.slash"
-                )
-                .font(Type.prose)
-                .foregroundStyle(Palette.attention)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 8) {
-                Button(expanded ? "Hide log" : "Show log") { expanded.toggle() }
-                    .controlSize(.small)
-                if run.state.isCancellable {
-                    Button("Cancel run") { Task { await model.cancelRun(id: run.id) } }
-                        .controlSize(.small)
-                }
-                Spacer()
-                Button {
-                    NSWorkspace.shared.selectFile(run.logPath, inFileViewerRootedAtPath: "")
-                } label: {
-                    Image(systemName: "folder").font(.system(size: 10))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Reveal the full log in the Finder")
-                .accessibilityLabel("Reveal the full log in the Finder")
-            }
-
-            if expanded { logView }
-        }
-        .padding(9)
-        .background(Surface.recess)
-        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
-    }
-
-    private var logView: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 1) {
-                        ForEach(Array(logLines.enumerated()), id: \.offset) { index, line in
-                            Text(line)
-                                .font(Type.log)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                                .id(index)
-                        }
-                    }
-                    .padding(6)
-                }
-                .frame(height: 260)
-                .onChange(of: logLines.count) {
-                    // A live tail that does not follow is a log you have to
-                    // chase with the scrollbar.
-                    // Gated: this is the panel you open to read a run the app
-                    // documents as lasting hours, and it animated on every
-                    // appended line.
-                    withAnimation(reduceMotion ? nil : .default) {
-                        proxy.scrollTo(logLines.count - 1, anchor: .bottom)
-                    }
-                }
-            }
-            .background(Color(nsColor: .textBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: Metric.nestedRadius))
-
-            Text(run.logPath)
-                .font(Type.factSmall)
-                .foregroundStyle(.tertiary)
-                .textSelection(.enabled)
-                .lineLimit(1)
-                .truncationMode(.head)
-        }
-    }
-
-    /// The live tail while it runs; the file on disk once it has finished.
-    ///
-    /// Both are folded by `RunLog.rows(from:)`, so a run does not change
-    /// appearance the moment it ends — the tail used to be readable lines and
-    /// the file on disk raw NDJSON, which made the log look like a different
-    /// artefact depending on when you opened it.
-    ///
-    /// One `Text` per row is a placeholder: #79's runs pane renders a view per
-    /// row kind. The fold is here already because it is what makes that
-    /// possible — the rows carry the tool-use ids a flattened tail had thrown
-    /// away.
-    private var logLines: [String] {
-        let events = liveLines.isEmpty ? diskEvents : liveLines
-        guard !events.isEmpty else {
-            return ["(no log on disk — it may have been cleaned up)"]
-        }
-        let rows = RunLog.rows(from: events, denials: run.permissionDenials)
-        return rows.isEmpty ? ["(log is empty)"] : rows.suffix(300).map(Self.line)
-    }
-
-    /// The whole log, decoded. `decodeAll` rather than `decode`: an assistant
-    /// turn that carries prose *and* a tool call is two rows, and the one-event
-    /// form would silently keep only the first.
-    private var diskEvents: [StreamEvent] {
-        guard let text = try? String(contentsOfFile: run.logPath, encoding: .utf8) else { return [] }
-        return text
-            .split(separator: "\n")
-            .flatMap { StreamEventDecoder.decodeAll(line: Data($0.utf8)) }
-    }
-
-    private static func line(_ row: RunLogRow) -> String {
-        switch row {
-        case .session(let info):
-            "▸ \(info.model ?? "claude") in \(info.cwd ?? "?")"
-        case .agentText(let text):
-            text.split(separator: "\n").first.map(String.init) ?? ""
-        case .toolUse(let name, _, let input, let outcome):
-            "⚙ \(name) \(input.prefix(120))" + Self.tail(of: outcome)
-        case .denial(let toolName):
-            "⛔ refused \(toolName)"
-        case .orphanResult(let outcome):
-            "\(outcome.isError ? "✗" : "✓") \(outcome.preview.prefix(120))"
-        case .terminal(let result):
-            "■ \(result.isClean ? "done" : "finished with issues") — \(result.text?.prefix(200) ?? "")"
-        case .unreadable(let text):
-            String(text.prefix(400))
-        }
-    }
-
-    private static func tail(of outcome: ToolOutcome?) -> String {
-        guard let outcome else { return " …" }
-        return outcome.isError ? "  ✗ \(outcome.preview.prefix(120))" : "  ✓"
     }
 }

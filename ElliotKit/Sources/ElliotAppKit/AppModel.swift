@@ -72,6 +72,16 @@ public final class AppModel {
     /// step with it.
     public var showingInspector = true
 
+    /// Which rows of a run log the panel is showing.
+    ///
+    /// One filter for the pane rather than one per run box: it is a reading
+    /// mode — "show me only what failed" — and a reader who sets it on the run
+    /// they are looking at means it for the card, not for that box. It lives on
+    /// the model rather than in `@State` for the ordinary reason: a `@State` in
+    /// a run box is reset every time the selection changes, so the choice would
+    /// not survive clicking the next card.
+    public var logFilter: RunLogFilter = .all
+
     /// Which repository a new story will be filed against.
     ///
     /// Here rather than passed in, because `NewCardWindow` is a `Window` scene

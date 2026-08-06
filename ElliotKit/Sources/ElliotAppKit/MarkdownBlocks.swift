@@ -367,10 +367,15 @@ private struct CodeFenceBlock: View {
     }
 }
 
-/// A short machine token on a chip ground — a fence's language, and nothing
-/// else so far. Not a `LinkBadge`: that is a *fact that is also a link*, a real
-/// button that is disabled when it has no URL, and a language name is neither.
-private struct MonoChip: View {
+/// A short machine token on a chip ground — a fence's language, a run's model
+/// and permission mode, a tool's name. Not a `LinkBadge`: that is a *fact that
+/// is also a link*, a real button that is disabled when it has no URL, and none
+/// of these is.
+///
+/// Internal rather than private because `LogRows.swift` draws the same thing:
+/// a second copy would drift in padding and face, and the two panes sit one
+/// tab apart.
+struct MonoChip: View {
     var text: String
 
     var body: some View {
