@@ -201,22 +201,21 @@ extension VerifiedOutcome {
     /// What `gh` established, as opposed to what the agent said about itself.
     /// This is the app's whole epistemology, and until now it was stored and
     /// never shown.
+    ///
+    /// The wording is `ElliotModel`'s `receiptText`, not a second copy of it:
+    /// the verdict block reads the same sentence through `RunVerdict.ghSays`,
+    /// and one wording that two places render is the point. Only the tint and
+    /// the icon are decided here, because only they need SwiftUI.
     var receipt: (text: String, tint: Color, icon: String) {
         switch self {
-        case .issueCreated(let number, _):
-            ("Opened issue #\(number)", Palette.verified, "checkmark.seal.fill")
-        case .noIssueCreated(let reason):
-            ("No issue — \(reason)", Palette.inert, "equal.circle")
-        case .prOpen(let number, _, let isDraft, let branch):
-            ("\(isDraft ? "Draft PR" : "PR") \(number) on \(branch)", Palette.verified, "checkmark.seal.fill")
-        case .merged(let sha):
-            ("Merged\(sha.map { " as \($0.prefix(7))" } ?? "")", Palette.verified, "checkmark.seal.fill")
-        case .notMerged(let reason):
-            ("Not merged — \(reason)", Palette.refused, "xmark.seal.fill")
-        case .closedUnmerged:
-            ("Closed without merging", Palette.refused, "xmark.seal.fill")
-        case .unverified(let reason):
-            ("Unverified — \(reason)", Palette.attention, "questionmark.circle.fill")
+        case .issueCreated, .prOpen, .merged:
+            (receiptText, Palette.verified, "checkmark.seal.fill")
+        case .noIssueCreated:
+            (receiptText, Palette.inert, "equal.circle")
+        case .notMerged, .closedUnmerged:
+            (receiptText, Palette.refused, "xmark.seal.fill")
+        case .unverified:
+            (receiptText, Palette.attention, "questionmark.circle.fill")
         }
     }
 }
