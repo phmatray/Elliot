@@ -74,6 +74,36 @@ private struct Fixture {
     }
 }
 
+extension Fixture {
+    /// Seeds one proposal against a throwaway analysis, so the decision tests
+    /// have something real in the store to name.
+    ///
+    /// The analysis row is saved first because `storyProposal.analysisID`
+    /// carries a foreign key onto it — a proposal hung off a bare `UUID()` is
+    /// rejected by the schema, not merely unreferenced. `runID` has no such
+    /// constraint, so a throwaway one is honest here.
+    func proposal(title: String, analysisID: UUID) async throws -> StoryProposal {
+        try await store.saveAnalysis(
+            Analysis(
+                id: analysisID, repoID: repo.id, angles: [.bugs],
+                maxStoriesPerAngle: 5, createdAt: Date()
+            )
+        )
+        let proposal = StoryProposal(
+            analysisID: analysisID,
+            runID: UUID(),
+            repoID: repo.id,
+            angle: .bugs,
+            title: title,
+            story: UserStory(role: "developer", want: title, benefit: "it is done"),
+            rationale: "because",
+            createdAt: Date()
+        )
+        try await store.saveProposal(proposal)
+        return proposal
+    }
+}
+
 /// Unwraps a refusal, so a test that expected one but got an `.ok` says so
 /// instead of falling through and passing.
 private func failureOf(
@@ -343,6 +373,75 @@ struct MCPRequestHandlerTests {
         #expect(page.total >= 1)
 
         let refusal = try #require(failureOf(await f.handler.handle(.next(repo: "nope/nope", limit: 0))))
+        #expect(refusal.code == .repoNotFound)
+    }
+
+    @Test("An unknown angle is named, and the real ones are listed")
+    func unknownAngleIsNamed() async throws {
+        let f = try await Fixture.make()
+        let refusal = try #require(failureOf(await f.handler.handle(
+            .analyzeRepo(repo: "phmatray/Elliot", angles: ["vibes"], maxStories: 5, instructions: "")
+        )))
+        #expect(refusal.code == .unknownAngle)
+        #expect(refusal.message.contains("vibes"))
+        #expect(refusal.hint?.contains("quickWins") == true)
+    }
+
+    @Test("No angles at all is refused as an analysis refusal, listing the choices")
+    func noAnglesIsRefused() async throws {
+        let f = try await Fixture.make()
+        let refusal = try #require(failureOf(await f.handler.handle(
+            .analyzeRepo(repo: "phmatray/Elliot", angles: [], maxStories: 5, instructions: "")
+        )))
+        #expect(refusal.code == .analysisRefused)
+    }
+
+    @Test("A disabled repository is refused, and pointed at Preflight")
+    func disabledRepoIsRefused() async throws {
+        let f = try await Fixture.make(enabled: false)
+        let refusal = try #require(failureOf(await f.handler.handle(
+            .analyzeRepo(repo: "phmatray/Elliot", angles: ["bugs"], maxStories: 5, instructions: "")
+        )))
+        #expect(refusal.code == .analysisRefused)
+        #expect(refusal.hint?.contains("Preflight") == true)
+    }
+
+    @Test("Starting an analysis queues one run per angle")
+    func analysisStartsOneRunPerAngle() async throws {
+        let f = try await Fixture.make()
+        guard case .ok(.analysisStarted(let started)) = await f.handler.handle(
+            .analyzeRepo(
+                repo: "phmatray/Elliot", angles: ["bugs", "tests"],
+                maxStories: 5, instructions: "focus on ElliotProcess"
+            )
+        ) else {
+            Issue.record("expected .analysisStarted")
+            return
+        }
+        #expect(started.runs.count == 2)
+        #expect(Set(started.runs.map(\.angle)) == ["bugs", "tests"])
+        #expect(started.repo == "phmatray/Elliot")
+    }
+
+    @Test("listProposals filters by analysis and by status")
+    func listProposalsFilters() async throws {
+        let f = try await Fixture.make()
+        let analysisID = UUID()
+        _ = try await f.proposal(title: "One", analysisID: analysisID)
+        _ = try await f.proposal(title: "Two", analysisID: UUID())
+
+        guard case .ok(.proposals(let mine)) = await f.handler.handle(
+            .listProposals(analysisID: analysisID, repo: nil, status: nil, limit: 50)
+        ) else {
+            Issue.record("expected proposals")
+            return
+        }
+        #expect(mine.map(\.title) == ["One"])
+        #expect(mine.first?.repo == "phmatray/Elliot")
+
+        let refusal = try #require(failureOf(await f.handler.handle(
+            .listProposals(analysisID: nil, repo: "nope/nope", status: nil, limit: 50)
+        )))
         #expect(refusal.code == .repoNotFound)
     }
 }
