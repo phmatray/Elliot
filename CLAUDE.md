@@ -177,7 +177,7 @@ If that is blank too, the finding is about your permissions, not about the chang
 planning a verification pass, because the answer decides what the pass can even ask:
 
 ```bash
-cua-driver permissions status --json    # {"accessibility": false, "screen_recording": true}
+cua-driver permissions status --json    # {"accessibility": false, "screen_recording": false} today
 ```
 
 - **Screen Recording** buys *observation*: `list_windows` (titles, sizes, `is_on_screen`) and a real screenshot of any window. That alone settles "did it open", "how big", "does it render", "is there exactly one".
@@ -190,6 +190,20 @@ screenshot afterwards is byte-for-byte the same board. Nothing errors. Read that
 not act", never as "the app ignored the input" — the third member of the same false-negative family as
 the two above. Anything needing a click or a key is **not verifiable** until someone runs
 `cua-driver permissions grant` and ticks the box.
+
+⚠️ **As of today the driver holds neither grant** — `accessibility: false` *and*
+`screen_recording: false`, read against the daemon's own TCC identity `com.trycua.driver`, which is
+the identity that matters because the daemon is its own responsible process. So observation is off
+too, and the window listing above is not currently reproducible through it. `/usr/sbin/screencapture
+-l` from a shell still enumerates windows and is what produced today's listings, but it is **not** a
+substitute: a non-frontmost window parks in the Stage Manager strip at ~143×160, and nothing in it
+can be read as text.
+
+Recognise the shape rather than the tool, because it has now bitten this project four times: **a
+permission that silently changes behaviour instead of erroring.** A blank accessibility tree that
+reads as an empty window; a click that reports `unverifiable` rather than failing; a screen-recording
+grant that is simply absent while the commands still return; and `gh secret list` omitting
+organisation secrets. Not one of the four says *no*.
 
 **Seeding the scratch store: the ids are `UUID`s, and a wrong one wedges the board silently.**
 `Repo.id` and `Card.id` are `UUID`, not free text. Insert `'sandbox'` as a repo id and the app starts,
@@ -276,6 +290,21 @@ publish the exit from `terminationHandler` under one lock (`StreamingProcess.wai
 `ProcessRunner.run`); `waitUntilExit()` spins a run loop waiting for a notification a concurrently-spawned
 sibling can consume first.
 
+**One green run does not clear a suite — sample it, because sampling is nearly free.** The clean build
+costs ~21–45 s, the test execution ~1.5–2.9 s, so five samples after one build cost about eight
+seconds. A single sample cannot detect an intermittent regression, and that is how a defect failing
+53 % of the time reached `main` past **21 single-sample merges**. Repetition alone is not the whole
+answer either: one flake was 1-in-13 idle and 6-in-10 under load, so sample under load where you can.
+
+**`ClaudeRun.updates` is deliberately lossy — never assert an exact count on it.** It is
+`AsyncStream(bufferingPolicy: .bufferingNewest(512))` (`ClaudeRunner.swift:136`), and the streaming
+commit says so at the seam: *the UI stream is bounded and may drop, this never does*. **The log file
+is the lossless sink** — raw bytes reach it before parsing — so a count is asserted against the log.
+Measured over 10 full-suite runs: the exact-count assertion on the stream failed **9/10**, the same
+assertion on the log **0/10** (#128). ⛔ The tempting repair is `.unbounded`, which turns the test
+green and reintroduces unbounded memory growth on a long run — precisely what the file sink exists to
+prevent.
+
 The end-to-end suite drives the real stack — rule engine, scheduler, actual process spawn, stream parsing,
 log writing, cancellation, launch sweep — against `Scripts/fake-claude.sh`, driven by
 `FAKE_CLAUDE_FIXTURE`, `_DELAY_MS`, `_MODE=hang|trap|crash`, `_ARGV_OUT`, `_STDERR`, `_READY`. Fixtures
@@ -320,17 +349,25 @@ Two invariants carry most of the weight:
   *outcome of the last call*, not just the status, or it promises a question that will never be asked
   again while every notification fails silently. Same family as `gh secret list` omitting org secrets.
 
-- **After merging `main`, a stale `.build` fails in ways that look like real breakage — wipe it before
-  believing the failure.** Several agent branches merge `main` mid-flight, and SwiftPM's incremental
-  state does not always survive it. Measured twice in one afternoon, on docs-only branches that could
-  not have caused either:
+- **A stale `.build` fails in ways that look like real breakage — wipe it before believing the
+  failure.** Merging `main` is one trigger, not the only one: **any `git checkout` that moves a
+  worktree across commits** can leave new sources against stale objects, and agent branches do both
+  all day. A run made in that state is not a measurement. Measured four times, on branches that could
+  not have caused any of them:
   - **Wrong values.** Three `RepoRegistryServiceSyncTests` failed *deterministically* while the identical commit passed in a fresh checkout. The tell was swift-testing printing the literal `.dirty` as `.unlisted` — an enum ordinal from before the merge. If a source literal reports as a different case, nothing is wrong with the code.
   - **A link error.** `ld: symbol(s) not found` for `ProcessRunner.run(…timeout:)`, referenced from test objects compiled against the pre-merge signature.
+  - **A SIGBUS**, signal 10, charged to an innocent pull request.
+  - **Three test failures that did not exist**, and a confident bisect on top of them that convicted an innocent commit.
 
-  Both cleared with `rm -rf ElliotKit/.build`. Neither is the intermittent signal 10/11 crash, which is
-  a *different* thing and also real: that one aborts the run reporting **no failing test**, so re-run
-  it rather than reading it as your change. Three outcomes, three responses — wrong values or a link
-  error after a merge means wipe the build; a signal means re-run; a named failing test means look at
+  All four cleared instantly with `rm -rf ElliotKit/.build`. **The tell is an assertion that could not
+  have failed** — `(x → nil) == nil` cannot fail for a single optional. When the reported failure is
+  impossible, you are reading a stale binary, not a defect, and anything built on top of it (a bisect
+  above all) is reading it too.
+
+  The intermittent signal 10/11 abort is a *different* thing and also real: it aborts the run
+  reporting **no failing test**, and a re-run clears it. But since staleness can present as a signal
+  too, a signal after a checkout is ambiguous — wipe first, and only call it the intermittent abort
+  once it survives a clean build. Named failing tests after a checkout: same order. Wipe, then look at
   your change.
 - **A `ScrollView` that can scroll swallows taps a disabled one passes through.** The board's
   deselect-on-background-click fired by bubbling out of a column's empty space, and that only worked
@@ -348,7 +385,12 @@ Two invariants carry most of the weight:
   that is the case to check.**
 - **Migrations are additive and shipped ones are frozen.** `ElliotStore/Migrations.swift` — append,
   renumber so versions stay ordered, never edit a migration that has run. `Column`'s raw values are
-  persisted, so renaming a case needs a migration.
+  persisted, so renaming a case needs a migration. A migration's **name** is its identity in
+  `grdb_migrations`, so when two unmerged branches claim the same number, **the unshipped one moves**
+  — whichever name reached `main` first keeps it, because renaming it would run a second, different
+  migration on every database in the field. That happened twice in one day: a v6 and a v7 each had to
+  shift after a differently-named v6 landed ahead of them. Each site in `Migrations.swift` records
+  which trade it made.
 - **Bump `elliotProtocolVersion` when the wire format changes** (`ElliotIPC/Protocol.swift`). An old
   helper in an old bundle meeting a newer app must fail loudly at `hello`, not halfway through a move.
 - **`ElliotBuild.marketingVersion` is the single source of the version.** `Scripts/build-app.sh` `sed`s
