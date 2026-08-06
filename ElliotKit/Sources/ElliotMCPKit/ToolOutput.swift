@@ -40,9 +40,40 @@ extension CallTool.Result {
         )
     }
 
+    /// Renders a read, and says where the answer came from.
+    ///
+    /// This is the one place `source` is set and the one place the snapshot
+    /// sentence is attached, so a tool contributes only the fields that are its
+    /// own and cannot label a snapshot `live` by forgetting a line. Before it,
+    /// each read tool wrote both by hand on each of its two branches.
+    ///
+    /// The snapshot note is **prepended** to whatever note the body already set,
+    /// never assigned over it: `board_list_cards` and `board_list_runs` attach a
+    /// page note too, and an implementation that assigned would drop "Showing 2
+    /// of 5" while every other tool went on looking correct. It goes first
+    /// because it qualifies everything after it.
+    static func render(
+        _ outcome: BridgeOutcome,
+        _ body: (ElliotPayload) throws -> [String: Value]?
+    ) throws -> CallTool.Result {
+        try render(outcome.response) { payload in
+            guard var fields = try body(payload) else { return nil }
+            fields["source"] = .string(outcome.source)
+            if let reason = outcome.snapshotReason {
+                var note = ToolOutput.offlineNote(reason)
+                if let own = fields["note"]?.stringValue { note += " " + own }
+                fields["note"] = .string(note)
+            }
+            return fields
+        }
+    }
+
     /// Renders a response from the running app. A failure keeps the app's own
     /// code, message and hint: the helper never rewords a refusal it did not
     /// decide.
+    ///
+    /// Still here for the write tools, which have one path by construction —
+    /// a write never falls back, so there is no source to report.
     static func render(
         _ response: ElliotResponse,
         _ body: (ElliotPayload) throws -> [String: Value]?

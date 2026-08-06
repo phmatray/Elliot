@@ -2,6 +2,7 @@ import ElliotIPC
 import ElliotModel
 import ElliotStore
 import Foundation
+import MCP
 import Testing
 
 @testable import ElliotMCPKit
@@ -143,6 +144,92 @@ struct OfflineResponderTests {
             .respond(to: .moveCard(id: card.id, to: .todo, followUps: []))
 
         #expect(refusal(response)?.code == .readOnly)
+    }
+}
+
+// MARK: - Rendering one outcome
+
+/// What `CallTool.Result.render` adds on top of a tool's own fields.
+///
+/// Its own suite because the trap is in none of the tools: `render` attaches
+/// `source` and the snapshot sentence for all of them, and the two that also
+/// have something to say about their page are the ones a naive implementation
+/// silences.
+@Suite("Rendering one answer, live or from the snapshot")
+struct OutcomeRenderingTests {
+
+    @Test("The snapshot note is prepended to the note the tool already wrote, not put in its place")
+    func snapshotNoteDoesNotReplaceTheToolsOwn() throws {
+        // `board_list_cards` and `board_list_runs` attach both. An
+        // implementation that *assigns* `note` instead of composing it drops
+        // "Showing 2 of 5" — and nothing else in the suite would notice, because
+        // every other tool has only the one note to attach.
+        let outcome = BridgeOutcome.offline(.ok(.repos([])), .appNotRunning)
+
+        let result = try CallTool.Result.render(outcome) { _ in
+            var fields: [String: Value] = ["total": .int(0)]
+            ToolOutput.attachNote(&fields, "Showing 2 of 5; the rest were left out.")
+            return fields
+        }
+
+        let rendered = try answer(result)
+        #expect(!rendered.isError)
+        #expect(rendered.source == "offline-db")
+        #expect(rendered.note.contains("Elliot is not running"))
+        #expect(rendered.note.contains("Showing 2 of 5"))
+        // Order matters as well as presence: the snapshot caveat qualifies
+        // everything after it, so it goes first.
+        #expect(rendered.note.hasPrefix("Elliot is not running"))
+    }
+
+    @Test("A snapshot served because the app did not answer does not claim the app is down")
+    func unreachableIsItsOwnStory() throws {
+        let outcome = BridgeOutcome.offline(.ok(.repos([])), .appUnreachable)
+
+        let rendered = try answer(try CallTool.Result.render(outcome) { _ in ["total": .int(0)] })
+
+        #expect(rendered.note.contains("did not answer"))
+        #expect(!rendered.note.contains("Elliot is not running"))
+    }
+
+    @Test("A live answer says live and adds no note of its own")
+    func liveAnswerCarriesNoSnapshotNote() throws {
+        let rendered = try answer(
+            try CallTool.Result.render(.live(.ok(.repos([])))) { _ in ["total": .int(0)] }
+        )
+
+        #expect(rendered.source == "live")
+        #expect(rendered.note.isEmpty)
+    }
+
+    @Test("A refusal is rendered in the app's own words, with no source and no snapshot note")
+    func refusalIsRenderedVerbatim() throws {
+        // The helper never rewords a refusal it did not decide, and never
+        // labels one `offline-db`: there is no answer to attribute a source to.
+        let outcome = BridgeOutcome.offline(
+            .failure(code: .cardNotFound, message: "No card with id 7.", hint: "Try board_list_cards."),
+            .appUnreachable
+        )
+
+        let rendered = try answer(try CallTool.Result.render(outcome) { _ in ["unused": .bool(true)] })
+
+        #expect(rendered.isError)
+        #expect(rendered.error == ElliotErrorCode.cardNotFound.rawValue)
+        #expect(rendered.message == "No card with id 7.")
+        #expect(rendered.hint == "Try board_list_cards.")
+        #expect(rendered.source == nil)
+        #expect(rendered.note.isEmpty)
+    }
+
+    @Test("A payload the tool cannot read is an internal_error, not an empty answer")
+    func unreadablePayloadIsAnError() throws {
+        // Kept from the response-only form: a body returning nil used to be the
+        // one way a tool could say "the app and this helper are different
+        // builds", and an empty object under `isError: false` gets believed.
+        let rendered = try answer(try CallTool.Result.render(.live(.ok(.repos([])))) { _ in nil })
+
+        #expect(rendered.isError)
+        #expect(rendered.error == "internal_error")
     }
 }
 
