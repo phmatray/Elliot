@@ -742,6 +742,11 @@ struct ColumnView: View {
     /// Per column and per repository, so collapsing a repository in Backlog does
     /// not hide it in To Do — the two are different questions.
     @State private var collapsed: Set<UUID> = []
+    /// The card a drop would land above, or `nil` when the pointer is not over
+    /// one. Held on the column rather than as `@State` inside each card, so
+    /// exactly one insertion cue can be drawn at a time — two bars would say the
+    /// card is about to land in two places.
+    @State private var insertAbove: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -915,6 +920,47 @@ struct ColumnView: View {
     private func draggable(_ card: Card) -> some View {
         CardView(card: card)
             .id(card.id)
+            // Arriving at a *position* starts nothing, so the cue is
+            // `Palette.inert` and not an accent. `armed` means a gesture starts
+            // an agent and `irreversible` means it merges; spending either here
+            // is exactly the dilution #47 spent its effort undoing.
+            .overlay(alignment: .top) {
+                if insertAbove == card.id {
+                    Rectangle()
+                        .fill(Palette.inert)
+                        .frame(height: 2)
+                        .allowsHitTesting(false)
+                }
+            }
+            .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: insertAbove)
+            // Nested inside the column's own drop target on purpose, and this is
+            // the hazard #47's review named: a card covers most of a populated
+            // column, so if this swallowed drops the column could not receive
+            // them and "drop anywhere in the column" — the app's whole gesture —
+            // would break. It does not swallow them: a drop on a card is still a
+            // drop into this column, because `reorder` performs the column move
+            // itself when the card comes from elsewhere. What changes is only
+            // *where in the column* it lands.
+            .dropDestination(for: String.self) { items, _ in
+                insertAbove = nil
+                guard let id = items.first.flatMap(UUID.init(uuidString:)) else { return false }
+                // A card dropped on itself. Refused at the gesture so the drag
+                // snaps back rather than animating into a placement that
+                // `CardReorder.placement` is about to decline anyway.
+                guard id != card.id else { return false }
+
+                // Only a drop from *another* column can be refused; asking
+                // `refuse` about a same-column drop would answer "same column"
+                // and put a refusal note on a gesture that is allowed.
+                if model.card(id: id)?.column != card.column,
+                   model.refuse(cardID: id, to: card.column) {
+                    return false
+                }
+                Task { await model.reorder(cardID: id, in: card.column, above: card) }
+                return true
+            } isTargeted: { targeted in
+                insertAbove = targeted ? card.id : (insertAbove == card.id ? nil : insertAbove)
+            }
             .onDrag {
                 // An action closure, not a view builder: safe to record the
                 // selection here, and it means starting a drag arms the console
