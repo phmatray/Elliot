@@ -49,7 +49,8 @@ ElliotStore     GRDB               schema, migrations, the one atomic move
 ElliotProcess   —                  tool discovery, login-shell env capture, spawning, line splitting,
                                    gh/git clients
 ElliotIPC       —                  wire protocol, unix socket server and client
-ElliotEngine    all of the above   BoardService, RunScheduler, Verifier, PRWatcher, Reconciler, preflight
+ElliotEngine    all of the above   BoardService, RunScheduler, Verifier, PRWatcher, Reconciler,
+                                   MCPRequestHandler (the wire's live half), preflight
 ElliotMCPKit    Model+IPC+Store    the MCP tools (one file per tool under Tools/)
 ElliotApp       SwiftUI            the board
 elliot-mcp      stdio              the helper Claude Code spawns
