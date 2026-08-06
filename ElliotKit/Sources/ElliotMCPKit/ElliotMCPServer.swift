@@ -46,9 +46,19 @@ public struct ElliotMCPServer: Sendable {
 
     public static let tools: [Tool] = registry.map(\.tool)
 
-    /// `uniqueKeysWithValues` on purpose: two tools claiming one name is a
-    /// build-time mistake that should stop the helper, not a silent shadowing
-    /// that makes one of them unreachable.
+    /// `uniqueKeysWithValues` on purpose: two tools claiming one name should
+    /// stop the helper, not shadow one of them into being unreachable.
+    ///
+    /// It stops it at the first *use* of this static — the first tools/call,
+    /// and only that. Measured, not assumed: with a duplicate in the registry,
+    /// reading `tools`, which is what tools/list answers, completes normally,
+    /// because each static initialises lazily on its own. So a session that
+    /// lists the tools and calls none never trips it at all. This comment used
+    /// to say "build time", which is a guarantee nothing here provides — and a
+    /// comment claiming one becomes the evidence every later reader relies on.
+    /// What catches a duplicate ahead of all of it is
+    /// `ToolSurfaceTests.toolNamesAreUnique`, which asserts these same names
+    /// are distinct without ever touching this dictionary.
     private static let byName: [String: any BoardTool] = Dictionary(
         uniqueKeysWithValues: registry.map { ($0.name, $0) }
     )

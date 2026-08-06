@@ -38,6 +38,24 @@ struct ToolSurfaceTests {
         }
     }
 
+    @Test("No two tools claim the same name")
+    func toolNamesAreUnique() {
+        // The dispatch table is a `Dictionary(uniqueKeysWithValues:)` over these
+        // very names, so a duplicate traps rather than shadowing a tool into
+        // unreachability — but only at the first *use* of that lazily
+        // initialised static, which is the first tools/call. Reading `tools`
+        // does not touch it, so a helper only ever asked for tools/list would
+        // never find out. This is what finds it before any of that.
+        //
+        // `BoardTool.name` is a protocol *extension* returning `tool.name`, not
+        // a requirement a conformance can answer its own way, so these are
+        // exactly the keys that dictionary is built from.
+        let names = ElliotMCPServer.tools.map(\.name)
+        // A registry that emptied out would satisfy the line below vacuously.
+        #expect(!names.isEmpty)
+        #expect(Set(names).count == names.count, "duplicate tool name among \(names.sorted())")
+    }
+
     // MARK: - Arguments
     //
     // An argument the caller sent but spelled wrong must come back as a
