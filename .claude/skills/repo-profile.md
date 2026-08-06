@@ -36,19 +36,38 @@
   pull request is never failed on formatting here. Adopting the formatter wholesale is a live option
   and a one-way door (one ~1 600-line reformat commit), and it is not a decision to make inside a
   feature branch.
-- **Prerequisites / caveats:** macOS 15+ and Swift 6.1+ toolchain (`swiftLanguageModes: [.v6]` — strict
-  concurrency is on, so data-race errors are build failures, not warnings). `ElliotApp` is a SwiftUI GUI
+- **Prerequisites / caveats:** macOS 15+ and a toolchain **newer than Swift 6.1**. `Package.swift`
+  says `swift-tools-version: 6.1`, but the sources do not compile under 6.1.2; see *CI gates* below
+  for the exact error. Known-good: 6.3.3 locally, 6.3 on the runner. 6.2 is untested — nobody has
+  built it there, so don't write it down as supported. `swiftLanguageModes: [.v6]` — strict
+  concurrency is on, so data-race errors are build failures, not warnings. `ElliotApp` is a SwiftUI GUI
   target: it builds headlessly but cannot be exercised from a terminal — launch the assembled bundle
   from the **Finder** (`open dist/Elliot.app`), not from a shell, because the preflight checks exist
   precisely to survive *not* inheriting your shell `PATH`.
 
 ## CI gates (the exact commands CI fails on — satisfy these locally before ready/merge)
-<!-- TODO: there is no `.github/workflows/` directory — this repo has no CI at all, and branch
-protection is disabled (no required status checks). Nothing is enforced remotely, so "green CI" is not
-something merge-pr can wait for. Until CI exists, treat these as the self-imposed gates, run locally
-before flipping a PR ready: -->
+`.github/workflows/ci.yml`, job **`build-and-test`**, on `pull_request` → `main` and `push` → `main`.
+One `macos-26` runner, `timeout-minutes: 20`. It runs exactly the two commands below, so satisfying
+them locally is satisfying CI:
 - `cd ElliotKit && swift build`
 - `cd ElliotKit && swift test`
+
+⚠️ **`macos-15` does not work, and the manifest is why you would think it does.** `Package.swift`
+declares `swift-tools-version: 6.1` and `platforms: [.macOS(.v15)]`, but that is the floor the
+*manifest* is parsed at — it is not a promise about the sources. Measured on run `31118743562`: the
+`macos-15` image carries Swift 6.1.2 and `swift build` fails on
+`ElliotStore/BoardStore.swift:237` (`for-in loop requires '()' to conform to 'Sequence'` — a
+multi-statement-closure return the 6.1 type checker will not infer). `macos-26` carries Swift 6.3,
+which is what the package is actually developed against. Don't lower the runner without building on
+the lower toolchain first.
+
+<!-- TODO: branch protection on `main` is still off — `required_status_checks.enforcement_level` is
+`"off"`, so `build-and-test` is advisory, not required, and a red check does not block a merge.
+Turning it on is issue #21's Task 3 and needs the workflow green on `main` first (i.e. after the PR
+that introduces it lands). Until then `merge-pr` can *read* a verdict but nothing enforces it. -->
+- **Format/lint in CI:** none, deliberately. See *Format/lint verify* above — the formatter question
+  is unsettled, and a lint step would have landed the first CI run red for a reason unrelated to
+  correctness, which is the fastest way to teach everyone to ignore the badge.
 
 ## Integration style
 - **Merge mode:** squash — `main` is linear and the landed subjects end in `(#N)`
