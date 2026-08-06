@@ -15,11 +15,21 @@ struct ElliotApp: App {
         // `Window`, not `WindowGroup`: there is one board, backed by one store
         // that only this process may write. A second copy of it would be a
         // second view of the same rows with no way to tell them apart.
+        //
+        // The `NavigationStack` is not decoration. `.toolbar` is written
+        // against a navigation container, and that container is what reserves
+        // the title-bar band and gives the content its top safe-area inset.
+        // Removing it (#47) left nothing reserving that strip: the board was
+        // laid out from the very top of the window, the traffic lights landed
+        // on the column headers, and the status bar was pushed off the bottom
+        // by exactly the height lost at the top. See #52.
         Window("Elliot", id: "board") {
-            BoardView()
-                .environment(model)
-                .frame(minWidth: 1_000, minHeight: 600)
-                .task { await model.start() }
+            NavigationStack {
+                BoardView()
+            }
+            .environment(model)
+            .frame(minWidth: 1_000, minHeight: 600)
+            .task { await model.start() }
         }
         // Wide enough that the five columns and the inspector coexist without
         // the board scrolling — seeing every column's consequence at once is
@@ -33,16 +43,24 @@ struct ElliotApp: App {
         // them, and `InspectorView`'s own doc comment already says watching a
         // run should not blindfold the board. Analysis is the sharpest case —
         // it starts up to six concurrent runs from inside a modal.
+        //
+        // Each root keeps a `NavigationStack` for the same reason the board
+        // does: `RepositoriesView` and `PreflightView` were written as
+        // `NavigationLink` destinations and still carry `.navigationTitle` and
+        // `.safeAreaInset`, both of which want that container.
         Window("Repositories", id: "repositories") {
-            RepositoriesView().environment(model)
+            NavigationStack { RepositoriesView() }.environment(model)
         }
         .defaultSize(width: 900, height: 700)
 
         Window("Preflight", id: "preflight") {
-            PreflightView().environment(model)
+            NavigationStack { PreflightView() }.environment(model)
         }
         .defaultSize(width: 820, height: 720)
 
+        // Not wrapped: `AnalysisWindow` has no `.toolbar` and no
+        // `.navigationTitle` — it draws its own header and footer — so a
+        // navigation container would only add an empty title bar above it.
         Window("Analysis", id: "analysis") {
             AnalysisWindow().environment(model)
         }
@@ -96,14 +114,14 @@ struct ElliotApp: App {
             .keyboardShortcut("r")
             .disabled(model.repos.isEmpty || model.isImporting)
 
-            // Not gated on the selection: the panel is a view preference, and
-            // it now has something to show when nothing is selected. This also
-            // keeps it consistent with the toolbar button, which had the same
-            // gate removed in #50.
+            // Gated on the selection again, matching the toolbar button: the
+            // panel only renders for a selected card, so offering to show it
+            // with nothing selected would name an act that does nothing.
             Button(model.showingInspector ? "Hide Details" : "Show Details") {
                 model.showingInspector.toggle()
             }
             .keyboardShortcut("i", modifiers: [.command, .option])
+            .disabled(model.selectedCard == nil)
 
             Divider()
 

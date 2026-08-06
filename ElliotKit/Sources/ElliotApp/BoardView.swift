@@ -24,27 +24,32 @@ public struct BoardView: View {
             } else if model.repos.isEmpty {
                 emptyState
             } else {
-                columns
+                // The panel is a sibling of the columns *inside* this row, not
+                // a split of the whole window. That placement is what keeps the
+                // status bar below full-width and the board's height unchanged
+                // when the panel opens.
+                //
+                // This was `.inspector()` briefly. It bought drag-to-resize and
+                // cost the window its layout: applied to the stack that also
+                // holds the Divider and StatusBar, the split covered the strip
+                // the title bar occupies, so the board rode up under the
+                // traffic lights and the status bar fell off the bottom (#52).
+                // It had already caused a crash (#50). Re-adopting it is its
+                // own change, to be verified on screen before it lands.
+                HStack(spacing: 0) {
+                    columns
+                    if model.showingInspector, model.selectedCard != nil {
+                        Divider()
+                        InspectorView()
+                            .frame(width: Metric.inspectorWidth)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
+                }
             }
             Divider()
             StatusBar()
         }
         .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.selectedCardID)
-        // The platform inspector, not a hand-rolled panel: the fixed 344 pt
-        // frame forced the board to scroll on a laptop display whenever details
-        // were open, and could not be dragged narrower.
-        //
-        // Driven by `showingInspector` and nothing else, which is load-bearing
-        // rather than tidy. `.inspector` is an `NSSplitViewItem`; collapsing it
-        // animates, and AppKit will not accept a constraint invalidation posted
-        // from inside that animation's layout pass. A derived binding — the
-        // `get` here used to also read `selectedCard` — meant clearing the
-        // selection collapsed the split item as a side effect, in the same
-        // update that made the toolbar recompute, and AppKit threw. See #50.
-        .inspector(isPresented: $model.showingInspector) {
-            InspectorView()
-                .inspectorColumnWidth(min: 300, ideal: Metric.inspectorWidth, max: 520)
-        }
         .toolbar { toolbarContent }
         .navigationTitle("Elliot")
         .sheet(isPresented: $model.showingNewCard) {
@@ -175,25 +180,18 @@ public struct BoardView: View {
         }
 
         ToolbarItem {
-            // A plain Button that flips the flag, which is Apple's own
-            // `.inspector` pattern and is deliberate here rather than lazy.
-            //
-            // This was a `Toggle` reading `showingInspector`, so the toolbar
-            // re-vended its items at the exact moment its own collapse
-            // animation was running — the crash in #50. A Button reads none of
-            // that state, so nothing in the toolbar changes while the split
-            // item animates. The inspector being on screen is its own state
-            // indicator.
-            //
-            // No `.disabled` on the selection either, for the same reason and a
-            // better one: whether the panel is open is a view preference, not a
-            // function of what is selected.
+            // A Button, not a Toggle. As a Toggle it read `showingInspector`,
+            // so the toolbar re-vended its items in the middle of the split
+            // view's own collapse animation — the crash in #50. There is no
+            // split view any more, but the Button is still the right shape:
+            // the panel being on screen is its own state indicator.
             Button {
                 model.showingInspector.toggle()
             } label: {
                 Label("Details", systemImage: "sidebar.right")
             }
-            .help("Show or hide the card details panel")
+            .disabled(model.selectedCard == nil)
+            .help("Show or hide the selected card's details")
         }
 
         ToolbarItem {
