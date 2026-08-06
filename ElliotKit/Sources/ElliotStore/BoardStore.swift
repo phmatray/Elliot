@@ -511,6 +511,37 @@ public final class BoardStore: Sendable {
         )
     }
 
+    /// The most recent runs across the whole board, newest first.
+    ///
+    /// A second, shallower path than `runs(cardID:)`, which the inspector uses
+    /// and which is right to load one card deeply. This one exists because an
+    /// overview cannot ask a question per row: costs and verdicts already in the
+    /// database were reachable one selected card at a time, which is what made
+    /// the missing cost view architectural rather than cosmetic.
+    ///
+    /// A run missing from the answer is outside the limit — that is the only
+    /// thing its absence may be read to mean.
+    public func recentRuns(limit: Int = 50) async throws -> [SkillRun] {
+        try await reader.read { db in
+            try SkillRun
+                .order(SQLColumn("createdAt").desc)
+                .limit(limit)
+                .fetchAll(db)
+        }
+    }
+
+    /// One repository's runs since a date, newest first.
+    public func runs(repoID: UUID, since: Date, limit: Int = 200) async throws -> [SkillRun] {
+        try await reader.read { db in
+            try SkillRun
+                .filter(SkillRun.Columns.repoID == repoID.databaseKey)
+                .filter(SQLColumn("createdAt") >= since)
+                .order(SQLColumn("createdAt").desc)
+                .limit(limit)
+                .fetchAll(db)
+        }
+    }
+
     /// Every run that was mid-flight when the app stopped. The launch sweep
     /// resolves each one against `gh` rather than trusting its recorded state.
     public func nonTerminalRuns() async throws -> [SkillRun] {
