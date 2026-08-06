@@ -3,6 +3,7 @@ import SwiftUI
 
 struct CardView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let card: Card
 
     var body: some View {
@@ -43,7 +44,14 @@ struct CardView: View {
                         Fact(text: Elapsed.age(of: ended), tint: Palette.quiet, small: true)
                     }
                 }
-                .transition(.opacity)
+                // Gated here rather than left to an ancestor, and that is not
+                // belt-and-braces. The two gated animations this view sits
+                // under are keyed on `selectedCardID` and on `cards.map(\.id)`;
+                // a receipt appears when a *run finishes*, which changes
+                // neither. Nothing above answers for this one, so it says so
+                // itself. `.identity` is what a transition looks like with
+                // reduce motion on: the row is simply there.
+                .transition(reduceMotion ? .identity : .opacity)
             }
 
             if !facts.isEmpty || repoName != nil || stagnation != nil {

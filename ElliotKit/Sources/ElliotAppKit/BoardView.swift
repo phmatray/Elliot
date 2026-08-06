@@ -385,6 +385,14 @@ public struct BoardView: View {
             // so Backlog → Done would send the panel gliding across four
             // columns. The panel's own placement does not animate; the columns
             // sliding aside still does.
+            //
+            // ⚠️ Deliberately a bare `nil`, and not the `reduceMotion ? nil : …`
+            // every other animation on this board is written as. This one is
+            // unconditional: the panel must not glide for anyone, reduce motion
+            // on or off. So it is *stricter* than reduce motion asks for rather
+            // than an ungated animation — there is no animation here to gate.
+            // Turning it into `reduceMotion ? nil : .something` would reinstate
+            // the glide for everyone who has not switched reduce motion on.
             .animation(nil, value: model.selectedCardID)
     }
 
@@ -668,7 +676,16 @@ struct ColumnView: View {
         .padding(.top, 8)
         .padding(.bottom, 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(column.displayName), \(cards.count) cards. \(consequence?.summary ?? column.standingRule)")
+        // One of the five captions #79 requires to survive the panel. Built by
+        // a pure function so that survival is a claim `swift test` can hold —
+        // the string itself used to be written here, where nothing could.
+        .accessibilityLabel(
+            BoardAccessibility.columnCaption(
+                name: column.displayName,
+                count: cards.count,
+                rule: consequence?.summary ?? column.standingRule
+            )
+        )
     }
 
     private var list: some View {
@@ -694,6 +711,11 @@ struct ColumnView: View {
                     }
 
                     if cards.isEmpty {
+                        // Driven by the gated `.animation(…, value: cards.map(\.id))`
+                        // a few lines down — the last card leaving is what
+                        // makes this appear, and that *is* a change to that
+                        // value. With reduce motion on the gate hands SwiftUI
+                        // `nil` and the hint is simply there.
                         dropHint.transition(.opacity)
                     }
                 }
@@ -745,6 +767,12 @@ struct ColumnView: View {
             // Moving a card is the app's only gesture, and it used to be a
             // teleport: the card vanished from one column and appeared in
             // another with no motion connecting the two.
+            //
+            // Gated by the `.animation(reduceMotion ? nil : …, value:
+            // cards.map(\.id))` on the enclosing `LazyVStack`, which is the
+            // animation that drives it: a card arriving or leaving *is* a
+            // change to that value. Reduce motion turns it off there, once, for
+            // every card in the column.
             .transition(
                 .asymmetric(
                     insertion: .opacity.combined(with: .offset(x: -14)),
@@ -787,10 +815,13 @@ struct ColumnView: View {
             .padding(.top, 4)
         }
         .buttonStyle(.plain)
-        // Singular written out. "1 cards" is the kind of thing that makes a
-        // careful product look careless, and this label is read aloud.
+        // Singular written out, by the same function the column caption above
+        // uses. It was written out here and *not* there, which is how the two
+        // labels on one column came to disagree about "1 cards".
         .accessibilityLabel(
-            "\(group.repoName), \(group.cards.count) \(group.cards.count == 1 ? "card" : "cards") in \(column.displayName)"
+            BoardAccessibility.groupCaption(
+                repoName: group.repoName, count: group.cards.count, column: column.displayName
+            )
         )
     }
 
@@ -854,5 +885,61 @@ struct ColumnView: View {
         if isTargeted { return consequence?.tint ?? Palette.inert }
         guard let consequence, !consequence.isRefused else { return .clear }
         return Surface.washBorder(consequence.tint)
+    }
+}
+
+// MARK: - What a screen reader hears of the board
+
+/// The sentences the board says aloud, as pure functions.
+///
+/// Same reason `LogRowAccessibility` exists one file over: a label written
+/// inline in a `body` is a claim nothing can hold. `swift test` cannot see the
+/// screen, but these it can see — and #79 asks for the five column captions to
+/// still be there *after* a panel was inserted between them, which is a claim
+/// worth being able to make.
+///
+/// Singular is written out in both captions here. "1 cards" is the kind of thing
+/// that makes a careful product look careless, and these strings are read aloud.
+/// The group header had already been fixed for exactly that and the column
+/// caption above it had not — which is the argument for one function rather than
+/// two spellings.
+enum BoardAccessibility {
+
+    /// A column's caption: its name, how many cards are in it, and either the
+    /// consequence of dropping the card in hand or the column's standing rule.
+    ///
+    /// The caller decides which of those two `rule` is — that choice is
+    /// `Consequence.of(model.preview(…))`, the same call the visible caption
+    /// makes, and duplicating it here would be a second answer to it.
+    static func columnCaption(name: String, count: Int, rule: String) -> String {
+        "\(name), \(count) \(cards(count)). \(rule)"
+    }
+
+    /// A repository group inside a column, when the picker says "All
+    /// repositories".
+    static func groupCaption(repoName: String, count: Int, column: String) -> String {
+        "\(repoName), \(count) \(cards(count)) in \(column)"
+    }
+
+    /// What the detail panel announces itself as.
+    ///
+    /// It names the column as well as the card, and that is the whole point of
+    /// the sentence. A sighted reader learns which column the panel belongs to
+    /// from the caret, the tether and the rail across its top — all three of
+    /// which are `.accessibilityHidden(true)`, because they are decoration for a
+    /// relationship that has to be *stated* rather than drawn. This is the
+    /// statement. Drop the column from it and a listener has no way left to
+    /// learn it.
+    ///
+    /// Applied in `DetailPanelView`, not here, and that is not arbitrary: the
+    /// label VoiceOver uses is the one nearest the view, so a second one
+    /// attached out here would be silently inert. It lives in this file only
+    /// because it is a sentence a test can hold, next to the other two.
+    static func panelLabel(title: String, column: ElliotModel.Column) -> String {
+        "Details for \(title), in \(column.displayName)"
+    }
+
+    private static func cards(_ count: Int) -> String {
+        count == 1 ? "card" : "cards"
     }
 }

@@ -99,7 +99,14 @@ struct DetailPanelView: View {
             y: Metric.panelElevation.y
         )
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Card details")
+        // Names the card and the column, because "Card details" told a
+        // screen-reader user the one thing they already knew. The sentence is
+        // built by a pure function so it can be asserted; it has to be applied
+        // *here* rather than from the board, since `accessibilityLabel`
+        // resolves innermost-first and an outer one would be silently inert.
+        .accessibilityLabel(
+            BoardAccessibility.panelLabel(title: card.displayTitle, column: card.column)
+        )
     }
 
     /// The panel's silhouette, used as a background fill and as a border — never
