@@ -8,20 +8,23 @@ import Testing
 
 @testable import ElliotEngine
 
-/// Records what would have been launched, without spawning anything.
+/// Stands in for `RunScheduler` without spawning anything.
+///
+/// It records nothing: every assertion here reads the run back out of the
+/// store, which is what the handler actually answers from, rather than
+/// trusting a double's memory of what it was asked to do.
 private actor LaunchSpy: RunLaunching {
     private let store: BoardStore
-    private(set) var launched: [UUID] = []
 
     init(store: BoardStore) { self.store = store }
 
-    func launch(runID: UUID) async { launched.append(runID) }
+    func launch(runID: UUID) async {}
 
     /// Mirrors the never-started branch of `RunScheduler.cancel`: a queued run
     /// has no live process to signal, so it goes straight to `.cancelled`
     /// rather than through `.cancelling`.
     ///
-    /// A spy that ignored cancellation would leave the run `queued`, and
+    /// A double that ignored cancellation would leave the run `queued`, and
     /// `BoardService.cancel` — which delegates here and then re-reads the
     /// store — would hand the handler back an untouched run. The cancel path
     /// would be driven without ever being exercised.
@@ -31,8 +34,6 @@ private actor LaunchSpy: RunLaunching {
         run.endedAt = Date()
         try? await store.saveRun(run)
     }
-
-    func ids() -> [UUID] { launched }
 }
 
 private struct Fixture {
@@ -40,7 +41,6 @@ private struct Fixture {
     var board: BoardService
     var analysis: AnalysisService
     var handler: MCPRequestHandler
-    var spy: LaunchSpy
     var repo: Repo
 
     static func make(enabled: Bool = true) async throws -> Fixture {
@@ -69,7 +69,7 @@ private struct Fixture {
         return Fixture(
             store: store, board: board, analysis: analysis,
             handler: MCPRequestHandler(store: store, board: board, analysis: analysis),
-            spy: spy, repo: repo
+            repo: repo
         )
     }
 }
