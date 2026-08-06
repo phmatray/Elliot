@@ -40,8 +40,8 @@ struct OfflineParityTests {
             // `#expect`'s message autoclosure will not compile, and the text is
             // the point — a bare "not equal" on two blobs of JSON says nothing
             // about which field moved.
-            let live = await board.liveText(request)
-            let snapshot = await board.snapshotText(request)
+            let live = try await board.liveText(request)
+            let snapshot = try await board.snapshotText(request)
             #expect(live == snapshot, "\(request) diverged:\n  live: \(live)\n   off: \(snapshot)")
         }
     }
@@ -122,6 +122,17 @@ struct OfflineParityTests {
         }
         #expect(next.items.contains { $0.isReady })
         #expect(next.items.contains { !$0.isReady })
+
+        // `listProposals` is compared under a repo filter, so it is worth
+        // nothing unless there is a proposal the filter must *exclude*.
+        guard case .ok(.proposals(let filtered)) = await board.responder.respond(
+            to: .listProposals(analysisID: nil, repo: "phmatray/Elliot", status: nil, limit: 100)
+        ) else {
+            Issue.record("expected a list of proposals")
+            return
+        }
+        #expect(filtered.count == 1)
+        #expect(filtered.allSatisfy { $0.repo == "phmatray/Elliot" })
     }
 }
 
@@ -197,6 +208,37 @@ private struct ParityBoard {
             run(backlog.id, elliot.id, .createIssue, .succeeded, epoch.addingTimeInterval(1))
         )
 
+        // A proposal in **each** repository, which is the whole point of seeding
+        // them at all: `listProposals` is the one read whose two implementations
+        // are written differently, and with proposals in only one repository —
+        // or none — the comparison holds `[]` against `[]` and sees nothing.
+        // Measured: with an empty board here, dropping the repo filter from
+        // `OfflineResponder.listProposals` (the exact drift that tool's comment
+        // records) passed this suite 4/4 and the full suite 1050/1050.
+        for (repo, angle, title) in [
+            (elliot, AnalysisAngle.bugs, "The reconciler drops a run"),
+            (koine, AnalysisAngle.techDebt, "Two copies of the same parser"),
+        ] {
+            // The analysis row first: `StoryProposal.analysisID` is a foreign
+            // key, so a proposal hung off a bare `UUID()` is rejected by the
+            // schema rather than merely unreferenced.
+            let analysisID = UUID()
+            try await store.saveAnalysis(Analysis(
+                id: analysisID, repoID: repo.id, angles: [angle],
+                maxStoriesPerAngle: 5, createdAt: epoch
+            ))
+            try await store.saveProposal(StoryProposal(
+                analysisID: analysisID,
+                runID: UUID(),
+                repoID: repo.id,
+                angle: angle,
+                title: title,
+                story: UserStory(role: "developer", want: title, benefit: "the board is honest"),
+                rationale: "seeded so a repo filter has something to exclude",
+                createdAt: epoch
+            ))
+        }
+
         return ParityBoard(
             store: store,
             handler: MCPRequestHandler(store: store, board: board, analysis: analysis),
@@ -223,20 +265,17 @@ private struct ParityBoard {
         ]
     }
 
-    func live(_ request: ElliotRequest) async -> Data? {
-        try? encoded(await handler.handle(request))
+    /// Both throw rather than swallowing. `try?` here would compare `"" == ""`
+    /// on an encode failure and pass having compared nothing — and since the two
+    /// sides share one encoder, a single DTO the encoder chokes on would silence
+    /// every read comparison at once, which is the failure this whole suite
+    /// exists to make impossible.
+    func liveText(_ request: ElliotRequest) async throws -> String {
+        String(decoding: try encoded(await handler.handle(request)), as: UTF8.self)
     }
 
-    func snapshot(_ request: ElliotRequest) async -> Data? {
-        try? encoded(await responder.respond(to: request))
-    }
-
-    func liveText(_ request: ElliotRequest) async -> String {
-        String(decoding: await live(request) ?? Data(), as: UTF8.self)
-    }
-
-    func snapshotText(_ request: ElliotRequest) async -> String {
-        String(decoding: await snapshot(request) ?? Data(), as: UTF8.self)
+    func snapshotText(_ request: ElliotRequest) async throws -> String {
+        String(decoding: try encoded(await responder.respond(to: request)), as: UTF8.self)
     }
 }
 
