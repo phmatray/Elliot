@@ -67,6 +67,30 @@
   target: it builds headlessly but cannot be exercised from a terminal — launch the assembled bundle
   from the **Finder** (`open dist/Elliot.app`), not from a shell, because the preflight checks exist
   precisely to survive *not* inheriting your shell `PATH`.
+- **If `swift test` hangs, or the SwiftPM build lock looks held, look for a stale
+  `swiftpm-testing-helper` — from *another worktree*.** This is the shape of #7, and its whole cost
+  was that it does not present as a stale process: it presents as the toolchain being broken. The
+  build lock stays held, `swift test` never returns, and nothing on screen points at a directory you
+  are not in. Several worktrees share this repository, which is exactly the arrangement where one
+  worktree's leftover affects another's build.
+  ```bash
+  ps -eo pid,ppid,etime,command | grep '[s]wiftpm-testing-helper'
+  ```
+  **Read the `--test-bundle-path` in the output, not just the PID: it names the owning worktree.**
+  That is what makes the sighting actionable — you can tell your own helper from a concurrent
+  session's, and killing the wrong one turns a rare stall into someone else's reproducible failure.
+  - ⚠️ **A PPID of 1 does *not* on its own mean "stale".** Measured 2026-08-06 (#30): SIGKILL the
+    `swift test` parent and the helper reparents to PID 1 — and then **exits by itself within about
+    200 ms**. Orphaned is a state this process passes *through* during normal teardown. So sample
+    twice, a second apart, and only act on a helper that is still there the second time. A one-shot
+    `ps` that greps for `ppid == 1` will accuse healthy processes.
+  - **Measured after #18, this no longer recurs** — see the *Resolved* note in #30 for the four
+    experiments and their numbers. Treat a fresh sighting that *survives* a second sample as new
+    information and record it on #30 rather than just killing it.
+  - ⚠️ **Do not reach for a pre-emptive "kill stray helpers" script.** This repository is regularly
+    driven from several sessions at once; such a script cannot tell a wedged helper from a healthy
+    concurrent one, and would convert a rare stall into a reproducible failure for whoever else is
+    building.
 
 ## CI gates (the exact commands CI fails on — satisfy these locally before ready/merge)
 <!-- TODO: there is no `.github/workflows/` directory — this repo has no CI at all, and branch
