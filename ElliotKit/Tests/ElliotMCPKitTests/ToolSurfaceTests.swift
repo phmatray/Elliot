@@ -273,6 +273,13 @@ struct ToolSurfaceTests {
         for tool in ElliotMCPServer.tools {
             #expect(tool.description?.isEmpty == false, "\(tool.name) has no description")
             #expect(tool.annotations.title?.isEmpty == false, "\(tool.name) has no title")
+            // Left nil this reads as "nobody said", and a client deciding how
+            // loudly to confirm a call has to guess — in whichever direction its
+            // author found convenient. Every tool here has an answer, so saying
+            // it is not optional: `board_cancel_run` reaches github.com and
+            // `board_next` reads one local database, and a caller must be able
+            // to tell those apart without reading our source.
+            #expect(tool.annotations.openWorldHint != nil, "\(tool.name) leaves openWorldHint unset")
         }
     }
 
@@ -309,5 +316,103 @@ struct ToolSurfaceTests {
         #expect(list.contains("workingTreeChanged"))
         #expect(list.contains("absent"))
         #expect(wait.contains("analysisReport"))
+    }
+
+    // MARK: - Invariants that also cover the next tool
+    //
+    // Per-tool tests pin the tool they were written for. These two are derived
+    // from the registry and the annotations, so a tool added tomorrow is covered
+    // the moment it declares itself — which is the only kind of test that catches
+    // the tool nobody has written yet.
+
+    /// Arguments good enough to carry one call past its own argument checks and
+    /// as far as the bridge.
+    ///
+    /// Read out of the tool's own schema rather than kept as a list here, so a
+    /// new tool needs no entry. A required argument whose name this does not
+    /// recognise still gets a value of the right JSON type; when that is not
+    /// enough the call comes back `bad_argument` and the test below fails naming
+    /// the tool, which is the signal to teach this function about it. That is a
+    /// far better failure than quietly skipping the new tool — which is what a
+    /// hand-written list does the day someone forgets to extend it.
+    private func plausibleArguments(for tool: Tool) -> [String: Value] {
+        let properties = tool.inputSchema["properties"]?.objectValue ?? [:]
+        let required = tool.inputSchema["required"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        var args: [String: Value] = [:]
+        for name in required {
+            let type = properties[name]?["type"]?.stringValue
+            if name == "to" || name == "column" {
+                args[name] = .string(Column.todo.rawValue)
+            } else if name == "angles" {
+                args[name] = .array([.string(AnalysisAngle.bugs.rawValue)])
+            } else if type == "array" {
+                args[name] = .array([.string(UUID().uuidString)])
+            } else if type == "integer" {
+                args[name] = .int(1)
+            } else if name.hasSuffix("_id") {
+                args[name] = .string(UUID().uuidString)
+            } else {
+                args[name] = .string("phmatray/Elliot")
+            }
+        }
+        return args
+    }
+
+    @Test("Every write tool is refused when Elliot is down, never served from the snapshot")
+    func everyWriteIsRefusedWhileOffline() async throws {
+        // The rule the whole architecture rests on: the app is the sole writer.
+        // A write answered from the read-only snapshot would change the board
+        // without firing its rule — a card moved with no run started, a
+        // cancellation nobody performed. `writesAreNeverServedOffline` pins this
+        // for board_move_card; this pins it for every tool that says it writes,
+        // including the ones not written yet.
+        let repo = makeRepo()
+        let card = makeCard(repoID: repo.id)
+        let run = makeRun(cardID: card.id, repoID: repo.id, state: .running)
+        let store = try await makeStore(repos: [repo], cards: [card], runs: [run])
+
+        let writes = ElliotMCPServer.tools.filter { $0.annotations.readOnlyHint == false }
+        // A floor, not an inventory. Without it a filter that matched nothing
+        // would pass the loop below vacuously, and a registry that stopped
+        // annotating its writes would read as a registry with no writes. Pinned
+        // to the exact count it would instead fail on every new write tool,
+        // which is the opposite of what this test is for.
+        #expect(writes.count >= 8, "the write set shrank: \(writes.map(\.name).sorted())")
+
+        for tool in writes {
+            let log = RequestLog()
+            let bridge = StubBridge(
+                isAppRunning: false,
+                onRead: { request in
+                    log.record(request)
+                    return .offline(store, .appNotRunning)
+                },
+                onWrite: { _ in
+                    .failure(
+                        code: .appUnavailable,
+                        message: "Elliot is not running and could not be launched.",
+                        hint: "Open Elliot.app and try again."
+                    )
+                }
+            )
+
+            let answer = try await call(
+                ElliotMCPServer(bridge: bridge), tool.name, plausibleArguments(for: tool)
+            )
+
+            #expect(answer.isError, "\(tool.name)")
+            // `app_unavailable` specifically, not merely "some error": a
+            // `bad_argument` would mean the call never reached the bridge and
+            // this loop asserted nothing at all about the write path.
+            #expect(
+                answer.error == ElliotErrorCode.appUnavailable.rawValue,
+                "\(tool.name) answered \(answer.error ?? "no error") — teach plausibleArguments its args"
+            )
+            // The read side must not even be consulted. A write tool that
+            // reached the snapshot first would be holding a database handle on
+            // the one code path that must never have one.
+            #expect(log.count == 0, "\(tool.name) consulted the read side")
+            #expect(answer.source == nil, "\(tool.name) claimed a source")
+        }
     }
 }

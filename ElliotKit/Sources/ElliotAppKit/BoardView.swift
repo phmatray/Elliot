@@ -558,15 +558,21 @@ struct BoardFraming: Equatable, Sendable {
             of: .column(selectedColumn), in: slots,
             columnWidth: columnWidth, panelWidth: panelWidth
         ) else { return nil }
-        // Only read when the pair is flipped, and it is flipped only when there
-        // is a panel — so the fallback is unreachable rather than a guess.
+        // `nil` when the panel is shut, and passed through as `nil`: the pair is
+        // then the column by itself, which is what `frameOffsetX` measures the
+        // lead against.
         let panelMinX = PanelLayout.minX(
             of: .panel, in: slots, columnWidth: columnWidth, panelWidth: panelWidth
         )
         return PanelLayout.frameOffsetX(
             originMinX: originMinX,
-            panelMinX: panelMinX ?? originMinX,
-            flipped: panelOrigin != nil && PanelLayout.opensLeft(of: selectedColumn)
+            panelMinX: panelMinX,
+            flipped: panelOrigin != nil && PanelLayout.opensLeft(of: selectedColumn),
+            columnWidth: columnWidth,
+            panelWidth: panelWidth,
+            // The window is the whole point of the clamp, and it is already the
+            // parameter this method is asked in terms of.
+            viewportWidth: boardWidth
         )
     }
 }

@@ -181,15 +181,25 @@ public final class StreamingProcess: Sendable {
     ///
     /// SIGTERM first because Claude Code shuts itself down cleanly on it;
     /// SIGKILL is the backstop for a process that is wedged.
-    public func terminate(hardKillAfter grace: Duration = .seconds(15)) {
+    public func terminate(hardKillAfter grace: Duration = ProcessTermination.hardKillGrace) {
         guard process.isRunning else { return }
         terminationRequested.withLock { $0 = true }
-        process.terminate()
 
         let process = self.process
-        Task.detached {
-            try? await Task.sleep(for: grace)
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        ProcessTermination.terminate(process, hardKillAfter: grace) {
+            // Deliberately `isRunning` alone, and deliberately not `state`:
+            // `ProcessRunner` consults its exit flag here and this one must not.
+            // That lock is held across `stdoutMirror`, which is a synchronous
+            // write to the run's log file, so reading it would let a slow — or
+            // wedged — disk delay the one signal that is supposed to be
+            // unconditional. A backstop that can block on the log it is trying
+            // to close out is not a backstop.
+            //
+            // Nothing is lost by it. The flag is set inside the termination
+            // handler, which only runs once Foundation has already reaped the
+            // child, so `isRunning` has gone false strictly earlier: the extra
+            // term could never have vetoed a kill this one allows.
+            process.isRunning
         }
     }
 }
