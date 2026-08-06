@@ -60,6 +60,11 @@ struct DetailPanelView: View {
                     editor.end()
                     saveError = nil
                     await model.refreshRuns(cardID: card.id)
+                    // Here and nowhere else: this is the one place that knows a
+                    // single card is open. `CardView.task` calls `refreshRuns`
+                    // for every visible card, and the 100-row read has no
+                    // business happening that often.
+                    await model.refreshHistory(cardID: card.id)
                 }
         }
     }
@@ -403,6 +408,10 @@ struct DetailPanelView: View {
                     provenance(card)
                     IssuePane(card: card)
                 case .runs:
+                    // Above the runs, mirroring `provenance` above the issue: a
+                    // row saying a move started `create-issue` sits directly
+                    // over the run box it names.
+                    MoveHistoryBlock(card: card)
                     RunsPane(card: card)
                 }
             }

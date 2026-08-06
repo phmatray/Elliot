@@ -183,6 +183,12 @@ public final class AppModel {
     /// it. `BoardStore.audits` had no non-test caller before this.
     public private(set) var lastMove: [UUID: MoveAudit] = [:]
 
+    /// Every move the selected card has made, newest first, as the store
+    /// returned them. Filled by `refreshHistory` from the panel's own `.task`,
+    /// never from `CardView` — see `refreshRuns` for why the two reads are not
+    /// one read.
+    public private(set) var historyByCard: [UUID: [MoveAudit]] = [:]
+
     public struct PendingMerge: Identifiable, Sendable {
         public var id: UUID { cardID }
         public var cardID: UUID
@@ -315,8 +321,8 @@ public final class AppModel {
             let server = IPCServer(
                 socketPath: StoreLocation.socketURL.path,
                 token: token
-            ) { request in
-                await handler.handle(request)
+            ) { request, client in
+                await handler.handle(request, client: client)
             }
             try server.start()
             ipcServer = server
@@ -741,7 +747,26 @@ public final class AppModel {
         runsByCard[cardID] = (try? await store?.runs(cardID: cardID, limit: 20)) ?? []
         // Read here rather than from a new call site: `CardView.task` and the
         // inspector already call this per card.
+        //
+        // Still one row, deliberately, and it is `refreshHistory` below that
+        // reads the rest. This runs from `CardView.task` for **every visible
+        // card**, so widening it to the full history would put the whole board's
+        // audit trail behind a scroll to feed one sentence in a header.
         lastMove[cardID] = (try? await store?.audits(cardID: cardID, limit: 1))??.first
+    }
+
+    /// Every move one card has made, for the panel that is open on it.
+    ///
+    /// Separate from `refreshRuns` for the reason written there — this is called
+    /// only from `DetailPanelView.task(id:)`, so the 100-row read happens once
+    /// per selection rather than once per visible card.
+    ///
+    /// A failed read leaves `[]` rather than the previous card's rows: an empty
+    /// history draws no block at all, which is honest, where stale rows would
+    /// attribute one card's moves to another.
+    public func refreshHistory(cardID: UUID) async {
+        historyByCard[cardID] =
+            (try? await store?.audits(cardID: cardID, limit: MoveHistory.auditLimit)) ?? []
     }
 
     // MARK: - Scheduler limits
@@ -1175,5 +1200,16 @@ public final class AppModel {
         runsByCard = byCard
         recentRuns = recent
         analysisRuns = analysis
+    }
+
+    /// Puts a real store behind the model without `start()`.
+    ///
+    /// The two seams above exist to avoid a database; this one exists because
+    /// the thing under test *is* a read. `refreshHistory` and `refreshRuns`
+    /// differ only in the limit they pass, and a fake would assert the limit I
+    /// wrote rather than the rows SQLite returns — which is the whole question
+    /// (#101). `board` stays nil, so a seeded model still cannot write.
+    func testOnlySeedStore(_ store: BoardStore) {
+        self.store = store
     }
 }

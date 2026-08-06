@@ -5,7 +5,13 @@ import Foundation
 /// The handler runs whatever the app would have run for a drag, so an agent
 /// moving a card and a human moving a card are the same act.
 public final class IPCServer: @unchecked Sendable {
-    public typealias Handler = @Sendable (ElliotRequest) async -> ElliotResponse
+    /// The request, and the name the connection gave for itself in `hello`.
+    ///
+    /// The name is per **connection**, not per server: `IPCClient.send` opens a
+    /// socket, greets, asks one question and hangs up, so two helpers talking to
+    /// one app must not see each other's name. Holding it in `serve`'s own frame
+    /// is what makes that true by construction.
+    public typealias Handler = @Sendable (ElliotRequest, String) async -> ElliotResponse
 
     private let socketPath: String
     private let token: String
@@ -63,6 +69,11 @@ public final class IPCServer: @unchecked Sendable {
 
     private func serve(_ fd: Int32) async {
         var greeted = false
+        // Named before it is known, because a request can only reach the handler
+        // after a successful `hello` — so "unknown" is unreachable rather than a
+        // guess, and it is a word an audit row can carry without lying if the
+        // guard above it ever changes.
+        var client = "unknown"
         let reader = UnixSocket.LineReader(fd: fd)
 
         while let line = reader.next() {
@@ -81,7 +92,7 @@ public final class IPCServer: @unchecked Sendable {
             }
 
             let response: ElliotResponse
-            if case .hello(let version, let clientToken, _) = envelope.body {
+            if case .hello(let version, let clientToken, let clientName) = envelope.body {
                 if version != elliotProtocolVersion {
                     response = .failure(
                         code: .protocolMismatch,
@@ -92,6 +103,9 @@ public final class IPCServer: @unchecked Sendable {
                     response = .failure(code: .unauthorized, message: "Bad token.", hint: nil)
                 } else {
                     greeted = true
+                    // Kept only on the path that also sets `greeted`: a name
+                    // from a refused greeting is a name nobody authenticated.
+                    client = clientName
                     // The build, not the protocol number — the version check
                     // already happened three lines up, and a bug report needs
                     // to name a build that exists.
@@ -104,7 +118,7 @@ public final class IPCServer: @unchecked Sendable {
                     hint: nil
                 )
             } else {
-                response = await handler(envelope.body)
+                response = await handler(envelope.body, client)
             }
 
             try? send(response, id: envelope.id, to: fd)
