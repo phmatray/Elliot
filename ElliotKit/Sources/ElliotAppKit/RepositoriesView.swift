@@ -295,6 +295,13 @@ public struct RepositoriesView: View {
         // rather than the neutral one a fork sits in.
         case .unlisted: "questionmark.circle.fill"
         case .notCloned, .notRegistered, .missing, .misplaced: "exclamationmark.triangle.fill"
+        // The git-state verdicts a probe produces. Grouped, and drawn exactly as
+        // the `default:` arm drew them before this file became exhaustive —
+        // giving each git state a symbol of its own is a decision belonging to
+        // the sweep that introduced them, not to this merge. They are listed
+        // rather than caught, so that decision has somewhere to land.
+        case .behind, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable:
+            "exclamationmark.triangle.fill"
         }
     }
 
@@ -309,6 +316,9 @@ public struct RepositoriesView: View {
         // same claim about a run that this is about a repository.
         case .unlisted: Palette.attention
         case .notCloned, .notRegistered, .missing, .misplaced: Palette.attention
+        // As above: the tint the `default:` arm gave them, preserved verbatim.
+        case .behind, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable:
+            Palette.attention
         }
     }
 

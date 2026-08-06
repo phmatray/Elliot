@@ -42,23 +42,37 @@ struct RepositoriesVocabularyTests {
         #expect(try #require(Self.srgb(RepositoriesView.tint(.ok), in: appearance)) == verified)
     }
 
-    /// Every verdict says something. Exhaustiveness is the compiler's job — the
-    /// switches carry no `default:` — but a case answering with an empty string
-    /// would still compile, and an unlabelled row is the failure this whole
-    /// change is about.
-    @Test("Every verdict has a word and a symbol")
+    /// Every verdict says something, and every symbol it names actually exists.
+    ///
+    /// Exhaustiveness is the compiler's job — the switches carry no `default:` —
+    /// but a case answering with an empty string, or with an SF Symbol that was
+    /// never shipped, compiles and tests green and then draws **nothing** where
+    /// the status icon should be. That is the class of bug this project has
+    /// repeatedly had to *look* at the window to find; here it is cheap enough
+    /// to assert instead.
+    @MainActor
+    @Test("Every verdict has a word, and a symbol that resolves")
     func vocabularyIsTotal() {
-        let all: [RepoIssue] = [
-            .ok, .notCloned, .notRegistered, .missing, .misplaced(expected: "/R/x"),
-            .unlisted, .outOfScope(.fork), .outOfScope(.archived), .outOfScope(.otherRoot),
-        ]
-        for issue in all {
+        for issue in Self.everyIssue {
             #expect(!RepositoriesView.verdict(issue).isEmpty)
-            #expect(!RepositoriesView.icon(issue).isEmpty)
+            let name = RepositoriesView.icon(issue)
+            #expect(!name.isEmpty)
+            #expect(
+                NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil,
+                "\(issue) names \(name), which is not an SF Symbol on this system")
         }
         // And no two verdicts share a word, or the page would merge two answers.
-        #expect(Set(all.map(RepositoriesView.verdict)).count == all.count)
+        #expect(Set(Self.everyIssue.map(RepositoriesView.verdict)).count == Self.everyIssue.count)
     }
+
+    /// One of each case. A verdict added to `RepoIssue` fails to compile in the
+    /// view's switches, which is the real guard; this list is what makes the
+    /// same addition visible *here*, where the word and symbol get checked.
+    private static let everyIssue: [RepoIssue] = [
+        .ok, .notCloned, .notRegistered, .missing, .misplaced(expected: "/R/x"),
+        .unlisted, .outOfScope(.fork), .outOfScope(.archived), .outOfScope(.otherRoot),
+        .behind(by: 3), .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable("no HEAD"),
+    ]
 
     // MARK: - The summary sentence
 
