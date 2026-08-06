@@ -289,6 +289,18 @@ Two invariants carry most of the weight:
 
 ## Things that bite
 
+- **After merging `main`, a stale `.build` fails in ways that look like real breakage — wipe it before
+  believing the failure.** Several agent branches merge `main` mid-flight, and SwiftPM's incremental
+  state does not always survive it. Measured twice in one afternoon, on docs-only branches that could
+  not have caused either:
+  - **Wrong values.** Three `RepoRegistryServiceSyncTests` failed *deterministically* while the identical commit passed in a fresh checkout. The tell was swift-testing printing the literal `.dirty` as `.unlisted` — an enum ordinal from before the merge. If a source literal reports as a different case, nothing is wrong with the code.
+  - **A link error.** `ld: symbol(s) not found` for `ProcessRunner.run(…timeout:)`, referenced from test objects compiled against the pre-merge signature.
+
+  Both cleared with `rm -rf ElliotKit/.build`. Neither is the intermittent signal 10/11 crash, which is
+  a *different* thing and also real: that one aborts the run reporting **no failing test**, so re-run
+  it rather than reading it as your change. Three outcomes, three responses — wrong values or a link
+  error after a merge means wipe the build; a signal means re-run; a named failing test means look at
+  your change.
 - **A `ScrollView` that can scroll swallows taps a disabled one passes through.** The board's
   deselect-on-background-click fired by bubbling out of a column's empty space, and that only worked
   while five columns fit the window and scrolling was off. The detail panel widens the row past the
