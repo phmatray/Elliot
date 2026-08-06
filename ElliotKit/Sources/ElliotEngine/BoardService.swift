@@ -333,14 +333,14 @@ public actor BoardService: SystemMoving {
 
     /// Reorders a card inside its own column without going near the rule engine
     /// — an inert move by construction.
+    ///
+    /// The index comes from `CardReorder.index`, which is also what decides the
+    /// neighbours in the first place. It used to be the same `switch` written
+    /// out here: two copies of one rule, and the placement's promise and the
+    /// write were free to drift apart without either side failing.
     public func reorder(cardID: UUID, between previous: Double?, and next: Double?) async throws {
         guard var card = try await store.card(id: cardID) else { throw BoardError.cardNotFound(cardID) }
-        card.orderIndex = switch (previous, next) {
-        case (let p?, let n?): (p + n) / 2
-        case (let p?, nil): p + 1024
-        case (nil, let n?): n - 1024
-        case (nil, nil): 0
-        }
+        card.orderIndex = CardReorder.index(previous: previous, next: next)
         try await store.saveCard(card)
     }
 
