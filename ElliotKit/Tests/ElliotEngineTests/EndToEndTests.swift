@@ -17,10 +17,39 @@ private enum TestPaths {
         .deletingLastPathComponent()   // repo root
 
     static let fakeClaude = repoRoot.appendingPathComponent("Scripts/fake-claude.sh").path
+    static let fakeGH = repoRoot.appendingPathComponent("Scripts/fake-gh.sh").path
 
     static func fixture(_ name: String) -> String {
         repoRoot.appendingPathComponent("Fixtures/stream-json/\(name)").path
     }
+
+    static func ghFixture(_ name: String) -> String {
+        repoRoot.appendingPathComponent("Fixtures/gh/\(name)").path
+    }
+}
+
+/// Writes a one-issue `gh issue list` payload whose `createdAt` is *now*.
+///
+/// `Verifier.verifyCreateIssue` only accepts an issue created since the run
+/// started, so this cannot be a checked-in fixture with a frozen date — a
+/// static file would make the test pass or fail according to the calendar.
+private func issuesFixtureCreatedNow(title: String, number: Int, at directory: URL) throws -> String {
+    let created = ISO8601DateFormatter().string(from: Date())
+    let json = """
+        [
+          {
+            "number": \(number),
+            "title": "\(title)",
+            "url": "https://github.com/phmatray/Elliot/issues/\(number)",
+            "state": "OPEN",
+            "createdAt": "\(created)",
+            "body": "Filed by the run under test."
+          }
+        ]
+        """
+    let path = directory.appendingPathComponent("issues-created-now.json")
+    try json.write(to: path, atomically: true, encoding: .utf8)
+    return path.path
 }
 
 /// The whole stack against a fake `claude`: a card is dragged, the rule engine
@@ -34,7 +63,8 @@ private struct Stack {
     var home: URL
 
     static func make(
-        fixture: String, extraEnv: [String: String] = [:], gitPath: String = "/usr/bin/false"
+        fixture: String, extraEnv: [String: String] = [:], gitPath: String = "/usr/bin/false",
+        ghPath: String = "/usr/bin/false"
     ) async throws -> Stack {
         let home = TestHome.scratch("board-e2e")
         try FileManager.default.createDirectory(
@@ -49,10 +79,11 @@ private struct Stack {
 
         let config = ToolConfig(
             claudePath: TestPaths.fakeClaude,
-            // `false` so every verification fails cleanly rather than reaching
-            // the network; this test is about the run mechanics. Callers that
-            // exercise the git sentinel pass a real `git` instead.
-            ghPath: "/usr/bin/false",
+            // `false` by default so every verification fails cleanly rather
+            // than reaching the network; this test is about the run mechanics.
+            // Callers that exercise the git sentinel pass a real `git` instead,
+            // and callers that need `gh` to *answer* pass `TestPaths.fakeGH`.
+            ghPath: ghPath,
             gitPath: gitPath,
             environment: environment
         )
@@ -165,6 +196,54 @@ struct EndToEndTests {
         let audits = try await stack.store.audits(cardID: card.id)
         #expect(audits.first?.origin == .userDrag)
         #expect(audits.first?.runID == runID)
+    }
+
+    /// Pins the behaviour the scheduler already had, so the refactor that moves
+    /// this decision into `ElliotModel` has something to be measured against.
+    /// It is `Reconciler` and `PRWatcher` that lacked the error-clearing, not
+    /// this path — see their own tests below.
+    @Test("A verified success clears the error a previous failure left on the card")
+    func schedulerClearsTheStaleErrorOnSuccess() async throws {
+        let ghHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("elliot-gh-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: ghHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: ghHome) }
+
+        let title = "Streaming run log inside the card"
+        let issues = try issuesFixtureCreatedNow(title: title, number: 4242, at: ghHome)
+
+        let stack = try await Stack.make(
+            fixture: "create-issue-success.ndjson",
+            extraEnv: ["FAKE_GH_ISSUES": issues],
+            ghPath: TestPaths.fakeGH
+        )
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(
+            repoID: stack.repo.id,
+            title: title,
+            story: UserStory(
+                role: "developer",
+                want: "to see the run log inside the card",
+                benefit: "I can diagnose without a terminal",
+                acceptanceCriteria: ["the log streams live"]
+            )
+        ).card
+
+        // The banner an earlier, failed attempt left behind.
+        card.lastError = "create-issue exited 1"
+        try await stack.store.saveCard(card)
+
+        _ = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        let run = try await stack.awaitRun(cardID: card.id)
+        #expect(run.state == .succeeded)
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.issueNumber == 4242)
+        #expect(after.issueURL == "https://github.com/phmatray/Elliot/issues/4242")
+        #expect(after.lastError == nil)
+        // `.issueCreated` implies no move: the card stays where the drag put it.
+        #expect(after.column == .todo)
     }
 
     @Test("A run refused a tool is not recorded as a plain success")
@@ -288,6 +367,202 @@ struct EndToEndTests {
         if case .unverified = recovered.verifiedOutcome {} else {
             Issue.record("expected an unverified outcome, got \(String(describing: recovered.verifiedOutcome))")
         }
+    }
+
+    /// A `Reconciler` over the same store, with `gh` answering from a fixture.
+    private func reconciler(for stack: Stack, prs: String) -> Reconciler {
+        let config = ToolConfig(
+            claudePath: TestPaths.fakeClaude, ghPath: TestPaths.fakeGH,
+            gitPath: "/usr/bin/false",
+            environment: [
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "FAKE_GH_PRS": TestPaths.ghFixture(prs),
+            ]
+        )
+        return Reconciler(
+            store: stack.store,
+            verifier: Verifier(gh: .init(config: config)),
+            mover: stack.board,
+            launcher: stack.scheduler
+        )
+    }
+
+    /// Seeds a card mid-flight, as a crash would have left it. Written straight
+    /// to the store on purpose: moving it through `BoardService` would spawn the
+    /// very run this test is pretending died.
+    private func seedInterruptedCard(
+        in stack: Stack, column: Column, issue: Int, lastError: String? = nil
+    ) async throws -> Card {
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Interrupted").card
+        card.column = column
+        card.issueNumber = issue
+        card.lastError = lastError
+        try await stack.store.saveCard(card)
+
+        var orphan = SkillRun(
+            cardID: card.id, repoID: stack.repo.id, kind: .implementIssue,
+            prompt: "/ai-migration-kit:implement-issue \(issue)", cwd: stack.repo.path,
+            logPath: stack.home.appendingPathComponent("runs/orphan.ndjson").path,
+            stderrPath: stack.home.appendingPathComponent("runs/orphan.log").path,
+            createdAt: Date()
+        )
+        orphan.state = .running
+        try await stack.store.saveRun(orphan)
+        return card
+    }
+
+    /// **AC4.** The bug this issue exists to close: `implement-issue` fails and
+    /// writes `lastError`, Elliot is quit mid-run, and on relaunch `gh` reports
+    /// the pull request *was* opened before the crash. The card must reach In
+    /// Review clean — the error describes a run that has since been disproved.
+    @Test("A card reconciled at launch no longer carries the failed run's error")
+    func reconciledCardDropsTheStaleError() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        let card = try await seedInterruptedCard(
+            in: stack, column: .inProgress, issue: 102, lastError: "implement-issue exited 1"
+        )
+        let summary = await reconciler(for: stack, prs: "prs-basic.json").sweep()
+
+        #expect(summary.orphanedRuns == 1)
+        #expect(summary.cardsCorrected == 1)
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.lastError == nil)
+        #expect(after.prNumber == 201)
+        #expect(after.prURL == "https://github.com/phmatray/Elliot/pull/201")
+        #expect(after.branch == "feat/102-the-thing")
+        #expect(after.column == .inReview)
+
+        // The launch sweep records `.reconciliation`, not `.prBecameReady`:
+        // the board is catching up, it did not watch this happen. That
+        // difference is true, it is persisted, and it must survive.
+        let audits = try await stack.store.audits(cardID: card.id)
+        #expect(audits.first?.origin == .system(reason: .reconciliation))
+    }
+
+    /// `cardsCorrected` used to count this: the old switch wrote nothing, set
+    /// no move, then fell through to `return true`. A launch summary that
+    /// overstates what it did is the one thing a summary must not do.
+    @Test("A merged pull request on a card already in Done corrects nothing, and says so")
+    func reconcilerDoesNotCountNoOps() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        let card = try await seedInterruptedCard(in: stack, column: .done, issue: 104)
+        let summary = await reconciler(for: stack, prs: "prs-merged.json").sweep()
+
+        #expect(summary.orphanedRuns == 1)
+        #expect(summary.cardsCorrected == 0)
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.column == .done)
+        #expect(try await stack.store.audits(cardID: card.id).isEmpty)
+    }
+
+    // MARK: - PRWatcher
+
+    private func pullRequest(
+        number: Int, issue: Int, state: String, mergedAt: Date? = nil
+    ) -> GHPullRequest {
+        GHPullRequest(
+            number: number,
+            url: "https://github.com/phmatray/Elliot/pull/\(number)",
+            title: "feat(app): the thing issue \(issue) asked for",
+            headRefName: "feat/\(issue)-the-thing",
+            isDraft: false,
+            state: state,
+            mergedAt: mergedAt
+        )
+    }
+
+    private func watcher(for stack: Stack) -> PRWatcher {
+        let config = ToolConfig(
+            claudePath: TestPaths.fakeClaude, ghPath: "/usr/bin/false",
+            gitPath: "/usr/bin/false", environment: [:]
+        )
+        // `reconcile` is handed its pull requests directly, so this client is
+        // never called — the sighting is the unit under test, not the fetch.
+        return PRWatcher(store: stack.store, gh: .init(config: config), mover: stack.board)
+    }
+
+    /// The identical hole `Reconciler` had, on the identical field: the watcher
+    /// moved the card to In Review and left the failed run's banner on it.
+    @Test("A card the watcher sends to In Review no longer carries the failed run's error")
+    func watcherClearsTheStaleError() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "In flight").card
+        card.column = .inProgress
+        card.issueNumber = 102
+        card.lastError = "implement-issue exited 1"
+        try await stack.store.saveCard(card)
+
+        let pr = pullRequest(number: 201, issue: 102, state: "OPEN")
+        #expect(await watcher(for: stack).reconcile(card: card, against: [pr]))
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.lastError == nil)
+        #expect(after.prNumber == 201)
+        #expect(after.prURL == "https://github.com/phmatray/Elliot/pull/201")
+        #expect(after.branch == "feat/102-the-thing")
+        #expect(after.column == .inReview)
+
+        // The watcher *did* see this happen, so it is not a reconciliation.
+        let audits = try await stack.store.audits(cardID: card.id)
+        #expect(audits.first?.origin == .system(reason: .prBecameReady))
+    }
+
+    /// The watcher used to guard on `card.lastError == nil` before saying a
+    /// pull request had been abandoned — so a card already carrying *any* other
+    /// error never learned it, and went on showing a stale reason for ever.
+    /// It acts whenever the text would change now, and only then.
+    @Test("A card carrying another error still learns its pull request was abandoned")
+    func watcherReplacesAStaleErrorWithTheClosedSentence() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Abandoned").card
+        card.column = .inReview
+        card.prNumber = 204
+        card.lastError = "Checks are failing: build."
+        try await stack.store.saveCard(card)
+
+        let pr = pullRequest(number: 204, issue: 105, state: "CLOSED")
+        let watcher = watcher(for: stack)
+
+        #expect(await watcher.reconcile(card: card, against: [pr]))
+        let first = try #require(try await stack.store.card(id: card.id))
+        #expect(first.lastError == "The pull request was closed without being merged.")
+
+        // Same card, same pull request: there is nothing left to say, so the
+        // poll stops re-saving an identical row.
+        #expect(await watcher.reconcile(card: first, against: [pr]) == false)
+    }
+
+    /// The one branch of the rewritten `reconcile` that still moves a card and
+    /// that the two tests above do not reach. `GHPullRequest.verifiedOutcome`
+    /// must read `MERGED` as `.merged` for this to work at all.
+    @Test("A pull request merged outside Elliot sends the card to Done, as something the watcher saw")
+    func watcherSendsAMergedCardToDone() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Landed").card
+        card.column = .inReview
+        card.prNumber = 205
+        try await stack.store.saveCard(card)
+
+        let pr = pullRequest(number: 205, issue: 106, state: "MERGED", mergedAt: Date())
+        #expect(await watcher(for: stack).reconcile(card: card, against: [pr]))
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.column == .done)
+
+        let audits = try await stack.store.audits(cardID: card.id)
+        #expect(audits.first?.origin == .system(reason: .prMergedExternally))
     }
 }
 

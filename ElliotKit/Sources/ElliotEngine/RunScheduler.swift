@@ -463,7 +463,7 @@ public actor RunScheduler: RunLaunching {
         // pull request before it was stopped, and both skills are resume-safe.
         let verified = await verifier.verify(run: run, card: card, repo: repo)
         run.verifiedOutcome = verified
-        await apply(verified, to: card, run: run)
+        await apply(verified, to: card)
         return verified
     }
 
@@ -518,44 +518,18 @@ public actor RunScheduler: RunLaunching {
     }
 
     /// Writes what `gh` reported back onto the card.
-    private func apply(_ outcome: VerifiedOutcome, to card: Card, run: SkillRun) async {
-        var card = card
-        var systemMove: (ElliotModel.Column, MoveOrigin.SystemReason)?
+    ///
+    /// What an outcome *does* to a card is decided once, in `ElliotModel`; this
+    /// reads the answer and performs the I/O. It used to hold its own switch,
+    /// and the copies in `Reconciler` and `PRWatcher` had already drifted from
+    /// it on whether a success clears `lastError`.
+    private func apply(_ outcome: VerifiedOutcome, to card: Card) async {
+        // `.live`: the world moved while Elliot was watching it happen.
+        let result = outcome.applied(to: card, attribution: .live)
 
-        switch outcome {
-        case .issueCreated(let number, let url):
-            card.issueNumber = number
-            card.issueURL = url
-            card.lastError = nil
-
-        case .noIssueCreated(let reason):
-            card.lastError = reason
-
-        case .prOpen(let number, let url, let isDraft, let branch):
-            card.prNumber = number
-            card.prURL = url
-            card.branch = branch
-            card.lastError = nil
-            // implement-issue flips the PR ready as its last act, so this is
-            // usually already true by the time the run exits.
-            if !isDraft, card.column == .inProgress {
-                systemMove = (.inReview, .prBecameReady)
-            }
-
-        case .merged:
-            card.lastError = nil
-            if card.column != .done { systemMove = (.done, .prMergedExternally) }
-
-        case .notMerged(let reason), .unverified(let reason):
-            card.lastError = reason
-
-        case .closedUnmerged:
-            card.lastError = "The pull request was closed without being merged."
-        }
-
-        try? await store.saveCard(card)
-        if let (column, reason) = systemMove {
-            await systemMover?.applySystemMove(cardID: card.id, to: column, reason: reason)
+        if result.changed { try? await store.saveCard(result.card) }
+        if let move = result.move {
+            await systemMover?.applySystemMove(cardID: card.id, to: move.column, reason: move.reason)
         }
     }
 

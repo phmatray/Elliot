@@ -115,6 +115,25 @@ run's closing summary. Issue and PR numbers come from `gh … --json` through `G
 `PRMatcher` scores branches rather than looking one up, anchoring on `^<issue>-` *with* the trailing
 hyphen so issue 4 cannot match `feat/47-…`.
 
+**What a verified outcome *does* to a card is decided once too, in `ElliotModel`.** `Verifier` says
+what happened; `VerifiedOutcome.applied(to:attribution:)` (`ElliotModel/CardOutcome.swift`) says what
+that means for the card — the fields, the `lastError`, and the move it implies — and returns all three
+in one `CardOutcome`. `RunScheduler.apply`, `Reconciler.apply` and `PRWatcher.reconcile` save and
+move; **they do not judge**, and none of them writes a card field of its own. Enforced by grep: none
+of `issueNumber|issueURL|prNumber|prURL|branch|lastError =` appears in those three files.
+
+This was three hand-written switches until #135, and they had already drifted — the same run,
+verified by the same `Verifier`, produced a clean card through `RunScheduler` and a card still
+showing the failed run's banner through `Reconciler`. The card and the move travel in one value on
+purpose: a caller that could save the fields and forget the move is the bug the type prevents.
+`GHPullRequest.verifiedOutcome` exists so `PRWatcher` states its conclusions in the same vocabulary
+instead of re-deriving them, which is why it was the site that drifted without looking like a copy.
+
+The one difference that is *real* stays a parameter: `Attribution.live` records `.prBecameReady` /
+`.prMergedExternally`, `.launchSweep` records `.reconciliation`. That is the board watching the world
+move versus the board catching up after not running — it is persisted in `MoveAudit` and rendered
+from there, so collapsing the two would rewrite history rather than simplify code.
+
 **The app is the sole writer.** SQLite does not notify other processes of writes, so `elliot-mcp` opens
 the store read-only and routes every mutation back over the unix socket. A read may fall back to
 `source: offline-db`; a **write never falls back** — writing a column change straight to the database

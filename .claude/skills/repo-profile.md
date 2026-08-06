@@ -32,15 +32,19 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**996 tests in 116 suites**, measured on `main` at
-  `7b8436c` on 2026-08-06; needs no Xcode, no API token, no network — the end-to-end suite drives
-  `Scripts/fake-claude.sh` instead of the real `claude`)
+- **Full test:** `cd ElliotKit && swift test` (**1034 tests in 119 suites**, measured on
+  `feat/135-verified-outcome-once` on 2026-08-06 after merging `main` at `36beaf3`; needs no Xcode,
+  no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
+  real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
-    wrong here three times.** It said 408 while the suite ran 517, then 517 while it ran 788. It moved
-    788 → 820 *during the pull request that corrected it*, when `main` gained three suites and the
-    branch was synced. It then said 820 while `main` ran **996 in 116** — a gap of 176 tests and 21
-    suites, i.e. the line had gone stale faster than anyone was reading it.
-    **Trust the run, and correct the line when you notice the gap.**
+    wrong here three times.** It said 408 while the suite ran 517, then 517 while it ran 788, then
+    **820 while it ran 996** — a gap of 176 tests and 21 suites, i.e. the line had gone stale faster
+    than anyone was reading it. It moved 788 → 820 *during the pull request that corrected it*, when
+    `main` gained three suites and the branch was synced, and it drifted **twice more inside #135**:
+    1026 → 1027 when the code-review pass added a test after the line was written, then 1027 → 1034
+    when the merge with `main` brought #134/#136's two suites in. **Trust the run, and correct the
+    line when you notice the gap** — that is three separate corrections in one pull request, so
+    re-read it from your own last run rather than from this line.
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
@@ -205,6 +209,15 @@ before flipping a PR ready: -->
 - **`gh` is the fact; the agent's prose is a hint.** Nothing written back to a card may be parsed out
   of a run's closing summary. Issue/PR numbers come from `gh … --json` through `GHClient`/`Verifier`;
   for an analysis, the fact is the `stories.json` file at the `ELLIOT_OUTPUT=` path, not the closing message.
+- **What a verified outcome *does* to a card is decided once, in `ElliotModel`** —
+  `VerifiedOutcome.applied(to:attribution:)` in `CardOutcome.swift` returns the new card, the move it
+  implies and whether anything changed, all in one value. `RunScheduler.apply`, `Reconciler.apply`
+  and `PRWatcher.reconcile` save and move; they write no card field of their own (grep-enforced: no
+  `issueNumber|issueURL|prNumber|prURL|branch|lastError =` in those three files). A plan that adds a
+  fourth reader of `VerifiedOutcome` calls that function — it does not write a fourth switch. This
+  was three switches until #135 and they had drifted, which is how a reconciled card kept showing the
+  banner of the run that failed. `Attribution` (`.live` / `.launchSweep`) is the one difference that
+  is genuinely real, because `MoveAudit` persists it and the history view renders it.
 - **A run is clean only when `permission_denials` is empty too** — `is_error: false` /
   `subtype: "success"` alone is not enough.
 - **A system-originated move never triggers a skill** (`MoveContext.allowSideEffects == false` →
