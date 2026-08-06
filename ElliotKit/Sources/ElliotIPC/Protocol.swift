@@ -18,7 +18,16 @@ import Foundation
 /// helper claiming 2 is one that cannot analyse anything. Additive to the app,
 /// but not to the helper — a 3 helper meeting a 2 app would send a request that
 /// app cannot decode, which is precisely what the handshake exists to refuse.
-public let elliotProtocolVersion = 3
+///
+/// **4** — a run says which analysis it belongs to, which angle it read
+/// through, and what it harvested: `RunDTO.analysisID`, `RunDTO.angle` and
+/// `RunDTO.analysisReport`. Additive as JSON, and bumped anyway, because
+/// `workingTreeChanged` is tri-state: absent means the git sentinel never ran.
+/// A 4 helper talking to a 3 app would find it absent on every analysis run
+/// and report a repository nobody checked as unchecked-for-the-wrong-reason —
+/// a statement about the user's checkout, derived from the age of their app
+/// bundle. Absent has to keep meaning one thing, so the pairing is refused.
+public let elliotProtocolVersion = 4
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
@@ -503,10 +512,68 @@ public struct VerifiedOutcomeDTO: Codable, Sendable, Hashable {
     }
 }
 
+/// What an analysis run had to say about itself, flattened for the wire.
+///
+/// Its own type rather than `AnalysisRunReport` re-exported, for the reason
+/// `VerifiedOutcomeDTO` is its own type: what an agent reads must not be a
+/// model type's synthesised `Codable`, or renaming a field in `ElliotModel`
+/// changes the wire with nothing at the boundary to fail.
+public struct AnalysisReportDTO: Codable, Sendable, Hashable {
+    /// `artifact` when the stories came from the file the prompt asked for,
+    /// `resultText` when they had to be recovered from the closing message,
+    /// `none` when there were none to read.
+    public var source: String
+    /// Proposals that survived validation.
+    public var kept: Int
+    /// Why each dropped story was dropped. Shown, never swallowed.
+    public var dropped: [String]
+    /// The git sentinel, and it is tri-state on purpose.
+    ///
+    /// **Absent** means nobody checked: the baseline lives only in the running
+    /// app, so a run orphaned by a crash has nothing to compare against.
+    /// `false` means it was checked and the tree was untouched. Reading absent
+    /// as clean is asserting something about a repository nobody looked at.
+    public var workingTreeChanged: Bool?
+    /// `git status --porcelain` after the run, present only when it moved.
+    public var workingTreeDiff: String?
+
+    public init(
+        source: String,
+        kept: Int = 0,
+        dropped: [String] = [],
+        workingTreeChanged: Bool? = nil,
+        workingTreeDiff: String? = nil
+    ) {
+        self.source = source
+        self.kept = kept
+        self.dropped = dropped
+        self.workingTreeChanged = workingTreeChanged
+        self.workingTreeDiff = workingTreeDiff
+    }
+
+    public init(_ report: AnalysisRunReport) {
+        source = report.harvestSource.rawValue
+        kept = report.kept
+        dropped = report.dropped
+        workingTreeChanged = report.workingTreeChanged
+        workingTreeDiff = report.workingTreeDiff
+    }
+}
+
 public struct RunDTO: Codable, Sendable, Hashable {
     public var id: UUID
     /// Null for an analysis run, which reads a repository and has no card.
     public var cardID: UUID?
+    /// The analysis this run belongs to. Exactly one of `cardID` and
+    /// `analysisID` is set.
+    public var analysisID: UUID?
+    /// The lens this run read the repository through: `bugs`, `quickWins`,
+    /// `features`, `techDebt`, `tests` or `docsAndDX`. Null for a card run.
+    ///
+    /// True from the moment the run is queued, unlike `analysisReport` — an
+    /// agent watching a running analysis still needs to know which of six
+    /// readings it is watching.
+    public var angle: String?
     /// `create-issue`, `implement-issue`, `merge-pr` or `analyze-repo` — the
     /// same vocabulary `MoveDTO.triggered` and `NextDTO.wouldTrigger` use, so
     /// one word means one thing across the whole wire.
@@ -523,6 +590,10 @@ public struct RunDTO: Codable, Sendable, Hashable {
     /// `resultText` will still describe a merge, because that is the agent's
     /// account of its own work and not a fact.
     public var verifiedOutcome: VerifiedOutcomeDTO?
+    /// What the run had to say about itself: where its stories came from, what
+    /// was dropped, and whether the repository moved under it. Null for a card
+    /// run, and for an analysis run that has not finished.
+    public var analysisReport: AnalysisReportDTO?
     public var exitCode: Int32?
     public var prompt: String
     public var startedAt: Date?
@@ -545,11 +616,14 @@ public struct RunDTO: Codable, Sendable, Hashable {
     public init(run: SkillRun, now: Date = Date()) {
         id = run.id
         cardID = run.cardID
+        analysisID = run.analysisID
+        angle = run.analysisAngle?.rawValue
         kind = run.kind.skillName
         state = run.state.rawValue
         isTerminal = run.state.isTerminal
         isActive = run.state.isActive
         verifiedOutcome = run.verifiedOutcome.map(VerifiedOutcomeDTO.init)
+        analysisReport = run.analysisReport.map(AnalysisReportDTO.init)
         exitCode = run.exitCode
         prompt = run.prompt
         startedAt = run.startedAt
@@ -568,12 +642,15 @@ public struct RunDTO: Codable, Sendable, Hashable {
 
     public init(
         id: UUID,
-        cardID: UUID,
+        cardID: UUID?,
+        analysisID: UUID? = nil,
+        angle: String? = nil,
         kind: String,
         state: String,
         isTerminal: Bool,
         isActive: Bool,
         verifiedOutcome: VerifiedOutcomeDTO? = nil,
+        analysisReport: AnalysisReportDTO? = nil,
         exitCode: Int32? = nil,
         prompt: String,
         startedAt: Date? = nil,
@@ -588,11 +665,14 @@ public struct RunDTO: Codable, Sendable, Hashable {
     ) {
         self.id = id
         self.cardID = cardID
+        self.analysisID = analysisID
+        self.angle = angle
         self.kind = kind
         self.state = state
         self.isTerminal = isTerminal
         self.isActive = isActive
         self.verifiedOutcome = verifiedOutcome
+        self.analysisReport = analysisReport
         self.exitCode = exitCode
         self.prompt = prompt
         self.startedAt = startedAt

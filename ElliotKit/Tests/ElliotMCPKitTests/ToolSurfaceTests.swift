@@ -38,6 +38,24 @@ struct ToolSurfaceTests {
         }
     }
 
+    @Test("No two tools claim the same name")
+    func toolNamesAreUnique() {
+        // The dispatch table is a `Dictionary(uniqueKeysWithValues:)` over these
+        // very names, so a duplicate traps rather than shadowing a tool into
+        // unreachability — but only at the first *use* of that lazily
+        // initialised static, which is the first tools/call. Reading `tools`
+        // does not touch it, so a helper only ever asked for tools/list would
+        // never find out. This is what finds it before any of that.
+        //
+        // `BoardTool.name` is a protocol *extension* returning `tool.name`, not
+        // a requirement a conformance can answer its own way, so these are
+        // exactly the keys that dictionary is built from.
+        let names = ElliotMCPServer.tools.map(\.name)
+        // A registry that emptied out would satisfy the line below vacuously.
+        #expect(!names.isEmpty)
+        #expect(Set(names).count == names.count, "duplicate tool name among \(names.sorted())")
+    }
+
     // MARK: - Arguments
     //
     // An argument the caller sent but spelled wrong must come back as a
@@ -277,5 +295,19 @@ struct ToolSurfaceTests {
         // named nothing at all, never reaches a client again.
         #expect(!ElliotBuild.version.isEmpty)
         #expect(!ElliotBuild.version.contains("unknown"))
+    }
+
+    @Test("Both run tools describe what an analysis run carries")
+    func runToolsDocumentTheAnalysisFields() throws {
+        let list = try #require(tool("board_list_runs").description)
+        let wait = try #require(tool("board_await_run").description)
+
+        #expect(list.contains("angle"))
+        #expect(list.contains("analysisReport"))
+        // The distinction the whole tri-state exists for, stated where an
+        // agent reads it before it reads any run at all.
+        #expect(list.contains("workingTreeChanged"))
+        #expect(list.contains("absent"))
+        #expect(wait.contains("analysisReport"))
     }
 }
