@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "ElliotEngine", targets: ["ElliotEngine"]),
         .library(name: "ElliotIPC", targets: ["ElliotIPC"]),
         .library(name: "ElliotMCPKit", targets: ["ElliotMCPKit"]),
+        .library(name: "ElliotAppKit", targets: ["ElliotAppKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
@@ -21,8 +22,18 @@ let package = Package(
     ],
     targets: [
         .executableTarget(name: "elliot-mcp", dependencies: ["ElliotMCPKit"]),
-        .executableTarget(
-            name: "ElliotApp",
+        // Holds `@main` and the `Scene` graph, and nothing else. An
+        // `executableTarget` cannot be imported, so anything left in here is
+        // unreachable from `swift test` — which is how `.inspector()` shipped
+        // three times without anyone seeing it work (#47 adopted it unverified,
+        // #50 was the crash, #52 the layout, #53 the revert), and why
+        // `MCPRequestHandler` had to be evacuated to ElliotEngine in #55.
+        .executableTarget(name: "ElliotApp", dependencies: ["ElliotAppKit"]),
+        // Every view and `AppModel`. A library rather than part of the
+        // executable so a test target can import it: the point of the split is
+        // that the app's own logic stops being unprovable.
+        .target(
+            name: "ElliotAppKit",
             dependencies: ["ElliotEngine", "ElliotIPC", "ElliotStore", "ElliotProcess"]
         ),
         // Renders the mark to PNGs so `Scripts/build-app.sh` can hand them to
@@ -87,6 +98,9 @@ let package = Package(
         // stops the process-global `ELLIOT_HOME` moving between a write and
         // the read that follows it.
         .testTarget(name: "ElliotMCPKitTests", dependencies: ["ElliotMCPKit", "TestSupport"]),
+        // Covers `AppModel` where it decides rather than where it renders. It
+        // held 800 lines and no tests until the split above made it reachable.
+        .testTarget(name: "ElliotAppKitTests", dependencies: ["ElliotAppKit", "TestSupport"]),
     ],
     swiftLanguageModes: [.v6]
 )
