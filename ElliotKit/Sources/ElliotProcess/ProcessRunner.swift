@@ -34,7 +34,8 @@ public enum ProcessRunner {
         arguments: [String],
         cwd: String? = nil,
         environment: [String: String],
-        timeout: Duration? = .seconds(60)
+        timeout: Duration? = .seconds(60),
+        hardKillAfter: Duration = ProcessTermination.hardKillGrace
     ) async throws -> ProcessResult {
         guard FileManager.default.isExecutableFile(atPath: executable) else {
             throw ProcessError.notExecutable(executable)
@@ -136,13 +137,18 @@ public enum ProcessRunner {
                 group.addTask {
                     do { try await Task.sleep(for: timeout) } catch { return false }
                     guard process.isRunning else { return false }
-                    process.terminate()
                     // SIGTERM, then SIGKILL for a command that ignores it: the
                     // exit is awaited below, so without the second rung a
                     // wedged `gh` would be the very hang this file prevents.
-                    Task.detached {
-                        try? await Task.sleep(for: .seconds(5))
-                        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                    // Measured, with the escalation deleted: `swift test` had
+                    // no verdict 5 minutes 39 seconds later. The rung and its
+                    // grace are `StreamingProcess`'s too — the two spawners
+                    // must not disagree about when a child is hopeless.
+                    ProcessTermination.terminate(process, hardKillAfter: hardKillAfter) {
+                        // Under the lock that publishes the exit, so the kill
+                        // cannot land on a pid this run has already reaped and
+                        // the kernel has handed to somebody else.
+                        state.withLock { !$0.exited } && process.isRunning
                     }
                     return true
                 }

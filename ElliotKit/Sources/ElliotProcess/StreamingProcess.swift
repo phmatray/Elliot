@@ -181,15 +181,18 @@ public final class StreamingProcess: Sendable {
     ///
     /// SIGTERM first because Claude Code shuts itself down cleanly on it;
     /// SIGKILL is the backstop for a process that is wedged.
-    public func terminate(hardKillAfter grace: Duration = .seconds(15)) {
+    public func terminate(hardKillAfter grace: Duration = ProcessTermination.hardKillGrace) {
         guard process.isRunning else { return }
         terminationRequested.withLock { $0 = true }
-        process.terminate()
 
-        let process = self.process
-        Task.detached {
-            try? await Task.sleep(for: grace)
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        let process = self.process, state = self.state
+        ProcessTermination.terminate(process, hardKillAfter: grace) {
+            // Both halves, because they close different windows: the state says
+            // this object has already published an exit, and `isRunning` covers
+            // the stretch between the child being reaped and the termination
+            // handler getting as far as publishing — the final drain can sit in
+            // the middle of it for as long as a stray descendant holds a pipe.
+            state.withLock { $0.exit == nil } && process.isRunning
         }
     }
 }
