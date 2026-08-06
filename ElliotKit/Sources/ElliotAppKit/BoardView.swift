@@ -362,6 +362,9 @@ struct ColumnView: View {
     let column: ElliotModel.Column
     let width: CGFloat
     @State private var isTargeted = false
+    /// Per column and per repository, so collapsing a repository in Backlog does
+    /// not hide it in To Do — the two are different questions.
+    @State private var collapsed: Set<UUID> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -438,25 +441,22 @@ struct ColumnView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 6) {
-                    ForEach(cards) { card in
-                        CardView(card: card)
-                            .id(card.id)
-                            .onDrag {
-                                // An action closure, not a view builder: safe
-                                // to record the selection here, and it means
-                                // starting a drag arms the console for the card
-                                // in hand.
-                                model.selectedCardID = card.id
-                                return NSItemProvider(object: card.id.uuidString as NSString)
+                    // Grouped only when the picker says "All repositories".
+                    // With one repository chosen every card belongs to it, and a
+                    // header repeating its name on every column is furniture.
+                    if let groups {
+                        ForEach(groups) { group in
+                            groupHeader(group)
+                            if !collapsed.contains(group.repoID) {
+                                ForEach(group.cards) { card in
+                                    draggable(card)
+                                }
                             }
-                            // Moving a card is the app's only gesture, and it
-                            // used to be a teleport: the card vanished from one
-                            // column and appeared in another with no motion
-                            // connecting the two.
-                            .transition(.asymmetric(
-                                insertion: .opacity.combined(with: .offset(x: -14)),
-                                removal: .opacity.combined(with: .scale(scale: 0.97))
-                            ))
+                        }
+                    } else {
+                        ForEach(cards) { card in
+                            draggable(card)
+                        }
                     }
 
                     if cards.isEmpty {
@@ -484,6 +484,68 @@ struct ColumnView: View {
                 }
             }
         }
+    }
+
+    private func draggable(_ card: Card) -> some View {
+        CardView(card: card)
+            .id(card.id)
+            .onDrag {
+                // An action closure, not a view builder: safe to record the
+                // selection here, and it means starting a drag arms the console
+                // for the card in hand.
+                model.selectedCardID = card.id
+                return NSItemProvider(object: card.id.uuidString as NSString)
+            }
+            // Moving a card is the app's only gesture, and it used to be a
+            // teleport: the card vanished from one column and appeared in
+            // another with no motion connecting the two.
+            .transition(
+                .asymmetric(
+                    insertion: .opacity.combined(with: .offset(x: -14)),
+                    removal: .opacity.combined(with: .scale(scale: 0.97))
+                ))
+    }
+
+    /// The groups, or `nil` when a single repository is selected.
+    ///
+    /// Decided by `groupByRepo` in ElliotModel, which is where the ordering and
+    /// the orphan fallback are proven. This only asks.
+    private var groups: [CardGroup]? {
+        guard model.selectedRepoID == nil else { return nil }
+        return groupByRepo(cards, repos: model.repos)
+    }
+
+    /// Deliberately carries no `dropDestination`.
+    ///
+    /// The drop target is the column and only the column. A drop onto a group
+    /// header would have to mean "move this card to that repository", which is
+    /// a write `BoardService` owns and a second path to a card's identity — the
+    /// exact kind of silent second write path the app is built to avoid.
+    private func groupHeader(_ group: CardGroup) -> some View {
+        Button {
+            if collapsed.contains(group.repoID) {
+                collapsed.remove(group.repoID)
+            } else {
+                collapsed.insert(group.repoID)
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: collapsed.contains(group.repoID) ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                ConsoleLabel(text: group.repoName, tint: .secondary)
+                Fact(text: "\(group.cards.count)", tint: Palette.quiet, small: true)
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .padding(.top, 4)
+        }
+        .buttonStyle(.plain)
+        // Singular written out. "1 cards" is the kind of thing that makes a
+        // careful product look careless, and this label is read aloud.
+        .accessibilityLabel(
+            "\(group.repoName), \(group.cards.count) \(group.cards.count == 1 ? "card" : "cards") in \(column.displayName)"
+        )
     }
 
     /// An empty column used to be blank, which reads as broken rather than
