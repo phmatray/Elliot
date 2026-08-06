@@ -87,7 +87,10 @@ struct NextTool: BoardTool {
                 max: ElliotPaging.nextLimitMax
             )
             let page = try await OfflineBoard.nextPage(
-                store: store, repo: repo, limit: limit, cappedFrom: cappedFrom
+                store: store,
+                repoID: try OfflineBoard.filter(repo, in: try await store.repos()).repoID,
+                limit: limit,
+                cappedFrom: cappedFrom
             )
             let fields = try ToolOutput.nextFields(
                 page, source: "offline-db", extraNote: ToolOutput.offlineNote(reason)

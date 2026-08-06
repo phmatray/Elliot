@@ -280,15 +280,19 @@ enum OfflineBoard {
 
     /// What `board_next` answers when Elliot is down, ranked by the same pure
     /// function the app uses.
+    ///
+    /// Takes the repository already resolved rather than a name: the caller has
+    /// to decide what an unknown name means — a refusal, in the same words the
+    /// app uses — and a function that resolved it here would have to invent a
+    /// second way of saying so.
     static func nextPage(
         store: BoardStore,
-        repo: String?,
+        repoID: UUID?,
         limit: Int,
         cappedFrom: Int?
     ) async throws -> NextPage {
         let repos = try await store.repos()
-        let resolved = try filter(repo, in: repos)
-        let cards = try await store.cards(repoID: resolved.repoID)
+        let cards = try await store.cards(repoID: repoID)
         let active = try await store.activeRuns(cardIDs: cards.map(\.id))
 
         let steps = rankNextSteps(
