@@ -83,6 +83,87 @@ public struct PreflightView: View {
         )
     }
 
+    /// The brake. Off by default, because a ceiling nobody chose will stop a
+    /// legitimate `merge-pr` at 3 a.m. and read as a bug.
+    ///
+    /// Today's spend is shown beside it, and it is the number that makes the
+    /// setting meaningful: a $20 ceiling means nothing until you know the board
+    /// spent $34 yesterday.
+    private var spendCeiling: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                ConsoleLabel(text: "Spending")
+                Spacer()
+                Fact(
+                    text: "today \(model.spentToday.sentence())",
+                    tint: model.isOverDailyCeiling ? Palette.refused : Palette.quiet,
+                    small: true
+                )
+            }
+            Text(
+                "A drag starts an unattended agent. Without a ceiling there is no upper bound "
+                    + "on what one costs."
+            )
+            .font(Type.prose)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            ceilingField(
+                title: "Per run", value: model.ceiling.perRunUSD,
+                help: "Handed to Claude Code, which stops the run itself."
+            ) { new in SpendCeiling(perRunUSD: new, perDayUSD: model.ceiling.perDayUSD) }
+
+            ceilingField(
+                title: "Per day", value: model.ceiling.perDayUSD,
+                help: "Checked before a run starts. Runs already going are never cut off."
+            ) { new in SpendCeiling(perRunUSD: model.ceiling.perRunUSD, perDayUSD: new) }
+
+            if model.isOverDailyCeiling {
+                // The one refusal a user cannot deduce from the board: the queue
+                // simply stops moving, and without this it reads as a broken
+                // scheduler rather than as the setting doing its job.
+                Label(
+                    "Today's ceiling is reached — queued runs are held until tomorrow, "
+                        + "or until you raise it.",
+                    systemImage: "hand.raised.fill"
+                )
+                .font(Type.prose)
+                .foregroundStyle(Palette.refused)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func ceilingField(
+        title: String,
+        value: Double?,
+        help: String,
+        make: @escaping (Double?) -> SpendCeiling
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(title).font(Type.bodyProse).frame(width: 68, alignment: .leading)
+            TextField(
+                "no ceiling",
+                text: Binding(
+                    // Empty, not "0": the placeholder says "no ceiling", and a
+                    // zero in the box would read as a ceiling of nothing.
+                    get: { value.map { String(format: "%.2f", $0) } ?? "" },
+                    set: { typed in
+                        let parsed = Double(typed.replacingOccurrences(of: ",", with: "."))
+                        Task { await model.updateCeiling(make(parsed)) }
+                    }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 90)
+            Text(help).font(Type.prose).foregroundStyle(.tertiary)
+            Spacer()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "\(title) ceiling, \(value.map { MoneyFormat.usd($0) } ?? "none"). \(help)")
+    }
+
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -91,6 +172,7 @@ public struct PreflightView: View {
 
                 section("This machine", results: model.globalChecks)
                 runLimits
+                spendCeiling
                 integration
 
                 VStack(alignment: .leading, spacing: 8) {
