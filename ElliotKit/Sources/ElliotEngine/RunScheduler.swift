@@ -463,7 +463,7 @@ public actor RunScheduler: RunLaunching {
         // pull request before it was stopped, and both skills are resume-safe.
         let verified = await verifier.verify(run: run, card: card, repo: repo)
         run.verifiedOutcome = verified
-        await apply(verified, to: card, run: run)
+        await apply(verified, to: card)
         return verified
     }
 
@@ -523,7 +523,7 @@ public actor RunScheduler: RunLaunching {
     /// reads the answer and performs the I/O. It used to hold its own switch,
     /// and the copies in `Reconciler` and `PRWatcher` had already drifted from
     /// it on whether a success clears `lastError`.
-    private func apply(_ outcome: VerifiedOutcome, to card: Card, run: SkillRun) async {
+    private func apply(_ outcome: VerifiedOutcome, to card: Card) async {
         // `.live`: the world moved while Elliot was watching it happen.
         let result = outcome.applied(to: card, attribution: .live)
 

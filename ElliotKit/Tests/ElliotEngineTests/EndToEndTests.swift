@@ -464,14 +464,14 @@ struct EndToEndTests {
     // MARK: - PRWatcher
 
     private func pullRequest(
-        number: Int, issue: Int, state: String, isDraft: Bool = false, mergedAt: Date? = nil
+        number: Int, issue: Int, state: String, mergedAt: Date? = nil
     ) -> GHPullRequest {
         GHPullRequest(
             number: number,
             url: "https://github.com/phmatray/Elliot/pull/\(number)",
             title: "feat(app): the thing issue \(issue) asked for",
             headRefName: "feat/\(issue)-the-thing",
-            isDraft: isDraft,
+            isDraft: false,
             state: state,
             mergedAt: mergedAt
         )
@@ -540,6 +540,29 @@ struct EndToEndTests {
         // Same card, same pull request: there is nothing left to say, so the
         // poll stops re-saving an identical row.
         #expect(await watcher.reconcile(card: first, against: [pr]) == false)
+    }
+
+    /// The one branch of the rewritten `reconcile` that still moves a card and
+    /// that the two tests above do not reach. `GHPullRequest.verifiedOutcome`
+    /// must read `MERGED` as `.merged` for this to work at all.
+    @Test("A pull request merged outside Elliot sends the card to Done, as something the watcher saw")
+    func watcherSendsAMergedCardToDone() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Landed").card
+        card.column = .inReview
+        card.prNumber = 205
+        try await stack.store.saveCard(card)
+
+        let pr = pullRequest(number: 205, issue: 106, state: "MERGED", mergedAt: Date())
+        #expect(await watcher(for: stack).reconcile(card: card, against: [pr]))
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.column == .done)
+
+        let audits = try await stack.store.audits(cardID: card.id)
+        #expect(audits.first?.origin == .system(reason: .prMergedExternally))
     }
 }
 
