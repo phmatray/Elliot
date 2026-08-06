@@ -36,6 +36,18 @@ struct ListRunsTool: BoardTool {
                 exactly as the CLI emitted it. The same content is readable as the resource \
                 `elliot://run/{id}/log`. `stderrPath` is where the process's stderr went.
 
+                An analysis run has no card. It carries `analysisID` and `angle` instead — \
+                `bugs`, `quickWins`, `features`, `techDebt`, `tests` or `docsAndDX` — which is \
+                what tells two readings of the same repository apart. Once it has finished it \
+                also carries `analysisReport`: `source` says where the stories came from \
+                (`artifact`, or `resultText` when they had to be recovered from the closing \
+                message), `kept` and `dropped` say what survived and why the rest did not, and \
+                `workingTreeChanged` is the git sentinel. Read that one carefully: `false` \
+                means the repository was checked and untouched, and the field being **absent** \
+                means it was never checked at all. An analysis has no business writing to a \
+                repository, so "unchecked" is not "clean". `workingTreeDiff` carries \
+                `git status --porcelain` when the tree did move.
+
                 The answer is a page: `total`, `truncated` and `limit_capped_from` say \
                 whether you are seeing everything.
                 """,
