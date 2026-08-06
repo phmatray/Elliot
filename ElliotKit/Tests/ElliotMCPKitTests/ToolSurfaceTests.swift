@@ -344,9 +344,9 @@ struct ToolSurfaceTests {
             if name == "to" || name == "column" {
                 args[name] = .string(Column.todo.rawValue)
             } else if name == "angles" {
-                args[name] = .string(AnalysisAngle.bugs.rawValue).wrappedInArray
+                args[name] = .array([.string(AnalysisAngle.bugs.rawValue)])
             } else if type == "array" {
-                args[name] = .string(UUID().uuidString).wrappedInArray
+                args[name] = .array([.string(UUID().uuidString)])
             } else if type == "integer" {
                 args[name] = .int(1)
             } else if name.hasSuffix("_id") {
@@ -372,10 +372,12 @@ struct ToolSurfaceTests {
         let store = try await makeStore(repos: [repo], cards: [card], runs: [run])
 
         let writes = ElliotMCPServer.tools.filter { $0.annotations.readOnlyHint == false }
-        // Without this the filter returning nothing would pass the loop below
-        // vacuously, and a registry that stopped annotating its writes would
-        // read as a registry with no writes.
-        #expect(writes.count == 8, "the write set changed: \(writes.map(\.name).sorted())")
+        // A floor, not an inventory. Without it a filter that matched nothing
+        // would pass the loop below vacuously, and a registry that stopped
+        // annotating its writes would read as a registry with no writes. Pinned
+        // to the exact count it would instead fail on every new write tool,
+        // which is the opposite of what this test is for.
+        #expect(writes.count >= 8, "the write set shrank: \(writes.map(\.name).sorted())")
 
         for tool in writes {
             let log = RequestLog()
@@ -413,10 +415,4 @@ struct ToolSurfaceTests {
             #expect(answer.source == nil, "\(tool.name) claimed a source")
         }
     }
-}
-
-private extension Value {
-    /// `[self]`, so a one-element array argument reads as what it is at the call
-    /// site rather than as nested brackets.
-    var wrappedInArray: Value { .array([self]) }
 }
