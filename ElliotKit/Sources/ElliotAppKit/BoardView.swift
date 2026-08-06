@@ -315,8 +315,16 @@ public struct BoardView: View {
 
 // MARK: - Status bar
 
+/// The only strip that is always on screen, and until #68 it carried the least
+/// information available: "N running" and a status sentence. Neither the queue
+/// depth, nor the capacity in use, nor the day's spend appeared — although all
+/// three were either already in memory or one aggregate query away.
+///
+/// It says the three numbers of a control room now. Each opens the screen that
+/// can act on it, so the strip is a way in rather than a readout.
 struct StatusBar: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 8) {
@@ -332,25 +340,70 @@ struct StatusBar: View {
                 .truncationMode(.tail)
                 .help(model.status)
 
-            Spacer()
+            Spacer(minLength: 8)
 
-            if !model.activeRuns.isEmpty {
-                Fact(
-                    text: "\(model.activeRuns.count) running",
-                    tint: Palette.armed,
-                    small: true
+            figure(
+                text: "\(model.occupancy.writers)/\(model.limits.maxConcurrent) workers",
+                tint: model.occupancy.writers > 0 ? Palette.armed : Palette.quiet,
+                help: "How many runs are going, against the limit. Click to change it.",
+                spoken: "\(model.occupancy.writers) of \(model.limits.maxConcurrent) workers busy",
+                window: "preflight"
+            )
+
+            // Only when there is one. A permanent "0 queued" is furniture, and
+            // this strip has been pushed around by its own contents before.
+            if !model.queue.isEmpty {
+                figure(
+                    text: "\(model.queue.count) queued",
+                    tint: model.isQueuePaused ? Palette.refused : Palette.attention,
+                    help: model.queue.first?.refusal.sentence ?? "Runs waiting to start.",
+                    spoken: model.isQueuePaused
+                        ? "\(model.queue.count) queued, paused"
+                        : "\(model.queue.count) runs queued",
+                    window: "nextSteps"
                 )
             }
+
+            figure(
+                text: MoneyFormat.usd(model.spentToday.totalUSD),
+                tint: model.isOverDailyCeiling ? Palette.refused : Palette.quiet,
+                help: "Spent today — \(model.spentToday.sentence()). Click to set a ceiling.",
+                spoken: "spent today, \(model.spentToday.sentence())",
+                window: "preflight"
+            )
+
             // Elliot wrote this hint, so it is not set in the fact face.
-            Text(model.selectedCard == nil
-                ? "↑↓←→ pick a card"
-                : "⌘→ advance · ⌘← back · esc deselect")
-                .font(Type.prose)
-                .foregroundStyle(Palette.quiet)
+            Text(
+                model.selectedCard == nil
+                    ? "↑↓←→ pick a card"
+                    : "⌘→ advance · ⌘← back · esc deselect"
+            )
+            .font(Type.prose)
+            .foregroundStyle(Palette.quiet)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+        // Fixed, and `lineLimit(1)` above: this bar has grown and shoved the
+        // whole board upwards before, and the numbers in it change constantly.
+        .frame(height: Metric.statusBarHeight)
         .background(.bar)
+    }
+
+    /// One figure, and a way to act on it.
+    ///
+    /// `spoken` rather than reading the label aloud: "2/4 workers" is a
+    /// screen-reader's nightmare, and a number with no sentence around it says
+    /// nothing to anyone who cannot see where it sits.
+    private func figure(
+        text: String, tint: Color, help: String, spoken: String, window: String
+    ) -> some View {
+        Button { openWindow(id: window) } label: {
+            Fact(text: text, tint: tint, small: true)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(spoken)
+        .accessibilityHint("Opens the screen that can change it")
     }
 }
 

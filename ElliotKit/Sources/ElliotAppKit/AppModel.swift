@@ -260,6 +260,13 @@ public final class AppModel {
 
             await refreshRepoChecks(using: preflight)
 
+            // Once at startup. These are otherwise only refreshed when a run
+            // reports, so a board that has not run anything since launch would
+            // show an empty queue and $0.00 spent — indistinguishable from a
+            // board that has genuinely spent nothing, and wrong on any store
+            // with history in it.
+            await refreshOccupancy()
+
             isReady = true
             status = summary == .init()
                 ? "Ready."
