@@ -5,8 +5,8 @@ import Foundation
 /// The lens is data, not a code path: `briefing` is the paragraph handed to the
 /// model, so adding an angle is a case and a paragraph. Each briefing says both
 /// what to look for *and* what to leave alone — without the second half every
-/// lens drifts back towards generic code review, and six lenses return the same
-/// six lists.
+/// lens drifts back towards generic code review, and eight lenses return the
+/// same eight lists.
 public enum AnalysisAngle: String, Codable, CaseIterable, Sendable, Hashable {
     case bugs
     case quickWins

@@ -40,9 +40,9 @@ than letting the two drift.
 ## Where stories come from
 
 The backlog holds user stories, and Elliot can write them. *Analyze…* reads a
-registered repository through six lenses — bugs, quick wins, features, tech
-debt, tests, docs & DX — one `claude -p` run each, and comes back with proposed
-stories you go through and accept.
+registered repository through eight lenses — bugs, quick wins, features, tech
+debt, tests, docs & DX, UX & UI, best practices — one `claude -p` run each, and
+comes back with proposed stories you go through and accept.
 
 Proposals are **not cards**. They live in their own table and their own window,
 so a 30-story analysis does not drown the board and the five columns keep one

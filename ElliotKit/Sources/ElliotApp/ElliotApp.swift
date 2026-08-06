@@ -54,7 +54,7 @@ struct ElliotApp: App {
         // watching a run should not blindfold the board — which is now also why
         // it opens beside the card rather than at the window's edge. Analysis is
         // the sharpest case —
-        // it starts up to six concurrent runs from inside a modal.
+        // it starts up to eight runs, three at a time, from inside a modal.
         //
         // Each root keeps a `NavigationStack` for the same reason the board
         // does: `RepositoriesView` and `PreflightView` were written as
