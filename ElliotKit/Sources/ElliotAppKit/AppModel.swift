@@ -21,6 +21,14 @@ public final class AppModel {
     public private(set) var isReady = false
     public private(set) var isImporting = false
 
+    /// How many runs may go at once, and how many are going.
+    ///
+    /// `occupancy` is refreshed from the scheduler on every run update rather
+    /// than polled: a stepper reading "4" says nothing without "2 in flight"
+    /// beside it, and a number that lags is worse than no number.
+    public private(set) var limits: SchedulerLimits = .default
+    public private(set) var occupancy: (writers: Int, analyses: Int) = (0, 0)
+
     /// One row per repository of the configured owners: GitHub's list, the disk
     /// and the store, reconciled. The judgement is `RepoReconciler`'s — the page
     /// renders it and never decides anything itself.
@@ -173,7 +181,14 @@ public final class AppModel {
 
             let ghClient = GHClient(config: config)
             let verifier = Verifier(gh: ghClient)
-            let scheduler = RunScheduler(store: store, toolConfig: config, verifier: verifier)
+            // Read before the scheduler is built, not applied to it afterwards:
+            // the launch sweep further down admits runs that died with the app,
+            // and it must do so under the caps the user chose rather than under
+            // the defaults for the moment it takes to override them.
+            limits = (try? await store.limits()) ?? .default
+            let scheduler = RunScheduler(
+                store: store, toolConfig: config, verifier: verifier, limits: limits
+            )
             let board = BoardService(store: store, launcher: scheduler)
             await scheduler.setSystemMover(board)
             self.scheduler = scheduler
@@ -301,6 +316,7 @@ public final class AppModel {
             Task {
                 await self.refreshActiveRuns()
                 await self.refreshAnalysisRuns()
+                await self.refreshOccupancy()
             }
         case .runOutput(let runID, let event):
             var lines = liveLog[runID] ?? []
@@ -328,6 +344,7 @@ public final class AppModel {
             Task {
                 await self.refreshActiveRuns()
                 await self.refreshAnalysisRuns()
+                await self.refreshOccupancy()
             }
         }
     }
@@ -551,6 +568,30 @@ public final class AppModel {
         // Read here rather than from a new call site: `CardView.task` and the
         // inspector already call this per card.
         lastMove[cardID] = (try? await store?.audits(cardID: cardID, limit: 1))??.first
+    }
+
+    // MARK: - Scheduler limits
+
+    /// Saves the caps and applies them to the running scheduler.
+    ///
+    /// Saved first: if the write fails the user must not be left with a board
+    /// running four workers and a store that will restore two on next launch.
+    public func updateLimits(_ new: SchedulerLimits) async {
+        guard let store else { return }
+        do {
+            try await store.saveLimits(new)
+        } catch {
+            status = "Could not save the run limits: \(error.localizedDescription)"
+            return
+        }
+        limits = new
+        await scheduler?.setLimits(new)
+        await refreshOccupancy()
+    }
+
+    func refreshOccupancy() async {
+        guard let scheduler else { return }
+        occupancy = await scheduler.occupancy
     }
 
     /// One query for the whole board rather than one per card.

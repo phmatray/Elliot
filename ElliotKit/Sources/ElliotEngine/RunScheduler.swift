@@ -30,8 +30,9 @@ public actor RunScheduler: RunLaunching {
     private let store: BoardStore
     private let toolConfig: ToolConfig
     private let verifier: Verifier
-    private let maxConcurrent: Int
-    private let maxConcurrentAnalyses: Int
+    /// `var`, not `let`: these were constructor constants nobody ever passed, so
+    /// the only way to change them was to rebuild the app. See `setLimits`.
+    private var limits: SchedulerLimits
     private let harvester: ProposalHarvester
     /// `git status --porcelain` taken just before each analysis spawned, keyed
     /// by run. In memory only: if the app dies mid-run the baseline is gone and
@@ -53,15 +54,13 @@ public actor RunScheduler: RunLaunching {
         toolConfig: ToolConfig,
         verifier: Verifier,
         harvester: ProposalHarvester? = nil,
-        maxConcurrent: Int = 2,
-        maxConcurrentAnalyses: Int = 3
+        limits: SchedulerLimits = .default
     ) {
         self.store = store
         self.toolConfig = toolConfig
         self.verifier = verifier
         self.harvester = harvester ?? ProposalHarvester(store: store, gh: GHClient(config: toolConfig))
-        self.maxConcurrent = maxConcurrent
-        self.maxConcurrentAnalyses = maxConcurrentAnalyses
+        self.limits = limits
         self.git = GitClient(config: toolConfig)
         var continuation: AsyncStream<SchedulerUpdate>.Continuation!
         updates = AsyncStream(bufferingPolicy: .bufferingNewest(1024)) { continuation = $0 }
@@ -70,6 +69,29 @@ public actor RunScheduler: RunLaunching {
 
     public func setSystemMover(_ mover: any SystemMoving) {
         systemMover = mover
+    }
+
+    /// Changes the caps, and drains whatever the old ones were holding back.
+    ///
+    /// The `pump()` is the point. Without it, raising the limit would do nothing
+    /// visible until some unrelated run happened to finish — the user would set
+    /// four workers, watch two run, and conclude the setting was ignored.
+    ///
+    /// Lowering never kills anything: `canStart` is only consulted for runs that
+    /// have not started, so runs already in flight finish under the old cap and
+    /// the new one takes effect as they drain.
+    public func setLimits(_ limits: SchedulerLimits) async {
+        self.limits = limits
+        await pump()
+    }
+
+    public var currentLimits: SchedulerLimits { limits }
+
+    /// What the caps are actually holding right now, for the UI to show beside
+    /// them: a stepper reading "4" means nothing without "2 in flight".
+    public var occupancy: (writers: Int, analyses: Int) {
+        let analyses = inFlight.values.filter { $0.kind == .analyzeRepo }.count
+        return (inFlight.count - analyses, analyses)
     }
 
     // MARK: - Admission
@@ -92,11 +114,11 @@ public actor RunScheduler: RunLaunching {
 
         if run.kind == .analyzeRepo {
             let analysesInFlight = inFlight.values.filter { $0.kind == .analyzeRepo }.count
-            return analysesInFlight < maxConcurrentAnalyses
+            return analysesInFlight < limits.maxConcurrentAnalyses
         }
 
         let writersInFlight = inFlight.values.filter { $0.kind != .analyzeRepo }.count
-        guard writersInFlight < maxConcurrent else { return false }
+        guard writersInFlight < limits.maxConcurrent else { return false }
 
         switch run.kind {
         case .mergePR:

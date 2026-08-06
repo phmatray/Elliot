@@ -11,6 +11,78 @@ public struct PreflightView: View {
     /// Per-check override of the default open-if-failing state.
     @State private var expansion: [String: Bool] = [:]
 
+    /// How many runs may go at once, and how many are going.
+    ///
+    /// Here rather than in a Settings screen because there is no Settings screen
+    /// and this is the page about the machine. It is deliberately small: the
+    /// Operations screen (#69) is where this eventually belongs, beside the
+    /// queue these caps are holding back.
+    ///
+    /// Each stepper says what it is holding right now. A cap of 4 means nothing
+    /// on its own — "2 of 4 in flight" is what tells you whether raising it
+    /// would change anything.
+    private var runLimits: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ConsoleLabel(text: "Runs at once")
+            Text(
+                "Writers build, so two at once in one checkout is the reason for the cap. "
+                    + "An analysis only reads, and gets its own lane."
+            )
+            .font(Type.prose)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            limitStepper(
+                title: "Writers", inFlight: model.occupancy.writers,
+                value: model.limits.maxConcurrent
+            ) { new in
+                SchedulerLimits(
+                    maxConcurrent: new,
+                    maxConcurrentAnalyses: model.limits.maxConcurrentAnalyses
+                )
+            }
+
+            limitStepper(
+                title: "Analyses", inFlight: model.occupancy.analyses,
+                value: model.limits.maxConcurrentAnalyses
+            ) { new in
+                SchedulerLimits(
+                    maxConcurrent: model.limits.maxConcurrent,
+                    maxConcurrentAnalyses: new
+                )
+            }
+        }
+    }
+
+    private func limitStepper(
+        title: String,
+        inFlight: Int,
+        value: Int,
+        make: @escaping (Int) -> SchedulerLimits
+    ) -> some View {
+        HStack(spacing: 8) {
+            Stepper(value: makeBinding(value, make), in: 1...SchedulerLimits.ceiling) {
+                Text("\(title): \(value)").font(Type.bodyProse)
+            }
+            .fixedSize()
+            Fact(text: "\(inFlight) in flight", tint: Palette.quiet, small: true)
+            Spacer()
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title), at most \(value) at once, \(inFlight) in flight")
+    }
+
+    /// The stepper writes through `AppModel`, which saves *then* applies. A
+    /// local `@State` mirror would let the two disagree the moment a save fails.
+    private func makeBinding(
+        _ value: Int, _ make: @escaping (Int) -> SchedulerLimits
+    ) -> Binding<Int> {
+        Binding(
+            get: { value },
+            set: { new in Task { await model.updateLimits(make(new)) } }
+        )
+    }
+
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -18,6 +90,7 @@ public struct PreflightView: View {
                 summary
 
                 section("This machine", results: model.globalChecks)
+                runLimits
                 integration
 
                 VStack(alignment: .leading, spacing: 8) {
