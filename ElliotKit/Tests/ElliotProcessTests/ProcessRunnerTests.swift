@@ -188,6 +188,48 @@ struct ProcessRunnerTests {
         #expect(result.exitCode == SIGKILL, "expected SIGKILL, got \(result.exitCode)")
     }
 
+    /// The tail — what a child writes between the last `readabilityHandler`
+    /// callback and its exit.
+    ///
+    /// This is the byte range a naive port of the drain drops, and dropping it
+    /// is silent. What goes missing is the *end* of a `gh … --json` payload, so
+    /// it surfaces as malformed JSON in whatever tried to parse it, never as
+    /// "the output was truncated" — the symptom does not point here, which is
+    /// why the guard has to.
+    ///
+    /// A full pipe buffer goes out first so the sentinel genuinely arrives
+    /// after a callback has already run and had its go at the descriptor. The
+    /// volume test above covers deadlock on a full buffer; this one covers the
+    /// last ten bytes, and only one of those two questions is about size.
+    @Test("The last thing a child writes before exiting is never lost")
+    func capturesTheTail() async throws {
+        let sentinel = "LAST-LINE\n"
+        let bulk = 65_536
+        try await withTimeout(.seconds(120)) {
+            // Repeated, because losing the tail is a race: one green pass says
+            // nothing, and the failure it guards against showed up as roughly
+            // three results in a few thousand when the analogous race went
+            // unguarded in the collecting handlers.
+            for attempt in 0..<50 {
+                let result = try await ProcessRunner.run(
+                    executable: "/bin/sh",
+                    arguments: ["-c", "yes abcdefghij | head -c \(bulk); printf 'LAST-LINE\\n'"],
+                    environment: Self.environment,
+                    timeout: .seconds(30)
+                )
+                #expect(result.exitCode == 0)
+                #expect(
+                    result.stdout.hasSuffix(sentinel),
+                    """
+                    attempt \(attempt): tail lost — \(result.stdoutData.count) bytes \
+                    ending \(String(result.stdout.suffix(12)).debugDescription)
+                    """
+                )
+                #expect(result.stdoutData.count == bulk + sentinel.utf8.count)
+            }
+        }
+    }
+
     @Test("A child that writes more than one pipe buffer does not deadlock")
     func largeOutputDoesNotDeadlock() async throws {
         // Both pipes must drain concurrently; 1 MiB is well past the 64 KiB
