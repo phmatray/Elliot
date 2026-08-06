@@ -13,6 +13,21 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
     public var title: String
     public var body: String
     public var story: UserStory?
+
+    /// The analysis lens this card was found through, when it was found rather
+    /// than written.
+    ///
+    /// `nil` for a card from the New-story sheet, from `board_create_card`, or
+    /// imported from GitHub — and `nil` is drawn as nothing, never as a
+    /// placeholder glyph. A mark meaning "no lens" reads as a mark meaning
+    /// something, which is the guess this field exists to avoid making.
+    ///
+    /// Provenance, not classification: it records which lens *found* the card,
+    /// so it is set once at acceptance and never re-derived from the card's
+    /// words afterwards. Inferring it later would put what was guessed in the
+    /// same face as what was chosen.
+    public var angle: AnalysisAngle?
+
     public var column: Column
 
     /// Position within the column. `Double` so an insert between two neighbours
@@ -48,6 +63,7 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
         title: String,
         body: String = "",
         story: UserStory? = nil,
+        angle: AnalysisAngle? = nil,
         column: Column = .backlog,
         orderIndex: Double = 0,
         issueNumber: Int? = nil,
@@ -66,6 +82,7 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
         self.title = title
         self.body = body
         self.story = story
+        self.angle = angle
         self.column = column
         self.orderIndex = orderIndex
         self.issueNumber = issueNumber
