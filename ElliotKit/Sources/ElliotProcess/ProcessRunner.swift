@@ -34,7 +34,8 @@ public enum ProcessRunner {
         arguments: [String],
         cwd: String? = nil,
         environment: [String: String],
-        timeout: Duration? = .seconds(60)
+        timeout: Duration? = .seconds(60),
+        hardKillAfter: Duration = ProcessTermination.hardKillGrace
     ) async throws -> ProcessResult {
         guard FileManager.default.isExecutableFile(atPath: executable) else {
             throw ProcessError.notExecutable(executable)
@@ -136,13 +137,25 @@ public enum ProcessRunner {
                 group.addTask {
                     do { try await Task.sleep(for: timeout) } catch { return false }
                     guard process.isRunning else { return false }
-                    process.terminate()
                     // SIGTERM, then SIGKILL for a command that ignores it: the
                     // exit is awaited below, so without the second rung a
                     // wedged `gh` would be the very hang this file prevents.
-                    Task.detached {
-                        try? await Task.sleep(for: .seconds(5))
-                        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                    // Measured, with the escalation deleted: `swift test` had
+                    // no verdict 5 minutes 39 seconds later. The rung and its
+                    // grace are `StreamingProcess`'s too — the two spawners
+                    // must not disagree about when a child is hopeless.
+                    ProcessTermination.terminate(process, hardKillAfter: hardKillAfter) {
+                        // Under the lock that publishes the exit, so the
+                        // decision is this run's own record of the child rather
+                        // than a second opinion about it. Belt and braces, not
+                        // a guarantee: the lock is released before the signal,
+                        // and only Foundation's reaper could close that gap.
+                        //
+                        // Safe to read here in a way it would not be in
+                        // `StreamingProcess`, whose lock covers a write to the
+                        // run's log file. This one is only ever held across
+                        // appends to two `Data` buffers.
+                        state.withLock { !$0.exited } && process.isRunning
                     }
                     return true
                 }

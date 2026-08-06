@@ -315,10 +315,48 @@ enum PanelLayout {
     /// column the column leads, before it the panel does. Using `originMinX` in
     /// the flipped case would scroll past the panel and leave it off-screen to
     /// the left. Never negative — a negative content offset is not a position.
+    ///
+    /// **The lead yields to the pair** (#93). It used to be a fixed 96pt, which
+    /// at the 1000pt minimum window pushed 30pt of the panel's trailing edge —
+    /// and the resize handle that lives on it — off screen: the column floor
+    /// binds at 226pt there, so at three spans the pair is 934pt and only 66pt
+    /// of lead actually fits. The lead is the part that is decoration, so the
+    /// lead is the part that gives; showing less of the previous column is a
+    /// smaller loss than showing none of the panel's edge.
+    ///
+    /// Both widths are taken rather than a single `pairWidth`, because which end
+    /// trails flips with `flipped` — computing it here keeps that answer in the
+    /// one place that already knows, instead of in every caller.
+    ///
+    /// `panelMinX` is optional because a shut panel is a real case and its pair
+    /// is the column **by itself**. It used to be passed as `originMinX` with a
+    /// note calling the fallback unreachable; that was true while no width was
+    /// read, and stopped being true the moment the pair's extent started to
+    /// matter — a shut panel would otherwise be measured as a column-and-a-panel
+    /// wide and clamp a lead it did not need to.
+    ///
+    /// When the pair is wider than the viewport the lead goes to zero and the
+    /// leading edge sits flush: the remaining overflow is the panel genuinely
+    /// not fitting, which no offset can fix, and framing the leading edge is the
+    /// most of it anyone can see.
     static func frameOffsetX(
-        originMinX: CGFloat, panelMinX: CGFloat, flipped: Bool, lead: CGFloat = 96
+        originMinX: CGFloat, panelMinX: CGFloat?, flipped: Bool,
+        columnWidth: CGFloat, panelWidth: CGFloat, viewportWidth: CGFloat,
+        lead: CGFloat = 96
     ) -> CGFloat {
-        max(0, (flipped ? panelMinX : originMinX) - lead)
+        let leadingMinX: CGFloat
+        let trailingMaxX: CGFloat
+        switch (panelMinX, flipped) {
+        case (nil, _):
+            (leadingMinX, trailingMaxX) = (originMinX, originMinX + columnWidth)
+        case (let panelMinX?, false):
+            (leadingMinX, trailingMaxX) = (originMinX, panelMinX + panelWidth)
+        case (let panelMinX?, true):
+            (leadingMinX, trailingMaxX) = (panelMinX, originMinX + columnWidth)
+        }
+
+        let affordable = max(0, min(lead, viewportWidth - (trailingMaxX - leadingMinX)))
+        return max(0, leadingMinX - affordable)
     }
 
     /// How far the tether reaches from the panel's edge to the card: the gutter
