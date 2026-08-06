@@ -460,6 +460,87 @@ struct EndToEndTests {
         #expect(after.column == .done)
         #expect(try await stack.store.audits(cardID: card.id).isEmpty)
     }
+
+    // MARK: - PRWatcher
+
+    private func pullRequest(
+        number: Int, issue: Int, state: String, isDraft: Bool = false, mergedAt: Date? = nil
+    ) -> GHPullRequest {
+        GHPullRequest(
+            number: number,
+            url: "https://github.com/phmatray/Elliot/pull/\(number)",
+            title: "feat(app): the thing issue \(issue) asked for",
+            headRefName: "feat/\(issue)-the-thing",
+            isDraft: isDraft,
+            state: state,
+            mergedAt: mergedAt
+        )
+    }
+
+    private func watcher(for stack: Stack) -> PRWatcher {
+        let config = ToolConfig(
+            claudePath: TestPaths.fakeClaude, ghPath: "/usr/bin/false",
+            gitPath: "/usr/bin/false", environment: [:]
+        )
+        // `reconcile` is handed its pull requests directly, so this client is
+        // never called — the sighting is the unit under test, not the fetch.
+        return PRWatcher(store: stack.store, gh: .init(config: config), mover: stack.board)
+    }
+
+    /// The identical hole `Reconciler` had, on the identical field: the watcher
+    /// moved the card to In Review and left the failed run's banner on it.
+    @Test("A card the watcher sends to In Review no longer carries the failed run's error")
+    func watcherClearsTheStaleError() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "In flight").card
+        card.column = .inProgress
+        card.issueNumber = 102
+        card.lastError = "implement-issue exited 1"
+        try await stack.store.saveCard(card)
+
+        let pr = pullRequest(number: 201, issue: 102, state: "OPEN")
+        #expect(await watcher(for: stack).reconcile(card: card, against: [pr]))
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.lastError == nil)
+        #expect(after.prNumber == 201)
+        #expect(after.prURL == "https://github.com/phmatray/Elliot/pull/201")
+        #expect(after.branch == "feat/102-the-thing")
+        #expect(after.column == .inReview)
+
+        // The watcher *did* see this happen, so it is not a reconciliation.
+        let audits = try await stack.store.audits(cardID: card.id)
+        #expect(audits.first?.origin == .system(reason: .prBecameReady))
+    }
+
+    /// The watcher used to guard on `card.lastError == nil` before saying a
+    /// pull request had been abandoned — so a card already carrying *any* other
+    /// error never learned it, and went on showing a stale reason for ever.
+    /// It acts whenever the text would change now, and only then.
+    @Test("A card carrying another error still learns its pull request was abandoned")
+    func watcherReplacesAStaleErrorWithTheClosedSentence() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Abandoned").card
+        card.column = .inReview
+        card.prNumber = 204
+        card.lastError = "Checks are failing: build."
+        try await stack.store.saveCard(card)
+
+        let pr = pullRequest(number: 204, issue: 105, state: "CLOSED")
+        let watcher = watcher(for: stack)
+
+        #expect(await watcher.reconcile(card: card, against: [pr]))
+        let first = try #require(try await stack.store.card(id: card.id))
+        #expect(first.lastError == "The pull request was closed without being merged.")
+
+        // Same card, same pull request: there is nothing left to say, so the
+        // poll stops re-saving an identical row.
+        #expect(await watcher.reconcile(card: first, against: [pr]) == false)
+    }
 }
 
 @Suite("Analysis completion", .serialized)
