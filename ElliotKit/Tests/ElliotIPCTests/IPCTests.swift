@@ -17,6 +17,12 @@ private actor RequestRecorder {
     func record(_ request: ElliotRequest) { last = request }
 }
 
+/// Captures the client name each dispatch carried, in arrival order.
+private actor ClientRecorder {
+    private(set) var seen: [String] = []
+    func record(_ client: String) { seen.append(client) }
+}
+
 private func makeServer(
     path: String,
     handler: @escaping IPCServer.Handler
@@ -43,10 +49,38 @@ private func page(_ cards: [CardDTO] = [], limit: Int = ElliotPaging.cardLimitDe
 @Suite("IPC", .serialized)
 struct IPCTests {
 
+    /// The name in `hello` has been on the wire since the first protocol
+    /// version and `serve` decoded it into `_`. Every MCP move therefore
+    /// recorded the literal `"mcp"`, so `MoveOrigin.mcp(client:)` was a field
+    /// that existed end to end and said nothing (#101).
+    ///
+    /// It belongs to the **connection**, not to the server: `send` opens a
+    /// socket, greets, asks one question and hangs up, so two helpers talking to
+    /// one app must not see each other's name. Asserted with two clients rather
+    /// than one, because a single client would pass just as well against a
+    /// server that stored the last name it saw in a property.
+    @Test("The client named in hello reaches the handler, and does not leak between connections")
+    func helloClientReachesTheHandlerPerConnection() async throws {
+        let path = temporarySocketPath()
+        let seen = ClientRecorder()
+        let server = try makeServer(path: path) { _, client in
+            await seen.record(client)
+            return .ok(.cards(page()))
+        }
+        defer { server.stop() }
+
+        for name in ["agent-x", "agent-y", "agent-x"] {
+            _ = try IPCClient(socketPath: path, token: token, clientName: name)
+                .send(.listCards(repo: nil, column: nil, limit: 1))
+        }
+
+        #expect(await seen.seen == ["agent-x", "agent-y", "agent-x"])
+    }
+
     @Test("A request round-trips over the socket")
     func roundTrip() throws {
         let path = temporarySocketPath()
-        let server = try makeServer(path: path) { request in
+        let server = try makeServer(path: path) { request, _ in
             guard case .listCards = request else {
                 return .failure(code: .internalError, message: "unexpected", hint: nil)
             }
@@ -71,7 +105,7 @@ struct IPCTests {
     func storyRoundTrip() async throws {
         let path = temporarySocketPath()
         let stored = RequestRecorder()
-        let server = try makeServer(path: path) { request in
+        let server = try makeServer(path: path) { request, _ in
             await stored.record(request)
             var c = card()
             c.story = UserStory(
@@ -113,7 +147,7 @@ struct IPCTests {
     @Test("A refused move comes back with a code the agent can act on")
     func blockedMove() throws {
         let path = temporarySocketPath()
-        let server = try makeServer(path: path) { _ in
+        let server = try makeServer(path: path) { _, _ in
             .failure(
                 code: .moveBlocked,
                 message: "The card has no issue number.",
@@ -136,7 +170,7 @@ struct IPCTests {
     @Test("A bad token is refused")
     func unauthorized() throws {
         let path = temporarySocketPath()
-        let server = try makeServer(path: path) { _ in
+        let server = try makeServer(path: path) { _, _ in
             .ok(.cards(page()))
         }
         defer { server.stop() }
@@ -153,7 +187,7 @@ struct IPCTests {
     @Test("A helper speaking an older protocol is told to re-register")
     func protocolMismatch() throws {
         let path = temporarySocketPath()
-        let server = try makeServer(path: path) { _ in .ok(.cards(page())) }
+        let server = try makeServer(path: path) { _, _ in .ok(.cards(page())) }
         defer { server.stop() }
 
         let fd = try UnixSocket.connect(path: path)
@@ -188,7 +222,7 @@ struct IPCTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         #expect(!UnixSocket.isLive(path: path))
-        let server = try makeServer(path: path) { _ in .ok(.cards(page())) }
+        let server = try makeServer(path: path) { _, _ in .ok(.cards(page())) }
         defer { server.stop() }
         #expect(UnixSocket.isLive(path: path))
     }
@@ -196,17 +230,17 @@ struct IPCTests {
     @Test("A second Elliot refuses to take over a live socket")
     func doubleStartRefused() throws {
         let path = temporarySocketPath()
-        let first = try makeServer(path: path) { _ in .ok(.cards(page())) }
+        let first = try makeServer(path: path) { _, _ in .ok(.cards(page())) }
         defer { first.stop() }
 
-        let second = IPCServer(socketPath: path, token: token) { _ in .ok(.cards(page())) }
+        let second = IPCServer(socketPath: path, token: token) { _, _ in .ok(.cards(page())) }
         #expect(throws: IPCServer.StartError.self) { try second.start() }
     }
 
     @Test("Several requests can share one connection")
     func multipleRequestsPerConnection() throws {
         let path = temporarySocketPath()
-        let server = try makeServer(path: path) { _ in .ok(.cards(page())) }
+        let server = try makeServer(path: path) { _, _ in .ok(.cards(page())) }
         defer { server.stop() }
 
         let fd = try UnixSocket.connect(path: path)
@@ -270,7 +304,7 @@ struct IPCTests {
     func largePayload() throws {
         let path = temporarySocketPath()
         let many = (0..<500).map { CardDTO(card: card(title: "Card \($0)"), repoName: "phmatray/Elliot") }
-        let server = try makeServer(path: path) { _ in .ok(.cards(page(many, limit: 500))) }
+        let server = try makeServer(path: path) { _, _ in .ok(.cards(page(many, limit: 500))) }
         defer { server.stop() }
 
         let client = IPCClient(socketPath: path, token: token)
@@ -286,7 +320,7 @@ struct IPCTests {
     @Test("Malformed input is answered, not fatal")
     func malformedRequest() throws {
         let path = temporarySocketPath()
-        let server = try makeServer(path: path) { _ in .ok(.cards(page())) }
+        let server = try makeServer(path: path) { _, _ in .ok(.cards(page())) }
         defer { server.stop() }
 
         let fd = try UnixSocket.connect(path: path)

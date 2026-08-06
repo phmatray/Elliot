@@ -315,8 +315,8 @@ public final class AppModel {
             let server = IPCServer(
                 socketPath: StoreLocation.socketURL.path,
                 token: token
-            ) { request in
-                await handler.handle(request)
+            ) { request, client in
+                await handler.handle(request, client: client)
             }
             try server.start()
             ipcServer = server
