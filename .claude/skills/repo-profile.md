@@ -87,10 +87,12 @@ multi-statement-closure return the 6.1 type checker will not infer). `macos-26` 
 which is what the package is actually developed against. Don't lower the runner without building on
 the lower toolchain first.
 
-<!-- TODO: branch protection on `main` is still off — `required_status_checks.enforcement_level` is
-`"off"`, so `build-and-test` is advisory, not required, and a red check does not block a merge.
-Turning it on is issue #21's Task 3 and needs the workflow green on `main` first (i.e. after the PR
-that introduces it lands). Until then `merge-pr` can *read* a verdict but nothing enforces it. -->
+<!-- TODO: branch protection on `main` is still off. Measured 2026-08-06:
+`gh api repos/phmatray/Elliot/branches/main/protection` → **404 "Branch not protected"** — there is
+no protection object at all, so `build-and-test` is advisory, not required, and a red check does not
+block a merge. Turning it on is issue #21's Task 3 and needs the workflow green on `main` first
+(i.e. after the PR that introduces it lands). Until then `merge-pr` can *read* a verdict but nothing
+enforces it. -->
 - **Format/lint in CI:** none, deliberately. See *Format/lint verify* above — the formatter question
   is unsettled, and a lint step would have landed the first CI run red for a reason unrelated to
   correctness, which is the fastest way to teach everyone to ignore the badge.
