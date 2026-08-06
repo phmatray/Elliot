@@ -194,9 +194,13 @@ public final class AppModel {
     private var scheduler: RunScheduler?
     private var watcher: PRWatcher?
     private var importer: GitHubImportService?
-    /// Repositories already imported this session. In memory on purpose: a
-    /// relaunch re-importing costs two `gh` calls and cannot duplicate anything.
-    private var importedThisSession: Set<UUID> = []
+    /// What has been brought in from GitHub this session, and what could not be.
+    ///
+    /// In memory on purpose: a relaunch re-importing costs two `gh` calls and
+    /// cannot duplicate anything. It used to be a bare `Set<UUID>` inserted into
+    /// *before* the await, which made "we tried" indistinguishable from "we
+    /// succeeded" — see ``ImportSessionState``.
+    private var importSession = ImportSessionState()
     private var registry: RepoRegistryService?
     private var ipcServer: IPCServer?
     private var toolConfig: ToolConfig?
@@ -988,23 +992,75 @@ public final class AppModel {
             ? "Refreshing \(targets[0].displayName) from GitHub…"
             : "Refreshing \(targets.count) repositories from GitHub…"
 
-        let summaries = await importer.importAll(targets)
-        targets.forEach { importedThisSession.insert($0.id) }
+        // Imported one at a time rather than through `importAll`, so each
+        // summary is attributable to the repository that produced it.
+        // `importAll` filters on `isEnabled`, so its output can be *shorter*
+        // than its input and position does not identify anything; matching on
+        // `ImportSummary.repoName` would be no better, since that is
+        // `displayName` and two repositories may share one. Here the id is in
+        // hand at the point the outcome is recorded, so there is nothing to
+        // match. The `isEnabled` filter is kept.
+        var summaries: [ImportSummary] = []
+        for repo in targets where repo.isEnabled {
+            let summary = await importer.importRepo(repo)
+            summaries.append(summary)
+            record(summary, for: repo.id)
+        }
         isImporting = false
         status = summaries.map(\.sentence).joined(separator: "   ")
     }
 
+    /// One place where an `ImportSummary` becomes session state, so the two
+    /// call sites cannot drift apart — which is how the second site came to
+    /// carry the same bug as the first.
+    ///
+    /// Internal rather than private so `ElliotAppKitTests` can drive an outcome
+    /// without standing up a `GitHubImportService` and a real `gh`. That is the
+    /// same seam `testOnlySeed` uses, and it is what lets criterion 5 be met
+    /// here rather than only one layer down in `ImportSessionState`.
+    func record(_ summary: ImportSummary, for repoID: UUID) {
+        if let failure = summary.failure {
+            importSession.recordFailure(repoID: repoID, message: failure)
+        } else {
+            importSession.recordSuccess(repoID: repoID)
+        }
+    }
+
+    /// Why this repository shows no cards, when the answer is not "it has none".
+    ///
+    /// Survives `status` being overwritten by the next event, which is the half
+    /// of #42 that actually bites: the one-shot sentence was the only signal.
+    public func importFailure(repoID: UUID?) -> String? {
+        repoID.flatMap { importSession.failure(repoID: $0) }
+    }
+
+    /// Whether anything in view could not be refreshed — for the "All
+    /// repositories" case, where no single id is selected.
+    public var importFailures: [(repo: Repo, message: String)] {
+        repos.compactMap { repo in
+            importSession.failure(repoID: repo.id).map { (repo, $0) }
+        }
+    }
+
     /// The first time a repository is shown, bring in what GitHub already knows.
     /// Once per repository per session — the button covers the rest.
+    /// This is the unattended path, so it guards on `shouldAutoImport`: one
+    /// attempt per repository per session whatever the outcome. A failure stays
+    /// retryable — but by a gesture (Refresh), never by the view re-evaluating.
+    /// That is criterion 4 held by construction rather than by an assumption
+    /// about when SwiftUI re-runs `.task(id:)`.
     public func importIfNeeded(repoID: UUID?) async {
-        guard let repoID, !importedThisSession.contains(repoID), !isImporting,
+        guard let repoID, importSession.shouldAutoImport(repoID: repoID), !isImporting,
               let repo = repos.first(where: { $0.id == repoID }), repo.isEnabled,
               let importer
         else { return }
 
-        importedThisSession.insert(repoID)
         isImporting = true
         let summary = await importer.importRepo(repo)
+        // Recorded *after* the await, and branched on the outcome. Inserting
+        // before it is the bug this fixes: `importRepo` never throws, so a
+        // failed fetch used to leave the repository marked done for the session.
+        record(summary, for: repoID)
         isImporting = false
         status = summary.sentence
     }
@@ -1016,7 +1072,11 @@ public final class AppModel {
         let targets = selectedRepoID.flatMap { id in repos.filter { $0.id == id } } ?? repos
         for repo in targets {
             try? await store.clearDismissals(repoID: repo.id)
-            importedThisSession.remove(repo.id)
+            // `forget`, not just "un-succeed": this has to restore the
+            // unattended attempt too, or a repository whose import failed
+            // earlier would not pick the dismissed cards back up until the
+            // user pressed Refresh.
+            importSession.forget(repoID: repo.id)
         }
         status = "Dismissed items forgotten — refresh to bring them back."
     }
