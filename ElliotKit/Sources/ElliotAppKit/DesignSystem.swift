@@ -128,6 +128,11 @@ enum Metric {
     /// Wide enough for a branch name set in the fact face without wrapping,
     /// and narrow enough that all five columns still fit beside it.
     static let inspectorWidth: CGFloat = 344
+    /// Fixed, because the status bar now carries live numbers that change
+    /// width. Left to size itself it has grown and shoved the whole board
+    /// upwards before, and a strip that jitters as a cost ticks is worse than
+    /// one that truncates.
+    static let statusBarHeight: CGFloat = 28
     /// The radius ladder: `nested < card < panel < column`. A rounded thing
     /// inside another rounded thing reads wrong at the same radius, and the two
     /// values added here were both already in use as literals — this names
