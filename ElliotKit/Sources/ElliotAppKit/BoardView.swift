@@ -1,5 +1,7 @@
+import AppKit
 import ElliotEngine
 import ElliotModel
+import ElliotStore
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -34,12 +36,14 @@ public struct BoardView: View {
             // yet" for the whole of startup — through the login-shell capture,
             // three tool lookups and a preflight sweep — to a user whose
             // repositories were in the database the entire time.
-            if !model.hasLoadedRepos {
-                startingState
-            } else if model.repos.isEmpty {
-                emptyState
-            } else {
-                board
+            // Asked, not decided. The board used to read `hasLoadedRepos` here
+            // while the status bar below read `isReady`, which is how it came
+            // to say "Still starting" over "Ready." for ever (#118).
+            switch model.boardPhase {
+            case .starting: startingState
+            case .unreadable(let reason): unreadableState(reason)
+            case .empty: emptyState
+            case .ready: board
             }
             Divider()
             StatusBar()
@@ -461,8 +465,40 @@ public struct BoardView: View {
     /// so the two screens stop disagreeing about one launch.
     private var startingState: some View {
         ContentUnavailableView(
-            "Still starting", systemImage: "hourglass", description: Text(model.status)
+            BoardPhase.starting.title ?? "",
+            systemImage: "hourglass",
+            // From the phase, not from `model.status` directly. Identical while
+            // startup runs — which is the only time this screen is drawn — but
+            // it means the title and the line under it come from one decision
+            // rather than two, which is the whole of #118.
+            description: Text(BoardPhase.starting.detail(status: model.status) ?? "")
         )
+        .frame(maxHeight: .infinity)
+    }
+
+    /// The store could not be read — distinct from both the spinner above and
+    /// the empty state below.
+    ///
+    /// A question mark rather than an hourglass: nothing is still happening, and
+    /// an hourglass is what said otherwise for ever. Drawn in `Palette.refused`
+    /// because this is a failure the reader has to act on, unlike the empty
+    /// state, which is an invitation.
+    private func unreadableState(_ reason: String) -> some View {
+        ContentUnavailableView {
+            Label(
+                BoardPhase.unreadable(reason: reason).title ?? "",
+                systemImage: "questionmark.folder"
+            )
+            .foregroundStyle(Palette.refused)
+        } description: {
+            Text(reason)
+        } actions: {
+            // The one thing a reader can usefully do about a store Elliot
+            // cannot read. It does not repair anything, and does not pretend to.
+            Button("Show the store in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([StoreLocation.databaseURL])
+            }
+        }
         .frame(maxHeight: .infinity)
     }
 
