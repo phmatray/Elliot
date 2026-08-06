@@ -65,6 +65,36 @@ struct BoardAccessibilityTests {
         )
     }
 
+    // MARK: - 1b. A move in the history
+
+    /// The visible row is tabular; read field by field it would be four
+    /// disconnected fragments. This is the same move as one sentence.
+    @Test("A history row reads as a sentence naming both columns")
+    func historyRowNamesBothColumns() {
+        #expect(
+            BoardAccessibility.historyRowLabel(
+                from: "In Progress", to: "In Review", age: "3h ago",
+                origin: "Elliot: the pull request went ready", run: nil)
+                == "In Progress to In Review, 3h ago, Elliot: the pull request went ready"
+        )
+    }
+
+    /// The clause is omitted rather than emptied. A move that started nothing
+    /// must not be read out as having started something — the same rule the
+    /// verdict block follows about never claiming more than was established.
+    @Test("A history row mentions a run only when there is one")
+    func historyRowOnlyClaimsARunItHas() {
+        let started = BoardAccessibility.historyRowLabel(
+            from: "Backlog", to: "To Do", age: "1d ago", origin: "Dragged",
+            run: "create-issue")
+        #expect(started == "Backlog to To Do, 1d ago, Dragged. Started create-issue")
+
+        let inert = BoardAccessibility.historyRowLabel(
+            from: "Backlog", to: "To Do", age: "1d ago", origin: "Dragged", run: nil)
+        #expect(!inert.lowercased().contains("started"))
+        #expect(inert == "Backlog to To Do, 1d ago, Dragged")
+    }
+
     // MARK: - 2. What the panel announces
 
     /// The panel's announcement has to carry the **column**, not only the card.
