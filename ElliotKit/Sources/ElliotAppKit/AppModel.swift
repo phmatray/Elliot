@@ -34,6 +34,11 @@ public final class AppModel {
     /// `isOverDailyCeiling` is held rather than derived in a view: a queue that
     /// sits still with no reason given reads as a broken scheduler, and this is
     /// the one refusal a user cannot deduce from the board.
+    /// The runs waiting to start, in the order the scheduler will consider
+    /// them, each carrying the rule holding it. Pushed by the scheduler on every
+    /// drain — nothing polls.
+    public private(set) var queue: [QueuedRun] = []
+
     public private(set) var ceiling: SpendCeiling = .off
     public private(set) var spentToday: Spend = .nothing
     public private(set) var isOverDailyCeiling = false
@@ -322,6 +327,8 @@ public final class AppModel {
 
     private func apply(_ update: SchedulerUpdate) {
         switch update {
+        case .queueChanged(let queue):
+            self.queue = queue
         case .runStarted(let runID, _):
             liveLog[runID] = ["▸ started"]
             Task {
