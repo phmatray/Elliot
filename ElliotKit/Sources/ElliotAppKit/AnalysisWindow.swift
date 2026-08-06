@@ -41,10 +41,10 @@ public struct AnalysisWindow: View {
             header
             Divider()
 
-            if model.activeAnalysisID == nil {
-                setup
+            if let session = model.analysis {
+                review(session)
             } else {
-                review
+                setup
             }
 
             Divider()
@@ -65,14 +65,14 @@ public struct AnalysisWindow: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Analyse \(repoName)").font(Type.sheetTitle)
-                Text(model.activeAnalysisID == nil
+                Text(model.analysis == nil
                     ? "Read this repository through several lenses and propose stories for the backlog."
                     : "Accept what you want on the board. Nothing here is a card until you do.")
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if !past.isEmpty, model.activeAnalysisID == nil {
+            if !past.isEmpty, model.analysis == nil {
                 Menu {
                     ForEach(past) { analysis in
                         Button(label(for: analysis)) { model.openAnalysis(id: analysis.id) }
@@ -152,7 +152,7 @@ public struct AnalysisWindow: View {
 
     // MARK: - Review
 
-    private var review: some View {
+    private func review(_ session: AnalysisSession) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // Pinned: this is the status of the thing you are waiting on, and
             // it must not scroll away under the proposals it is producing.
@@ -163,22 +163,22 @@ public struct AnalysisWindow: View {
             // hold half the window to say so.
             VStack(alignment: .leading, spacing: 8) {
                 Button {
-                    lensesExpanded = !isLensStripOpen
+                    lensesExpanded = !isLensStripOpen(session)
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: isLensStripOpen ? "chevron.down" : "chevron.right")
+                        Image(systemName: isLensStripOpen(session) ? "chevron.down" : "chevron.right")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(.secondary)
                         ConsoleLabel(text: "Lenses")
-                        if !isLensStripOpen { lensSummary }
+                        if !isLensStripOpen(session) { lensSummary(session) }
                         Spacer()
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
-                if isLensStripOpen {
-                    ForEach(model.analysisRuns) { run in
+                if isLensStripOpen(session) {
+                    ForEach(session.runs) { run in
                         LensRunRow(run: run, repoPath: repo?.path)
                     }
                 }
@@ -186,14 +186,14 @@ public struct AnalysisWindow: View {
             .padding(16)
 
             Divider()
-            proposalList
+            proposalList(session)
         }
     }
 
     /// Open while anything is still reading, closed once it is all in — unless
     /// the reader has said otherwise, which then sticks.
-    private var isLensStripOpen: Bool {
-        lensesExpanded ?? !model.analysisRuns.allSatisfy { $0.state.isTerminal }
+    private func isLensStripOpen(_ session: AnalysisSession) -> Bool {
+        lensesExpanded ?? !session.runs.allSatisfy { $0.state.isTerminal }
     }
 
     /// What the collapsed strip still has to say.
@@ -202,15 +202,15 @@ public struct AnalysisWindow: View {
     /// exactly the thing that must not become invisible because the panel it
     /// lived in was tidied away.
     @ViewBuilder
-    private var lensSummary: some View {
-        let reports = model.analysisRuns.compactMap(\.analysisReport)
+    private func lensSummary(_ session: AnalysisSession) -> some View {
+        let reports = session.runs.compactMap(\.analysisReport)
         let kept = reports.reduce(0) { $0 + $1.kept }
         let dropped = reports.reduce(0) { $0 + $1.dropped.count }
         let edited = reports.filter { $0.workingTreeChanged == true }.count
         let recovered = reports.filter { $0.harvestSource == .resultText }.count
 
         HStack(spacing: 8) {
-            Fact(text: "\(model.analysisRuns.count) lenses", small: true)
+            Fact(text: "\(session.runs.count) lenses", small: true)
             Fact(text: "\(kept) kept", tint: Palette.verified, small: true)
             if dropped > 0 {
                 Fact(text: "\(dropped) dropped", tint: Palette.attention, small: true)
@@ -229,17 +229,18 @@ public struct AnalysisWindow: View {
         }
     }
 
-    private var proposed: [StoryProposal] {
-        model.proposals.filter { $0.status == .proposed }
+    private func proposed(_ session: AnalysisSession) -> [StoryProposal] {
+        session.proposals.filter { $0.status == .proposed }
     }
 
-    private var proposalList: some View {
-        ScrollView {
+    private func proposalList(_ session: AnalysisSession) -> some View {
+        let proposed = self.proposed(session)
+        return ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
                 if proposed.isEmpty {
                     emptyReview
                 } else {
-                    selectionBar
+                    selectionBar(proposed)
                     ForEach(AnalysisAngle.allCases, id: \.self) { angle in
                         let group = proposed.filter { $0.angle == angle }
                         if !group.isEmpty {
@@ -312,7 +313,7 @@ public struct AnalysisWindow: View {
 
     /// Grounding is the one objective fact available about an opinion, so it is
     /// the one bulk selection worth offering.
-    private var selectionBar: some View {
+    private func selectionBar(_ proposed: [StoryProposal]) -> some View {
         HStack(spacing: 10) {
             Fact(text: "\(selection.count) of \(proposed.count) selected", small: true)
             Spacer()
@@ -360,7 +361,7 @@ public struct AnalysisWindow: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if model.activeAnalysisID == nil {
+            if model.analysis == nil {
                 // The same promise the board's columns make: say what the
                 // gesture will do before it is made. Each lens is a full read
                 // of the repository, and that is what the button is spending.
@@ -371,14 +372,14 @@ public struct AnalysisWindow: View {
                 // A count of your own clicks is not a consequence, so it
                 // carries no accent.
                 Fact(text: "\(selection.count) selected")
-            } else if let note = model.analysisNote {
+            } else if let note = model.analysis?.note {
                 Label(note, systemImage: "info.circle")
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .id(note)
                     // Driven by the `.animation(reduceMotion ? nil : …, value:
-                    // model.analysisNote)` at the foot of this footer, which is
+                    // model.analysis?.note)` at the foot of this footer, which is
                     // keyed on the very value that makes the note appear and
                     // go. Reduce motion switches it off there, once.
                     .transition(.opacity)
@@ -391,7 +392,7 @@ public struct AnalysisWindow: View {
                 dismiss()
             }
 
-            if model.activeAnalysisID == nil {
+            if model.analysis == nil {
                 Button("Start \(angles.count) run\(angles.count == 1 ? "" : "s")") {
                     guard let repoID = model.selectedRepoID else { return }
                     Task {
@@ -413,7 +414,7 @@ public struct AnalysisWindow: View {
                 // Editing was reachable by hover and by context menu, neither
                 // of which a keyboard can open on macOS.
                 Button("Edit…") {
-                    editingID = proposed.first { selection.contains($0.id) }?.id
+                    editingID = (model.analysis.map(proposed) ?? []).first { selection.contains($0.id) }?.id
                 }
                 .disabled(selection.count != 1)
 
@@ -436,7 +437,7 @@ public struct AnalysisWindow: View {
             }
         }
         .padding(16)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: model.analysisNote)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: model.analysis?.note)
     }
 
     private var startConsequence: String {
