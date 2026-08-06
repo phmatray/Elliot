@@ -32,15 +32,18 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**788 tests in 92 suites**, measured on `main` at
-  `862c4ae` on 2026-08-06 — the count moves every feature PR, so trust the run over this number and
-  correct it here when it drifts; needs no Xcode, no API token, no network — the end-to-end suite
-  drives `Scripts/fake-claude.sh` instead of the real `claude`)
-  - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Two
-    consecutive full runs at `862c4ae` passed with 788/788; a third died with
-    `ElliotKitPackageTests … exited with unexpected signal code 11` partway through, having reported
-    no failing test. A signal 10/11 abort is a suite-level crash, not an assertion — re-run before
-    concluding anything about your change, and do not read it as a broken toolchain.
+- **Full test:** `cd ElliotKit && swift test` (**820 tests in 95 suites**, measured on `main` at
+  `c99ebb1` on 2026-08-06; needs no Xcode, no API token, no network — the end-to-end suite drives
+  `Scripts/fake-claude.sh` instead of the real `claude`)
+  - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
+    wrong here twice.** It said 408 while the suite ran 517, then 517 while it ran 788. It moved
+    788 → 820 *during the pull request that corrected it*, when `main` gained three suites and the
+    branch was synced. **Trust the run, and correct the line when you notice the gap.**
+  - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
+    three full runs at `862c4ae`, two passed 788/788 and a third died partway with
+    `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
+    A signal 10/11 abort is a suite-level crash, not an assertion — re-run before concluding anything
+    about your change, and do not read it as a broken toolchain.
 - **Single-suite filter (per-task, fast):** `cd ElliotKit && swift test --filter <Suite>` — e.g.
   `--filter ElliotModelTests`, or a single suite/test name (**swift-testing**, `@Test`/`@Suite`, not XCTest)
 - **App bundle:** `./Scripts/build-app.sh` — assembles `dist/Elliot.app` from the two SwiftPM
