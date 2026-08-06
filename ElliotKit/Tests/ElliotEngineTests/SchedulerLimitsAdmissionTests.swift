@@ -113,3 +113,93 @@ struct SchedulerLimitsAdmissionTests {
         #expect(await scheduler.currentLimits == SchedulerLimits(maxConcurrent: 5, maxConcurrentAnalyses: 6))
     }
 }
+
+/// The daily ceiling, at the one place it acts: admission.
+@Suite("Spend ceiling — admission")
+struct SpendCeilingAdmissionTests {
+
+    private let now = Date(timeIntervalSince1970: 1_770_000_000)
+
+    /// A store holding one finished run that cost `spent`, dated today so the
+    /// scheduler's start-of-day window includes it.
+    private func scheduler(ceiling: SpendCeiling, spentToday: Double?) async throws -> RunScheduler {
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            gitPath: "/usr/bin/true", environment: [:]
+        )
+        if let spentToday {
+            let repo = Repo(
+                path: "/tmp/Elliot", nameWithOwner: "phmatray/Elliot",
+                defaultBranch: "main", displayName: "Elliot"
+            )
+            let card = Card(
+                repoID: repo.id, title: "spent",
+                columnEnteredAt: now, createdAt: now, updatedAt: now
+            )
+            try await store.saveRepo(repo)
+            try await store.saveCard(card)
+            var run = SkillRun(
+                cardID: card.id, repoID: repo.id, kind: .implementIssue, prompt: "x",
+                cwd: "/tmp", logPath: "/tmp/a", stderrPath: "/tmp/b", createdAt: Date()
+            )
+            run.totalCostUSD = spentToday
+            // Dated now, not `self.now`: the scheduler asks for spend since the
+            // start of *today*, and a fixed epoch would fall outside it.
+            run.endedAt = Date()
+            run.state = .succeeded
+            try await store.saveRun(run)
+        }
+        return RunScheduler(
+            store: store, toolConfig: config,
+            verifier: Verifier(gh: .init(config: config)), ceiling: ceiling
+        )
+    }
+
+    @Test("No ceiling never refuses, whatever has been spent")
+    func offNeverRefuses() async throws {
+        let scheduler = try await scheduler(ceiling: .off, spentToday: 10_000)
+        #expect(await scheduler.isOverDailyCeiling() == false)
+    }
+
+    @Test("Under the ceiling, admission is open")
+    func underTheCeiling() async throws {
+        let scheduler = try await scheduler(
+            ceiling: SpendCeiling(perRunUSD: nil, perDayUSD: 10), spentToday: 4
+        )
+        #expect(await scheduler.isOverDailyCeiling() == false)
+    }
+
+    @Test("At the ceiling, admission closes")
+    func atTheCeiling() async throws {
+        let scheduler = try await scheduler(
+            ceiling: SpendCeiling(perRunUSD: nil, perDayUSD: 10), spentToday: 10
+        )
+        #expect(await scheduler.isOverDailyCeiling() == true)
+    }
+
+    @Test("Raising the ceiling reopens admission immediately")
+    func raisingReopens() async throws {
+        // The counterpart of `setLimits` calling `pump()`. A ceiling that only
+        // took effect at the next finished run would look ignored.
+        let scheduler = try await scheduler(
+            ceiling: SpendCeiling(perRunUSD: nil, perDayUSD: 5), spentToday: 6
+        )
+        #expect(await scheduler.isOverDailyCeiling() == true)
+
+        await scheduler.setCeiling(SpendCeiling(perRunUSD: nil, perDayUSD: 50))
+        #expect(await scheduler.isOverDailyCeiling() == false)
+    }
+
+    @Test("A per-run ceiling alone never closes admission")
+    func perRunDoesNotGateAdmission() async throws {
+        // The two halves are enforced in different places: the per-run ceiling
+        // is Claude Code's job via `--max-budget-usd`, and gating admission on
+        // it would refuse runs that have not spent anything yet.
+        let scheduler = try await scheduler(
+            ceiling: SpendCeiling(perRunUSD: 0.5, perDayUSD: nil), spentToday: 900
+        )
+        #expect(await scheduler.isOverDailyCeiling() == false)
+        #expect(await scheduler.currentCeiling.perRunUSD == 0.5)
+    }
+}

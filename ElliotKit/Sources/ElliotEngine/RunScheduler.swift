@@ -33,6 +33,13 @@ public actor RunScheduler: RunLaunching {
     /// `var`, not `let`: these were constructor constants nobody ever passed, so
     /// the only way to change them was to rebuild the app. See `setLimits`.
     private var limits: SchedulerLimits
+    private var ceiling: SpendCeiling
+    /// Today's spend, cached. Read from the store when it goes stale rather than
+    /// on every admission: `canStart` runs once per pending run per `pump()`,
+    /// and a SQL aggregate there would turn a queue drain into N queries.
+    /// Invalidated whenever a run finishes, which is the only moment it changes.
+    private var spentTodayCache: Double?
+    private var spentTodayDay: Date?
     private let harvester: ProposalHarvester
     /// `git status --porcelain` taken just before each analysis spawned, keyed
     /// by run. In memory only: if the app dies mid-run the baseline is gone and
@@ -54,13 +61,15 @@ public actor RunScheduler: RunLaunching {
         toolConfig: ToolConfig,
         verifier: Verifier,
         harvester: ProposalHarvester? = nil,
-        limits: SchedulerLimits = .default
+        limits: SchedulerLimits = .default,
+        ceiling: SpendCeiling = .off
     ) {
         self.store = store
         self.toolConfig = toolConfig
         self.verifier = verifier
         self.harvester = harvester ?? ProposalHarvester(store: store, gh: GHClient(config: toolConfig))
         self.limits = limits
+        self.ceiling = ceiling
         self.git = GitClient(config: toolConfig)
         var continuation: AsyncStream<SchedulerUpdate>.Continuation!
         updates = AsyncStream(bufferingPolicy: .bufferingNewest(1024)) { continuation = $0 }
@@ -86,6 +95,17 @@ public actor RunScheduler: RunLaunching {
     }
 
     public var currentLimits: SchedulerLimits { limits }
+
+    /// Changes the ceiling and drains, for the same reason `setLimits` does:
+    /// raising a ceiling that was refusing admission must release the queue now,
+    /// not whenever something else happens to finish.
+    public func setCeiling(_ ceiling: SpendCeiling) async {
+        self.ceiling = ceiling
+        spentTodayCache = nil
+        await pump()
+    }
+
+    public var currentCeiling: SpendCeiling { ceiling }
 
     /// What the caps are actually holding right now, for the UI to show beside
     /// them: a stepper reading "4" means nothing without "2 in flight".
@@ -140,16 +160,45 @@ public actor RunScheduler: RunLaunching {
     }
 
     private func pump() async {
+        // Read once per drain, not once per run. `canStart` is consulted for
+        // every pending run and is deliberately synchronous; a SQL aggregate in
+        // there would turn draining a queue of twenty into twenty queries.
+        let overBudget = await isOverDailyCeiling()
         var stillPending: [UUID] = []
         for runID in pending {
             guard let run = try? await store.run(id: runID), run.state == .queued else { continue }
-            if canStart(run) {
+            // The ceiling holds runs rather than cancelling them: tomorrow, or a
+            // raised ceiling, releases the same queue untouched.
+            if !overBudget, canStart(run) {
                 await start(run)
             } else {
                 stillPending.append(runID)
             }
         }
         pending = stillPending
+    }
+
+    /// Whether today's spend has reached the daily ceiling.
+    ///
+    /// Public so the UI can say *why* a queue is not moving. A queue that sits
+    /// still with no reason given reads as a broken scheduler, and this is the
+    /// one refusal a user cannot deduce from the board.
+    public func isOverDailyCeiling() async -> Bool {
+        guard ceiling.perDayUSD != nil else { return false }
+        return ceiling.daylimitReached(spentToday: await spentToday())
+    }
+
+    private func spentToday() async -> Double {
+        let startOfDay = Calendar.current.startOfDay(for: Date())
+        // The day boundary is part of the cache key. Without it a session left
+        // open overnight keeps yesterday's total and refuses every run of the
+        // new day — a bug that only appears after midnight, which is the worst
+        // kind to find.
+        if let cached = spentTodayCache, spentTodayDay == startOfDay { return cached }
+        let spend = (try? await store.spend(since: startOfDay)) ?? .nothing
+        spentTodayCache = spend.totalUSD
+        spentTodayDay = startOfDay
+        return spend.totalUSD
     }
 
     // MARK: - Running
@@ -166,7 +215,8 @@ public actor RunScheduler: RunLaunching {
             prompt: run.prompt,
             cwd: repo.path,
             permissionMode: repo.permissionMode,
-            extraAllowedTools: repo.extraAllowedTools
+            extraAllowedTools: repo.extraAllowedTools,
+            maxBudgetUSD: ceiling.perRunUSD
         )
         updated.argv = [toolConfig.claudePath] + invocation.arguments()
 
@@ -240,6 +290,10 @@ public actor RunScheduler: RunLaunching {
     private func finish(run: SkillRun, outcome: ClaudeRunOutcome?) async {
         live[run.id] = nil
         inFlight[run.id] = nil
+        // The only moment the day's total moves. Invalidated rather than
+        // recomputed: the `pump()` at the end of this method reads it back, and
+        // doing it here would read a total that does not include this run yet.
+        spentTodayCache = nil
 
         var updated = (try? await store.run(id: run.id)) ?? run
         updated.endedAt = Date()

@@ -132,6 +132,51 @@ public final class BoardStore: Sendable {
         try await saveSetting(Self.limitsKey, limits)
     }
 
+    private static let ceilingKey = "spendCeiling"
+
+    public func spendCeiling() async throws -> SpendCeiling? {
+        try await setting(Self.ceilingKey, as: SpendCeiling.self)
+    }
+
+    public func saveSpendCeiling(_ ceiling: SpendCeiling) async throws {
+        try await saveSetting(Self.ceilingKey, ceiling)
+    }
+
+    /// What has been spent since `since`, summed in SQL.
+    ///
+    /// Keyed on `endedAt`, not `createdAt`: a run's cost is only known once it
+    /// has finished, so a run that started yesterday and ended today spent its
+    /// money today. Runs still in flight contribute nothing, which is the honest
+    /// answer — their cost does not exist yet.
+    ///
+    /// A NULL `totalCostUSD` is **not** counted as zero. A run whose cost was
+    /// never recorded must not read the same as a run that cost nothing; the
+    /// same distinction `workingTreeChanged` draws between checked-and-clean and
+    /// never-checked. The count comes back so a caller can tell a partial answer
+    /// from a complete one.
+    public func spend(since: Date) async throws -> Spend {
+        try await reader.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: #"""
+                    SELECT
+                        COALESCE(SUM("totalCostUSD"), 0.0) AS total,
+                        COUNT(*) AS runs,
+                        SUM(CASE WHEN "totalCostUSD" IS NULL THEN 1 ELSE 0 END) AS unknown
+                    FROM "skillRun"
+                    WHERE "endedAt" IS NOT NULL AND "endedAt" >= ?
+                    """#,
+                arguments: [since]
+            )
+            guard let row else { return Spend.nothing }
+            return Spend(
+                totalUSD: row["total"] ?? 0,
+                runs: row["runs"] ?? 0,
+                unknownCost: row["unknown"] ?? 0
+            )
+        }
+    }
+
     /// The two halves of the settings pair, written once.
     ///
     /// `layout` had its own copy of both, and the scheduler limits would have

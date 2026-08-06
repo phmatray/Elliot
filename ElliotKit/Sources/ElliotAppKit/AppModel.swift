@@ -29,6 +29,15 @@ public final class AppModel {
     public private(set) var limits: SchedulerLimits = .default
     public private(set) var occupancy: (writers: Int, analyses: Int) = (0, 0)
 
+    /// The most Elliot may spend, and what it has spent today.
+    ///
+    /// `isOverDailyCeiling` is held rather than derived in a view: a queue that
+    /// sits still with no reason given reads as a broken scheduler, and this is
+    /// the one refusal a user cannot deduce from the board.
+    public private(set) var ceiling: SpendCeiling = .off
+    public private(set) var spentToday: Spend = .nothing
+    public private(set) var isOverDailyCeiling = false
+
     /// One row per repository of the configured owners: GitHub's list, the disk
     /// and the store, reconciled. The judgement is `RepoReconciler`'s — the page
     /// renders it and never decides anything itself.
@@ -186,8 +195,10 @@ public final class AppModel {
             // and it must do so under the caps the user chose rather than under
             // the defaults for the moment it takes to override them.
             limits = (try? await store.limits()) ?? .default
+            ceiling = (try? await store.spendCeiling()) ?? .off
             let scheduler = RunScheduler(
-                store: store, toolConfig: config, verifier: verifier, limits: limits
+                store: store, toolConfig: config, verifier: verifier,
+                limits: limits, ceiling: ceiling
             )
             let board = BoardService(store: store, launcher: scheduler)
             await scheduler.setSystemMover(board)
@@ -592,6 +603,30 @@ public final class AppModel {
     func refreshOccupancy() async {
         guard let scheduler else { return }
         occupancy = await scheduler.occupancy
+        await refreshSpend()
+    }
+
+    /// Saves the ceiling and applies it, in that order, for the same reason
+    /// `updateLimits` does: a failed write must not leave the running scheduler
+    /// enforcing something the store will not restore.
+    public func updateCeiling(_ new: SpendCeiling) async {
+        guard let store else { return }
+        do {
+            try await store.saveSpendCeiling(new)
+        } catch {
+            status = "Could not save the spend ceiling: \(error.localizedDescription)"
+            return
+        }
+        ceiling = new
+        await scheduler?.setCeiling(new)
+        await refreshSpend()
+    }
+
+    func refreshSpend() async {
+        guard let store, let scheduler else { return }
+        spentToday = (try? await store.spend(since: Calendar.current.startOfDay(for: Date())))
+            ?? .nothing
+        isOverDailyCeiling = await scheduler.isOverDailyCeiling()
     }
 
     /// One query for the whole board rather than one per card.

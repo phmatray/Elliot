@@ -11,6 +11,8 @@ public struct ClaudeInvocation: Sendable {
     public var permissionMode: PermissionMode
     public var extraAllowedTools: [String]
     public var includePartialMessages: Bool
+    /// `nil` means no ceiling — the behaviour before #57, and the default.
+    public var maxBudgetUSD: Double?
 
     public init(
         runID: UUID,
@@ -18,7 +20,8 @@ public struct ClaudeInvocation: Sendable {
         cwd: String,
         permissionMode: PermissionMode = .bypassPermissions,
         extraAllowedTools: [String] = [],
-        includePartialMessages: Bool = false
+        includePartialMessages: Bool = false,
+        maxBudgetUSD: Double? = nil
     ) {
         self.runID = runID
         self.prompt = prompt
@@ -26,6 +29,15 @@ public struct ClaudeInvocation: Sendable {
         self.permissionMode = permissionMode
         self.extraAllowedTools = extraAllowedTools
         self.includePartialMessages = includePartialMessages
+        self.maxBudgetUSD = maxBudgetUSD
+    }
+
+    /// Formatted rather than interpolated. `"\(0.5)"` is `"0.5"`, but
+    /// `"\(1e-05)"` is `"1e-05"` and `"\(10.0)"` is `"10.0"` — the first would
+    /// reach the CLI as scientific notation. Two decimals is money, and the
+    /// value is sanitised to be positive and finite before it gets here.
+    static func budgetArgument(_ usd: Double) -> String {
+        String(format: "%.2f", usd)
     }
 
     /// The full argument list, as a pure function so a test can assert the
@@ -43,6 +55,13 @@ public struct ClaudeInvocation: Sendable {
         ]
         if !extraAllowedTools.isEmpty {
             args += ["--allowedTools", extraAllowedTools.joined(separator: ",")]
+        }
+        // The only bound that can stop a single runaway run: nothing on our side
+        // can interrupt a turn in progress. Claude Code ends the run itself and
+        // reports `error_max_budget_usd`, which `StreamEventDecoder` already
+        // recognises as an error sub-type.
+        if let maxBudgetUSD {
+            args += ["--max-budget-usd", Self.budgetArgument(maxBudgetUSD)]
         }
         if includePartialMessages {
             args.append("--include-partial-messages")

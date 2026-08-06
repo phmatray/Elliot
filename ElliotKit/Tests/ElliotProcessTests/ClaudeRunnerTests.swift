@@ -79,6 +79,34 @@ struct ClaudeInvocationTests {
         #expect(args[args.firstIndex(of: "--allowedTools")! + 1] == "Bash(git status *),Read")
     }
 
+    @Test("A per-run budget reaches the CLI, and is absent when there is no ceiling")
+    func budgetFlag() {
+        // The flag is the only thing that can stop a single runaway run: nothing
+        // on our side can interrupt a turn in progress. If it silently stopped
+        // reaching argv, the ceiling would look armed and be inert — which is
+        // exactly the shape of the `gh secret list` trap.
+        var invocation = ClaudeInvocation(runID: UUID(), prompt: "x", cwd: "/tmp")
+        #expect(!invocation.arguments().contains("--max-budget-usd"))
+
+        invocation.maxBudgetUSD = 2.5
+        let args = invocation.arguments()
+        #expect(args[args.firstIndex(of: "--max-budget-usd")! + 1] == "2.50")
+    }
+
+    @Test("The budget is formatted as money, never as scientific notation")
+    func budgetIsNeverScientific() {
+        // `"\(0.00001)"` is `"1e-05"`, which the CLI would reject or misread.
+        // Interpolating the Double here would have been the obvious thing to do.
+        var invocation = ClaudeInvocation(runID: UUID(), prompt: "x", cwd: "/tmp")
+        for (value, expected) in [(0.000_01, "0.00"), (10.0, "10.00"), (1_000.5, "1000.50")] {
+            invocation.maxBudgetUSD = value
+            let args = invocation.arguments()
+            let written = args[args.firstIndex(of: "--max-budget-usd")! + 1]
+            #expect(written == expected)
+            #expect(!written.contains("e"))
+        }
+    }
+
     @Test("Partial messages stay off unless asked for")
     func partialMessagesAreOptional() {
         var invocation = ClaudeInvocation(runID: UUID(), prompt: "x", cwd: "/tmp")
