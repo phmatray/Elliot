@@ -142,11 +142,11 @@ public final class AppModel {
     public var defaultRepoIDForNewCard: UUID? { selectedRepoID ?? repos.first?.id }
 
     /// The analysis the window is showing. `nil` means it is still in setup.
-    public private(set) var activeAnalysisID: UUID?
-    public private(set) var analysisRuns: [SkillRun] = []
-    public private(set) var proposals: [StoryProposal] = []
-    /// Whatever the window needs to say about the last action.
-    public private(set) var analysisNote: String?
+    ///
+    /// One value rather than four members and a task: they have one lifetime,
+    /// and holding them apart meant `openAnalysis` and `closeAnalysis` each
+    /// had to enumerate it. They had already drifted — see ``AnalysisSession``.
+    public private(set) var analysis: AnalysisSession?
 
     /// Live tail per run, for the card's strip and the panel's log. Bounded —
     /// the file on disk is the complete record.
@@ -253,7 +253,6 @@ public final class AppModel {
     /// When this launch began. The audit observation starts here so relaunching
     /// does not replay a week of history as a week of banners.
     private let launchedAt = Date()
-    private var proposalObservation: Task<Void, Never>?
 
     public init() {}
 
@@ -424,7 +423,8 @@ public final class AppModel {
 
     public func shutdown() async {
         observationTasks.forEach { $0.cancel() }
-        proposalObservation?.cancel()
+        // Dropping the session cancels its observation.
+        analysis = nil
         await watcher?.stop()
         ipcServer?.stop()
     }
@@ -662,7 +662,7 @@ public final class AppModel {
         activeRuns = activeRuns.mapValues { Self.stalling(runID, $0) }
         recentRuns = recentRuns.map { Self.stalling(runID, $0) }
         runsByCard = runsByCard.mapValues { runs in runs.map { Self.stalling(runID, $0) } }
-        analysisRuns = analysisRuns.map { Self.stalling(runID, $0) }
+        analysis?.markStalled(runID)
     }
 
     /// The rule itself: **only a run that is still running can stall.**
@@ -1366,48 +1366,60 @@ public final class AppModel {
                 repoID: repoID, angles: angles, extraInstructions: instructions,
                 maxStoriesPerAngle: maxStories, origin: .manual
             )
-            analysisNote = nil
+            analysis = nil
             openAnalysis(id: started.analysis.id)
         } catch {
-            analysisNote = error.localizedDescription
+            // Written into the session, which in setup is `nil` — so this is
+            // discarded, exactly as it was before, when the footer's first
+            // branch made a note unreachable while no analysis was open
+            // (`AnalysisWindow.swift:363`). Logged so the failure stops
+            // vanishing outright; showing it needs a surface the setup footer
+            // does not have, and that is its own issue.
+            analysis?.note = error.localizedDescription
+            Self.log.error("Analysis failed to start: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     public func openAnalysis(id: UUID) {
-        activeAnalysisID = id
-        proposals = []
-        analysisRuns = []
+        // One assignment. The outgoing session goes with it, and its
+        // observation is cancelled by `ObservationHandle.deinit` rather than
+        // by a line here that a sixth member could out-live.
+        analysis = AnalysisSession(id: id)
         Task { await refreshAnalysisRuns() }
 
         // Proposals arrive run by run, so the list fills in as each angle
         // lands rather than all at once when the last one does.
-        proposalObservation?.cancel()
         guard let store else { return }
         let observation = store.observeProposals(analysisID: id)
-        proposalObservation = Task { [weak self] in
-            do {
-                for try await proposals in observation {
-                    await MainActor.run { self?.proposals = proposals }
+        analysis?.observation = ObservationHandle(
+            Task { [weak self] in
+                do {
+                    for try await proposals in observation {
+                        await MainActor.run {
+                            guard let self, AnalysisSession.accepts(self.analysis, rowsFor: id) else { return }
+                            self.analysis?.proposals = proposals
+                        }
+                    }
+                } catch {
+                    await MainActor.run {
+                        guard let self, AnalysisSession.accepts(self.analysis, rowsFor: id) else { return }
+                        self.analysis?.note = error.localizedDescription
+                    }
                 }
-            } catch {
-                await MainActor.run { self?.analysisNote = error.localizedDescription }
-            }
-        }
+            })
     }
 
-    public func closeAnalysis() {
-        proposalObservation?.cancel()
-        proposalObservation = nil
-        activeAnalysisID = nil
-        analysisRuns = []
-        proposals = []
-        analysisNote = nil
-    }
+    public func closeAnalysis() { analysis = nil }
 
     public func refreshAnalysisRuns() async {
-        guard let store, let id = activeAnalysisID else { return }
-        analysisRuns = (try? await store.runs(analysisID: id)) ?? []
-        await notifyIfAnalysisFinished(id: id, store: store)
+        guard let store, let id = analysis?.id else { return }
+        let runs = (try? await store.runs(analysisID: id)) ?? []
+        // The window can close, or another analysis open, while this read is
+        // in flight. Without this the rows land in whatever is open when the
+        // read ends rather than in what asked for them.
+        guard AnalysisSession.accepts(analysis, rowsFor: id) else { return }
+        analysis?.runs = runs
+        await notifyIfAnalysisFinished(id: id, runs: runs, store: store)
     }
 
     /// Ids of analyses already announced, so six angles produce one banner.
@@ -1417,15 +1429,17 @@ public final class AppModel {
     /// act, which is the fastest way to make a channel worth muting.
     private var announcedAnalyses: Set<UUID> = []
 
-    private func notifyIfAnalysisFinished(id: UUID, store: BoardStore) async {
+    /// The runs are passed in rather than re-read, so this cannot disagree
+    /// with the read that produced them.
+    private func notifyIfAnalysisFinished(id: UUID, runs: [SkillRun], store: BoardStore) async {
         guard !announcedAnalyses.contains(id) else { return }
         // An empty list is a analysis that has not started, not one that
         // finished — `allSatisfy` on nothing is true, and would announce it.
-        guard !analysisRuns.isEmpty, analysisRuns.allSatisfy(\.state.isTerminal) else { return }
+        guard !runs.isEmpty, runs.allSatisfy(\.state.isTerminal) else { return }
         announcedAnalyses.insert(id)
 
         guard
-            let repoID = analysisRuns.first?.repoID,
+            let repoID = runs.first?.repoID,
             let repo = try? await store.repo(id: repoID)
         else { return }
         // What the harvest actually kept, counted from the store rather than
@@ -1447,26 +1461,26 @@ public final class AppModel {
         guard let analysisService else { return }
         // Cleared before the await, not after: replacing one sentence with
         // another in place reads as nothing having happened.
-        analysisNote = nil
+        analysis?.note = nil
         do {
             let cards = try await analysisService.accept(proposalIDs: ids)
-            analysisNote = cards.isEmpty
+            analysis?.note = cards.isEmpty
                 ? "Nothing to accept — those were already decided."
                 : "Accepted \(cards.count == 1 ? "1 story" : "\(cards.count) stories") — waiting in Backlog. Nothing was filed on GitHub."
         } catch {
-            analysisNote = error.localizedDescription
+            analysis?.note = error.localizedDescription
         }
     }
 
     public func rejectProposals(ids: [UUID]) async {
-        analysisNote = nil
+        analysis?.note = nil
         try? await analysisService?.reject(proposalIDs: ids)
-        analysisNote = ids.count == 1 ? "Rejected 1 proposal." : "Rejected \(ids.count) proposals."
+        analysis?.note = ids.count == 1 ? "Rejected 1 proposal." : "Rejected \(ids.count) proposals."
     }
 
     /// The angles still working, for the window's header.
     public var runningAngles: [AnalysisAngle] {
-        analysisRuns.filter { !$0.state.isTerminal }.compactMap(\.analysisAngle)
+        analysis?.runs.filter { !$0.state.isTerminal }.compactMap(\.analysisAngle) ?? []
     }
 
     /// The command that registers the bundled helper with Claude Code.
@@ -1508,8 +1522,30 @@ public final class AppModel {
         activeRuns = active
         runsByCard = byCard
         recentRuns = recent
-        analysisRuns = analysis
+        if !analysis.isEmpty { self.analysis = AnalysisSession(id: UUID(), runs: analysis) }
     }
+
+    /// Seeds the analysis window's state without a store behind it.
+    ///
+    /// `testOnlySeedRuns(analysis:)` seeded a bare array; the session needs an
+    /// id, so this takes the session's members and leaves that seam to the
+    /// three collections that are still plain.
+    func testOnlySeedAnalysis(runs: [SkillRun], note: String?) {
+        guard var session = analysis else { return }
+        session.runs = runs
+        session.note = note
+        analysis = session
+    }
+
+    // MARK: - Temporary read-only shims (deleted in the next commit)
+    //
+    // `AnalysisWindow` reads these in 13 places. Keeping them for one commit
+    // means this commit builds and its tests pass; there is no CI here, so a
+    // tree that does not compile is a tree a reviewer cannot judge at all.
+    var activeAnalysisID: UUID? { analysis?.id }
+    var analysisRuns: [SkillRun] { analysis?.runs ?? [] }
+    var proposals: [StoryProposal] { analysis?.proposals ?? [] }
+    var analysisNote: String? { analysis?.note }
 
     /// Puts a real store behind the model without `start()`.
     ///

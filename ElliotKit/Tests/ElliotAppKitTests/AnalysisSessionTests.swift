@@ -76,3 +76,68 @@ struct AnalysisSessionTests {
         task.cancel()  // the test owns this one too; leave nothing running
     }
 }
+
+@MainActor
+@Suite("Analysis session on the model")
+struct AppModelAnalysisSessionTests {
+    private func model() -> AppModel {
+        let model = AppModel()
+        model.testOnlySeed(repos: [], cards: [])
+        return model
+    }
+
+    @Test("Closing leaves nothing behind")
+    func closingLeavesNothing() {
+        // Asserted as one claim about the optional rather than as one
+        // expectation per member: a list of four would go on passing while a
+        // fifth member, added later, survived the close. This cannot.
+        let model = model()
+        model.openAnalysis(id: UUID())
+        #expect(model.analysis != nil)
+
+        model.closeAnalysis()
+
+        #expect(model.analysis == nil)
+    }
+
+    @Test("Opening replaces the session rather than clearing members one at a time")
+    func openingReplaces() {
+        // The defect this issue exists for: `openAnalysis` cleared the runs
+        // and the proposals and left `analysisNote`, so a note from a failed
+        // start was rendered under the analysis you opened next.
+        let model = model()
+        let first = UUID()
+        model.openAnalysis(id: first)
+        model.testOnlySeedAnalysis(runs: [], note: "Accepted 3 stories.")
+        #expect(model.analysis?.note != nil)
+
+        let second = UUID()
+        model.openAnalysis(id: second)
+
+        #expect(model.analysis?.id == second)
+        #expect(model.analysis?.note == nil)
+        #expect(model.analysis?.runs.isEmpty == true)
+        #expect(model.analysis?.proposals.isEmpty == true)
+    }
+
+    @Test("A stall still reaches the analysis window's copy of the run")
+    func stallReachesTheSession() {
+        // `markStalled` walks four collections because any of them can be the
+        // one on screen; the analysis window's is the fourth, and it moved
+        // into the session.
+        let model = model()
+        var stalling = SkillRun(
+            cardID: nil, repoID: UUID(), analysisID: UUID(), analysisAngle: .bugs,
+            kind: .analyzeRepo, prompt: "analyse", cwd: "/tmp",
+            logPath: "/tmp/run.ndjson", stderrPath: "/tmp/run.log",
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        stalling.state = .running
+        model.openAnalysis(id: UUID())
+        model.testOnlySeedAnalysis(runs: [stalling], note: nil)
+
+        model.markStalled(runID: stalling.id)
+
+        #expect(model.analysis?.runs.first?.state == .stalled)
+    }
+}
