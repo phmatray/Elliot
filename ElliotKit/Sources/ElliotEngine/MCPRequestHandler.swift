@@ -1,4 +1,3 @@
-import ElliotEngine
 import ElliotIPC
 import ElliotModel
 import ElliotStore

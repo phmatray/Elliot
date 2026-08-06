@@ -35,7 +35,16 @@ let package = Package(
             dependencies: ["ElliotModel", .product(name: "GRDB", package: "GRDB.swift")]
         ),
         .target(name: "ElliotProcess", dependencies: ["ElliotModel"]),
-        .target(name: "ElliotEngine", dependencies: ["ElliotModel", "ElliotStore", "ElliotProcess"]),
+        // ElliotIPC for `MCPRequestHandler`, which answers the wire on the app's
+        // behalf. It lives here rather than in ElliotApp because ElliotApp is an
+        // executableTarget with no test target: in there, the live half of the
+        // protocol was unreachable from `swift test` while the helper's offline
+        // fallback was covered. The edge points down the documented order —
+        // ElliotIPC depends on ElliotModel alone — so it adds no cycle.
+        .target(
+            name: "ElliotEngine",
+            dependencies: ["ElliotModel", "ElliotStore", "ElliotProcess", "ElliotIPC"]
+        ),
         .target(name: "ElliotIPC", dependencies: ["ElliotModel"]),
         // Deliberately depends on neither ElliotEngine nor ElliotProcess: the
         // helper never spawns claude and never writes the database. It cannot
