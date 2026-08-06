@@ -83,6 +83,43 @@ struct CodeHighlighterTests {
         #expect(CodeHighlighter.tokens(of: "").isEmpty)
     }
 
+    // MARK: - 1b. The declaration
+
+    @Test("A declaration this type has no rules for changes nothing at all")
+    func anUnrecognisedDeclarationIsInert() {
+        // The default path is the contract: a fence declared `rust` must render
+        // exactly as an undeclared one, because this type has no rust rules and
+        // the nearest rules it does have would be a guess. Criterion 2 lives
+        // here — swift, bash and json fences are named explicitly.
+        let languages: [String?] = [nil, "", "   ", "swift", "bash", "sh", "json", "text", "Rust"]
+        for source in corpus {
+            let agnostic = CodeHighlighter.tokens(of: source)
+            for language in languages {
+                #expect(
+                    CodeHighlighter.tokens(of: source, language: language) == agnostic,
+                    "declaring `\(language ?? "nil")` moved a token in \(source.debugDescription)"
+                )
+            }
+        }
+    }
+
+    @Test("The declaration is read from the first word, and case does not matter")
+    func dialectReadsTheInfoString() {
+        // CommonMark lets the info string carry more than the language, and this
+        // repository's own mockup writes ```yaml .github/workflows/ci.yml.
+        #expect(CodeHighlighter.Dialect(declared: "yaml") == .yaml)
+        #expect(CodeHighlighter.Dialect(declared: "yml") == .yaml)
+        #expect(CodeHighlighter.Dialect(declared: "YAML") == .yaml)
+        #expect(CodeHighlighter.Dialect(declared: "yaml .github/workflows/ci.yml") == .yaml)
+
+        #expect(CodeHighlighter.Dialect(declared: nil) == .agnostic)
+        #expect(CodeHighlighter.Dialect(declared: "") == .agnostic)
+        // Near misses are not near enough. `yamlish` is not yaml, and a type
+        // that matched on a prefix would be guessing again.
+        #expect(CodeHighlighter.Dialect(declared: "yamlish") == .agnostic)
+        #expect(CodeHighlighter.Dialect(declared: "swift") == .agnostic)
+    }
+
     // MARK: - 2. Comments
 
     @Test("A hash or a double slash starts a comment, and it runs to end of line")
@@ -200,12 +237,15 @@ struct CodeHighlighterTests {
 
     // MARK: - 5. The mockup's own fence
 
-    /// The approved mockup's YAML block, tokenised. It is here to state plainly
-    /// what this implementation does and does not do with it: the comment is
-    /// found, and the unquoted keys and scalars stay plain, because tinting a
-    /// YAML key like a keyword means knowing the document is YAML — the
-    /// per-language grammar this type deliberately does not have.
-    @Test("The mockup's YAML fence gets its comment, and guesses at nothing else")
+    /// The approved mockup's YAML block with **no declaration**, tokenised.
+    ///
+    /// This is the refusal, not the shortfall: content that is obviously YAML
+    /// is still not read as YAML unless the author's info string says so. Every
+    /// assertion below is the same one it has always made — what changed is
+    /// only that the fence next door, declared `yaml`, now tints the same text
+    /// (`theMockupsFenceDeclaredAsYAML`). The pair is the point: the
+    /// declaration is doing all the work, and nothing is inferred from content.
+    @Test("Undeclared, the mockup's YAML fence gets its comment and guesses at nothing else")
     func theMockupsFence() {
         let yaml = """
             on:
@@ -230,7 +270,168 @@ struct CodeHighlighterTests {
         // in it either. Anything else appearing here would be a guess.
         #expect(!tokens.contains { $0.kind == .string })
         #expect(!tokens.contains { $0.kind == .keyword })
+
+        // Said the other way round, because this is the line that would break
+        // first if content ever started deciding: the same text, declared,
+        // is a different tokenisation.
+        #expect(CodeHighlighter.tokens(of: yaml, language: "yaml") != tokens)
     }
+
+    // MARK: - 6. A fence the author declared to be YAML
+
+    @Test("A key is a keyword, indentation and the colon are not")
+    func yamlKeysAreKeywords() {
+        #expect(yamlText(ofFirst: .keyword, in: "on:") == "on")
+        #expect(yamlText(ofFirst: .keyword, in: "  pull_request:") == "pull_request")
+        // Hyphens belong to the key. `runs` alone would be a different field.
+        #expect(yamlText(ofFirst: .keyword, in: "    runs-on: macos-15") == "runs-on")
+        #expect(yamlText(ofFirst: .keyword, in: "    timeout-minutes: 15") == "timeout-minutes")
+        // A mapping inside a sequence, which is most of the YAML in this repo.
+        #expect(yamlText(ofFirst: .keyword, in: "  - uses: actions/checkout@v4") == "uses")
+
+        // The colon and the indentation are structure and stay plain, or the
+        // whole line would read as one tinted blob.
+        let tokens = CodeHighlighter.tokens(of: "  push:", language: "yaml")
+        #expect(tokens.map(\.text) == ["  ", "push", ":"])
+        #expect(tokens.map(\.kind) == [.plain, .keyword, .plain])
+    }
+
+    @Test("A colon that opens nothing is not a key")
+    func yamlKeysFailToPlain() {
+        // The same guard as the comment rule, one cue over: what follows the
+        // colon decides. A URL is the case that would be wrong every time.
+        #expect(
+            !yamlKinds(of: "https://example.com").contains(.keyword),
+            "`https` is not a key — its colon is followed by a slash, not a space."
+        )
+        #expect(
+            !yamlKinds(of: "a:b").contains(.keyword),
+            "`a:b` is YAML's scalar `a:b`, not a mapping."
+        )
+        #expect(!yamlKinds(of: ": leading colon").contains(.keyword))
+        #expect(!yamlKinds(of: "# just a comment").contains(.keyword))
+        #expect(!yamlKinds(of: "").contains(.keyword))
+    }
+
+    @Test("An unquoted scalar is a string, and flow punctuation stays plain")
+    func yamlScalarsAreStrings() {
+        #expect(yamlText(ofFirst: .string, in: "    runs-on: macos-15") == "macos-15")
+        #expect(yamlText(ofFirst: .string, in: "    timeout-minutes: 15") == "15")
+        #expect(yamlText(ofFirst: .string, in: "    branches: [main]") == "main")
+
+        // The brackets are structure. Tinting them would make a list look like
+        // a value called "[main]".
+        // The colon, the space and the bracket are one plain run: adjacent runs
+        // of a kind are merged, which is what `tokensAreMinimalRuns` requires.
+        let flow = CodeHighlighter.tokens(of: "branches: [main]", language: "yaml")
+        #expect(flow.map(\.text) == ["branches", ": [", "main", "]"])
+        #expect(flow.map(\.kind) == [.keyword, .plain, .string, .plain])
+
+        // A bare sequence item is a scalar with no key.
+        #expect(yamlText(ofFirst: .string, in: "  - macos-15") == "macos-15")
+        // A key with no value tints nothing beyond the key.
+        #expect(!yamlKinds(of: "jobs:").contains(.string))
+    }
+
+    /// The approved mockup's own fence, asserted against
+    /// `docs/mockups/inline-detail-panel.html` lines 655–665 span for span.
+    /// That block is the design this feature exists to match, so it is checked
+    /// token for token rather than by sampling.
+    @Test("The mockup's YAML fence comes out exactly as the mockup draws it")
+    func theMockupsFenceDeclaredAsYAML() {
+        let yaml = """
+            on:
+              pull_request:
+                branches: [main]
+              push:
+                branches: [main]
+            jobs:
+              test:
+                runs-on: macos-15
+                timeout-minutes: 15          # criterion 5
+            """
+
+        let tokens = CodeHighlighter.tokens(of: yaml, language: "yaml")
+        #expect(tokens.map(\.text).joined() == yaml)
+
+        // <span class="k"> in the mockup, in document order.
+        let keywords = tokens.filter { $0.kind == .keyword }.map(\.text)
+        #expect(keywords == [
+            "on", "pull_request", "branches", "push", "branches",
+            "jobs", "test", "runs-on", "timeout-minutes",
+        ])
+
+        // <span class="s">, in document order.
+        let strings = tokens.filter { $0.kind == .string }.map(\.text)
+        #expect(strings == ["main", "main", "macos-15", "15"])
+
+        // <span class="c">, and still exactly the one.
+        let comments = tokens.filter { $0.kind == .comment }.map(\.text)
+        #expect(comments == ["# criterion 5"])
+    }
+
+    @Test("Declaring YAML does not weaken a single one of the refusals")
+    func yamlKeepsEveryNegative() {
+        // Criterion 3. These four are the reasons this type has no grammar, and
+        // a per-language cue set is only safe while they still hold.
+        #expect(!yamlKinds(of: "curl https://example.com/a//b").contains(.comment))
+        #expect(!yamlKinds(of: "#if os(macOS)").contains(.comment))
+        #expect(!yamlKinds(of: "note: the shell doesn't mind").contains(.comment))
+        #expect(
+            yamlText(ofFirst: .string, in: "note: the shell doesn't mind") == "the",
+            "An apostrophe mid-word is part of the scalar, never a quote that opens one."
+        )
+        #expect(
+            !yamlKinds(of: "let unterminated = \"oops").contains(.string),
+            "An unterminated quote is unknown, and unknown is plain."
+        )
+        // A quoted scalar is still the quoted run, not two half-scalars.
+        #expect(yamlText(ofFirst: .string, in: "name: \"hello world\"") == "\"hello world\"")
+        // And a comment still wins over what it contains.
+        #expect(yamlText(ofFirst: .comment, in: "key: v  # say \"hi\"") == "# say \"hi\"")
+    }
+
+    @Test("Totality holds for every declaration, not only the default")
+    func nothingIsDroppedInAnyDialect() {
+        // Criterion 4, restated across the axis this change added. A per-line
+        // branch is exactly where a character goes missing.
+        let languages: [String?] = [nil, "yaml", "yml", "YAML", "swift", "json"]
+        for source in corpus + yamlCorpus {
+            for language in languages {
+                let tokens = CodeHighlighter.tokens(of: source, language: language)
+                #expect(
+                    tokens.map(\.text).joined() == source,
+                    "`\(language ?? "nil")` dropped a character from \(source.debugDescription)"
+                )
+                for token in tokens {
+                    #expect(!token.text.isEmpty)
+                }
+                for (left, right) in zip(tokens, tokens.dropFirst()) {
+                    #expect(left.kind != right.kind, "\(language ?? "nil"): adjacent runs of one kind")
+                }
+            }
+        }
+    }
+
+    /// Awkward YAML, so the totality property above runs against the shapes the
+    /// new branch actually has to survive rather than against tidy ones.
+    private let yamlCorpus: [String] = [
+        "on:",
+        ":",
+        "-",
+        "- ",
+        "  -   spaced: value",
+        "a:b",
+        "https://example.com",
+        "key: [a, b, {c: d}]",
+        "key: 'single'  # and a comment",
+        "key:\tvalue",
+        "  key: \"unterminated",
+        "ключ: значение",
+        "key: don't",
+        "key:",
+        "   ",
+    ]
 
     // MARK: - Helpers
 
@@ -240,5 +441,13 @@ struct CodeHighlighterTests {
 
     private func text(ofFirst kind: CodeTokenKind, in source: String) -> String? {
         CodeHighlighter.tokens(of: source).first { $0.kind == kind }?.text
+    }
+
+    private func yamlKinds(of source: String) -> Set<CodeTokenKind> {
+        Set(CodeHighlighter.tokens(of: source, language: "yaml").map(\.kind))
+    }
+
+    private func yamlText(ofFirst kind: CodeTokenKind, in source: String) -> String? {
+        CodeHighlighter.tokens(of: source, language: "yaml").first { $0.kind == kind }?.text
     }
 }
