@@ -106,6 +106,72 @@ struct BoardPhaseTests {
         #expect(phase.detail(status: "Ready.") == nil)
     }
 
+    // MARK: - Criterion 4: partial success, said out loud
+
+    /// Some rows read and some did not: the board draws what it has. Blanking it
+    /// would trade one false "fine" for a different one.
+    @Test("Rows that did read still draw the board")
+    func partialReadStillDrawsTheBoard() {
+        #expect(
+            BoardPhase.of(
+                hasLoadedRepos: true, isReady: true, repoCount: 3,
+                failure: nil, unreadableCount: 1) == .ready)
+    }
+
+    /// …and the skip is never silent, which is the clause the whole of Task 3
+    /// turns on: a skipped row nobody mentions is the original defect with a
+    /// smaller blast radius.
+    @Test("A skipped row always produces a sentence, and a clean read never does")
+    func skippedRowsAreAlwaysSaid() {
+        #expect(BoardPhase.skippedNote(0) == nil)
+        #expect(BoardPhase.skippedNote(-1) == nil)
+        for count in 1...4 {
+            let note = try? #require(BoardPhase.skippedNote(count))
+            #expect(note?.isEmpty == false, "\(count)")
+            #expect(note?.contains("\(count)") == true, "\(count) is not named in its own note")
+        }
+        // Singular reads as English, not as "1 repositories".
+        #expect(BoardPhase.skippedNote(1)?.contains("1 repository") == true)
+        #expect(BoardPhase.skippedNote(2)?.contains("2 repositories") == true)
+    }
+
+    /// Nothing readable **and** something unreadable is criterion 4's other
+    /// half — "says plainly that it cannot show any". It must not be `.empty`:
+    /// "there is nothing to show" and "I could not look" are different answers,
+    /// and #42 exists because they were once the same screen.
+    @Test("Every row unreadable is a failure, never the empty state")
+    func everyRowUnreadableIsNotEmpty() {
+        let phase = BoardPhase.of(
+            hasLoadedRepos: true, isReady: true, repoCount: 0,
+            failure: nil, unreadableCount: 2)
+
+        #expect(phase.isFailure)
+        #expect(phase != .empty)
+        #expect(phase == .unreadable(reason: BoardPhase.noneReadable(2)))
+        #expect(phase.detail(status: "Ready.")?.contains("None of the 2") == true)
+    }
+
+    /// The singular of the same, because "None of the 1 repositories" is how
+    /// that sentence goes wrong.
+    @Test("A single unreadable row reads as one repository, not as none of one")
+    func singleUnreadableRowReadsAsEnglish() {
+        let phase = BoardPhase.of(
+            hasLoadedRepos: true, isReady: true, repoCount: 0,
+            failure: nil, unreadableCount: 1)
+        #expect(phase.detail(status: "Ready.") == BoardPhase.noneReadable(1))
+        #expect(BoardPhase.noneReadable(1).contains("The one repository"))
+    }
+
+    /// A genuinely empty store is still empty — the new argument must not have
+    /// turned every empty board into a failure.
+    @Test("An empty store with nothing skipped is still just empty")
+    func emptyWithNoSkipsIsStillEmpty() {
+        #expect(
+            BoardPhase.of(
+                hasLoadedRepos: true, isReady: true, repoCount: 0,
+                failure: nil, unreadableCount: 0) == .empty)
+    }
+
     @Test("A readable store with repositories draws the board and nothing else")
     func readyDrawsTheBoard() {
         let phase = BoardPhase.of(

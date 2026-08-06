@@ -78,6 +78,14 @@ public final class AppModel {
     /// succeeds, so it names a live problem rather than a historical one.
     public private(set) var startupFailure: String?
 
+    /// How many repository rows the last read could not decode.
+    ///
+    /// One bad row costs one repository now rather than the whole list, but the
+    /// cost is still stated — `BoardPhase.skippedNote` turns this into the
+    /// sentence beside the board. Zero means every row read, which is why a
+    /// healthy board says nothing.
+    public private(set) var unreadableRepoCount = 0
+
     /// Which of the board's four screens is the true one.
     ///
     /// Asked of `ElliotModel` rather than decided here, because the defect this
@@ -86,7 +94,8 @@ public final class AppModel {
     public var boardPhase: BoardPhase {
         BoardPhase.of(
             hasLoadedRepos: hasLoadedRepos, isReady: isReady,
-            repoCount: repos.count, failure: startupFailure)
+            repoCount: repos.count, failure: startupFailure,
+            unreadableCount: unreadableRepoCount)
     }
 
     /// Sheet and inspector state, here rather than in a view, because a menu
@@ -513,9 +522,12 @@ public final class AppModel {
         let repoObservation = store.observeRepos()
         observationTasks.append(Task { [weak self] in
             do {
-                for try await repos in repoObservation {
+                for try await scan in repoObservation {
                     await MainActor.run {
-                        self?.repos = repos
+                        self?.repos = scan.repos
+                        // Carried, not dropped: the board says how many rows it
+                        // could not read beside the ones it could.
+                        self?.unreadableRepoCount = scan.unreadable
                         // Set on every delivery, including an empty one: an
                         // empty store is a loaded store, and the board's real
                         // empty state must be reachable.
@@ -524,7 +536,7 @@ public final class AppModel {
                         // failed before it. Left set, a transient error would
                         // keep accusing a store that is now being read.
                         self?.startupFailure = nil
-                        if self?.selectedRepoID == nil { self?.selectedRepoID = repos.first?.id }
+                        if self?.selectedRepoID == nil { self?.selectedRepoID = scan.repos.first?.id }
                     }
                 }
             } catch {

@@ -36,7 +36,8 @@ public enum BoardPhase: Sendable, Hashable {
     /// an observation that throws is only one way to reach it, and a delivery
     /// that simply never arrives reaches it too, with nothing caught anywhere.
     public static func of(
-        hasLoadedRepos: Bool, isReady: Bool, repoCount: Int, failure: String?
+        hasLoadedRepos: Bool, isReady: Bool, repoCount: Int, failure: String?,
+        unreadableCount: Int = 0
     ) -> BoardPhase {
         // A failure that arrived after a good delivery does not blank the
         // board: the caller keeps the repositories it has and shows the reason
@@ -45,7 +46,38 @@ public enum BoardPhase: Sendable, Hashable {
             if let failure { return .unreadable(reason: failure) }
             return isReady ? .unreadable(reason: Self.neverArrived) : .starting
         }
-        return repoCount == 0 ? .empty : .ready
+        // Nothing readable *and* something unreadable is not an empty store —
+        // that is criterion 4's "says plainly that it cannot show any", and
+        // conflating it with `.empty` would be #42 again: "there is nothing to
+        // show" wearing the face of "I could not look".
+        if repoCount == 0 {
+            return unreadableCount > 0
+                ? .unreadable(reason: Self.noneReadable(unreadableCount))
+                : .empty
+        }
+        // Some rows read. The board draws them, and the skipped ones are said
+        // out loud beside it rather than silently missing — see `skippedNote`.
+        return .ready
+    }
+
+    /// The reason shown when every row failed to decode.
+    public static func noneReadable(_ count: Int) -> String {
+        count == 1
+            ? "The one repository in your store could not be read."
+            : "None of the \(count) repositories in your store could be read."
+    }
+
+    /// What the board says beside the repositories it *did* read.
+    ///
+    /// `nil` when nothing was skipped, so a healthy board says nothing at all.
+    /// This is the clause the whole of Task 3 turns on: a skipped row nobody
+    /// mentions is the original defect with a smaller blast radius.
+    public static func skippedNote(_ count: Int) -> String? {
+        switch count {
+        case ..<1: nil
+        case 1: "1 repository could not be read and is not shown."
+        default: "\(count) repositories could not be read and are not shown."
+        }
     }
 
     /// The reason given when nothing threw and nothing arrived.
@@ -87,5 +119,26 @@ public enum BoardPhase: Sendable, Hashable {
     public var isFailure: Bool {
         if case .unreadable = self { return true }
         return false
+    }
+}
+
+/// What one read of the repository table produced: the rows that decoded, and
+/// how many did not.
+///
+/// A count rather than the bad rows themselves, because a row that will not
+/// decode has nothing safely readable on it — asking for more than "there were
+/// this many" would mean trusting the thing that just failed to be trustworthy.
+///
+/// The count exists at all because of the clause in #118's own plan: *a skipped
+/// row that nobody mentions is this same bug with a smaller radius*. Dropping
+/// bad rows silently would trade a board that says nothing for a board that
+/// quietly shows less than the truth.
+public struct RepoScan: Sendable, Hashable {
+    public var repos: [Repo]
+    public var unreadable: Int
+
+    public init(repos: [Repo], unreadable: Int = 0) {
+        self.repos = repos
+        self.unreadable = unreadable
     }
 }
