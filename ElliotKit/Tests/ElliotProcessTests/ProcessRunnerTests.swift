@@ -91,33 +91,90 @@ struct ProcessRunnerTests {
     /// finished, so the run never reached a terminal state.
     ///
     /// Rather than race that timing, this asserts the property underneath it —
-    /// unrelated work still gets scheduled while many commands are in flight.
+    /// unrelated work still gets scheduled while many commands are in flight —
+    /// and asserts it by **causality rather than by a stopwatch**.
+    ///
+    /// No child here can end on its own. Each waits for a file that only this
+    /// test's ordinary async work creates, so starving the pool means that work
+    /// never runs, the file never appears, and the children go on holding the
+    /// very threads that would have run it. The starvation feeds itself until
+    /// every child reports it gave up. A healthy pool creates the file in
+    /// milliseconds and they all exit 0.
+    ///
+    /// That self-reinforcement is the whole design, and it is why the children
+    /// wait instead of sleeping a fixed 0.5 s as they used to. Under the
+    /// blocking drain a sleeping child released its threads on its own, so the
+    /// starvation was only ever a *delay* — and a delay can be caught only with
+    /// a clock. A waiting child turns the same defect into a deadlock, which
+    /// can be caught without one.
+    ///
+    /// The previous form did use a clock: ten 5 ms hops had to land inside
+    /// 400 ms. Measured on this repository at 18 cores, it failed **6 full-suite
+    /// runs in 10** under four-times CPU oversubscription — elapsed 0.494 s to
+    /// 0.583 s against the 0.4 s bound — while being the only failing test in
+    /// all 843. It also failed about once in thirteen runs on an *idle* machine,
+    /// because `swift test` runs its suites in parallel and so loads the machine
+    /// exactly when this test runs. CLAUDE.md's testing discipline names that
+    /// form as the bug rather than the symptom: an absolute duration fails under
+    /// load while the code behaved perfectly. Raising the bound would only have
+    /// moved the load at which it lies.
+    ///
+    /// Nothing below is timed. The child's give-up count is a fuse, so that a
+    /// real starvation reddens this test instead of hanging the suite; it is not
+    /// a threshold anything is measured against, and a healthy run never comes
+    /// near it.
     @Test("Waiting on a child never parks a thread of the cooperative pool")
     func doesNotOccupyCooperativeThreads() async throws {
         // Comfortably more commands than the pool has threads.
         let width = ProcessInfo.processInfo.activeProcessorCount * 2
+        let gate = FileManager.default.temporaryDirectory
+            .appendingPathComponent("elliot-pool-gate-\(UUID().uuidString)")
+        let gatePath = gate.path
+        defer { try? FileManager.default.removeItem(at: gate) }
 
-        async let commands: Void = withTaskGroup(of: Int32.self) { group in
-            for _ in 0..<width {
-                group.addTask {
-                    let result = try? await ProcessRunner.run(
-                        executable: "/bin/sleep", arguments: ["0.5"],
-                        environment: Self.environment, timeout: .seconds(30)
-                    )
-                    return result?.exitCode ?? -1
+        try await withTimeout(.seconds(180)) {
+            async let commands: [Int32] = withTaskGroup(of: Int32.self) { group in
+                for _ in 0..<width {
+                    group.addTask {
+                        let result = try? await ProcessRunner.run(
+                            executable: "/bin/sh",
+                            arguments: [
+                                "-c",
+                                """
+                                n=0
+                                while [ ! -f "$1" ]; do
+                                    n=$((n + 1))
+                                    if [ "$n" -gt 600 ]; then exit 3; fi
+                                    sleep 0.05
+                                done
+                                exit 0
+                                """,
+                                "gate-wait", gatePath,
+                            ],
+                            environment: Self.environment, timeout: .seconds(120)
+                        )
+                        return result?.exitCode ?? -1
+                    }
                 }
+                var codes: [Int32] = []
+                for await code in group { codes.append(code) }
+                return codes
             }
-            for await code in group { #expect(code == 0) }
+
+            // Ordinary concurrent work, of the kind the scheduler and the UI do
+            // while a run is going: ten suspensions, each needing a pool thread
+            // to resume on. How long they take is nobody's business here — but
+            // until they are through, not one child can finish.
+            for _ in 0..<10 { try await Task.sleep(for: .milliseconds(5)) }
+            FileManager.default.createFile(atPath: gatePath, contents: nil)
+
+            let codes = await commands
+            #expect(codes.count == width)
+            #expect(
+                codes.allSatisfy { $0 == 0 },
+                "\(codes.filter { $0 != 0 }.count) of \(width) children never saw the gate: \(codes)"
+            )
         }
-
-        // Ordinary concurrent work, of the kind the scheduler and the UI do
-        // while a run is going. Ten hops that should take ~50 ms in total.
-        let start = ContinuousClock.now
-        for _ in 0..<10 { try await Task.sleep(for: .milliseconds(5)) }
-        let elapsed = ContinuousClock.now - start
-
-        await commands
-        #expect(elapsed < .milliseconds(400), "concurrency stalled for \(elapsed)")
     }
 
     @Test("stdout and stderr are both captured, and a non-zero exit is reported")
