@@ -278,7 +278,15 @@ struct PanelLayoutTests {
                 originMinX: 500, panelMinX: 700, flipped: false,
                 columnWidth: 200, panelWidth: 200, viewportWidth: 1_000) == 404)
 
-        // Exactly the #93 geometry: a 934pt pair in a 1000pt viewport leaves 66.
+        // Exactly the #93 geometry: a 934pt pair in a 1000pt viewport leaves 66
+        // of the 96, so the offset is 482 − 66 = 416.
+        //
+        // ⚠️ Written as the literal on purpose. `#expect(x == 482 - 66)` *fails*
+        // here while `#expect(x == 416)` passes, on a clean build, with the same
+        // CGFloat value on the left — the macro reports the right-hand side as
+        // `416` rather than `416.0`, so the two sides are not being compared as
+        // the same type. Verified against the arithmetic standalone, where the
+        // two do compare equal. Do not "tidy" this back into the subtraction.
         #expect(
             PanelLayout.frameOffsetX(
                 originMinX: 482, panelMinX: 718, flipped: false,
