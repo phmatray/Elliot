@@ -29,6 +29,80 @@ struct BrandColorTests {
         #expect(BrandColor.paper.light == BrandColor.paper.dark)
     }
 
+    /// The mechanical half of "colour is reserved for consequence" — the rule
+    /// that, with "monospace means a machine established it", carries the whole
+    /// visual system.
+    ///
+    /// Five is not a round number. It is the complete list of things this app
+    /// is allowed to say in colour: a gesture starts an autonomous run
+    /// (`armed`), a gesture cannot be taken back (`irreversible`), `gh`
+    /// confirmed it (`verified`), it was refused or it failed (`refused`), it
+    /// is alive and wants a decision (`attention`). Everything else on screen
+    /// is greyscale, and that scarcity is the *only* reason any of the five is
+    /// legible at a glance.
+    ///
+    /// So a sixth entry does not add a meaning — it takes a little from each of
+    /// the five that already have one, and nothing on screen reports that. This
+    /// test is where it gets reported.
+    @Test("Exactly five colours are consequences, and they are those five")
+    func consequencesAreTheFiveAccents() {
+        #expect(
+            BrandColor.consequences.count == 5,
+            """
+            `BrandColor.consequences` is the app's entire colour budget: armed, \
+            irreversible, verified, refused, attention. Colour here means "a \
+            consequence follows", and it reads only because nothing else on the \
+            board is coloured at all. Adding a sixth accent does not extend the \
+            vocabulary, it dilutes the five that carry it — and nothing on \
+            screen would show that happening, which is why it has to fail here. \
+            If a new meaning genuinely needs colour, retire one of the five in \
+            the same change and say which.
+            """
+        )
+
+        // Named pairwise rather than by `==` on the array, so a failure says
+        // *which* slot drifted instead of "two arrays differ". `zip` truncates,
+        // so this cannot trap on a short list — the count above is the guard.
+        let named: [(name: String, colour: BrandColor)] = [
+            ("armed", .armed),
+            ("irreversible", .irreversible),
+            ("verified", .verified),
+            ("refused", .refused),
+            ("attention", .attention),
+        ]
+        #expect(named.count == 5)
+
+        for (listed, expected) in zip(BrandColor.consequences, named) {
+            #expect(
+                listed.light == expected.colour.light,
+                "The consequence listed here should be `\(expected.name)`'s light value."
+            )
+            #expect(
+                listed.dark == expected.colour.dark,
+                "The consequence listed here should be `\(expected.name)`'s dark value."
+            )
+        }
+
+        // A duplicate would keep the count at five while dropping an accent —
+        // the failure mode the count alone cannot see.
+        #expect(Set(BrandColor.consequences).count == 5)
+    }
+
+    /// `paper` is the mark's own paper, and the file says so: a fill, not a
+    /// consequence. It is also the one colour deliberately identical in both
+    /// appearances, so listing it as an accent would put a value that cannot
+    /// respond to the appearance into the set that always must.
+    @Test("Paper is a fill and is not one of the consequences")
+    func paperIsNotAnAccent() {
+        #expect(
+            !BrandColor.consequences.contains(BrandColor.paper),
+            """
+            `paper` draws the cards in the app mark. Nothing follows from \
+            seeing it, so it spends none of the budget `consequences` bounds.
+            """
+        )
+    }
+
     @Test("Every channel fits in 24 bits")
     func valuesAreRGB() {
         let all = [

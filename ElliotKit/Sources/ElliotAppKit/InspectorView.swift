@@ -140,8 +140,9 @@ struct InspectorView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
-                    .background(Surface.wash(consequence.tint)
-                        .opacity(consequence.isRefused ? 0.6 : 1))
+                    .background(consequence.isRefused
+                        ? Surface.washFaint(consequence.tint)
+                        : Surface.wash(consequence.tint))
                     .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
                     .overlay {
                         RoundedRectangle(cornerRadius: Metric.cardRadius)

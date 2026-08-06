@@ -96,13 +96,69 @@ enum Surface {
     /// A consequence colour used as a *background*. Kept as a function so the
     /// tint stays the argument: a wash is always about something.
     static func wash(_ tint: Color) -> Color { tint.opacity(0.12) }
+
+    /// The same wash, demoted: the surface is about something that is *not*
+    /// going to happen — a refused next step, a pane that cannot act yet.
+    ///
+    /// It exists because the strength was written by hand. `InspectorView` drew
+    /// the refused next step as `wash(tint).opacity(0.6)`, and the detail panel
+    /// needs the same ground in several more places; a second hand-written
+    /// multiplier at each of them is exactly how the fifteen unchosen
+    /// `Color.secondary.opacity(…)` values this enum replaced came about.
+    ///
+    /// 0.09, not the 0.072 that multiplier produced: the demotion has to stay
+    /// visible as a *surface* against `recess`, and below about 0.08 a tinted
+    /// wash stops being distinguishable from the untinted recess behind it.
+    static func washFaint(_ tint: Color) -> Color { tint.opacity(0.09) }
+
     static func washBorder(_ tint: Color) -> Color { tint.opacity(0.45) }
+
+    /// The 1pt rule *inside* a panel: between two verdict rows, above a plan
+    /// item, under a table cell.
+    ///
+    /// Greyscale, so it spends none of the colour budget, and derived from
+    /// `.primary` so it inverts with the appearance the way the mockup's
+    /// `--hair` does (`rgba(0,0,0,.10)` light, `rgba(255,255,255,.10)` dark).
+    /// Deliberately weaker than `NSColor.separatorColor`, which divides one
+    /// component from another; this divides rows of the same thing, and a rule
+    /// that separates a thing from itself should be barely there.
+    static let hairline = Color.primary.opacity(0.10)
+
+    /// The ground under machine output: code fences in an issue body, the run
+    /// log, a tool result's preview. The visual counterpart of `Type.fact` —
+    /// where the fact face says *a machine established this*, the well says
+    /// *this whole region is a machine's output*.
+    ///
+    /// Hard-coded rather than reusing `NSColor.textBackgroundColor`, because a
+    /// well has to read as **set into** the panel, which in a dark appearance
+    /// means darker than the window behind it. Measured on macOS 15: in
+    /// `.darkAqua`, `.textBackgroundColor` and `.windowBackgroundColor` are the
+    /// same `#1E1E1E`, so a well drawn with it is not a well — it is invisible.
+    /// These are the mockup's `--code`, which is darker than its `--window` in
+    /// both appearances.
+    ///
+    /// The `BrandColor` here is a light/dark pair, **not** a sixth brand
+    /// colour: `BrandColor` is the shape of such a pair, and `Palette.dynamic`
+    /// is the one place in the app that resolves one against the appearance.
+    /// Minting a named constant for it would put a fill in the list that
+    /// `BrandColor.consequences` exists to keep down to five.
+    static let well = Palette.dynamic(BrandColor(light: 0xF5_F5F7, dark: 0x1B_1B1E))
 }
 
 enum Type {
     /// Column headers and field labels: small, spaced, unmistakably a console
     /// label rather than content.
     static let label = Font.system(size: 11, weight: .semibold).width(.standard)
+    /// `label` one step down: the key column of a verdict row, a table header,
+    /// a caption inside a panel where the 11pt console label would compete with
+    /// the row it is introducing rather than announce it.
+    ///
+    /// As with `label`, the tracking is **not** in the font — SwiftUI carries
+    /// tracking as a view modifier, not a font trait, which is why
+    /// `ConsoleLabel` applies it rather than `Type`. Set it with
+    /// `.tracking(0.6)` to hold the same 0.06em ratio `label` gets from
+    /// `.tracking(0.7)` at 11pt.
+    static let labelSmall = Font.system(size: 10, weight: .semibold).width(.standard)
     /// What a card is about — a human wrote it.
     static let cardTitle = Font.system(size: 13, weight: .medium)
     /// A card title one step down: the name of a row inside a panel.
@@ -112,6 +168,20 @@ enum Type {
     /// Prose given room — the inspector reads a story a point larger than the
     /// card glances at it. Not named `body`, which is `Font.body` already.
     static let bodyProse = Font.system(size: 12)
+    /// The demoted "it said" face, and the deliberate visual opposite of
+    /// `Type.fact`.
+    ///
+    /// This is the type-level form of the rule the whole app rests on: **`gh`
+    /// is the fact, the agent's prose is a hint.** A run's `resultText` set in
+    /// this face beside its `verifiedOutcome` set in `fact` says which of the
+    /// two may be believed before a word of either has been read — the same
+    /// judgement the app already makes in code, made visible.
+    ///
+    /// It is `bodyProse` italicised rather than a size of its own. What the
+    /// agent wrote *is* prose, so demoting it by shrinking it would say it
+    /// matters less, when what is meant is that it is less trustworthy. Italic
+    /// is the quotation mark.
+    static let hearsay = Font.system(size: 12).italic()
     /// Anything `gh`, `git` or the process itself established. Monospaced
     /// digits so a column of costs or elapsed times lines up.
     static let fact = Font.system(size: 11, design: .monospaced)

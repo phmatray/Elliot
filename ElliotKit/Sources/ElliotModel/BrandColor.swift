@@ -31,4 +31,27 @@ extension BrandColor {
     /// icon does not follow the system appearance, so a dark variant would be
     /// unreachable.
     public static let paper = BrandColor(light: 0xFA_F9FC, dark: 0xFA_F9FC)
+
+    /// The five accents that mean something happens, named once.
+    ///
+    /// "Colour is reserved for consequence" is one of the two rules the board's
+    /// whole visual system rests on, and until now it lived only in a doc
+    /// comment — which is a rule right up until someone is in a hurry. This is
+    /// the mechanical form of it: the budget is five, and a sixth entry fails a
+    /// test that says why five is the number instead of quietly diluting the
+    /// five that already carry meaning.
+    ///
+    /// It lives here rather than beside `Palette` because `Palette`'s values
+    /// are `Color(nsColor: NSColor(name: nil) { … })`, whose equality across
+    /// instances is meaningless, and an `enum` namespace of `static let`s
+    /// cannot be enumerated. Here the entries are numbers, so a test can hold
+    /// them.
+    ///
+    /// `paper` is **not** in this list: it is the mark's own paper, a fill, and
+    /// it is deliberately identical in both appearances. Neither are
+    /// `Palette.inert` or `Palette.quiet`, which are greyscale and so spend
+    /// none of the budget this list bounds.
+    public static let consequences: [BrandColor] = [
+        armed, irreversible, verified, refused, attention,
+    ]
 }
