@@ -3,6 +3,39 @@ import ElliotProcess
 import ElliotStore
 import Foundation
 
+/// What one sweep did, and — the part that matters — what it did not.
+///
+/// `skipped` holds **every** row the sweep left out, each with the reason it was
+/// left out. A repository dropped silently from a sweep reads exactly like one
+/// that succeeded; the portfolio has paid for that once already, when a probe
+/// that `continue`d past its errors reported 148 repositories where 210 were
+/// eligible and the missing 62 were invisible.
+public struct SyncSummary: Sendable {
+    public let attempted: Int
+    public let succeeded: Int
+    /// (row id, why it was not attempted) — for every row left out.
+    public let skipped: [(String, String)]
+    /// (row id, why the pull failed) — attempted, and refused by git.
+    public let failed: [(String, String)]
+
+    public init(
+        attempted: Int, succeeded: Int,
+        skipped: [(String, String)], failed: [(String, String)]
+    ) {
+        self.attempted = attempted
+        self.succeeded = succeeded
+        self.skipped = skipped
+        self.failed = failed
+    }
+
+    /// The sentence the status bar shows. `failed` appears only when there is
+    /// one, so a clean sweep does not advertise a zero.
+    public var sentence: String {
+        "\(succeeded) pulled · \(skipped.count) skipped"
+            + (failed.isEmpty ? "" : " · \(failed.count) failed")
+    }
+}
+
 public struct RepoFixOutcome: Sendable, Hashable {
     public let succeeded: Bool
     public let detail: String
@@ -171,6 +204,70 @@ public struct RepoRegistryService: Sendable {
         case (_, 0): return .ahead
         default: return .diverged
         }
+    }
+
+    /// Fast-forwards every row that is strictly behind, eight at a time.
+    ///
+    /// Only `.behind`, and only `--ff-only`: every action in this batch refuses
+    /// itself when it is not safe, which is what makes a batch legitimate here
+    /// at all. `move` is not in it and cannot be — a `moveItem` does not refuse.
+    ///
+    /// It sweeps the rows it is given rather than re-probing first, so what the
+    /// user saw on screen is what gets swept.
+    public func syncAll(rows: [RepoRow]) async -> SyncSummary {
+        var pullable: [(id: String, path: String)] = []
+        var skipped: [(String, String)] = []
+        for row in rows {
+            if case .behind = row.issue, let path = row.path {
+                pullable.append((row.id, path))
+            } else {
+                skipped.append((row.id, Self.whyNotSwept(row)))
+            }
+        }
+
+        var succeeded = 0
+        var failed: [(String, String)] = []
+        await withTaskGroup(of: (String, String?).self) { group in
+            let limit = min(8, pullable.count)
+            for index in 0..<limit {
+                let target = pullable[index]
+                group.addTask { (target.id, await self.pull(target.path)) }
+            }
+            var next = limit
+            while let (id, error) = await group.next() {
+                if let error { failed.append((id, error)) } else { succeeded += 1 }
+                if next < pullable.count {
+                    let target = pullable[next]
+                    group.addTask { (target.id, await self.pull(target.path)) }
+                    next += 1
+                }
+            }
+        }
+
+        return SyncSummary(
+            attempted: pullable.count, succeeded: succeeded,
+            skipped: skipped, failed: failed)
+    }
+
+    /// nil on success, the reason on failure.
+    private func pull(_ path: String) async -> String? {
+        do {
+            try await git.pullFastForward(cwd: path)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// Never empty. The row's own detail when it has one, and otherwise a
+    /// sentence — because "skipped, reason blank" is the silence this whole
+    /// summary exists to prevent.
+    private static func whyNotSwept(_ row: RepoRow) -> String {
+        if !row.detail.isEmpty { return row.detail }
+        if case .behind = row.issue, row.path == nil {
+            return "Behind, but Elliot holds no path for it."
+        }
+        return "Not behind."
     }
 
     private static func isBehind(_ issue: RepoIssue) -> Bool {

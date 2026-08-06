@@ -97,6 +97,73 @@ struct RepoRegistryServiceSyncTests {
         #expect(await service.probe([row]) == [row])
     }
 
+    @Test("syncAll attempts only the behind rows, and names every skip with a reason")
+    func syncOnlyPullsBehind() async throws {
+        // Paths that deliberately do not exist: what is asserted here is which
+        // rows were *chosen*, and a chosen row whose pull fails still has to be
+        // named rather than counted as done.
+        let absent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("absent-\(UUID().uuidString)").path
+        let service = RepoRegistryService(store: try BoardStore.inMemory(), config: syncTestConfig())
+        let rows = [
+            RepoRow(
+                id: "o/behind", path: absent + "/behind", issue: .behind(by: 2),
+                fixes: [.pull(path: absent + "/behind")]),
+            RepoRow(
+                id: "o/dirty", path: absent + "/dirty", issue: .dirty,
+                detail: "Uncommitted changes."),
+            RepoRow(
+                id: "o/gone", issue: .notCloned,
+                fixes: [.clone(nameWithOwner: "o/gone", into: absent + "/gone")]),
+            RepoRow(id: "o/fine", path: absent + "/fine", issue: .ok),
+        ]
+        let summary = await service.syncAll(rows: rows)
+
+        #expect(summary.attempted == 1, "only .behind is swept")
+        #expect(summary.skipped.map(\.0).sorted() == ["o/dirty", "o/fine", "o/gone"])
+        #expect(summary.skipped.allSatisfy { !$0.1.isEmpty }, "every skip carries its reason")
+        #expect(summary.failed.map(\.0) == ["o/behind"], "the path does not exist, so the pull fails")
+        #expect(summary.succeeded == 0)
+    }
+
+    @Test("A behind clone really is fast-forwarded, and the summary says so")
+    func syncFastForwardsForReal() async throws {
+        let (origin, clone, root) = try await makeClonePair()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try await git(["commit", "--allow-empty", "-m", "b"], in: origin)
+
+        let service = RepoRegistryService(store: try BoardStore.inMemory(), config: syncTestConfig())
+        let probed = await service.probe([RepoRow(id: "o/r", path: clone, issue: .ok)])
+        let summary = await service.syncAll(rows: probed)
+
+        #expect(summary.attempted == 1)
+        #expect(summary.succeeded == 1)
+        #expect(summary.failed.isEmpty)
+        #expect(summary.skipped.isEmpty)
+        // Re-probed from scratch, so the claim is git's rather than the sweep's.
+        #expect(await service.probe([RepoRow(id: "o/r", path: clone, issue: .ok)])[0].issue == .ok)
+    }
+
+    @Test("A sweep of nothing is a summary of zeroes, not a crash")
+    func emptySweep() async throws {
+        let service = RepoRegistryService(store: try BoardStore.inMemory(), config: syncTestConfig())
+        let summary = await service.syncAll(rows: [])
+        #expect(summary.attempted == 0 && summary.succeeded == 0)
+        #expect(summary.skipped.isEmpty && summary.failed.isEmpty)
+    }
+
+    @Test("A behind row with no path on it is skipped by name, never silently dropped")
+    func behindWithoutAPathIsNamed() async throws {
+        // Not reachable through `probe`, which only refines rows that have a
+        // path — but `syncAll` takes whatever the page holds, and the one thing
+        // it may never do is drop a row without saying so.
+        let service = RepoRegistryService(store: try BoardStore.inMemory(), config: syncTestConfig())
+        let summary = await service.syncAll(rows: [RepoRow(id: "o/pathless", issue: .behind(by: 1))])
+        #expect(summary.attempted == 0)
+        #expect(summary.skipped.map(\.0) == ["o/pathless"])
+        #expect(summary.skipped[0].1.isEmpty == false)
+    }
+
     @Test("Probing keeps the rows in the order it was given, whatever finishes first")
     func orderIsPreserved() async throws {
         // The page renders rows in place; a probe that returned them in
