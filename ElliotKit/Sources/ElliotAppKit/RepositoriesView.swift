@@ -180,6 +180,9 @@ public struct RepositoriesView: View {
             "Let Elliot drive the checkout at \(path)."
         case .forget:
             "Remove the registration and this repository's cards. The clone on disk is untouched."
+        case .pull(let path):
+            "Fast-forward \(path) to its upstream. Never merges, never rebases, and refuses outright "
+                + "if anything there is uncommitted."
         }
     }
 
@@ -214,6 +217,13 @@ public struct RepositoriesView: View {
         case .outOfScope(.fork): "fork"
         case .outOfScope(.archived): "archived"
         case .outOfScope(.otherRoot): "out of scope"
+        case .behind(let count): "behind by \(count)"
+        case .dirty: "dirty"
+        case .ahead: "ahead"
+        case .diverged: "diverged"
+        case .detached: "detached"
+        case .noRemote: "no remote"
+        case .unreadable: "unreadable"
         }
     }
 

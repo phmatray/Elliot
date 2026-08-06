@@ -2,9 +2,10 @@ import Foundation
 
 /// Why a repository's row is not simply fine.
 ///
-/// Only the verdicts this reconciler can produce live here. Git state — behind,
-/// dirty, diverged — arrives with the sync follow-up, which refines a row rather
-/// than changing how rows are built.
+/// Two families live here. The first six are what `RepoReconciler` decides from
+/// GitHub, the disk and the store. The rest are what a probe *observes* by
+/// asking git: they refine a row the reconciler already called `.ok`, and
+/// nothing about how rows are built changes to accommodate them.
 public enum RepoIssue: Sendable, Hashable {
     case ok
     case notCloned
@@ -12,6 +13,15 @@ public enum RepoIssue: Sendable, Hashable {
     case missing
     case misplaced(expected: String)
     case outOfScope(OutOfScope)
+
+    // Git state. Only a probe produces these.
+    case behind(by: Int)
+    case dirty
+    case ahead
+    case diverged
+    case detached
+    case noRemote
+    case unreadable(String)
 
     public enum OutOfScope: Sendable, Hashable { case fork, archived, otherRoot }
 }
@@ -22,6 +32,9 @@ public enum RepoFix: Sendable, Hashable {
     case move(from: String, to: String)
     case register(path: String)
     case forget(repoID: UUID)
+    /// Fast-forward, or refuse. Offered only to a clone that is clean, attached
+    /// and strictly behind — the one state where a pull cannot lose anything.
+    case pull(path: String)
 
     /// The button's label. `move` names its destination, because it relocates a
     /// directory in the user's portfolio and must say so before it runs.
@@ -31,6 +44,7 @@ public enum RepoFix: Sendable, Hashable {
         case .move(_, let to): "Move to \((to as NSString).lastPathComponent)"
         case .register: "Register"
         case .forget: "Forget"
+        case .pull: "Pull"
         }
     }
 }

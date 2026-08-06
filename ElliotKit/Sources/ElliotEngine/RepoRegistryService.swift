@@ -54,6 +54,15 @@ public struct RepoRegistryService: Sendable {
             case .register(let path):
                 return try await register(path: path, layout: layout)
 
+            case .pull(let path):
+                // `--ff-only`, so this refuses itself on a tree the probe raced
+                // and found work in. The row's button and the Sync sweep reach
+                // the same verb rather than two spellings of "pull".
+                try await git.pullFastForward(cwd: path)
+                return RepoFixOutcome(
+                    succeeded: true,
+                    detail: "Fast-forwarded \((path as NSString).lastPathComponent).")
+
             case .move(let from, let to):
                 try git.relocate(from: from, to: to)
                 // Repoint in the same step: a store pointing at a path that was
@@ -102,5 +111,85 @@ public struct RepoRegistryService: Sendable {
             visibility: slot?.visibility)
         try await store.saveRepo(repo)
         return RepoFixOutcome(succeeded: true, detail: "Registered \(repo.nameWithOwner).")
+    }
+
+    /// Refines the rows the reconciler called `.ok` with what git says about
+    /// each clone. Every other row is returned exactly as it arrived.
+    ///
+    /// Eight in flight, matching `repo-audit/repo_sync.py`: each item is a fetch
+    /// plus three subprocesses, and 221 of those at once would swamp the machine.
+    /// The result stays in **input order** — the page renders rows in place, so a
+    /// completion-ordered result would make every refresh jump.
+    public func probe(_ rows: [RepoRow]) async -> [RepoRow] {
+        await withTaskGroup(of: (Int, RepoRow).self) { group in
+            var result = rows
+            // Start 8, then add one more each time one finishes: the window stays
+            // at 8 in flight rather than 8 per wave, so one slow fetch does not
+            // idle seven workers.
+            let limit = min(8, rows.count)
+            for index in 0..<limit {
+                group.addTask { (index, await self.refine(rows[index])) }
+            }
+            var next = limit
+            while let (index, row) = await group.next() {
+                result[index] = row
+                if next < rows.count {
+                    let pending = next
+                    group.addTask { (pending, await self.refine(rows[pending])) }
+                    next += 1
+                }
+            }
+            return result
+        }
+    }
+
+    private func refine(_ row: RepoRow) async -> RepoRow {
+        guard row.issue == .ok, let path = row.path else { return row }
+        let issue = await classify(path: path)
+        var refined = row
+        refined.issue = issue
+        refined.detail = Self.explain(issue, path: path)
+        refined.fixes = Self.isBehind(issue) ? [.pull(path: path)] : []
+        return refined
+    }
+
+    /// One clone's git state. Ordered most-blocking first: the first answer wins,
+    /// so a tree with local work is never reported as merely `.behind`. Reverse
+    /// any two of these and a clone carrying uncommitted work becomes eligible
+    /// for the sweep.
+    private func classify(path: String) async -> RepoIssue {
+        guard await git.isMainCheckout(path: path) else { return .outOfScope(.otherRoot) }
+        if await git.isDetached(cwd: path) { return .detached }
+        if !(await git.isClean(cwd: path)) { return .dirty }
+        // Before the counts, never after: `aheadBehind` reads `@{u}`, a local
+        // ref, and answers `behind: 0` for a clone that has never been told.
+        do { try await git.fetch(cwd: path) } catch { return .unreadable("fetch failed") }
+        guard let counts = await git.aheadBehind(cwd: path) else { return .noRemote }
+        switch (counts.ahead, counts.behind) {
+        case (0, 0): return .ok
+        case (0, let behind): return .behind(by: behind)
+        case (_, 0): return .ahead
+        default: return .diverged
+        }
+    }
+
+    private static func isBehind(_ issue: RepoIssue) -> Bool {
+        if case .behind = issue { return true }
+        return false
+    }
+
+    private static func explain(_ issue: RepoIssue, path: String) -> String {
+        switch issue {
+        case .ok: "Up to date."
+        case .behind(let count): "\(count) commit(s) behind; a fast-forward will do."
+        case .dirty: "Uncommitted changes — left alone."
+        case .ahead: "Local commits not pushed — left alone."
+        case .diverged: "Diverged from the upstream — needs a human."
+        case .detached: "Detached HEAD — left alone."
+        case .noRemote: "No upstream branch to compare against."
+        case .unreadable(let why): "Could not read this clone: \(why)."
+        case .outOfScope(.otherRoot): "A linked worktree — never swept."
+        default: path
+        }
     }
 }
