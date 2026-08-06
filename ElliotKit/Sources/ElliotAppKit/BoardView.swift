@@ -130,6 +130,7 @@ public struct BoardView: View {
             } label: {
                 Label("New story", systemImage: "plus")
             }
+            .labelStyle(.titleAndIcon)
             .disabled(model.repos.isEmpty)
             // No `.keyboardShortcut` here: the File menu owns ⌘N, and a
             // shortcut declared in two places is matched reliably in neither.
@@ -146,6 +147,7 @@ public struct BoardView: View {
             } primaryAction: {
                 Task { await model.refreshFromGitHub() }
             }
+            .labelStyle(.titleAndIcon)
             .menuStyle(.button)
             .fixedSize()
             .disabled(model.repos.isEmpty || model.isImporting)
@@ -160,23 +162,38 @@ public struct BoardView: View {
             } label: {
                 Label("Analyse", systemImage: "sparkle.magnifyingglass")
             }
+            .labelStyle(.titleAndIcon)
             .disabled(model.selectedRepoID == nil || isSelectedRepoBlocked)
             .help(analyseHelp)
         }
 
         ToolbarItem {
-            // A Button, not a Toggle. As a Toggle it read `showingInspector`,
-            // so the toolbar re-vended its items in the middle of the split
-            // view's own collapse animation — the crash in #50. There is no
-            // split view any more, but the Button is still the right shape:
-            // the panel being on screen is its own state indicator.
+            // Still a Button and not a Toggle. As a Toggle it read
+            // `showingInspector`, so the toolbar re-vended its items in the
+            // middle of the split view's own collapse animation — the crash in
+            // #50.
+            //
+            // It now reads that state anyway, to tint itself while the panel is
+            // open, which is what #50 is a warning about. What made that crash
+            // was an `NSSplitViewItem` collapsing *while* the toolbar rebuilt;
+            // the panel is a plain sibling in an `HStack` now and there is no
+            // split view left to collapse. The tint is worth it because the
+            // panel no longer sits at a fixed edge: it opens between columns
+            // and the board scrolls, so "is a panel open" stopped being
+            // answerable at a glance. Toggled repeatedly on screen before this
+            // landed — if it ever crashes on collapse again, this is the line.
             Button {
                 model.showingInspector.toggle()
             } label: {
                 Label("Details", systemImage: "sidebar.right")
             }
+            .labelStyle(.titleAndIcon)
+            .tint(isPanelShowing ? Palette.armed : nil)
+            .foregroundStyle(isPanelShowing ? Palette.armed : Color.primary)
             .disabled(model.selectedCard == nil)
-            .help("Show or hide the selected card's details")
+            .help(isPanelShowing
+                ? "Hide the selected card's details"
+                : "Show the selected card's details")
         }
 
         ToolbarItem {
@@ -185,6 +202,7 @@ public struct BoardView: View {
             } label: {
                 Label("Repositories", systemImage: "square.stack.3d.up")
             }
+            .labelStyle(.titleAndIcon)
             .help("Every repository of your accounts, and what is wrong with it")
         }
 
@@ -194,8 +212,16 @@ public struct BoardView: View {
             } label: {
                 Label("Preflight", systemImage: "checkmark.seal")
             }
+            .labelStyle(.titleAndIcon)
             .help("Check the tools and repositories Elliot depends on")
         }
+    }
+
+    /// Whether a panel is actually drawn, which is both flags and not either
+    /// one: `showingInspector` can be true with nothing selected, and a
+    /// selection means nothing while the panel is hidden.
+    private var isPanelShowing: Bool {
+        model.showingInspector && model.selectedCard != nil
     }
 
     /// Says which gate is closed, rather than repeating the one that is open.
