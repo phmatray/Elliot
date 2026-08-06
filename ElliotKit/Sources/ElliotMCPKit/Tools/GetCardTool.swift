@@ -7,10 +7,12 @@ import MCP
 /// issue and pull request it produced, the error that stopped its last run, and
 /// the run holding it right now.
 ///
-/// That last field is why the snapshot branch spends a second query rather than
+/// That last field is why the snapshot spends a second query rather than
 /// building the DTO straight from the row: `activeRunID` absent means "no run
 /// holds this card", so an offline answer that left it nil reported every held
-/// card as movable.
+/// card as movable. The query lives in `OfflineResponder` now, beside the
+/// running app's own, rather than in a second body here — which is where that
+/// nil was, and where it had to be found separately.
 struct GetCardTool: BoardTool {
     var tool: Tool {
         Tool(
@@ -38,27 +40,10 @@ struct GetCardTool: BoardTool {
 
     func call(_ args: [String: Value], bridge: any BridgeProviding) async throws -> CallTool.Result {
         let id = try args.uuid("card_id")
-        switch await bridge.read(.getCard(id: id)) {
-        case .live(let response):
-            return try .render(response) { payload in
-                guard case .card(let card) = payload else { return nil }
-                return ["card": try Value.encoding(card), "source": .string("live")]
-            }
-        case .offline(let store, let reason):
-            guard let card = try await store.card(id: id) else {
-                return .failure(code: "card_not_found", message: "No card with id \(id).")
-            }
-            let repoName = try await store.repo(id: card.repoID)?.nameWithOwner ?? "?"
-            // Filled, not skipped: absent means "no run holds this card", so a
-            // snapshot that left it nil would report every held card as movable.
-            let activeRunID = try await store.activeRun(cardID: id)?.id
-            let dto = CardDTO(card: card, repoName: repoName, activeRunID: activeRunID)
-            var fields: [String: Value] = [
-                "card": try Value.encoding(dto),
-                "source": .string("offline-db"),
-            ]
-            ToolOutput.attachNote(&fields, ToolOutput.offlineNote(reason))
-            return try .ok(fields)
+        let outcome = await bridge.read(.getCard(id: id))
+        return try .render(outcome) { payload in
+            guard case .card(let card) = payload else { return nil }
+            return ["card": try Value.encoding(card)]
         }
     }
 }
