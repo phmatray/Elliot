@@ -12,7 +12,14 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: macos-15
+    # NOT `macos-15`, though `Package.swift` says `swift-tools-version: 6.1` and
+    # `platforms: [.macOS(.v15)]`. Measured on run 31118743562: that image carries Swift 6.1.2,
+    # and the package does not compile on it — `BoardStore.swift:237` fails with "for-in loop
+    # requires '()' to conform to 'Sequence'", a closure-return inference the 6.1 type checker
+    # does not make. The tools-version is the floor the *manifest* is parsed at; it is not a
+    # promise about the sources. `macos-26` carries Swift 6.3, which is what this package is
+    # actually developed against. Don't lower this without building on the lower toolchain first.
+    runs-on: macos-26
     # The suite is deterministic and runs in about half a second; the minutes are checkout and
     # toolchain. A job that runs long is a hang, not a slow test — bound it so it goes red
     # instead of sitting in the queue.
