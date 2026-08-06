@@ -175,6 +175,10 @@ public final class AppModel {
 
     public private(set) var lastFixOutcome: FixOutcome?
 
+    /// What the last sweep did, and every repository it left out with the reason.
+    /// Nil until Sync has run once, and cleared by a plain Refresh.
+    public private(set) var lastSyncSummary: SyncSummary?
+
     /// The most recent audited move per card, so the inspector can say who made
     /// it. `BoardStore.audits` had no non-test caller before this.
     public private(set) var lastMove: [UUID: MoveAudit] = [:]
@@ -892,10 +896,46 @@ public final class AppModel {
     /// row they were clicked on — a clone becomes registered, a move empties one
     /// folder and fills another.
     public func refreshRepoRows() async {
+        guard registry != nil, !isReconciling else { return }
+        isReconciling = true
+        lastFixOutcome = nil
+        // The previous sweep's report answers "what did that button just decide
+        // not to do?", and an unrelated refresh makes it an answer to a question
+        // nobody asked.
+        lastSyncSummary = nil
+        await reloadRepoRows()
+        isReconciling = false
+    }
+
+    /// Rebuilds the rows without touching `isReconciling`, so a caller that is
+    /// already holding the flag up — the sweep — can refresh without the guard
+    /// in `refreshRepoRows()` turning its own refresh into a no-op.
+    ///
+    /// Both halves run before anything is assigned: the reconcile is quick and
+    /// the probe is a fetch per clone, and a page that flashed a flat `ok` for
+    /// every repository before refining it would be asserting the exact thing
+    /// this feature exists to disprove.
+    private func reloadRepoRows() async {
+        guard let registry else { return }
+        let reconciled = await registry.rows(layout: layout)
+        repoRows = await registry.probe(reconciled)
+    }
+
+    /// Fast-forwards every clone the probe found strictly behind, and keeps the
+    /// account of what it refused.
+    ///
+    /// It sweeps the rows on screen rather than re-probing first, so what the
+    /// user was looking at is what gets swept.
+    public func syncAll() async {
         guard let registry, !isReconciling else { return }
         isReconciling = true
         lastFixOutcome = nil
-        repoRows = await registry.rows(layout: layout)
+        let summary = await registry.syncAll(rows: repoRows)
+        lastSyncSummary = summary
+        status = summary.sentence
+        // Re-read rather than trusting the sweep's own account of itself: the
+        // verdicts on screen have to come from git.
+        await reloadRepoRows()
         isReconciling = false
     }
 
