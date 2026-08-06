@@ -117,6 +117,63 @@ public actor RunScheduler: RunLaunching {
 
     public var currentCeiling: SpendCeiling { ceiling }
 
+    // MARK: - Queue commands
+
+    /// Stops new runs starting. Runs already in flight finish normally — there
+    /// is no version of "pause" that suspends a `claude` mid-turn, and pretending
+    /// otherwise would be worse than not offering it.
+    public func pause() async {
+        guard !isPaused else { return }
+        isPaused = true
+        // Republished rather than left stale: every pending run's reason has
+        // just changed to `.paused`, and a queue still showing "cap reached"
+        // would send the reader to raise a limit that is not the block.
+        await publishQueue()
+    }
+
+    public func resume() async {
+        guard isPaused else { return }
+        isPaused = false
+        await pump()
+    }
+
+    public var paused: Bool { isPaused }
+
+    /// Empties the queue without touching what is running.
+    ///
+    /// Each cleared run is marked `.cancelled` with an `endedAt`. A run that
+    /// simply vanished from `pending` would keep its `.queued` state in the
+    /// store, and the launch sweep would pick it up on the next start and
+    /// resolve it against `gh` — reviving work the user just discarded.
+    @discardableResult
+    public func drain() async -> Int {
+        let cleared = pending
+        pending = []
+        lastRefusals = [:]
+        for runID in cleared {
+            guard var run = try? await store.run(id: runID), run.state == .queued else { continue }
+            run.state = .cancelled
+            run.endedAt = Date()
+            try? await store.saveRun(run)
+            continuation.yield(
+                .runFinished(runID: runID, cardID: run.cardID, state: .cancelled, outcome: nil))
+        }
+        await publishQueue()
+        return cleared.count
+    }
+
+    /// Moves one entry to the head of the queue.
+    ///
+    /// Does not bypass admission: `pump()` still asks `refusal(for:)`, so a
+    /// promoted run whose repository is merging waits exactly as it did. This
+    /// changes the order runs are *considered* in, never the rules.
+    public func promote(runID: UUID) async {
+        guard let index = pending.firstIndex(of: runID), index != 0 else { return }
+        pending.remove(at: index)
+        pending.insert(runID, at: 0)
+        await pump()
+    }
+
     /// What the caps are actually holding right now, for the UI to show beside
     /// them: a stepper reading "4" means nothing without "2 in flight".
     public var occupancy: (writers: Int, analyses: Int) {
