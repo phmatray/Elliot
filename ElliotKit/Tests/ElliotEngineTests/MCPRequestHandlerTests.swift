@@ -10,9 +10,28 @@ import Testing
 
 /// Records what would have been launched, without spawning anything.
 private actor LaunchSpy: RunLaunching {
+    private let store: BoardStore
     private(set) var launched: [UUID] = []
+
+    init(store: BoardStore) { self.store = store }
+
     func launch(runID: UUID) async { launched.append(runID) }
-    func cancel(runID: UUID) async {}
+
+    /// Mirrors the never-started branch of `RunScheduler.cancel`: a queued run
+    /// has no live process to signal, so it goes straight to `.cancelled`
+    /// rather than through `.cancelling`.
+    ///
+    /// A spy that ignored cancellation would leave the run `queued`, and
+    /// `BoardService.cancel` — which delegates here and then re-reads the
+    /// store — would hand the handler back an untouched run. The cancel path
+    /// would be driven without ever being exercised.
+    func cancel(runID: UUID) async {
+        guard var run = try? await store.run(id: runID), run.state.isActive else { return }
+        run.state = .cancelled
+        run.endedAt = Date()
+        try? await store.saveRun(run)
+    }
+
     func ids() -> [UUID] { launched }
 }
 
@@ -35,7 +54,7 @@ private struct Fixture {
             claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
-        let spy = LaunchSpy()
+        let spy = LaunchSpy(store: store)
         let board = BoardService(store: store, launcher: spy)
         let analysis = AnalysisService(
             store: store, launcher: spy, board: board, gh: GHClient(config: config)
@@ -237,5 +256,93 @@ struct MCPRequestHandlerTests {
             .moveCard(id: UUID(), to: .todo, followUps: [])
         )))
         #expect(refusal.code == .cardNotFound)
+    }
+
+    @Test("awaitRun on an unknown id refuses and says where runs are listed")
+    func awaitUnknownRun() async throws {
+        let f = try await Fixture.make()
+        let refusal = try #require(failureOf(await f.handler.handle(
+            .awaitRun(id: UUID(), timeoutSeconds: 1)
+        )))
+        #expect(refusal.code == .runNotFound)
+        #expect(refusal.hint?.contains("board_list_runs") == true)
+    }
+
+    @Test("awaitRun timing out is not an error: it returns the run as it stands")
+    func awaitTimesOutWithTheRun() async throws {
+        let f = try await Fixture.make()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id,
+            title: "Run log",
+            story: UserStory(role: "developer", want: "a log", benefit: "I can diagnose")
+        ).card
+        guard case .moved(let runID?) = try await f.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag
+        ) else {
+            Issue.record("expected a queued run")
+            return
+        }
+
+        // Bounded: the handler clamps 1 second to 1 second, and nothing here
+        // ever completes the run, so this must return on the timeout path.
+        let response = try await withTimeout(.seconds(20)) {
+            await f.handler.handle(.awaitRun(id: runID, timeoutSeconds: 1))
+        }
+        guard case .ok(.run(let run)) = response else {
+            Issue.record("a timeout is not an error; got \(response)")
+            return
+        }
+        #expect(run.id == runID)
+        #expect(run.isTerminal == false)
+    }
+
+    @Test("cancelRun on an unknown id refuses")
+    func cancelUnknownRun() async throws {
+        let f = try await Fixture.make()
+        let refusal = try #require(failureOf(await f.handler.handle(.cancelRun(id: UUID()))))
+        #expect(refusal.code == .runNotFound)
+    }
+
+    @Test("Cancelling a queued run answers with the run, not with a bare success")
+    func cancelQueuedRun() async throws {
+        let f = try await Fixture.make()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id,
+            title: "Run log",
+            story: UserStory(role: "developer", want: "a log", benefit: "I can diagnose")
+        ).card
+        guard case .moved(let runID?) = try await f.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag
+        ) else {
+            Issue.record("expected a queued run")
+            return
+        }
+
+        guard case .ok(.run(let run)) = await f.handler.handle(.cancelRun(id: runID)) else {
+            Issue.record("expected the cancelled run back")
+            return
+        }
+        #expect(run.id == runID)
+        #expect(run.state == RunState.cancelling.rawValue || run.state == RunState.cancelled.rawValue)
+    }
+
+    @Test("next ranks the board and refuses an unknown repository")
+    func nextRanksAndRefuses() async throws {
+        let f = try await Fixture.make()
+        _ = try await f.board.createCard(
+            repoID: f.repo.id,
+            title: "Ready",
+            story: UserStory(role: "developer", want: "a log", benefit: "I can diagnose")
+        )
+
+        guard case .ok(.next(let page)) = await f.handler.handle(.next(repo: nil, limit: 0)) else {
+            Issue.record("expected a next page")
+            return
+        }
+        #expect(page.items.first?.rank == 1)
+        #expect(page.total >= 1)
+
+        let refusal = try #require(failureOf(await f.handler.handle(.next(repo: "nope/nope", limit: 0))))
+        #expect(refusal.code == .repoNotFound)
     }
 }
