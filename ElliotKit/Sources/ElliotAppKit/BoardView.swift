@@ -25,6 +25,11 @@ public struct BoardView: View {
         @Bindable var model = model
 
         VStack(spacing: 0) {
+            // Above the board, not inside it, because the case it exists for is
+            // a board with *nothing* in it: an empty column set and an
+            // unreachable repository are otherwise the same screen (#42).
+            unreachableBanner
+
             // Three states, not two. The board used to assert "No repository
             // yet" for the whole of startup — through the login-shell capture,
             // three tool lookups and a preflight sweep — to a user whose
@@ -116,7 +121,15 @@ public struct BoardView: View {
             Picker("Repository", selection: $model.selectedRepoID) {
                 Text("All repositories").tag(UUID?.none)
                 ForEach(model.repos) { repo in
-                    Text(repo.displayName).tag(UUID?.some(repo.id))
+                    // Badged in the list too, so a repository that could not be
+                    // refreshed is findable while a *different* one is selected
+                    // — otherwise the only way to learn it failed is to pick it.
+                    if model.importFailure(repoID: repo.id) != nil {
+                        Label(repo.displayName, systemImage: "exclamationmark.triangle.fill")
+                            .tag(UUID?.some(repo.id))
+                    } else {
+                        Text(repo.displayName).tag(UUID?.some(repo.id))
+                    }
                 }
             }
             .labelsHidden()
@@ -451,6 +464,53 @@ public struct BoardView: View {
             "Still starting", systemImage: "hourglass", description: Text(model.status)
         )
         .frame(maxHeight: .infinity)
+    }
+
+    /// What #42 is actually about: an empty board that means "I could not ask"
+    /// looking exactly like one that means "there is nothing to show".
+    ///
+    /// A bar rather than a status sentence, because `status` is one shared line
+    /// that the next event overwrites — a run finishing, a preflight pass,
+    /// another repository's summary — and the failure was gone seconds later.
+    /// This stays until the repository imports or is forgotten.
+    ///
+    /// Scoped to what the picker is showing: the selected repository, or every
+    /// failed one when "All repositories" is chosen.
+    @ViewBuilder
+    private var unreachableBanner: some View {
+        let failures = model.visibleImportFailures
+
+        if !failures.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(failures, id: \.repo.id) { entry in
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Palette.attention)
+                        Text("\(entry.repo.displayName) could not be refreshed")
+                            .font(Type.rowTitle)
+                        // The reason in the fact face: it is `gh`'s words, not
+                        // ours, and the board's own convention keeps those apart.
+                        Text(entry.message)
+                            .font(Type.factSmall)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        Button("Retry") { Task { await model.refreshFromGitHub() } }
+                            .buttonStyle(.link)
+                            .font(Type.labelSmall)
+                            .disabled(model.isImporting)
+                    }
+                    .help(entry.message)
+                }
+            }
+            .padding(.horizontal, Metric.gutter)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.attention.opacity(0.12))
+            .overlay(alignment: .bottom) { Divider() }
+            .accessibilityIdentifier("import-failure-banner")
+        }
     }
 
     private var emptyState: some View {

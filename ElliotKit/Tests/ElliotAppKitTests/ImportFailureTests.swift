@@ -119,6 +119,48 @@ struct ImportFailureTests {
         #expect(model.importFailure(repoID: nil) == nil)
     }
 
+    /// What the banner shows, decided here rather than in the view.
+    @Test("Selecting one repository shows only its failure")
+    func bannerScopedToSelection() {
+        let model = AppModel()
+        let a = repo("alpha"), b = repo("beta")
+        model.testOnlySeed(repos: [a, b], cards: [])
+        model.record(failed("alpha", "one"), for: a.id)
+        model.record(failed("beta", "two"), for: b.id)
+
+        model.selectedRepoID = a.id
+        #expect(model.visibleImportFailures.map(\.message) == ["one"])
+
+        model.selectedRepoID = b.id
+        #expect(model.visibleImportFailures.map(\.message) == ["two"])
+    }
+
+    /// With "All repositories" chosen an empty board is the sum of all of them,
+    /// so every failure has to be named.
+    @Test("All repositories shows every failure")
+    func bannerShowsAllWhenNothingSelected() {
+        let model = AppModel()
+        let a = repo("alpha"), b = repo("beta")
+        model.testOnlySeed(repos: [a, b], cards: [])
+        model.record(failed("alpha", "one"), for: a.id)
+        model.record(failed("beta", "two"), for: b.id)
+
+        model.selectedRepoID = nil
+        #expect(Set(model.visibleImportFailures.map(\.message)) == ["one", "two"])
+    }
+
+    @Test("A healthy selection shows no banner at all")
+    func noBannerWhenFine() {
+        let model = AppModel()
+        let a = repo("alpha"), b = repo("beta")
+        model.testOnlySeed(repos: [a, b], cards: [])
+        model.record(succeeded("alpha"), for: a.id)
+        model.record(failed("beta", "two"), for: b.id)
+
+        model.selectedRepoID = a.id
+        #expect(model.visibleImportFailures.isEmpty, "alpha is fine; beta's problem is not alpha's")
+    }
+
     /// A summary can carry counts *and* a failure — a write that broke partway.
     /// That is a failure: a re-run is idempotent, so trying again is safe and
     /// calling it done is not.

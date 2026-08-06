@@ -1042,6 +1042,18 @@ public final class AppModel {
         }
     }
 
+    /// The failures the board should be showing, given what the picker is on.
+    ///
+    /// Here rather than in `BoardView` because it is a decision — "which of
+    /// these does the user need to see right now" — and a view cannot be
+    /// tested. One repository selected shows only its own failure; "All
+    /// repositories" shows every one, because in that case an empty board is
+    /// the sum of all of them.
+    public var visibleImportFailures: [(repo: Repo, message: String)] {
+        guard let selectedRepoID else { return importFailures }
+        return importFailures.filter { $0.repo.id == selectedRepoID }
+    }
+
     /// The first time a repository is shown, bring in what GitHub already knows.
     /// Once per repository per session — the button covers the rest.
     /// This is the unattended path, so it guards on `shouldAutoImport`: one
