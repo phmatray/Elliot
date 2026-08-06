@@ -49,11 +49,14 @@ public struct ElliotMCPServer: Sendable {
     /// `uniqueKeysWithValues` on purpose: two tools claiming one name should
     /// stop the helper, not shadow one of them into being unreachable.
     ///
-    /// It stops it at the first *use* of this static, though — the first
-    /// tools/list or tools/call, so startup in practice. This comment used to
-    /// say "build time", which is a guarantee nothing here provides; a comment
-    /// claiming one becomes the evidence every later reader relies on. What
-    /// does catch a duplicate before startup is
+    /// It stops it at the first *use* of this static — the first tools/call,
+    /// and only that. Measured, not assumed: with a duplicate in the registry,
+    /// reading `tools`, which is what tools/list answers, completes normally,
+    /// because each static initialises lazily on its own. So a session that
+    /// lists the tools and calls none never trips it at all. This comment used
+    /// to say "build time", which is a guarantee nothing here provides — and a
+    /// comment claiming one becomes the evidence every later reader relies on.
+    /// What catches a duplicate ahead of all of it is
     /// `ToolSurfaceTests.toolNamesAreUnique`, which asserts these same names
     /// are distinct without ever touching this dictionary.
     private static let byName: [String: any BoardTool] = Dictionary(

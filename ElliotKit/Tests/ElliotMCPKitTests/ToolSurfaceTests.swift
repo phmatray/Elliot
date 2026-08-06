@@ -43,8 +43,9 @@ struct ToolSurfaceTests {
         // The dispatch table is a `Dictionary(uniqueKeysWithValues:)` over these
         // very names, so a duplicate traps rather than shadowing a tool into
         // unreachability — but only at the first *use* of that lazily
-        // initialised static, which is the first tools/list or tools/call. This
-        // is what finds it before then.
+        // initialised static, which is the first tools/call. Reading `tools`
+        // does not touch it, so a helper only ever asked for tools/list would
+        // never find out. This is what finds it before any of that.
         //
         // `BoardTool.name` is a protocol *extension* returning `tool.name`, not
         // a requirement a conformance can answer its own way, so these are
