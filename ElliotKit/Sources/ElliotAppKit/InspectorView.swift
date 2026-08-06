@@ -43,6 +43,12 @@ struct InspectorView: View {
                             Text(saveError).font(Type.prose).foregroundStyle(Palette.refused)
                         }
                     } else {
+                        // Above everything else: it is the only thing on this
+                        // panel that is waiting on the reader, and the one act
+                        // in the product that cannot be undone.
+                        if let pending = model.pendingFollowUps, pending.cardID == card.id {
+                            MergeConfirmation(pending: pending)
+                        }
                         nextStep(card)
                         IssuePane(card: card)
                         provenance(card)

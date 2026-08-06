@@ -23,6 +23,9 @@ public enum SchedulerUpdate: Sendable {
     case runOutput(runID: UUID, event: StreamEvent)
     case runStalled(runID: UUID, since: Date)
     case runFinished(runID: UUID, cardID: UUID?, state: RunState, outcome: VerifiedOutcome?)
+    /// The pending queue changed. Pushed rather than polled — the UI must not
+    /// ask a question whose answer only the scheduler knows.
+    case queueChanged([QueuedRun])
 }
 
 /// Runs skills, at most a few at a time, respecting what can safely overlap.
@@ -30,8 +33,23 @@ public actor RunScheduler: RunLaunching {
     private let store: BoardStore
     private let toolConfig: ToolConfig
     private let verifier: Verifier
-    private let maxConcurrent: Int
-    private let maxConcurrentAnalyses: Int
+    /// `var`, not `let`: these were constructor constants nobody ever passed, so
+    /// the only way to change them was to rebuild the app. See `setLimits`.
+    private var limits: SchedulerLimits
+    private var ceiling: SpendCeiling
+    /// Today's spend, cached. Read from the store when it goes stale rather than
+    /// on every admission: `canStart` runs once per pending run per `pump()`,
+    /// and a SQL aggregate there would turn a queue drain into N queries.
+    /// Invalidated whenever a run finishes, which is the only moment it changes.
+    private var spentTodayCache: Double?
+    private var spentTodayDay: Date?
+    /// Why each pending run was held, as of the last drain. Recorded rather than
+    /// recomputed on read so the snapshot describes the decision that was
+    /// actually made, not a fresh guess against a board that has since moved.
+    private var lastRefusals: [UUID: QueueRefusal] = [:]
+    /// Not persisted, deliberately: a relaunch should start working, not stay
+    /// silently stopped.
+    private var isPaused = false
     private let harvester: ProposalHarvester
     /// `git status --porcelain` taken just before each analysis spawned, keyed
     /// by run. In memory only: if the app dies mid-run the baseline is gone and
@@ -53,15 +71,15 @@ public actor RunScheduler: RunLaunching {
         toolConfig: ToolConfig,
         verifier: Verifier,
         harvester: ProposalHarvester? = nil,
-        maxConcurrent: Int = 2,
-        maxConcurrentAnalyses: Int = 3
+        limits: SchedulerLimits = .default,
+        ceiling: SpendCeiling = .off
     ) {
         self.store = store
         self.toolConfig = toolConfig
         self.verifier = verifier
         self.harvester = harvester ?? ProposalHarvester(store: store, gh: GHClient(config: toolConfig))
-        self.maxConcurrent = maxConcurrent
-        self.maxConcurrentAnalyses = maxConcurrentAnalyses
+        self.limits = limits
+        self.ceiling = ceiling
         self.git = GitClient(config: toolConfig)
         var continuation: AsyncStream<SchedulerUpdate>.Continuation!
         updates = AsyncStream(bufferingPolicy: .bufferingNewest(1024)) { continuation = $0 }
@@ -70,6 +88,97 @@ public actor RunScheduler: RunLaunching {
 
     public func setSystemMover(_ mover: any SystemMoving) {
         systemMover = mover
+    }
+
+    /// Changes the caps, and drains whatever the old ones were holding back.
+    ///
+    /// The `pump()` is the point. Without it, raising the limit would do nothing
+    /// visible until some unrelated run happened to finish — the user would set
+    /// four workers, watch two run, and conclude the setting was ignored.
+    ///
+    /// Lowering never kills anything: `canStart` is only consulted for runs that
+    /// have not started, so runs already in flight finish under the old cap and
+    /// the new one takes effect as they drain.
+    public func setLimits(_ limits: SchedulerLimits) async {
+        self.limits = limits
+        await pump()
+    }
+
+    public var currentLimits: SchedulerLimits { limits }
+
+    /// Changes the ceiling and drains, for the same reason `setLimits` does:
+    /// raising a ceiling that was refusing admission must release the queue now,
+    /// not whenever something else happens to finish.
+    public func setCeiling(_ ceiling: SpendCeiling) async {
+        self.ceiling = ceiling
+        spentTodayCache = nil
+        await pump()
+    }
+
+    public var currentCeiling: SpendCeiling { ceiling }
+
+    // MARK: - Queue commands
+
+    /// Stops new runs starting. Runs already in flight finish normally — there
+    /// is no version of "pause" that suspends a `claude` mid-turn, and pretending
+    /// otherwise would be worse than not offering it.
+    public func pause() async {
+        guard !isPaused else { return }
+        isPaused = true
+        // Republished rather than left stale: every pending run's reason has
+        // just changed to `.paused`, and a queue still showing "cap reached"
+        // would send the reader to raise a limit that is not the block.
+        await publishQueue()
+    }
+
+    public func resume() async {
+        guard isPaused else { return }
+        isPaused = false
+        await pump()
+    }
+
+    public var paused: Bool { isPaused }
+
+    /// Empties the queue without touching what is running.
+    ///
+    /// Each cleared run is marked `.cancelled` with an `endedAt`. A run that
+    /// simply vanished from `pending` would keep its `.queued` state in the
+    /// store, and the launch sweep would pick it up on the next start and
+    /// resolve it against `gh` — reviving work the user just discarded.
+    @discardableResult
+    public func drain() async -> Int {
+        let cleared = pending
+        pending = []
+        lastRefusals = [:]
+        for runID in cleared {
+            guard var run = try? await store.run(id: runID), run.state == .queued else { continue }
+            run.state = .cancelled
+            run.endedAt = Date()
+            try? await store.saveRun(run)
+            continuation.yield(
+                .runFinished(runID: runID, cardID: run.cardID, state: .cancelled, outcome: nil))
+        }
+        await publishQueue()
+        return cleared.count
+    }
+
+    /// Moves one entry to the head of the queue.
+    ///
+    /// Does not bypass admission: `pump()` still asks `refusal(for:)`, so a
+    /// promoted run whose repository is merging waits exactly as it did. This
+    /// changes the order runs are *considered* in, never the rules.
+    public func promote(runID: UUID) async {
+        guard let index = pending.firstIndex(of: runID), index != 0 else { return }
+        pending.remove(at: index)
+        pending.insert(runID, at: 0)
+        await pump()
+    }
+
+    /// What the caps are actually holding right now, for the UI to show beside
+    /// them: a stepper reading "4" means nothing without "2 in flight".
+    public var occupancy: (writers: Int, analyses: Int) {
+        let analyses = inFlight.values.filter { $0.kind == .analyzeRepo }.count
+        return (inFlight.count - analyses, analyses)
     }
 
     // MARK: - Admission
@@ -87,27 +196,47 @@ public actor RunScheduler: RunLaunching {
     /// because the cap below exists to keep two *builds* out of one `.build/`,
     /// and an analysis builds nothing.
     func canStart(_ run: SkillRun) -> Bool {
+        refusal(for: run, overBudget: false) == nil
+    }
+
+    /// The same decision as `canStart`, keeping the reason instead of throwing
+    /// it away.
+    ///
+    /// `nil` means the run may start. Every branch below is a rule the engine
+    /// already enforced; what is new is that it says *which* — a queue that
+    /// stops moving with no reason given reads as a broken scheduler.
+    ///
+    /// `overBudget` is passed in rather than read here because the spend lives
+    /// behind an `await` and this must stay synchronous: it is consulted once
+    /// per pending run per drain.
+    func refusal(for run: SkillRun, overBudget: Bool) -> QueueRefusal? {
+        if isPaused { return .paused }
+        if overBudget { return .dailyCeilingReached }
+
         let sameRepo = inFlight.values.filter { $0.repoID == run.repoID }
-        guard !sameRepo.contains(where: { $0.kind == .mergePR }) else { return false }
+        if sameRepo.contains(where: { $0.kind == .mergePR }) { return .mergeInFlightInRepo }
 
         if run.kind == .analyzeRepo {
             let analysesInFlight = inFlight.values.filter { $0.kind == .analyzeRepo }.count
-            return analysesInFlight < maxConcurrentAnalyses
+            guard analysesInFlight >= limits.maxConcurrentAnalyses else { return nil }
+            return .analysisCapReached(
+                inFlight: analysesInFlight, cap: limits.maxConcurrentAnalyses)
         }
 
         let writersInFlight = inFlight.values.filter { $0.kind != .analyzeRepo }.count
-        guard writersInFlight < maxConcurrent else { return false }
+        guard writersInFlight < limits.maxConcurrent else {
+            return .writerCapReached(inFlight: writersInFlight, cap: limits.maxConcurrent)
+        }
 
         switch run.kind {
         case .mergePR:
             // Waits for an analysis too, at no extra cost: it is in sameRepo.
-            return sameRepo.isEmpty
+            return sameRepo.isEmpty ? nil : .mergeWaitsForRepoToBeIdle
         case .createIssue:
-            return !sameRepo.contains { $0.kind == .createIssue }
-        case .implementIssue:
-            return true
-        case .analyzeRepo:
-            return true
+            return sameRepo.contains { $0.kind == .createIssue }
+                ? .duplicateCreateIssueInRepo : nil
+        case .implementIssue, .analyzeRepo:
+            return nil
         }
     }
 
@@ -118,16 +247,85 @@ public actor RunScheduler: RunLaunching {
     }
 
     private func pump() async {
+        // Read once per drain, not once per run. `canStart` is consulted for
+        // every pending run and is deliberately synchronous; a SQL aggregate in
+        // there would turn draining a queue of twenty into twenty queries.
+        let overBudget = await isOverDailyCeiling()
         var stillPending: [UUID] = []
+        var refusals: [UUID: QueueRefusal] = [:]
         for runID in pending {
             guard let run = try? await store.run(id: runID), run.state == .queued else { continue }
-            if canStart(run) {
-                await start(run)
-            } else {
+            // The ceiling holds runs rather than cancelling them: tomorrow, or a
+            // raised ceiling, releases the same queue untouched.
+            if let why = refusal(for: run, overBudget: overBudget) {
                 stillPending.append(runID)
+                refusals[runID] = why
+            } else {
+                await start(run)
             }
         }
         pending = stillPending
+        lastRefusals = refusals
+        await publishQueue()
+    }
+
+    /// The pending queue, in the order `pump()` will consider it, each entry
+    /// carrying the rule that is holding it.
+    public func queueSnapshot() async -> [QueuedRun] {
+        var rows: [QueuedRun] = []
+        for (index, runID) in pending.enumerated() {
+            guard let run = try? await store.run(id: runID) else { continue }
+            let repo = try? await store.repo(id: run.repoID)
+            // Written out rather than `flatMap`: the closure would have to be
+            // async, and `flatMap` takes a synchronous one.
+            var card: Card?
+            if let cardID = run.cardID { card = try? await store.card(id: cardID) }
+            rows.append(
+                QueuedRun(
+                    runID: run.id,
+                    cardID: run.cardID,
+                    repoID: run.repoID,
+                    repoName: repo?.nameWithOwner ?? "?",
+                    cardTitle: card?.displayTitle,
+                    kind: run.kind,
+                    position: index + 1,
+                    // The recorded reason, or the one that applies right now for
+                    // a run queued since the last drain.
+                    refusal: lastRefusals[runID]
+                        ?? refusal(for: run, overBudget: false)
+                        ?? .writerCapReached(inFlight: 0, cap: limits.maxConcurrent),
+                    queuedAt: run.createdAt
+                )
+            )
+        }
+        return rows
+    }
+
+    private func publishQueue() async {
+        continuation.yield(.queueChanged(await queueSnapshot()))
+    }
+
+    /// Whether today's spend has reached the daily ceiling.
+    ///
+    /// Public so the UI can say *why* a queue is not moving. A queue that sits
+    /// still with no reason given reads as a broken scheduler, and this is the
+    /// one refusal a user cannot deduce from the board.
+    public func isOverDailyCeiling() async -> Bool {
+        guard ceiling.perDayUSD != nil else { return false }
+        return ceiling.daylimitReached(spentToday: await spentToday())
+    }
+
+    private func spentToday() async -> Double {
+        let startOfDay = Calendar.current.startOfDay(for: Date())
+        // The day boundary is part of the cache key. Without it a session left
+        // open overnight keeps yesterday's total and refuses every run of the
+        // new day — a bug that only appears after midnight, which is the worst
+        // kind to find.
+        if let cached = spentTodayCache, spentTodayDay == startOfDay { return cached }
+        let spend = (try? await store.spend(since: startOfDay)) ?? .nothing
+        spentTodayCache = spend.totalUSD
+        spentTodayDay = startOfDay
+        return spend.totalUSD
     }
 
     // MARK: - Running
@@ -144,7 +342,8 @@ public actor RunScheduler: RunLaunching {
             prompt: run.prompt,
             cwd: repo.path,
             permissionMode: repo.permissionMode,
-            extraAllowedTools: repo.extraAllowedTools
+            extraAllowedTools: repo.extraAllowedTools,
+            maxBudgetUSD: ceiling.perRunUSD
         )
         updated.argv = [toolConfig.claudePath] + invocation.arguments()
 
@@ -218,6 +417,10 @@ public actor RunScheduler: RunLaunching {
     private func finish(run: SkillRun, outcome: ClaudeRunOutcome?) async {
         live[run.id] = nil
         inFlight[run.id] = nil
+        // The only moment the day's total moves. Invalidated rather than
+        // recomputed: the `pump()` at the end of this method reads it back, and
+        // doing it here would read a total that does not include this run yet.
+        spentTodayCache = nil
 
         var updated = (try? await store.run(id: run.id)) ?? run
         updated.endedAt = Date()

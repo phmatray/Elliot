@@ -221,6 +221,112 @@ struct AppModelTests {
         #expect(model.selectedCard == nil)
     }
 
+    // MARK: - The merge confirmation must be reachable
+
+    @Test("Arming a merge selects its card and opens the panel, in that order")
+    func armingMakesTheConfirmationReachable() {
+        // The confirmation moved out of a sheet and into the details panel
+        // (#65). The panel only draws for a selected card and only when it is
+        // open, so if these three ever came apart the merge would become
+        // unreachable — the one way that change could fail *closed*. A sheet did
+        // not care what was selected; this does.
+        let a = repo("Elliot")
+        let review = card("ready", repoID: a.id, column: .inReview, order: 1, issue: 4, pr: 9)
+        let other = card("elsewhere", repoID: a.id, column: .todo, order: 2)
+        let model = model(repos: [a], cards: [review, other])
+
+        // Deliberately start from the state ⌘→ leaves: another card selected and
+        // the panel shut.
+        model.selectedCardID = other.id
+        model.showingInspector = false
+
+        model.armPendingMerge(cardID: review.id, prNumber: 9)
+
+        #expect(model.selectedCardID == review.id)
+        #expect(model.showingInspector)
+        #expect(model.pendingFollowUps?.cardID == review.id)
+        #expect(model.pendingFollowUps?.prNumber == 9)
+    }
+
+    @Test("Cancelling a pending merge leaves the card where it was")
+    func cancellingMovesNothing() {
+        let a = repo("Elliot")
+        let review = card("ready", repoID: a.id, column: .inReview, order: 1, issue: 4, pr: 9)
+        let model = model(repos: [a], cards: [review])
+
+        model.armPendingMerge(cardID: review.id, prNumber: 9)
+        model.cancelPendingMerge()
+
+        #expect(model.pendingFollowUps == nil)
+        // Still in review, and still selected: cancelling a confirmation is not
+        // a reason to lose your place.
+        #expect(model.card(id: review.id)?.column == .inReview)
+        #expect(model.selectedCardID == review.id)
+    }
+
+    // MARK: - What to do next
+
+    @Test("nextSteps is rankNextSteps' answer, not a second opinion")
+    func nextStepsMatchesTheRanking() {
+        // `BoardService.nextSteps` — what `board_next` answers over MCP —
+        // assembles `nextCandidates(cards:repos:activeRunIDs:)` and ranks it.
+        // This asserts the app builds the identical thing, because the moment
+        // the two differ the board and the agent disagree about what to do next
+        // and nothing says so.
+        let a = repo("Elliot")
+        let b = repo("Lyrics")
+        let cards = [
+            card("ready to file", repoID: a.id, column: .backlog, order: 1),
+            card("filed", repoID: a.id, column: .todo, order: 2, issue: 7),
+            card("no issue yet", repoID: b.id, column: .todo, order: 3),
+            card("merged", repoID: b.id, column: .done, order: 4, issue: 1, pr: 2),
+        ]
+        let model = model(repos: [a, b], cards: cards)
+
+        let expected = rankNextSteps(
+            nextCandidates(cards: cards, repos: [a, b], activeRunIDs: [:])
+        )
+        #expect(model.nextSteps == expected)
+    }
+
+    @Test("Ready steps come before blocked ones")
+    func readyFirst() {
+        // The ordering is the whole point of the view: it exists so the reader
+        // stops rebuilding it in their head. A stray `.sorted` in AppModel would
+        // silently undo it, and this is what would catch that.
+        let a = repo("Elliot")
+        let blocked = card("no issue yet", repoID: a.id, column: .todo, order: 1)
+        let ready = card("write it", repoID: a.id, column: .backlog, order: 2)
+        let model = model(repos: [a], cards: [blocked, ready])
+
+        let steps = model.nextSteps
+        #expect(steps.count == 2)
+        #expect(steps[0].card.id == ready.id)
+        #expect(steps[0].isReady)
+        #expect(!steps[1].isReady)
+    }
+
+    @Test("A card with nowhere to go does not appear at all")
+    func doneCardsAreDropped() {
+        // `Done` has no `naturalNext`, so `rankNextSteps` drops it. The view
+        // must not invent a row for it — the same contract `board_next` has.
+        let a = repo("Elliot")
+        let done = card("shipped", repoID: a.id, column: .done, order: 1, issue: 1, pr: 2)
+        #expect(model(repos: [a], cards: [done]).nextSteps.isEmpty)
+    }
+
+    @Test("A card whose repository is unknown is dropped, not shown as ready")
+    func orphanCardsAreDropped() {
+        // `nextCandidates` drops it deliberately: no repository means no
+        // checkout to run in and no permission mode to run under. Showing it as
+        // actionable would offer a move that cannot be made.
+        let model = model(
+            repos: [],
+            cards: [card("orphan", repoID: UUID(), column: .backlog, order: 1)]
+        )
+        #expect(model.nextSteps.isEmpty)
+    }
+
     // MARK: - Log rendering
 
     /// These two used to assert what `AppModel.describe` produced for the log —

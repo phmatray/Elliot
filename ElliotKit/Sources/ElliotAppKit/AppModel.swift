@@ -21,6 +21,34 @@ public final class AppModel {
     public private(set) var isReady = false
     public private(set) var isImporting = false
 
+    /// How many runs may go at once, and how many are going.
+    ///
+    /// `occupancy` is refreshed from the scheduler on every run update rather
+    /// than polled: a stepper reading "4" says nothing without "2 in flight"
+    /// beside it, and a number that lags is worse than no number.
+    public private(set) var limits: SchedulerLimits = .default
+    public private(set) var occupancy: (writers: Int, analyses: Int) = (0, 0)
+
+    /// The most Elliot may spend, and what it has spent today.
+    ///
+    /// `isOverDailyCeiling` is held rather than derived in a view: a queue that
+    /// sits still with no reason given reads as a broken scheduler, and this is
+    /// the one refusal a user cannot deduce from the board.
+    /// The runs waiting to start, in the order the scheduler will consider
+    /// them, each carrying the rule holding it. Pushed by the scheduler on every
+    /// drain — nothing polls.
+    public private(set) var queue: [QueuedRun] = []
+
+    /// The most recent runs across the whole board, independent of what is
+    /// selected. `runsByCard` is loaded per selected card and is right to be —
+    /// this is the shallower path an overview needs.
+    public private(set) var recentRuns: [SkillRun] = []
+    public private(set) var isQueuePaused = false
+
+    public private(set) var ceiling: SpendCeiling = .off
+    public private(set) var spentToday: Spend = .nothing
+    public private(set) var isOverDailyCeiling = false
+
     /// One row per repository of the configured owners: GitHub's list, the disk
     /// and the store, reconciled. The judgement is `RepoReconciler`'s — the page
     /// renders it and never decides anything itself.
@@ -42,8 +70,19 @@ public final class AppModel {
     /// Analysis is deliberately absent: it is a `Window` scene now, so its
     /// presentation is `openWindow`'s business and there is no flag to keep in
     /// step with it.
-    public var showingNewCard = false
     public var showingInspector = true
+
+    /// Which repository a new story will be filed against.
+    ///
+    /// Here rather than passed in, because `NewCardWindow` is a `Window` scene
+    /// and a scene cannot be handed a parameter the way a sheet's closure can.
+    /// Set at the moment the window is opened, so it captures the repository
+    /// that was selected then rather than following the picker afterwards.
+    public var newCardRepoID: UUID?
+
+    /// The repository a new story should default to: the one in the picker, or
+    /// the first, when "All repositories" is chosen.
+    public var defaultRepoIDForNewCard: UUID? { selectedRepoID ?? repos.first?.id }
 
     /// The analysis the window is showing. `nil` means it is still in setup.
     public private(set) var activeAnalysisID: UUID?
@@ -178,7 +217,16 @@ public final class AppModel {
 
             let ghClient = GHClient(config: config)
             let verifier = Verifier(gh: ghClient)
-            let scheduler = RunScheduler(store: store, toolConfig: config, verifier: verifier)
+            // Read before the scheduler is built, not applied to it afterwards:
+            // the launch sweep further down admits runs that died with the app,
+            // and it must do so under the caps the user chose rather than under
+            // the defaults for the moment it takes to override them.
+            limits = (try? await store.limits()) ?? .default
+            ceiling = (try? await store.spendCeiling()) ?? .off
+            let scheduler = RunScheduler(
+                store: store, toolConfig: config, verifier: verifier,
+                limits: limits, ceiling: ceiling
+            )
             let board = BoardService(store: store, launcher: scheduler)
             await scheduler.setSystemMover(board)
             self.scheduler = scheduler
@@ -216,6 +264,13 @@ public final class AppModel {
             importer = GitHubImportService(store: store, gh: ghClient, board: board)
 
             await refreshRepoChecks(using: preflight)
+
+            // Once at startup. These are otherwise only refreshed when a run
+            // reports, so a board that has not run anything since launch would
+            // show an empty queue and $0.00 spent — indistinguishable from a
+            // board that has genuinely spent nothing, and wrong on any store
+            // with history in it.
+            await refreshOccupancy()
 
             isReady = true
             status = summary == .init()
@@ -305,6 +360,8 @@ public final class AppModel {
     /// unbounded array held in memory.
     func apply(_ update: SchedulerUpdate) {
         switch update {
+        case .queueChanged(let queue):
+            self.queue = queue
         case .runStarted(let runID, _):
             // Emptied rather than seeded with a line: the tail carries events
             // now, and "started" is not one. `RunningStrip` and `RunRow` both
@@ -313,6 +370,7 @@ public final class AppModel {
             Task {
                 await self.refreshActiveRuns()
                 await self.refreshAnalysisRuns()
+                await self.refreshOccupancy()
             }
         case .runOutput(let runID, let event):
             var events = liveLog[runID] ?? []
@@ -338,6 +396,7 @@ public final class AppModel {
             Task {
                 await self.refreshActiveRuns()
                 await self.refreshAnalysisRuns()
+                await self.refreshOccupancy()
             }
         }
     }
@@ -472,7 +531,7 @@ public final class AppModel {
                 await refreshActiveRuns()
             case .needsInput(.followUps(let pr)):
                 refusal = nil
-                pendingFollowUps = PendingMerge(cardID: cardID, prNumber: pr)
+                armPendingMerge(cardID: cardID, prNumber: pr)
             case .blocked(let block):
                 // Shown on the card, not only in the status bar: the reason a
                 // gesture did nothing belongs where the gesture was made.
@@ -523,6 +582,27 @@ public final class AppModel {
         } catch {
             status = error.localizedDescription
         }
+    }
+
+    /// Puts the merge confirmation somewhere the user can actually see it.
+    ///
+    /// The panel only draws for a selected card and only when it is open, so the
+    /// order here is the difference between a confirmation and a merge with
+    /// nowhere to confirm it — the one way moving this out of a sheet could fail
+    /// *closed*. A drag selects the card on its way past; the Card menu's
+    /// Advance and the panel's own Next step button do not, and a sheet did not
+    /// care.
+    ///
+    /// Its own method so `swift test` can prove the three happen together.
+    func armPendingMerge(cardID: UUID, prNumber: Int) {
+        selectedCardID = cardID
+        showingInspector = true
+        pendingFollowUps = PendingMerge(cardID: cardID, prNumber: prNumber)
+    }
+
+    /// Abandons a merge the user decided against, without moving the card.
+    public func cancelPendingMerge() {
+        pendingFollowUps = nil
     }
 
     public func confirmMerge(cardID: UUID, followUps: [String]) async {
@@ -589,6 +669,121 @@ public final class AppModel {
         // Read here rather than from a new call site: `CardView.task` and the
         // inspector already call this per card.
         lastMove[cardID] = (try? await store?.audits(cardID: cardID, limit: 1))??.first
+    }
+
+    // MARK: - Scheduler limits
+
+    /// Saves the caps and applies them to the running scheduler.
+    ///
+    /// Saved first: if the write fails the user must not be left with a board
+    /// running four workers and a store that will restore two on next launch.
+    public func updateLimits(_ new: SchedulerLimits) async {
+        guard let store else { return }
+        do {
+            try await store.saveLimits(new)
+        } catch {
+            status = "Could not save the run limits: \(error.localizedDescription)"
+            return
+        }
+        limits = new
+        await scheduler?.setLimits(new)
+        await refreshOccupancy()
+    }
+
+    func refreshOccupancy() async {
+        guard let scheduler else { return }
+        occupancy = await scheduler.occupancy
+        isQueuePaused = await scheduler.paused
+        await refreshSpend()
+        await refreshRecentRuns()
+    }
+
+    // MARK: - Queue commands
+
+    /// Pause, resume, empty, or push one run to the front.
+    ///
+    /// Thin on purpose: every one of these is the scheduler's decision, and a
+    /// second copy of the reasoning here is how the board and the engine start
+    /// disagreeing about what the queue is doing.
+    public func pauseQueue() async {
+        await scheduler?.pause()
+        await refreshOccupancy()
+    }
+
+    public func resumeQueue() async {
+        await scheduler?.resume()
+        await refreshOccupancy()
+    }
+
+    /// Says how many were discarded. A command that empties something must
+    /// report what it emptied, or an accidental press is indistinguishable from
+    /// a queue that was already empty.
+    public func drainQueue() async {
+        guard let scheduler else { return }
+        let cleared = await scheduler.drain()
+        status = cleared == 0
+            ? "Nothing was waiting."
+            : "Discarded \(cleared == 1 ? "1 queued run" : "\(cleared) queued runs"). Nothing running was stopped."
+        await refreshOccupancy()
+    }
+
+    public func promoteQueued(runID: UUID) async {
+        await scheduler?.promote(runID: runID)
+        await refreshOccupancy()
+    }
+
+    /// Saves the ceiling and applies it, in that order, for the same reason
+    /// `updateLimits` does: a failed write must not leave the running scheduler
+    /// enforcing something the store will not restore.
+    public func updateCeiling(_ new: SpendCeiling) async {
+        guard let store else { return }
+        do {
+            try await store.saveSpendCeiling(new)
+        } catch {
+            status = "Could not save the spend ceiling: \(error.localizedDescription)"
+            return
+        }
+        ceiling = new
+        await scheduler?.setCeiling(new)
+        await refreshSpend()
+    }
+
+    func refreshRecentRuns() async {
+        guard let store else { return }
+        recentRuns = (try? await store.recentRuns(limit: 50)) ?? []
+    }
+
+    func refreshSpend() async {
+        guard let store, let scheduler else { return }
+        spentToday = (try? await store.spend(since: Calendar.current.startOfDay(for: Date())))
+            ?? .nothing
+        isOverDailyCeiling = await scheduler.isOverDailyCeiling()
+    }
+
+    // MARK: - What to do next
+
+    /// What Elliot thinks should happen next, in order.
+    ///
+    /// The ranking is `rankNextSteps`, the same pure function `board_next`
+    /// answers with over MCP. It was written, tested and served to agents while
+    /// the human got five columns and had to rebuild the order in their head at
+    /// every glance.
+    ///
+    /// Computed rather than stored: it is derived entirely from `cards`, `repos`
+    /// and `activeRuns`, all of which are already observed, and a stored copy is
+    /// one more thing that can be stale.
+    ///
+    /// **No sorting here.** `rankNextSteps` has already ordered them, and a
+    /// second sort is a second opinion that will drift from what the MCP tool
+    /// answers for the same board.
+    public var nextSteps: [NextStep] {
+        rankNextSteps(
+            nextCandidates(
+                cards: cards,
+                repos: repos,
+                activeRunIDs: activeRuns.mapValues(\.id)
+            )
+        )
     }
 
     /// One query for the whole board rather than one per card.

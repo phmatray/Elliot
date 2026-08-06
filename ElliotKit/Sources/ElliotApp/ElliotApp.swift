@@ -54,10 +54,36 @@ struct ElliotApp: App {
         }
         .defaultSize(width: 900, height: 700)
 
+        // What the machine is doing, what it will do next, and what it costs.
+        // The board answers "what work exists"; nothing answered the other two,
+        // and the four windows were peers with no home among them.
+        Window("Operations", id: "operations") {
+            NavigationStack { OperationsView() }.environment(model)
+        }
+        .defaultSize(width: 720, height: 780)
+
+        // Its own window for now. It is the first band of the Operations
+        // screen (#69) and will be composed into it there; landing it alone
+        // means the ranking is on screen and usable before that screen exists.
+        Window("Up next", id: "nextSteps") {
+            NavigationStack { NextStepsView() }.environment(model)
+        }
+        .defaultSize(width: 520, height: 640)
+
         Window("Preflight", id: "preflight") {
             NavigationStack { PreflightView() }.environment(model)
         }
         .defaultSize(width: 820, height: 720)
+
+        // A window rather than the fixed 580x580 sheet it was. That sheet had
+        // already grown an internal ScrollView because at three or four
+        // acceptance criteria — the documented normal path — it pushed its own
+        // buttons off the bottom, and a macOS sheet cannot be resized. Writing
+        // a story also no longer blocks the board while a run reports on it.
+        Window("New story", id: "newStory") {
+            NavigationStack { NewCardWindow() }.environment(model)
+        }
+        .defaultSize(width: 620, height: 640)
 
         // Not wrapped: `AnalysisWindow` has no `.toolbar` and no
         // `.navigationTitle` — it draws its own header and footer — so a
@@ -74,8 +100,7 @@ struct ElliotApp: App {
             // The shortcut lives here rather than on the toolbar button: a menu
             // item is the discoverable half of a keyboard shortcut, and the
             // toolbar was carrying ⌘N invisibly.
-            Button("New Story…") { model.showingNewCard = true }
-                .keyboardShortcut("n")
+            NewStoryMenuItem(model: model)
                 .disabled(model.repos.isEmpty)
         }
 
@@ -131,6 +156,32 @@ struct ElliotApp: App {
     }
 }
 
+/// New Story, as a menu item.
+///
+/// A `View` for the same reason `OpenWindowButtons` is one: `openWindow` is an
+/// environment value and `Commands` is not a view hierarchy that can read one.
+/// The shortcut stays here and not on the toolbar button — a shortcut declared
+/// in two places is matched reliably in neither.
+///
+/// ⚠️ The model is **passed in, never read from the environment**. `Commands` is
+/// not under the `.environment(model)` that each `Window`'s content carries, so
+/// `@Environment(AppModel.self)` here compiles, passes every test, and kills the
+/// app at launch with "No Observable object of type AppModel found". It did
+/// exactly that in #64, and only launching the app found it. `openWindow` is
+/// safe because it is a built-in environment value that `Commands` does provide.
+private struct NewStoryMenuItem: View {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("New Story…") {
+            model.newCardRepoID = model.defaultRepoIDForNewCard
+            openWindow(id: "newStory")
+        }
+        .keyboardShortcut("n")
+    }
+}
+
 /// The three auxiliary windows, as menu items.
 ///
 /// A `View` rather than three inline buttons because `openWindow` is an
@@ -139,6 +190,8 @@ private struct OpenWindowButtons: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        Button("Operations") { openWindow(id: "operations") }
+        Button("Up Next") { openWindow(id: "nextSteps") }
         Button("Analysis…") { openWindow(id: "analysis") }
         Button("Repositories") { openWindow(id: "repositories") }
         Button("Preflight") { openWindow(id: "preflight") }

@@ -52,12 +52,6 @@ public struct BoardView: View {
         .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.selectedCardID)
         .toolbar { toolbarContent }
         .navigationTitle("Elliot")
-        .sheet(isPresented: $model.showingNewCard) {
-            NewCardSheet(repoID: model.selectedRepoID ?? model.repos.first?.id)
-        }
-        .sheet(item: $model.pendingFollowUps) { pending in
-            FollowUpSheet(pending: pending)
-        }
         .task(id: model.selectedRepoID) {
             await model.importIfNeeded(repoID: model.selectedRepoID)
         }
@@ -141,7 +135,8 @@ public struct BoardView: View {
 
         ToolbarItem {
             Button {
-                model.showingNewCard = true
+                model.newCardRepoID = model.defaultRepoIDForNewCard
+                openWindow(id: "newStory")
             } label: {
                 Label("New story", systemImage: "plus")
             }
@@ -321,8 +316,16 @@ public struct BoardView: View {
 
 // MARK: - Status bar
 
+/// The only strip that is always on screen, and until #68 it carried the least
+/// information available: "N running" and a status sentence. Neither the queue
+/// depth, nor the capacity in use, nor the day's spend appeared — although all
+/// three were either already in memory or one aggregate query away.
+///
+/// It says the three numbers of a control room now. Each opens the screen that
+/// can act on it, so the strip is a way in rather than a readout.
 struct StatusBar: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 8) {
@@ -338,25 +341,70 @@ struct StatusBar: View {
                 .truncationMode(.tail)
                 .help(model.status)
 
-            Spacer()
+            Spacer(minLength: 8)
 
-            if !model.activeRuns.isEmpty {
-                Fact(
-                    text: "\(model.activeRuns.count) running",
-                    tint: Palette.armed,
-                    small: true
+            figure(
+                text: "\(model.occupancy.writers)/\(model.limits.maxConcurrent) workers",
+                tint: model.occupancy.writers > 0 ? Palette.armed : Palette.quiet,
+                help: "How many runs are going, against the limit. Click to change it.",
+                spoken: "\(model.occupancy.writers) of \(model.limits.maxConcurrent) workers busy",
+                window: "operations"
+            )
+
+            // Only when there is one. A permanent "0 queued" is furniture, and
+            // this strip has been pushed around by its own contents before.
+            if !model.queue.isEmpty {
+                figure(
+                    text: "\(model.queue.count) queued",
+                    tint: model.isQueuePaused ? Palette.refused : Palette.attention,
+                    help: model.queue.first?.refusal.sentence ?? "Runs waiting to start.",
+                    spoken: model.isQueuePaused
+                        ? "\(model.queue.count) queued, paused"
+                        : "\(model.queue.count) runs queued",
+                    window: "operations"
                 )
             }
+
+            figure(
+                text: MoneyFormat.usd(model.spentToday.totalUSD),
+                tint: model.isOverDailyCeiling ? Palette.refused : Palette.quiet,
+                help: "Spent today — \(model.spentToday.sentence()). Click to set a ceiling.",
+                spoken: "spent today, \(model.spentToday.sentence())",
+                window: "operations"
+            )
+
             // Elliot wrote this hint, so it is not set in the fact face.
-            Text(model.selectedCard == nil
-                ? "↑↓←→ pick a card"
-                : "⌘→ advance · ⌘← back · esc deselect")
-                .font(Type.prose)
-                .foregroundStyle(Palette.quiet)
+            Text(
+                model.selectedCard == nil
+                    ? "↑↓←→ pick a card"
+                    : "⌘→ advance · ⌘← back · esc deselect"
+            )
+            .font(Type.prose)
+            .foregroundStyle(Palette.quiet)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+        // Fixed, and `lineLimit(1)` above: this bar has grown and shoved the
+        // whole board upwards before, and the numbers in it change constantly.
+        .frame(height: Metric.statusBarHeight)
         .background(.bar)
+    }
+
+    /// One figure, and a way to act on it.
+    ///
+    /// `spoken` rather than reading the label aloud: "2/4 workers" is a
+    /// screen-reader's nightmare, and a number with no sentence around it says
+    /// nothing to anyone who cannot see where it sits.
+    private func figure(
+        text: String, tint: Color, help: String, spoken: String, window: String
+    ) -> some View {
+        Button { openWindow(id: window) } label: {
+            Fact(text: text, tint: tint, small: true)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(spoken)
+        .accessibilityHint("Opens the screen that can change it")
     }
 }
 
@@ -368,6 +416,9 @@ struct ColumnView: View {
     let column: ElliotModel.Column
     let width: CGFloat
     @State private var isTargeted = false
+    /// Per column and per repository, so collapsing a repository in Backlog does
+    /// not hide it in To Do — the two are different questions.
+    @State private var collapsed: Set<UUID> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -444,25 +495,22 @@ struct ColumnView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 6) {
-                    ForEach(cards) { card in
-                        CardView(card: card)
-                            .id(card.id)
-                            .onDrag {
-                                // An action closure, not a view builder: safe
-                                // to record the selection here, and it means
-                                // starting a drag arms the console for the card
-                                // in hand.
-                                model.selectedCardID = card.id
-                                return NSItemProvider(object: card.id.uuidString as NSString)
+                    // Grouped only when the picker says "All repositories".
+                    // With one repository chosen every card belongs to it, and a
+                    // header repeating its name on every column is furniture.
+                    if let groups {
+                        ForEach(groups) { group in
+                            groupHeader(group)
+                            if !collapsed.contains(group.repoID) {
+                                ForEach(group.cards) { card in
+                                    draggable(card)
+                                }
                             }
-                            // Moving a card is the app's only gesture, and it
-                            // used to be a teleport: the card vanished from one
-                            // column and appeared in another with no motion
-                            // connecting the two.
-                            .transition(.asymmetric(
-                                insertion: .opacity.combined(with: .offset(x: -14)),
-                                removal: .opacity.combined(with: .scale(scale: 0.97))
-                            ))
+                        }
+                    } else {
+                        ForEach(cards) { card in
+                            draggable(card)
+                        }
                     }
 
                     if cards.isEmpty {
@@ -490,6 +538,68 @@ struct ColumnView: View {
                 }
             }
         }
+    }
+
+    private func draggable(_ card: Card) -> some View {
+        CardView(card: card)
+            .id(card.id)
+            .onDrag {
+                // An action closure, not a view builder: safe to record the
+                // selection here, and it means starting a drag arms the console
+                // for the card in hand.
+                model.selectedCardID = card.id
+                return NSItemProvider(object: card.id.uuidString as NSString)
+            }
+            // Moving a card is the app's only gesture, and it used to be a
+            // teleport: the card vanished from one column and appeared in
+            // another with no motion connecting the two.
+            .transition(
+                .asymmetric(
+                    insertion: .opacity.combined(with: .offset(x: -14)),
+                    removal: .opacity.combined(with: .scale(scale: 0.97))
+                ))
+    }
+
+    /// The groups, or `nil` when a single repository is selected.
+    ///
+    /// Decided by `groupByRepo` in ElliotModel, which is where the ordering and
+    /// the orphan fallback are proven. This only asks.
+    private var groups: [CardGroup]? {
+        guard model.selectedRepoID == nil else { return nil }
+        return groupByRepo(cards, repos: model.repos)
+    }
+
+    /// Deliberately carries no `dropDestination`.
+    ///
+    /// The drop target is the column and only the column. A drop onto a group
+    /// header would have to mean "move this card to that repository", which is
+    /// a write `BoardService` owns and a second path to a card's identity — the
+    /// exact kind of silent second write path the app is built to avoid.
+    private func groupHeader(_ group: CardGroup) -> some View {
+        Button {
+            if collapsed.contains(group.repoID) {
+                collapsed.remove(group.repoID)
+            } else {
+                collapsed.insert(group.repoID)
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: collapsed.contains(group.repoID) ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                ConsoleLabel(text: group.repoName, tint: .secondary)
+                Fact(text: "\(group.cards.count)", tint: Palette.quiet, small: true)
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .padding(.top, 4)
+        }
+        .buttonStyle(.plain)
+        // Singular written out. "1 cards" is the kind of thing that makes a
+        // careful product look careless, and this label is read aloud.
+        .accessibilityLabel(
+            "\(group.repoName), \(group.cards.count) \(group.cards.count == 1 ? "card" : "cards") in \(column.displayName)"
+        )
     }
 
     /// An empty column used to be blank, which reads as broken rather than

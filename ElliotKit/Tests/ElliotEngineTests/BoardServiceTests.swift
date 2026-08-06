@@ -339,7 +339,8 @@ struct SchedulerAdmissionTests {
         )
         return RunScheduler(
             store: store, toolConfig: config,
-            verifier: Verifier(gh: .init(config: config)), maxConcurrent: maxConcurrent
+            verifier: Verifier(gh: .init(config: config)),
+            limits: SchedulerLimits(maxConcurrent: maxConcurrent, maxConcurrentAnalyses: 3)
         )
     }
 

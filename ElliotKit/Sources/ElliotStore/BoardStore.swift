@@ -113,24 +113,186 @@ public final class BoardStore: Sendable {
     private static let layoutKey = "repositoryLayout"
 
     public func layout() async throws -> RepoTreeLayout? {
-        let json = try await reader.read { db in
-            try String.fetchOne(
-                db, sql: #"SELECT "value" FROM "setting" WHERE "key" = ?"#,
-                arguments: [Self.layoutKey])
-        }
-        guard let data = json?.data(using: .utf8) else { return nil }
-        return try JSONDecoder().decode(RepoTreeLayout.self, from: data)
+        try await setting(Self.layoutKey, as: RepoTreeLayout.self)
     }
 
     public func saveLayout(_ layout: RepoTreeLayout) async throws {
-        let json = String(decoding: try JSONEncoder().encode(layout), as: UTF8.self)
+        try await saveSetting(Self.layoutKey, layout)
+    }
+
+    private static let limitsKey = "schedulerLimits"
+
+    /// `nil` when nothing has been chosen — the caller applies
+    /// `SchedulerLimits.default`, so an existing store behaves as it always did.
+    public func limits() async throws -> SchedulerLimits? {
+        try await setting(Self.limitsKey, as: SchedulerLimits.self)
+    }
+
+    public func saveLimits(_ limits: SchedulerLimits) async throws {
+        try await saveSetting(Self.limitsKey, limits)
+    }
+
+    private static let ceilingKey = "spendCeiling"
+
+    public func spendCeiling() async throws -> SpendCeiling? {
+        try await setting(Self.ceilingKey, as: SpendCeiling.self)
+    }
+
+    public func saveSpendCeiling(_ ceiling: SpendCeiling) async throws {
+        try await saveSetting(Self.ceilingKey, ceiling)
+    }
+
+    /// What has been spent since `since`, summed in SQL.
+    ///
+    /// Keyed on `endedAt`, not `createdAt`: a run's cost is only known once it
+    /// has finished, so a run that started yesterday and ended today spent its
+    /// money today. Runs still in flight contribute nothing, which is the honest
+    /// answer — their cost does not exist yet.
+    ///
+    /// A NULL `totalCostUSD` is **not** counted as zero. A run whose cost was
+    /// never recorded must not read the same as a run that cost nothing; the
+    /// same distinction `workingTreeChanged` draws between checked-and-clean and
+    /// never-checked. The count comes back so a caller can tell a partial answer
+    /// from a complete one.
+    public func spend(since: Date) async throws -> Spend {
+        try await reader.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: #"""
+                    SELECT
+                        COALESCE(SUM("totalCostUSD"), 0.0) AS total,
+                        COUNT(*) AS runs,
+                        SUM(CASE WHEN "totalCostUSD" IS NULL THEN 1 ELSE 0 END) AS unknown
+                    FROM "skillRun"
+                    WHERE "endedAt" IS NOT NULL AND "endedAt" >= ?
+                    """#,
+                arguments: [since]
+            )
+            guard let row else { return Spend.nothing }
+            return Spend(
+                totalUSD: row["total"] ?? 0,
+                runs: row["runs"] ?? 0,
+                unknownCost: row["unknown"] ?? 0
+            )
+        }
+    }
+
+    /// Spend since `since`, split by repository, biggest first.
+    ///
+    /// One statement with a GROUP BY rather than one query per repository: on a
+    /// portfolio this is the difference between a page load and three hundred.
+    public func spendByRepo(since: Date) async throws -> [(repoID: UUID, spend: Spend)] {
+        try await reader.read { db in
+            try Row.fetchAll(
+                db,
+                sql: #"""
+                    SELECT
+                        "repoID",
+                        COALESCE(SUM("totalCostUSD"), 0.0) AS total,
+                        COUNT(*) AS runs,
+                        SUM(CASE WHEN "totalCostUSD" IS NULL THEN 1 ELSE 0 END) AS unknown
+                    FROM "skillRun"
+                    WHERE "endedAt" IS NOT NULL AND "endedAt" >= ?
+                    GROUP BY "repoID"
+                    ORDER BY total DESC
+                    """#,
+                arguments: [since]
+            )
+            .compactMap { row -> (repoID: UUID, spend: Spend)? in
+                guard let id: UUID = row["repoID"] else { return nil }
+                return (
+                    id,
+                    Spend(
+                        totalUSD: row["total"] ?? 0,
+                        runs: row["runs"] ?? 0,
+                        unknownCost: row["unknown"] ?? 0
+                    )
+                )
+            }
+        }
+    }
+
+    /// Spend since `since`, split by what the run was doing.
+    ///
+    /// Answers the question the analysis setup screen raises and never answered:
+    /// what a six-lens read actually costs, as against filing an issue.
+    public func spendByKind(since: Date) async throws -> [SkillKind: Spend] {
+        let rows = try await reader.read { db in
+            try Row.fetchAll(
+                db,
+                sql: #"""
+                    SELECT
+                        "kind",
+                        COALESCE(SUM("totalCostUSD"), 0.0) AS total,
+                        COUNT(*) AS runs,
+                        SUM(CASE WHEN "totalCostUSD" IS NULL THEN 1 ELSE 0 END) AS unknown
+                    FROM "skillRun"
+                    WHERE "endedAt" IS NOT NULL AND "endedAt" >= ?
+                    GROUP BY "kind"
+                    """#,
+                arguments: [since]
+            )
+        }
+        var byKind: [SkillKind: Spend] = [:]
+        for row in rows {
+            guard let raw: String = row["kind"], let kind = SkillKind(rawValue: raw) else { continue }
+            byKind[kind] = Spend(
+                totalUSD: row["total"] ?? 0,
+                runs: row["runs"] ?? 0,
+                unknownCost: row["unknown"] ?? 0
+            )
+        }
+        return byKind
+    }
+
+    /// What one analysis cost, across all of its lenses.
+    public func spend(analysisID: UUID) async throws -> Spend {
+        try await reader.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: #"""
+                    SELECT
+                        COALESCE(SUM("totalCostUSD"), 0.0) AS total,
+                        COUNT(*) AS runs,
+                        SUM(CASE WHEN "totalCostUSD" IS NULL THEN 1 ELSE 0 END) AS unknown
+                    FROM "skillRun"
+                    WHERE "analysisID" = ? AND "endedAt" IS NOT NULL
+                    """#,
+                arguments: [analysisID.databaseKey]
+            )
+            guard let row else { return Spend.nothing }
+            return Spend(
+                totalUSD: row["total"] ?? 0,
+                runs: row["runs"] ?? 0,
+                unknownCost: row["unknown"] ?? 0
+            )
+        }
+    }
+
+    /// The two halves of the settings pair, written once.
+    ///
+    /// `layout` had its own copy of both, and the scheduler limits would have
+    /// made a second — at which point the next setting makes a third and one of
+    /// them forgets the upsert.
+    private func setting<T: Decodable>(_ key: String, as type: T.Type) async throws -> T? {
+        let json = try await reader.read { db in
+            try String.fetchOne(
+                db, sql: #"SELECT "value" FROM "setting" WHERE "key" = ?"#,
+                arguments: [key])
+        }
+        guard let data = json?.data(using: .utf8) else { return nil }
+        return try JSONDecoder().decode(type, from: data)
+    }
+
+    private func saveSetting(_ key: String, _ value: some Encodable) async throws {
+        let json = String(decoding: try JSONEncoder().encode(value), as: UTF8.self)
         try await requireWriter().write { db in
             try db.execute(
                 sql: #"""
                     INSERT INTO "setting" ("key", "value") VALUES (?, ?)
                     ON CONFLICT("key") DO UPDATE SET "value" = excluded."value"
                     """#,
-                arguments: [Self.layoutKey, json])
+                arguments: [key, json])
         }
     }
 
@@ -347,6 +509,37 @@ public final class BoardStore: Sendable {
             runs.compactMap { run in run.cardID.map { ($0, run) } },
             uniquingKeysWith: { newest, _ in newest }
         )
+    }
+
+    /// The most recent runs across the whole board, newest first.
+    ///
+    /// A second, shallower path than `runs(cardID:)`, which the inspector uses
+    /// and which is right to load one card deeply. This one exists because an
+    /// overview cannot ask a question per row: costs and verdicts already in the
+    /// database were reachable one selected card at a time, which is what made
+    /// the missing cost view architectural rather than cosmetic.
+    ///
+    /// A run missing from the answer is outside the limit — that is the only
+    /// thing its absence may be read to mean.
+    public func recentRuns(limit: Int = 50) async throws -> [SkillRun] {
+        try await reader.read { db in
+            try SkillRun
+                .order(SQLColumn("createdAt").desc)
+                .limit(limit)
+                .fetchAll(db)
+        }
+    }
+
+    /// One repository's runs since a date, newest first.
+    public func runs(repoID: UUID, since: Date, limit: Int = 200) async throws -> [SkillRun] {
+        try await reader.read { db in
+            try SkillRun
+                .filter(SkillRun.Columns.repoID == repoID.databaseKey)
+                .filter(SQLColumn("createdAt") >= since)
+                .order(SQLColumn("createdAt").desc)
+                .limit(limit)
+                .fetchAll(db)
+        }
     }
 
     /// Every run that was mid-flight when the app stopped. The launch sweep
