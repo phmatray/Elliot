@@ -116,38 +116,51 @@ public struct RunResult: Sendable, Hashable, Codable {
 public enum StreamEventDecoder {
     /// Decodes one NDJSON line. Total: every input maps to some event.
     public static func decode(line: Data) -> StreamEvent? {
+        decodeAll(line: line).first
+    }
+
+    /// Every meaningful block of one NDJSON line, in source order. One assistant
+    /// turn can carry prose *and* one or more tool calls in the same
+    /// `message.content` array; `decode(line:)` sees only the first of them, so
+    /// anything rendering a row per block reads this instead.
+    ///
+    /// Total in exactly the way `decode` is, and for the same reason: a blank
+    /// line yields `[]`, an unreadable line exactly one `.malformed`, an
+    /// unrecognised `type` exactly one `.unknown`. It never throws and never
+    /// drops a line.
+    public static func decodeAll(line: Data) -> [StreamEvent] {
         let trimmed = line.trimmingTrailingNewline()
         // A blank or whitespace-only line carries nothing; it is not an error.
-        guard trimmed.contains(where: { !$0.isASCIIWhitespace }) else { return nil }
+        guard trimmed.contains(where: { !$0.isASCIIWhitespace }) else { return [] }
 
         guard
             let object = try? JSONSerialization.jsonObject(with: trimmed),
             let dict = object as? [String: Any]
         else {
-            return .malformed(raw: trimmed, error: "not a JSON object")
+            return [.malformed(raw: trimmed, error: "not a JSON object")]
         }
         guard let type = dict["type"] as? String else {
-            return .malformed(raw: trimmed, error: "missing \"type\"")
+            return [.malformed(raw: trimmed, error: "missing \"type\"")]
         }
 
         switch type {
         case "system":
             let subtype = dict["subtype"] as? String ?? ""
-            if subtype == "init" { return .systemInit(decodeInit(dict)) }
-            return .system(subtype: subtype, raw: trimmed)
+            if subtype == "init" { return [.systemInit(decodeInit(dict))] }
+            return [.system(subtype: subtype, raw: trimmed)]
 
         case "assistant", "user":
             return decodeMessage(dict, raw: trimmed)
 
         case "stream_event":
-            if let text = partialText(dict) { return .partial(text: text) }
-            return .unknown(type: type, raw: trimmed)
+            if let text = partialText(dict) { return [.partial(text: text)] }
+            return [.unknown(type: type, raw: trimmed)]
 
         case "result":
-            return .result(decodeResult(dict))
+            return [.result(decodeResult(dict))]
 
         default:
-            return .unknown(type: type, raw: trimmed)
+            return [.unknown(type: type, raw: trimmed)]
         }
     }
 
@@ -192,38 +205,48 @@ public enum StreamEventDecoder {
         )
     }
 
-    /// Pulls the first meaningful block out of an assistant/user message.
-    private static func decodeMessage(_ dict: [String: Any], raw: Data) -> StreamEvent {
+    /// Pulls every meaningful block out of an assistant/user message, in source
+    /// order. An empty text block carries nothing and is skipped; a message with
+    /// no readable block at all stays one `.unknown` rather than vanishing.
+    private static func decodeMessage(_ dict: [String: Any], raw: Data) -> [StreamEvent] {
         guard
             let message = dict["message"] as? [String: Any],
             let content = message["content"] as? [[String: Any]]
         else {
-            return .unknown(type: dict["type"] as? String ?? "", raw: raw)
+            return [.unknown(type: dict["type"] as? String ?? "", raw: raw)]
         }
 
+        var events: [StreamEvent] = []
         for block in content {
             switch block["type"] as? String {
             case "text":
                 if let text = block["text"] as? String, !text.isEmpty {
-                    return .assistantText(text)
+                    events.append(.assistantText(text))
                 }
             case "tool_use":
-                return .assistantToolUse(
-                    name: block["name"] as? String ?? "",
-                    id: block["id"] as? String ?? "",
-                    inputPreview: preview(of: block["input"])
+                events.append(
+                    .assistantToolUse(
+                        name: block["name"] as? String ?? "",
+                        id: block["id"] as? String ?? "",
+                        inputPreview: preview(of: block["input"])
+                    )
                 )
             case "tool_result":
-                return .toolResult(
-                    toolUseID: block["tool_use_id"] as? String ?? "",
-                    isError: block["is_error"] as? Bool ?? false,
-                    preview: preview(of: block["content"])
+                events.append(
+                    .toolResult(
+                        toolUseID: block["tool_use_id"] as? String ?? "",
+                        isError: block["is_error"] as? Bool ?? false,
+                        preview: preview(of: block["content"])
+                    )
                 )
             default:
                 continue
             }
         }
-        return .unknown(type: dict["type"] as? String ?? "", raw: raw)
+        guard !events.isEmpty else {
+            return [.unknown(type: dict["type"] as? String ?? "", raw: raw)]
+        }
+        return events
     }
 
     private static func partialText(_ dict: [String: Any]) -> String? {
