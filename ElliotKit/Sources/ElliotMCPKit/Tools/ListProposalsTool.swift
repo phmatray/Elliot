@@ -8,10 +8,11 @@ import MCP
 /// Elliot is down — proposals are rows, and a row is a row whether or not the
 /// app is up.
 ///
-/// The offline branch resolves the repository through `OfflineBoard.filter` and
-/// not its own lookup: the live handler refuses a name it does not know, and a
-/// snapshot that read the same typo as "no filter" would answer with every
-/// proposal on the board under `isError: false`.
+/// The snapshot resolves the repository through `OfflineResponder`, which
+/// refuses a name it does not know exactly as the running app does. This tool
+/// used to resolve it a second time, and the lesson — that a typo read as "no
+/// filter" answers with every proposal on the board under `isError: false` —
+/// had to be taught here after it had already been fixed twice elsewhere.
 struct ListProposalsTool: BoardTool {
     var tool: Tool {
         Tool(
@@ -59,37 +60,12 @@ struct ListProposalsTool: BoardTool {
         let status = args["status"]?.stringValue ?? ProposalStatus.proposed.rawValue
         let limit = try args.limit() ?? 100
 
-        switch await bridge.read(.listProposals(
+        let outcome = await bridge.read(.listProposals(
             analysisID: analysisID, repo: repo, status: status, limit: limit
-        )) {
-        case .live(let response):
-            return try .render(response) { payload in
-                guard case .proposals(let proposals) = payload else { return nil }
-                return [
-                    "proposals": try Value.encoding(proposals),
-                    "source": .string("live"),
-                ]
-            }
-
-        case .offline(let store, let reason):
-            let repos = try await store.repos()
-            let resolved = try OfflineBoard.filter(repo, in: repos)
-            let names = OfflineBoard.namesByID(repos)
-            let proposals = try await store.proposals(
-                analysisID: analysisID,
-                repoID: resolved.repoID,
-                status: ProposalStatus(rawValue: status),
-                limit: limit
-            )
-            let dtos = proposals.map { proposal in
-                ProposalDTO(proposal: proposal, repoName: names[proposal.repoID] ?? "?")
-            }
-            var fields: [String: Value] = [
-                "proposals": try Value.encoding(dtos),
-                "source": .string("offline-db"),
-            ]
-            ToolOutput.attachNote(&fields, ToolOutput.offlineNote(reason))
-            return try .ok(fields)
+        ))
+        return try .render(outcome) { payload in
+            guard case .proposals(let proposals) = payload else { return nil }
+            return ["proposals": try Value.encoding(proposals)]
         }
     }
 }

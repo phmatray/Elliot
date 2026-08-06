@@ -237,18 +237,17 @@ enum ToolOutput {
 
     /// The body of a `board_next` answer, live or offline, so the two cannot
     /// drift into describing the same ranking differently.
-    static func nextFields(
-        _ page: NextPage,
-        source: String,
-        extraNote: String?
-    ) throws -> [String: Value] {
+    ///
+    /// It took a `source` and an `extraNote` while the tool had two branches to
+    /// tell apart. `render` sets both from the outcome now, for every tool, so
+    /// what is left here is only what is particular to a ranked page.
+    static func nextFields(_ page: NextPage) throws -> [String: Value] {
         var fields = pageFields(
             total: page.total, limit: page.limit,
             truncated: page.truncated, cappedFrom: page.limitCappedFrom
         )
         fields["items"] = try Value.encoding(page.items)
         fields["ready_count"] = .int(page.readyCount)
-        fields["source"] = .string(source)
         // "Nothing is ready" is a finding, not an empty result. Said out loud so
         // an agent does not read a page of blocked cards as a page it mis-asked
         // for.
@@ -257,7 +256,6 @@ enum ToolOutput {
             : nil
         attachNote(
             &fields,
-            extraNote,
             readiness,
             pageNote(
                 shown: page.items.count, total: page.total,
