@@ -220,6 +220,47 @@ public struct GitClient: Sendable {
             environment: config.environment, timeout: .seconds(600))
     }
 
+    /// Updates the remote-tracking refs and nothing else. Separate from
+    /// `aheadBehind` on purpose: a query that silently reaches the network is a
+    /// query you cannot reason about in a loop over 221 clones.
+    public func fetch(cwd: String) async throws {
+        _ = try await run(["fetch", "--quiet", "--prune"], cwd: cwd)
+    }
+
+    /// Commits on each side of the upstream, or nil when there is no upstream.
+    ///
+    /// Reads `@{u}`, a **local** ref: without a preceding `fetch` this answers
+    /// `behind: 0` for a clone that is in fact behind. That is not a hypothetical
+    /// — it is how 200 of 244 clones once measured as current while they were not.
+    public func aheadBehind(cwd: String) async -> (ahead: Int, behind: Int)? {
+        guard
+            let output = try? await run(
+                ["rev-list", "--left-right", "--count", "@{u}...HEAD"], cwd: cwd)
+        else { return nil }
+        let parts = output.split(whereSeparator: \.isWhitespace).compactMap { Int($0) }
+        guard parts.count == 2 else { return nil }
+        // `--left-right` counts the left side first, and the left side is `@{u}`:
+        // what upstream has and we do not is how far *behind* we are.
+        return (ahead: parts[1], behind: parts[0])
+    }
+
+    /// True when HEAD points at a commit rather than a branch — which means
+    /// there is no upstream to compare against, and nothing to fast-forward.
+    public func isDetached(cwd: String) async -> Bool {
+        (try? await run(["symbolic-ref", "-q", "HEAD"], cwd: cwd)) == nil
+    }
+
+    /// Fast-forward or nothing.
+    ///
+    /// `--ff-only` is the whole safety property: a dirty, ahead or diverged clone
+    /// means a human has work there, and Elliot's answer is to say so, not to
+    /// merge. Never `--rebase`, never `--autostash`, never a `--force` of any
+    /// kind — this is the only verb in Elliot that writes inside a working tree
+    /// the user may be mid-edit.
+    public func pullFastForward(cwd: String) async throws {
+        _ = try await run(["pull", "--ff-only"], cwd: cwd)
+    }
+
     /// Moves a clone into its expected folder. Refuses an occupied destination:
     /// there is no merge of two working trees, and nothing here deletes.
     public func relocate(from source: String, to destination: String) throws {
