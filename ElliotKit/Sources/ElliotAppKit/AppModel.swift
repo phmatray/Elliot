@@ -313,6 +313,38 @@ public final class AppModel {
             status = summary == .init()
                 ? "Ready."
                 : "Ready — recovered \(summary.orphanedRuns == 1 ? "1 interrupted run" : "\(summary.orphanedRuns) interrupted runs")."
+
+            // The first import is kicked from here, and the order above is
+            // load-bearing — do not reshuffle it without reading this (#120).
+            //
+            // `BoardView` imports from `.task(id: selectedRepoID)`, and by now
+            // that has almost certainly already fired and done nothing:
+            // `observe(store:)` publishes a selection one local read after
+            // launch, while everything between it and here waits on the login
+            // shell, three tool lookups, a reconciler sweep and a PR watcher.
+            // It found `importer` nil and returned — and `.task(id:)` re-runs
+            // on an id *change*, so it never asks again. The result was that a
+            // cold launch on an already-registered repository imported nothing
+            // at all, silently, which is indistinguishable from a repository
+            // with no open work.
+            //
+            // The obvious repair — build `importer` before `observe(store:)` —
+            // is not available: it needs `ghClient`, which needs the located
+            // `gh`, which needs the very shell capture that `observe` is
+            // deliberately hoisted above so the board stops claiming "No
+            // repository yet" for the whole of startup.
+            //
+            // So both orders are covered instead of one being enforced: if the
+            // selection arrived early, this call does the import; if the
+            // repositories are still loading, this is a no-op on a nil id and
+            // the view's `.task` does it when the id changes, by which time
+            // `importer` exists either way. `shouldAutoImport` keeps that to
+            // exactly one unattended import per repository per session, so the
+            // pair cannot double-import.
+            //
+            // After `status` is set, not before: `importIfNeeded` writes the
+            // import's own sentence there, and "Ready." would overwrite it.
+            await importIfNeeded(repoID: selectedRepoID)
         } catch {
             status = "Could not start: \(error.localizedDescription)"
         }
@@ -1300,5 +1332,16 @@ public final class AppModel {
     /// (#101). `board` stays nil, so a seeded model still cannot write.
     func testOnlySeedStore(_ store: BoardStore) {
         self.store = store
+    }
+
+    /// Puts an importer behind the model without `start()`.
+    ///
+    /// The thing under test in #120 is *when* `importer` becomes non-nil
+    /// relative to the selection, and the real answer takes a login-shell
+    /// capture and three tool lookups to arrive. This lets a test move that
+    /// moment by hand and check both orders, with the importer pointed at
+    /// `Scripts/fake-gh.sh` so no real `gh` is involved.
+    func testOnlyAttachImporter(_ importer: GitHubImportService) {
+        self.importer = importer
     }
 }
