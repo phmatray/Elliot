@@ -59,6 +59,16 @@ struct ElliotApp: App {
         }
         .defaultSize(width: 820, height: 720)
 
+        // A window rather than the fixed 580x580 sheet it was. That sheet had
+        // already grown an internal ScrollView because at three or four
+        // acceptance criteria — the documented normal path — it pushed its own
+        // buttons off the bottom, and a macOS sheet cannot be resized. Writing
+        // a story also no longer blocks the board while a run reports on it.
+        Window("New story", id: "newStory") {
+            NavigationStack { NewCardWindow() }.environment(model)
+        }
+        .defaultSize(width: 620, height: 640)
+
         // Not wrapped: `AnalysisWindow` has no `.toolbar` and no
         // `.navigationTitle` — it draws its own header and footer — so a
         // navigation container would only add an empty title bar above it.
@@ -74,8 +84,7 @@ struct ElliotApp: App {
             // The shortcut lives here rather than on the toolbar button: a menu
             // item is the discoverable half of a keyboard shortcut, and the
             // toolbar was carrying ⌘N invisibly.
-            Button("New Story…") { model.showingNewCard = true }
-                .keyboardShortcut("n")
+            NewStoryMenuItem()
                 .disabled(model.repos.isEmpty)
         }
 
@@ -128,6 +137,25 @@ struct ElliotApp: App {
 
             OpenWindowButtons()
         }
+    }
+}
+
+/// New Story, as a menu item.
+///
+/// A `View` for the same reason `OpenWindowButtons` is one: `openWindow` is an
+/// environment value and `Commands` is not a view hierarchy that can read one.
+/// The shortcut stays here and not on the toolbar button — a shortcut declared
+/// in two places is matched reliably in neither.
+private struct NewStoryMenuItem: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("New Story…") {
+            model.newCardRepoID = model.defaultRepoIDForNewCard
+            openWindow(id: "newStory")
+        }
+        .keyboardShortcut("n")
     }
 }
 

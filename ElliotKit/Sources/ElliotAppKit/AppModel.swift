@@ -70,8 +70,19 @@ public final class AppModel {
     /// Analysis is deliberately absent: it is a `Window` scene now, so its
     /// presentation is `openWindow`'s business and there is no flag to keep in
     /// step with it.
-    public var showingNewCard = false
     public var showingInspector = true
+
+    /// Which repository a new story will be filed against.
+    ///
+    /// Here rather than passed in, because `NewCardWindow` is a `Window` scene
+    /// and a scene cannot be handed a parameter the way a sheet's closure can.
+    /// Set at the moment the window is opened, so it captures the repository
+    /// that was selected then rather than following the picker afterwards.
+    public var newCardRepoID: UUID?
+
+    /// The repository a new story should default to: the one in the picker, or
+    /// the first, when "All repositories" is chosen.
+    public var defaultRepoIDForNewCard: UUID? { selectedRepoID ?? repos.first?.id }
 
     /// The analysis the window is showing. `nil` means it is still in setup.
     public private(set) var activeAnalysisID: UUID?
