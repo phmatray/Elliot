@@ -9,13 +9,15 @@ import Testing
 @Suite("Analysis wire format")
 struct AnalysisWireTests {
 
-    /// 3, not 2: this work was written against an unreleased 2, and 2 reached
-    /// `main` first carrying a different set of changes. A helper claiming 2 is
-    /// therefore one that cannot analyse anything, and the handshake has to be
-    /// able to say so.
+    /// 4: a run now carries its analysis, its angle and its harvest report.
+    /// Additive in JSON, and bumped anyway — a 4 helper meeting a 3 app finds
+    /// `workingTreeChanged` absent on every analysis run and reports "the
+    /// sentinel never ran". That is a claim about the user's repository,
+    /// produced by the age of their app bundle, and refusing the pairing is
+    /// what the handshake is for.
     @Test("The protocol version moved, so an old helper fails loudly")
     func versionBumped() {
-        #expect(elliotProtocolVersion == 3)
+        #expect(elliotProtocolVersion == 4)
     }
 
     @Test("Every new request round-trips through the wire codec", arguments: [

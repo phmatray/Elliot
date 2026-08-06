@@ -18,7 +18,16 @@ import Foundation
 /// helper claiming 2 is one that cannot analyse anything. Additive to the app,
 /// but not to the helper — a 3 helper meeting a 2 app would send a request that
 /// app cannot decode, which is precisely what the handshake exists to refuse.
-public let elliotProtocolVersion = 3
+///
+/// **4** — a run says which analysis it belongs to, which angle it read
+/// through, and what it harvested: `RunDTO.analysisID`, `RunDTO.angle` and
+/// `RunDTO.analysisReport`. Additive as JSON, and bumped anyway, because
+/// `workingTreeChanged` is tri-state: absent means the git sentinel never ran.
+/// A 4 helper talking to a 3 app would find it absent on every analysis run
+/// and report a repository nobody checked as unchecked-for-the-wrong-reason —
+/// a statement about the user's checkout, derived from the age of their app
+/// bundle. Absent has to keep meaning one thing, so the pairing is refused.
+public let elliotProtocolVersion = 4
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
