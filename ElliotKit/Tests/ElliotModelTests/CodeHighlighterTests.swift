@@ -237,12 +237,15 @@ struct CodeHighlighterTests {
 
     // MARK: - 5. The mockup's own fence
 
-    /// The approved mockup's YAML block, tokenised. It is here to state plainly
-    /// what this implementation does and does not do with it: the comment is
-    /// found, and the unquoted keys and scalars stay plain, because tinting a
-    /// YAML key like a keyword means knowing the document is YAML — the
-    /// per-language grammar this type deliberately does not have.
-    @Test("The mockup's YAML fence gets its comment, and guesses at nothing else")
+    /// The approved mockup's YAML block with **no declaration**, tokenised.
+    ///
+    /// This is the refusal, not the shortfall: content that is obviously YAML
+    /// is still not read as YAML unless the author's info string says so. Every
+    /// assertion below is the same one it has always made — what changed is
+    /// only that the fence next door, declared `yaml`, now tints the same text
+    /// (`theMockupsFenceDeclaredAsYAML`). The pair is the point: the
+    /// declaration is doing all the work, and nothing is inferred from content.
+    @Test("Undeclared, the mockup's YAML fence gets its comment and guesses at nothing else")
     func theMockupsFence() {
         let yaml = """
             on:
@@ -267,6 +270,11 @@ struct CodeHighlighterTests {
         // in it either. Anything else appearing here would be a guess.
         #expect(!tokens.contains { $0.kind == .string })
         #expect(!tokens.contains { $0.kind == .keyword })
+
+        // Said the other way round, because this is the line that would break
+        // first if content ever started deciding: the same text, declared,
+        // is a different tokenisation.
+        #expect(CodeHighlighter.tokens(of: yaml, language: "yaml") != tokens)
     }
 
     // MARK: - 6. A fence the author declared to be YAML

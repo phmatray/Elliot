@@ -34,9 +34,9 @@ public struct CodeToken: Sendable, Hashable {
 /// still shows what the author wrote" a thing a test can hold rather than a
 /// thing a reader has to notice.
 ///
-/// ### Deliberately language-agnostic
+/// ### Language-agnostic by default, per-language only on the author's word
 ///
-/// There is no `language` parameter, and that is the design rather than an
+/// The default path has no grammar, and that is the design rather than an
 /// omission. The fences in this repository's issues are swift, yaml, bash and
 /// json, and three shared conventions cover all four:
 ///
@@ -44,19 +44,29 @@ public struct CodeToken: Sendable, Hashable {
 /// - a string is whatever sits between a matched pair of quotes on one line;
 /// - a small set of words are keywords in more than one of those languages.
 ///
-/// A per-language grammar would colour more and be wrong more. Every rule
-/// below is written to **fail to `.plain`** rather than to guess: an
-/// unterminated quote is not a string, a `#` with no space after it is not a
-/// comment, and a word that is not in the list is nothing at all.
+/// A per-language grammar *inferred from content* would colour more and be
+/// wrong more, and that remains refused. What `language` adds is different in
+/// kind: it is the fence's **declared** info string — ` ```yaml ` — so the one
+/// fact a grammar needs is one the author supplied rather than one this type
+/// guessed. `Dialect` maps that declaration onto a cue set, and anything it
+/// does not recognise falls back to the three cues above.
+///
+/// Every rule below is still written to **fail to `.plain`** rather than to
+/// guess: an unterminated quote is not a string, a `#` with no space after it
+/// is not a comment, a word that is not in the list is nothing at all, and a
+/// colon that is not followed by a space does not make a YAML key.
 ///
 /// ### What it deliberately does not do
 ///
 /// - No `/* … */`. A block comment spans lines, and a cue that can swallow the
 ///   rest of a fence on one mis-read is the wrong trade at this size.
-/// - No numbers, no YAML keys, no JSON keys. The approved mockup tints a YAML
-///   key like a keyword and its scalar like a string; doing that here means
-///   knowing the document is YAML, which is the grammar this type refuses to
-///   have. Unquoted YAML renders plain, and that is the honest outcome.
+/// - No numbers, and no JSON keys. A JSON key is already a quoted string and
+///   reads as one; a number would need a grammar to tell `15` in a version
+///   from `15` in prose.
+/// - No YAML *inference*. A fence that does not say it is YAML is not treated
+///   as YAML however much it looks like it — `key: value` is a perfectly
+///   ordinary line of English with a colon in it. The keys and scalars the
+///   mockup tints are tinted only when the info string says `yaml`.
 /// - No highlighting of **inline** code spans. `InlineText.Run.code` is
 ///   rendered by its own view and never comes through here; syntax colour
 ///   exists only inside a fence's own surface, which is what stops it reading
