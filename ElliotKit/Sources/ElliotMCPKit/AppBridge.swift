@@ -93,7 +93,15 @@ public struct AppBridge: Sendable, BridgeProviding {
             if let response { return .live(response) }
         }
         do {
-            return .offline(try BoardStore.openReadOnly(), wasRunning ? .appUnreachable : .appNotRunning)
+            // The snapshot answers in the same type the app does. It used to
+            // hand the store itself to the tool layer, and every read tool then
+            // rebuilt the app's answer out of rows — six times, drifting each
+            // time. See `OfflineResponder`.
+            let responder = OfflineResponder(store: try BoardStore.openReadOnly())
+            return .offline(
+                await responder.respond(to: request),
+                wasRunning ? .appUnreachable : .appNotRunning
+            )
         } catch {
             // Caught rather than `try?`. The store distinguishes "this file was
             // written by a newer Elliot than this helper" from "no board has
@@ -160,10 +168,43 @@ public struct AppBridge: Sendable, BridgeProviding {
     }
 }
 
+/// One answer, and where it came from.
+///
+/// Both cases carry an `ElliotResponse`, which is the whole point: a tool reads
+/// `response`, renders it, and never learns which half of the bridge built it.
+/// `offline` used to carry a `BoardStore` instead, and the six tools that had to
+/// unpack it each grew a second implementation of the app's query — the clamp,
+/// the repository filter, the DTO assembly, the refusals. Four of them were
+/// taught the same lesson separately, months apart, because nothing in the type
+/// said the two answers had to agree.
 public enum BridgeOutcome: Sendable {
     case live(ElliotResponse)
-    /// The app could not answer; serve the database and say which way it failed.
-    case offline(BoardStore, SnapshotReason)
+    /// The app could not answer; this came from the database, and the reason
+    /// says which way the app failed.
+    case offline(ElliotResponse, SnapshotReason)
+
+    public var response: ElliotResponse {
+        switch self {
+        case .live(let response), .offline(let response, _): response
+        }
+    }
+
+    /// What the `source` field says. The one word an agent has to tell a live
+    /// board from a frozen one, so it is derived here rather than written out at
+    /// each tool.
+    public var source: String {
+        switch self {
+        case .live: "live"
+        case .offline: "offline-db"
+        }
+    }
+
+    public var snapshotReason: SnapshotReason? {
+        switch self {
+        case .live: nil
+        case .offline(_, let reason): reason
+        }
+    }
 }
 
 /// Why a read fell back to the database instead of the running app.
