@@ -138,6 +138,18 @@ enum Metric {
     static let columnRadius: CGFloat = 10
     static let railHeight: CGFloat = 2
     static let gutter: CGFloat = 10
+    /// `ColumnView`'s own horizontal list padding. Named because the detail
+    /// panel's tether has to cross it to touch the card — `PanelLayout
+    /// .tetherReach` is `gutter + columnListPadding`, and left as a bare 8 in
+    /// one file and an 18 in another the tether stops touching the day either
+    /// moves. This names the literal, it does not introduce it.
+    static let columnListPadding: CGFloat = 8
+    /// The detail panel floats above the columns it is placed between, so it
+    /// carries the only shadow on the board. Read off the approved mockup's
+    /// dominant layer (`0 12px 28px rgba(0,0,0,.10)`), halving the CSS blur for
+    /// SwiftUI's radius.
+    static let panelElevation: (radius: CGFloat, y: CGFloat, opacity: Double)
+        = (radius: 14, y: 12, opacity: 0.10)
 }
 
 enum Elapsed {

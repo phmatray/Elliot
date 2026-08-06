@@ -233,10 +233,11 @@ public struct BoardView: View {
         // The board has exactly five columns and always will — the rule engine
         // is a fixed transition matrix. So they share the width rather than
         // sitting at a fixed size that leaves Done half off-screen.
+        // The formula itself lives in `PanelLayout`, where a test can pin it:
+        // the detail panel is measured in columns, so its width and this one
+        // have to be the same number rather than two copies of it.
         GeometryReader { geometry in
-            let count = CGFloat(ElliotModel.Column.allCases.count)
-            let available = geometry.size.width - Metric.gutter * (count + 1)
-            let width = max(Metric.minColumnWidth, available / count)
+            let width = PanelLayout.columnWidth(boardWidth: geometry.size.width)
 
             ScrollViewReader { proxy in
                 ScrollView(.horizontal) {
