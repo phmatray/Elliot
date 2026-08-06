@@ -368,6 +368,98 @@ struct EndToEndTests {
             Issue.record("expected an unverified outcome, got \(String(describing: recovered.verifiedOutcome))")
         }
     }
+
+    /// A `Reconciler` over the same store, with `gh` answering from a fixture.
+    private func reconciler(for stack: Stack, prs: String) -> Reconciler {
+        let config = ToolConfig(
+            claudePath: TestPaths.fakeClaude, ghPath: TestPaths.fakeGH,
+            gitPath: "/usr/bin/false",
+            environment: [
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "FAKE_GH_PRS": TestPaths.ghFixture(prs),
+            ]
+        )
+        return Reconciler(
+            store: stack.store,
+            verifier: Verifier(gh: .init(config: config)),
+            mover: stack.board,
+            launcher: stack.scheduler
+        )
+    }
+
+    /// Seeds a card mid-flight, as a crash would have left it. Written straight
+    /// to the store on purpose: moving it through `BoardService` would spawn the
+    /// very run this test is pretending died.
+    private func seedInterruptedCard(
+        in stack: Stack, column: Column, issue: Int, lastError: String? = nil
+    ) async throws -> Card {
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Interrupted").card
+        card.column = column
+        card.issueNumber = issue
+        card.lastError = lastError
+        try await stack.store.saveCard(card)
+
+        var orphan = SkillRun(
+            cardID: card.id, repoID: stack.repo.id, kind: .implementIssue,
+            prompt: "/ai-migration-kit:implement-issue \(issue)", cwd: stack.repo.path,
+            logPath: stack.home.appendingPathComponent("runs/orphan.ndjson").path,
+            stderrPath: stack.home.appendingPathComponent("runs/orphan.log").path,
+            createdAt: Date()
+        )
+        orphan.state = .running
+        try await stack.store.saveRun(orphan)
+        return card
+    }
+
+    /// **AC4.** The bug this issue exists to close: `implement-issue` fails and
+    /// writes `lastError`, Elliot is quit mid-run, and on relaunch `gh` reports
+    /// the pull request *was* opened before the crash. The card must reach In
+    /// Review clean — the error describes a run that has since been disproved.
+    @Test("A card reconciled at launch no longer carries the failed run's error")
+    func reconciledCardDropsTheStaleError() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        let card = try await seedInterruptedCard(
+            in: stack, column: .inProgress, issue: 102, lastError: "implement-issue exited 1"
+        )
+        let summary = await reconciler(for: stack, prs: "prs-basic.json").sweep()
+
+        #expect(summary.orphanedRuns == 1)
+        #expect(summary.cardsCorrected == 1)
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.lastError == nil)
+        #expect(after.prNumber == 201)
+        #expect(after.prURL == "https://github.com/phmatray/Elliot/pull/201")
+        #expect(after.branch == "feat/102-the-thing")
+        #expect(after.column == .inReview)
+
+        // The launch sweep records `.reconciliation`, not `.prBecameReady`:
+        // the board is catching up, it did not watch this happen. That
+        // difference is true, it is persisted, and it must survive.
+        let audits = try await stack.store.audits(cardID: card.id)
+        #expect(audits.first?.origin == .system(reason: .reconciliation))
+    }
+
+    /// `cardsCorrected` used to count this: the old switch wrote nothing, set
+    /// no move, then fell through to `return true`. A launch summary that
+    /// overstates what it did is the one thing a summary must not do.
+    @Test("A merged pull request on a card already in Done corrects nothing, and says so")
+    func reconcilerDoesNotCountNoOps() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        let card = try await seedInterruptedCard(in: stack, column: .done, issue: 104)
+        let summary = await reconciler(for: stack, prs: "prs-merged.json").sweep()
+
+        #expect(summary.orphanedRuns == 1)
+        #expect(summary.cardsCorrected == 0)
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.column == .done)
+        #expect(try await stack.store.audits(cardID: card.id).isEmpty)
+    }
 }
 
 @Suite("Analysis completion", .serialized)
