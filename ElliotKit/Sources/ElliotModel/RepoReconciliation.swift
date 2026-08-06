@@ -11,6 +11,27 @@ public enum RepoIssue: Sendable, Hashable {
     case notRegistered
     case missing
     case misplaced(expected: String)
+
+    /// On disk, registered, and absent from GitHub's answer.
+    ///
+    /// Its own case rather than `.ok` with a telling detail, because `.ok` is
+    /// the verdict nobody scrolls to read and this row has at least three
+    /// causes, none of them "fine": the repository was renamed or transferred,
+    /// so the local remote is stale; it was deleted, so this clone is the only
+    /// copy; or the listing itself was incomplete — pagination, a rate limit, a
+    /// scope the token lacks.
+    ///
+    /// The third is what settles it. An incomplete answer is not a fact about
+    /// the repository at all, and it would mark *many* rows at once. A row that
+    /// says "fine" when the real answer is "I could not check" is a
+    /// non-measurement rendered as a pass, which is the one thing this codebase
+    /// spends its effort refusing to do.
+    ///
+    /// What it deliberately does **not** claim is *which* of the three happened.
+    /// Telling "GitHub said no" from "GitHub did not answer" needs the scanner to
+    /// report its own failure modes upward; the reconciler is pure and cannot
+    /// ask. That is a separate change.
+    case unlisted
     case outOfScope(OutOfScope)
 
     public enum OutOfScope: Sendable, Hashable { case fork, archived, otherRoot }
@@ -85,13 +106,18 @@ public enum RepoReconciler {
 
         // A clone or a registration GitHub did not mention still gets a row —
         // silence is how a repository disappears from a sweep unnoticed.
+        //
+        // Unregistered, the verdict stays `.notRegistered`: it is already
+        // actionable and already carries its fix. Registered, it is `.unlisted`
+        // and not `.ok` — nothing is wrong on disk, but nothing was confirmed
+        // either, and those are different answers.
         for slot in disk where byName[slot.nameWithOwner] == nil {
             let path = "\(layout.root)/\(slot.owner)/\(slot.visibility.rawValue)/\(slot.name)"
             let known = registeredByName[slot.nameWithOwner]
             byName[slot.nameWithOwner] = RepoRow(
                 id: slot.nameWithOwner, nameWithOwner: slot.nameWithOwner, path: path,
                 repoID: known?.id, visibility: slot.visibility,
-                issue: known == nil ? .notRegistered : .ok,
+                issue: known == nil ? .notRegistered : .unlisted,
                 detail: "On disk; GitHub did not list it.",
                 fixes: known == nil ? [.register(path: path)] : [])
         }

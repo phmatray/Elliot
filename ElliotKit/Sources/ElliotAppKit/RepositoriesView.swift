@@ -105,28 +105,44 @@ public struct RepositoriesView: View {
                 ? "Reading GitHub, the disk and the board…"
                 : "Nothing found under \(model.layout.root)."
         }
-        let actionable = model.repoRows.filter { !$0.fixes.isEmpty }.count
         let repositories = "\(total) repositor\(total == 1 ? "y" : "ies")"
-        return actionable == 0
-            ? "\(repositories) · nothing needs attention"
-            : "\(repositories) · \(actionable) need\(actionable == 1 ? "s" : "") attention"
+        return ([repositories] + Self.clauses(for: model.repoRows)).joined(separator: " · ")
+    }
+
+    /// The sentence's clauses, in order, or the single "nothing" clause.
+    ///
+    /// `.unlisted` gets counted here on its own rather than folded into
+    /// "needs attention", and it cannot simply join that count: attention is
+    /// measured by having a fix, and an unlisted row has no button to press.
+    /// Left out entirely it would have been swallowed by "nothing needs
+    /// attention" — which is the row-level verdict this change exists to fix,
+    /// restated one level up, and just as quiet.
+    nonisolated static func clauses(for rows: [RepoRow]) -> [String] {
+        let actionable = rows.filter { !$0.fixes.isEmpty }.count
+        let unlisted = rows.filter { $0.issue == .unlisted }.count
+        var clauses: [String] = []
+        if actionable > 0 {
+            clauses.append("\(actionable) need\(actionable == 1 ? "s" : "") attention")
+        }
+        if unlisted > 0 { clauses.append("\(unlisted) unlisted") }
+        return clauses.isEmpty ? ["nothing needs attention"] : clauses
     }
 
     // MARK: - Rows
 
     private func repoRow(_ row: RepoRow) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon(row.issue))
+            Image(systemName: Self.icon(row.issue))
                 .font(.system(size: 11))
-                .foregroundStyle(tint(row.issue))
+                .foregroundStyle(Self.tint(row.issue))
                 .padding(.top, 2)
-                .accessibilityLabel(verdict(row.issue))
+                .accessibilityLabel(Self.verdict(row.issue))
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(row.nameWithOwner.map(displayName) ?? row.id)
                         .font(Type.cardTitle)
-                    Fact(text: verdict(row.issue), tint: tint(row.issue), small: true)
+                    Fact(text: Self.verdict(row.issue), tint: Self.tint(row.issue), small: true)
                 }
                 if let nameWithOwner = row.nameWithOwner {
                     Fact(text: nameWithOwner, tint: Palette.quiet, small: true)
@@ -188,29 +204,50 @@ public struct RepositoriesView: View {
     /// Deliberately the same three symbols and tints Preflight uses, so the two
     /// screens read alike. `outOfScope` is neutral, not a warning: a fork or an
     /// archived repository is *fine*, it is simply not ours to harmonise.
-    private func icon(_ issue: RepoIssue) -> String {
+    ///
+    /// Every switch below is exhaustive, with no `default:`. That is the point of
+    /// the vocabulary rather than a style note: a verdict added to `RepoIssue`
+    /// must fail to compile here, so it gets a symbol and a tint someone chose
+    /// instead of silently inheriting the warning triangle. `.unlisted` reached
+    /// this file exactly that way.
+    ///
+    /// They are `static` so `ElliotAppKitTests` can read them — the same shape as
+    /// `VerdictBlock.receipt`. What the page says about a verdict is assertable;
+    /// where the row sits on screen still is not.
+    nonisolated static func icon(_ issue: RepoIssue) -> String {
         switch issue {
         case .ok: "checkmark.circle.fill"
         case .outOfScope: "minus.circle"
-        default: "exclamationmark.triangle.fill"
+        // A question, not a warning triangle: nothing here is known to be
+        // broken. The fill keeps it in this file's "wants a decision" tier
+        // rather than the neutral one a fork sits in.
+        case .unlisted: "questionmark.circle.fill"
+        case .notCloned, .notRegistered, .missing, .misplaced: "exclamationmark.triangle.fill"
         }
     }
 
-    private func tint(_ issue: RepoIssue) -> Color {
+    nonisolated static func tint(_ issue: RepoIssue) -> Color {
         switch issue {
         case .ok: Palette.verified
         case .outOfScope: .secondary
-        default: Palette.attention
+        // `attention` is "still alive, but wants a decision", which is exactly
+        // this row: a human has to go and look. Not `verified` — nothing was
+        // verified — and no sixth accent is invented for it. `RunsPane` already
+        // spends the same tint on "Nothing verified for this run", which is the
+        // same claim about a run that this is about a repository.
+        case .unlisted: Palette.attention
+        case .notCloned, .notRegistered, .missing, .misplaced: Palette.attention
         }
     }
 
-    private func verdict(_ issue: RepoIssue) -> String {
+    nonisolated static func verdict(_ issue: RepoIssue) -> String {
         switch issue {
         case .ok: "ok"
         case .notCloned: "not cloned"
         case .notRegistered: "not registered"
         case .missing: "missing"
         case .misplaced: "misplaced"
+        case .unlisted: "unlisted"
         case .outOfScope(.fork): "fork"
         case .outOfScope(.archived): "archived"
         case .outOfScope(.otherRoot): "out of scope"
