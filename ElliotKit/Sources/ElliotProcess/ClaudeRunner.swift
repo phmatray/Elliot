@@ -150,11 +150,22 @@ public final class ClaudeRun: Sendable {
 
         updateContinuation.yield(.started(pid: process.processIdentifier))
 
-        // Decode lines into events.
+        // Decode lines into events. `decodeAll`, never `decode`: one NDJSON line
+        // can carry an assistant turn with prose *and* one or more tool calls in
+        // the same `message.content` array, and `decode` is `decodeAll(…).first`
+        // — it returns the prose and drops every tool call that shared the turn
+        // with it.
+        //
+        // A line is one-to-many here, not one-to-one, and that is the whole
+        // point: the file on disk is read back through `decodeAll` already, so
+        // while this said `decode` the same run read differently depending on
+        // when you opened it — the live tail short of its tool calls, the log
+        // complete. Nothing failed; the two just disagreed.
         let decodeTask = Task {
             for await line in process.lines {
-                guard let event = StreamEventDecoder.decode(line: line) else { continue }
-                updateContinuation.yield(.event(event))
+                for event in StreamEventDecoder.decodeAll(line: line) {
+                    updateContinuation.yield(.event(event))
+                }
             }
         }
 
@@ -202,6 +213,11 @@ public final class ClaudeRun: Sendable {
     }
 
     /// Scans a run log backwards for the terminal `result` event.
+    ///
+    /// `decode` and not `decodeAll` here, and that is not the oversight the live
+    /// path above was: a `"result"` line decodes to exactly one event, so the
+    /// first *is* all of them. This asks a line one yes-or-no question, where
+    /// the tail has to render every block of it.
     static func lastResult(inLogAt url: URL) -> RunResult? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         for line in data.split(separator: 0x0A).reversed() {

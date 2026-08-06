@@ -16,6 +16,15 @@ import SwiftUI
 ///    start an agent, `irreversible` one that will merge to a default branch on
 ///    github.com. Neither is used for anything else, so neither can be read as
 ///    decoration.
+///
+///    There is exactly **one** exception, and it is written down here rather
+///    than left for someone to discover: syntax colour inside a fenced code
+///    block spends `armed` on keywords and `verified` on strings, because the
+///    approved mockup does. It is bounded by the fence's own `Surface.well`
+///    ground, it never reaches an inline code span or a word of prose, and it
+///    adds no sixth accent. `CodeTokenKind.tint` in `MarkdownBlocks.swift`
+///    carries the full reasoning and what the trade costs. A second exception
+///    should be argued at least as hard as that one was.
 enum Palette {
     /// A gesture here starts an autonomous run. Deliberately not the system
     /// accent — that is user-configurable, and a meaning that changes with a
@@ -96,13 +105,69 @@ enum Surface {
     /// A consequence colour used as a *background*. Kept as a function so the
     /// tint stays the argument: a wash is always about something.
     static func wash(_ tint: Color) -> Color { tint.opacity(0.12) }
+
+    /// The same wash, demoted: the surface is about something that is *not*
+    /// going to happen — a refused next step, a pane that cannot act yet.
+    ///
+    /// It exists because the strength was written by hand. `InspectorView` drew
+    /// the refused next step as `wash(tint).opacity(0.6)`, and the detail panel
+    /// needs the same ground in several more places; a second hand-written
+    /// multiplier at each of them is exactly how the fifteen unchosen
+    /// `Color.secondary.opacity(…)` values this enum replaced came about.
+    ///
+    /// 0.09, not the 0.072 that multiplier produced: the demotion has to stay
+    /// visible as a *surface* against `recess`, and below about 0.08 a tinted
+    /// wash stops being distinguishable from the untinted recess behind it.
+    static func washFaint(_ tint: Color) -> Color { tint.opacity(0.09) }
+
     static func washBorder(_ tint: Color) -> Color { tint.opacity(0.45) }
+
+    /// The 1pt rule *inside* a panel: between two verdict rows, above a plan
+    /// item, under a table cell.
+    ///
+    /// Greyscale, so it spends none of the colour budget, and derived from
+    /// `.primary` so it inverts with the appearance the way the mockup's
+    /// `--hair` does (`rgba(0,0,0,.10)` light, `rgba(255,255,255,.10)` dark).
+    /// Deliberately weaker than `NSColor.separatorColor`, which divides one
+    /// component from another; this divides rows of the same thing, and a rule
+    /// that separates a thing from itself should be barely there.
+    static let hairline = Color.primary.opacity(0.10)
+
+    /// The ground under machine output: code fences in an issue body, the run
+    /// log, a tool result's preview. The visual counterpart of `Type.fact` —
+    /// where the fact face says *a machine established this*, the well says
+    /// *this whole region is a machine's output*.
+    ///
+    /// Hard-coded rather than reusing `NSColor.textBackgroundColor`, because a
+    /// well has to read as **set into** the panel, which in a dark appearance
+    /// means darker than the window behind it. Measured on macOS 15: in
+    /// `.darkAqua`, `.textBackgroundColor` and `.windowBackgroundColor` are the
+    /// same `#1E1E1E`, so a well drawn with it is not a well — it is invisible.
+    /// These are the mockup's `--code`, which is darker than its `--window` in
+    /// both appearances.
+    ///
+    /// The `BrandColor` here is a light/dark pair, **not** a sixth brand
+    /// colour: `BrandColor` is the shape of such a pair, and `Palette.dynamic`
+    /// is the one place in the app that resolves one against the appearance.
+    /// Minting a named constant for it would put a fill in the list that
+    /// `BrandColor.consequences` exists to keep down to five.
+    static let well = Palette.dynamic(BrandColor(light: 0xF5_F5F7, dark: 0x1B_1B1E))
 }
 
 enum Type {
     /// Column headers and field labels: small, spaced, unmistakably a console
     /// label rather than content.
     static let label = Font.system(size: 11, weight: .semibold).width(.standard)
+    /// `label` one step down: the key column of a verdict row, a table header,
+    /// a caption inside a panel where the 11pt console label would compete with
+    /// the row it is introducing rather than announce it.
+    ///
+    /// As with `label`, the tracking is **not** in the font — SwiftUI carries
+    /// tracking as a view modifier, not a font trait, which is why
+    /// `ConsoleLabel` applies it rather than `Type`. Set it with
+    /// `.tracking(0.6)` to hold the same 0.06em ratio `label` gets from
+    /// `.tracking(0.7)` at 11pt.
+    static let labelSmall = Font.system(size: 10, weight: .semibold).width(.standard)
     /// What a card is about — a human wrote it.
     static let cardTitle = Font.system(size: 13, weight: .medium)
     /// A card title one step down: the name of a row inside a panel.
@@ -112,6 +177,20 @@ enum Type {
     /// Prose given room — the inspector reads a story a point larger than the
     /// card glances at it. Not named `body`, which is `Font.body` already.
     static let bodyProse = Font.system(size: 12)
+    /// The demoted "it said" face, and the deliberate visual opposite of
+    /// `Type.fact`.
+    ///
+    /// This is the type-level form of the rule the whole app rests on: **`gh`
+    /// is the fact, the agent's prose is a hint.** A run's `resultText` set in
+    /// this face beside its `verifiedOutcome` set in `fact` says which of the
+    /// two may be believed before a word of either has been read — the same
+    /// judgement the app already makes in code, made visible.
+    ///
+    /// It is `bodyProse` italicised rather than a size of its own. What the
+    /// agent wrote *is* prose, so demoting it by shrinking it would say it
+    /// matters less, when what is meant is that it is less trustworthy. Italic
+    /// is the quotation mark.
+    static let hearsay = Font.system(size: 12).italic()
     /// Anything `gh`, `git` or the process itself established. Monospaced
     /// digits so a column of costs or elapsed times lines up.
     static let fact = Font.system(size: 11, design: .monospaced)
@@ -125,9 +204,10 @@ enum Metric {
     /// Below this the five columns start scrolling instead of shrinking
     /// further — a card title needs about this much to stay readable.
     static let minColumnWidth: CGFloat = 226
-    /// Wide enough for a branch name set in the fact face without wrapping,
-    /// and narrow enough that all five columns still fit beside it.
-    static let inspectorWidth: CGFloat = 344
+    // The detail panel deliberately has no constant width here. It is measured
+    // *in columns* — `PanelLayout.panelWidth(columnWidth:spans:)` — which is
+    // what makes it read as belonging to the column it opened from rather than
+    // as a fixed strip at the far edge of the window.
     /// Fixed, because the status bar now carries live numbers that change
     /// width. Left to size itself it has grown and shoved the whole board
     /// upwards before, and a strip that jitters as a cost ticks is worse than
@@ -143,6 +223,35 @@ enum Metric {
     static let columnRadius: CGFloat = 10
     static let railHeight: CGFloat = 2
     static let gutter: CGFloat = 10
+    /// `ColumnView`'s own horizontal list padding. Named because the detail
+    /// panel's tether has to cross it to touch the card — `PanelLayout
+    /// .tetherReach` is `gutter + columnListPadding`, and left as a bare 8 in
+    /// one file and an 18 in another the tether stops touching the day either
+    /// moves. This names the literal, it does not introduce it.
+    static let columnListPadding: CGFloat = 8
+    /// The detail panel floats above the columns it is placed between, so it
+    /// carries the only shadow on the board. Read off the approved mockup's
+    /// dominant layer (`0 12px 28px rgba(0,0,0,.10)`), halving the CSS blur for
+    /// SwiftUI's radius.
+    static let panelElevation: (radius: CGFloat, y: CGFloat, opacity: Double)
+        = (radius: 14, y: 12, opacity: 0.10)
+
+    /// The grab area on the panel's outer edge, and the grip drawn in the
+    /// middle of it.
+    ///
+    /// Two numbers rather than one because they answer different questions.
+    /// `resizeStripWidth` is how far from the edge a *pointer* still counts as
+    /// on the handle; it is deliberately several times the grip it draws,
+    /// because a 2pt target is one nobody hits. It is not wider than this
+    /// because the strip sits inside the panel, over the outer edge of the
+    /// trailing pane — every point added is a point of that pane's scroll bar
+    /// taken away.
+    ///
+    /// `resizeGrip` is what is actually drawn: short, thin, centred, and quiet
+    /// enough at rest that it reads as an edge treatment rather than as a
+    /// control competing with the panel's content.
+    static let resizeStripWidth: CGFloat = 7
+    static let resizeGrip: (width: CGFloat, height: CGFloat) = (width: 2, height: 26)
 }
 
 enum Elapsed {

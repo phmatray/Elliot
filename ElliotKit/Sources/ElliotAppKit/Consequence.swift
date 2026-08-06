@@ -178,8 +178,9 @@ extension RunState {
     /// Sentence case, and phrased as what happened rather than a state name.
     ///
     /// `succeeded` says "finished without errors" rather than "Succeeded"
-    /// because that is all the process told us. In `RunRow` this label sits
-    /// three lines above the `gh` receipt, which may well read "Not merged —
+    /// because that is all the process told us. In `RunBox` this label sits
+    /// directly above the verdict block, whose `gh` side may well read "Not
+    /// merged —
     /// …": a clean exit and a successful outcome are exactly the two things
     /// this app refuses to conflate.
     var label: String {
@@ -201,22 +202,21 @@ extension VerifiedOutcome {
     /// What `gh` established, as opposed to what the agent said about itself.
     /// This is the app's whole epistemology, and until now it was stored and
     /// never shown.
+    ///
+    /// The wording is `ElliotModel`'s `receiptText`, not a second copy of it:
+    /// the verdict block reads the same sentence through `RunVerdict.ghSays`,
+    /// and one wording that two places render is the point. Only the tint and
+    /// the icon are decided here, because only they need SwiftUI.
     var receipt: (text: String, tint: Color, icon: String) {
         switch self {
-        case .issueCreated(let number, _):
-            ("Opened issue #\(number)", Palette.verified, "checkmark.seal.fill")
-        case .noIssueCreated(let reason):
-            ("No issue — \(reason)", Palette.inert, "equal.circle")
-        case .prOpen(let number, _, let isDraft, let branch):
-            ("\(isDraft ? "Draft PR" : "PR") \(number) on \(branch)", Palette.verified, "checkmark.seal.fill")
-        case .merged(let sha):
-            ("Merged\(sha.map { " as \($0.prefix(7))" } ?? "")", Palette.verified, "checkmark.seal.fill")
-        case .notMerged(let reason):
-            ("Not merged — \(reason)", Palette.refused, "xmark.seal.fill")
-        case .closedUnmerged:
-            ("Closed without merging", Palette.refused, "xmark.seal.fill")
-        case .unverified(let reason):
-            ("Unverified — \(reason)", Palette.attention, "questionmark.circle.fill")
+        case .issueCreated, .prOpen, .merged:
+            (receiptText, Palette.verified, "checkmark.seal.fill")
+        case .noIssueCreated:
+            (receiptText, Palette.inert, "equal.circle")
+        case .notMerged, .closedUnmerged:
+            (receiptText, Palette.refused, "xmark.seal.fill")
+        case .unverified:
+            (receiptText, Palette.attention, "questionmark.circle.fill")
         }
     }
 }

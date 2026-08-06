@@ -9,6 +9,16 @@ public struct BoardView: View {
     @Environment(\.openWindow) private var openWindow
     @FocusState private var boardFocused: Bool
 
+    /// The board's horizontal scroll, held rather than driven through a
+    /// `ScrollViewReader`.
+    ///
+    /// `ScrollViewProxy.scrollTo(_:anchor:)` aligns a view to a `UnitPoint` and
+    /// takes no offset, so it cannot express the lead that keeps the previous
+    /// column showing — and with the panel inline, `anchor: .center` on the
+    /// origin column pushes the panel half off the right edge, or the whole
+    /// panel off-screen in the flipped case. `ScrollPosition` takes the x.
+    @State private var boardScroll = ScrollPosition(edge: .leading)
+
     public init() {}
 
     public var body: some View {
@@ -24,27 +34,7 @@ public struct BoardView: View {
             } else if model.repos.isEmpty {
                 emptyState
             } else {
-                // The panel is a sibling of the columns *inside* this row, not
-                // a split of the whole window. That placement is what keeps the
-                // status bar below full-width and the board's height unchanged
-                // when the panel opens.
-                //
-                // This was `.inspector()` briefly. It bought drag-to-resize and
-                // cost the window its layout: applied to the stack that also
-                // holds the Divider and StatusBar, the split covered the strip
-                // the title bar occupies, so the board rode up under the
-                // traffic lights and the status bar fell off the bottom (#52).
-                // It had already caused a crash (#50). Re-adopting it is its
-                // own change, to be verified on screen before it lands.
-                HStack(spacing: 0) {
-                    columns
-                    if model.showingInspector, model.selectedCard != nil {
-                        Divider()
-                        InspectorView()
-                            .frame(width: Metric.inspectorWidth)
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                    }
-                }
+                board
             }
             Divider()
             StatusBar()
@@ -140,6 +130,7 @@ public struct BoardView: View {
             } label: {
                 Label("New story", systemImage: "plus")
             }
+            .labelStyle(.titleAndIcon)
             .disabled(model.repos.isEmpty)
             // No `.keyboardShortcut` here: the File menu owns ⌘N, and a
             // shortcut declared in two places is matched reliably in neither.
@@ -156,6 +147,7 @@ public struct BoardView: View {
             } primaryAction: {
                 Task { await model.refreshFromGitHub() }
             }
+            .labelStyle(.titleAndIcon)
             .menuStyle(.button)
             .fixedSize()
             .disabled(model.repos.isEmpty || model.isImporting)
@@ -170,23 +162,38 @@ public struct BoardView: View {
             } label: {
                 Label("Analyse", systemImage: "sparkle.magnifyingglass")
             }
+            .labelStyle(.titleAndIcon)
             .disabled(model.selectedRepoID == nil || isSelectedRepoBlocked)
             .help(analyseHelp)
         }
 
         ToolbarItem {
-            // A Button, not a Toggle. As a Toggle it read `showingInspector`,
-            // so the toolbar re-vended its items in the middle of the split
-            // view's own collapse animation — the crash in #50. There is no
-            // split view any more, but the Button is still the right shape:
-            // the panel being on screen is its own state indicator.
+            // Still a Button and not a Toggle. As a Toggle it read
+            // `showingInspector`, so the toolbar re-vended its items in the
+            // middle of the split view's own collapse animation — the crash in
+            // #50.
+            //
+            // It now reads that state anyway, to tint itself while the panel is
+            // open, which is what #50 is a warning about. What made that crash
+            // was an `NSSplitViewItem` collapsing *while* the toolbar rebuilt;
+            // the panel is a plain sibling in an `HStack` now and there is no
+            // split view left to collapse. The tint is worth it because the
+            // panel no longer sits at a fixed edge: it opens between columns
+            // and the board scrolls, so "is a panel open" stopped being
+            // answerable at a glance. Toggled repeatedly on screen before this
+            // landed — if it ever crashes on collapse again, this is the line.
             Button {
                 model.showingInspector.toggle()
             } label: {
                 Label("Details", systemImage: "sidebar.right")
             }
+            .labelStyle(.titleAndIcon)
+            .tint(isPanelShowing ? Palette.armed : nil)
+            .foregroundStyle(isPanelShowing ? Palette.armed : Color.primary)
             .disabled(model.selectedCard == nil)
-            .help("Show or hide the selected card's details")
+            .help(isPanelShowing
+                ? "Hide the selected card's details"
+                : "Show the selected card's details")
         }
 
         ToolbarItem {
@@ -195,6 +202,7 @@ public struct BoardView: View {
             } label: {
                 Label("Repositories", systemImage: "square.stack.3d.up")
             }
+            .labelStyle(.titleAndIcon)
             .help("Every repository of your accounts, and what is wrong with it")
         }
 
@@ -204,8 +212,16 @@ public struct BoardView: View {
             } label: {
                 Label("Preflight", systemImage: "checkmark.seal")
             }
+            .labelStyle(.titleAndIcon)
             .help("Check the tools and repositories Elliot depends on")
         }
+    }
+
+    /// Whether a panel is actually drawn, which is both flags and not either
+    /// one: `showingInspector` can be true with nothing selected, and a
+    /// selection means nothing while the panel is hidden.
+    private var isPanelShowing: Bool {
+        model.showingInspector && model.selectedCard != nil
     }
 
     /// Says which gate is closed, rather than repeating the one that is open.
@@ -224,53 +240,208 @@ public struct BoardView: View {
         return "Read this repository through several lenses and propose stories."
     }
 
-    private var columns: some View {
+    /// The five columns and, when a card is selected, its detail panel between
+    /// them — one ordered row, `PanelLayout.boardOrder` deciding the order.
+    ///
+    /// The panel is a **sibling in this row**. Not a split of the window: as
+    /// `.inspector()` it bought drag-to-resize and cost the window its layout,
+    /// because applied to the stack that also holds the Divider and StatusBar
+    /// the split covered the strip the title bar occupies — the board rode up
+    /// under the traffic lights and the status bar fell off the bottom (#52),
+    /// after it had already crashed on a collapse (#50). And not an overlay
+    /// either, which would look identical and be wrong invisibly: an overlay is
+    /// not a sibling, so VoiceOver would reach the panel somewhere other than
+    /// after its origin column with no visible symptom.
+    ///
+    /// Everything below the row — the Divider and the StatusBar — is outside
+    /// it, which is what keeps the status bar full-width at the bottom and the
+    /// board's height the same whether the panel is open or shut.
+    private var board: some View {
         // The board has exactly five columns and always will — the rule engine
         // is a fixed transition matrix. So they share the width rather than
         // sitting at a fixed size that leaves Done half off-screen.
+        // The formula itself lives in `PanelLayout`, where a test can pin it:
+        // the detail panel is measured in columns, so its width and this one
+        // have to be the same number rather than two copies of it.
         GeometryReader { geometry in
-            let count = CGFloat(ElliotModel.Column.allCases.count)
-            let available = geometry.size.width - Metric.gutter * (count + 1)
-            let width = max(Metric.minColumnWidth, available / count)
+            let boardWidth = geometry.size.width
+            let width = PanelLayout.columnWidth(boardWidth: boardWidth)
 
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal) {
-                    HStack(alignment: .top, spacing: Metric.gutter) {
-                        ForEach(ElliotModel.Column.allCases, id: \.self) { column in
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: Metric.gutter) {
+                    ForEach(PanelLayout.boardOrder(selected: panelOrigin), id: \.self) { slot in
+                        switch slot {
+                        case .column(let column):
                             ColumnView(column: column, width: width)
-                                .id(column)
+                        case .panel:
+                            panel(width: width)
                         }
                     }
-                    .padding(Metric.gutter)
-                    .frame(minWidth: geometry.size.width, alignment: .leading)
                 }
-                .scrollDisabled(width > Metric.minColumnWidth)
-                // In a window too narrow for five columns the board scrolls,
-                // and the card you just selected could be the one off-screen.
-                .onChange(of: model.selectedCardID) {
-                    guard let card = model.selectedCard else { return }
-                    withAnimation(reduceMotion ? nil : .default) {
-                        proxy.scrollTo(card.column, anchor: .center)
-                    }
-                }
-                // A second handler, because `nudgeSelection` never touches
-                // `selectedCardID`: ⌘→ advanced a card into a column the board
-                // did not follow it to. Kept separate from the handler above so
-                // each comment stays true to what it covers.
-                .onChange(of: model.selectedCard?.column) {
-                    guard let card = model.selectedCard else { return }
-                    withAnimation(reduceMotion ? nil : .default) {
-                        proxy.scrollTo(card.column, anchor: .center)
-                    }
+                .padding(Metric.gutter)
+                .frame(minWidth: boardWidth, alignment: .leading)
+                // The caret and its tether, drawn over the whole row rather
+                // than inside the panel. They sit *outside* the panel's bounds
+                // by design, and in the flipped case they hang over Done — up
+                // here nothing clips them and nothing paints over them. The
+                // card, the origin column's viewport and the panel all arrive
+                // as anchors, so one `GeometryProxy` resolves the three in one
+                // space and the caret is drawn from the layout pass that is
+                // happening rather than the one before it.
+                .overlayPreferenceValue(CaretAnchorKey.self) { anchors in
+                    CaretRail(anchors: anchors, flipped: isPanelFlipped)
                 }
             }
+            .scrollPosition($boardScroll)
+            // Derived from the same width function the row is built from, never
+            // a second copy of the arithmetic. The old predicate asked only
+            // whether five columns fit, so with the panel open it reported
+            // "everything fits" over content 1.6–1.7× the viewport — leaving
+            // the panel or Done silently unreachable with no scrollbar, green
+            // on both `swift build` and `swift test`.
+            .scrollDisabled(
+                PanelLayout.contentWidth(boardWidth: boardWidth, spans: openSpans) <= boardWidth
+            )
+            // In a window too narrow for what the row holds the board scrolls,
+            // and the card you just selected could be the one off-screen.
+            //
+            // One handler on one value, and that value is the row itself rather
+            // than a proxy for it. There used to be two — `selectedCardID` and
+            // the selected card's column — and between them they missed every
+            // path that reshapes the row without touching either: the Details
+            // toolbar button opening the panel on a card already selected, a
+            // resize (drag handle, or View ▸ Narrow/Widen) changing
+            // `panelSpans`, and `armPendingMerge`, which selects a card that may
+            // already be selected and opens the panel in the same breath. Each
+            // left the board framed for the row it had a moment ago, which is
+            // the same failure this branch already fixed once for the selection
+            // path — and the third is the one that arms the merge, so the
+            // confirmation for the single irreversible act in the product was
+            // the one that could open off-screen.
+            .onChange(of: framing) { _, framing in frame(framing, boardWidth: boardWidth) }
         }
         .frame(maxWidth: .infinity)
         .background(Color(nsColor: .underPageBackgroundColor))
-        // Clicking the board's own background clears the selection, so the
-        // console goes quiet without hunting for a close button.
-        .contentShape(Rectangle())
-        .onTapGesture { model.selectedCardID = nil }
+        // No deselect gesture here any more; `ColumnView` carries it.
+        //
+        // It lived here and fired by bubbling, which stopped working the moment
+        // the panel widened the row past the viewport: an enabled `ScrollView`
+        // swallows the tap, so nothing deselected at all. Moving it to the row's
+        // background fixed that and broke the opposite direction — that
+        // background also lies under the panel, so a click on the panel being
+        // read closed it, and the panel's own empty `onTapGesture` did not
+        // absorb it.
+        //
+        // An ancestor's tap fires for taps on its descendants, so any deselect
+        // above the panel is a deselect *through* the panel. The reach has to be
+        // the columns themselves. What that gives up is the 10pt padding ring,
+        // which no longer deselects; Escape still does, and the columns cover
+        // the gesture anyone actually makes.
+    }
+
+    /// The column the panel opens beside, or `nil` when there is no panel — the
+    /// one place "is the panel showing" is decided, so the order, the width of
+    /// the row and the framing cannot disagree about it.
+    private var panelOrigin: ElliotModel.Column? {
+        guard model.showingInspector, let card = model.selectedCard else { return nil }
+        return card.column
+    }
+
+    /// The reader's span preference while the panel is open, `nil` while it is
+    /// shut — which is the shape `PanelLayout.contentWidth` takes for "no
+    /// panel", so the closed board measures exactly what it measures today.
+    private var openSpans: Int? {
+        panelOrigin == nil ? nil : model.panelSpans
+    }
+
+    /// Which edge of the panel the caret hangs off, decided by the same function
+    /// that put the panel on that side of its column. Reading it off
+    /// `panelOrigin` rather than off the card is deliberate: the panel and its
+    /// caret cannot then disagree about which column they belong to.
+    private var isPanelFlipped: Bool {
+        panelOrigin.map(PanelLayout.opensLeft(of:)) ?? false
+    }
+
+    /// The detail panel, as one slot of the row.
+    private func panel(width: CGFloat) -> some View {
+        DetailPanelView(columnWidth: width)
+            // Where the caret's flat side goes. The panel's anchor is also the
+            // whole "is there a caret" condition — it exists exactly while the
+            // panel is built, so there is no second copy of that question.
+            .anchorPreference(key: CaretAnchorKey.self, value: .bounds) {
+                CaretAnchors(panel: $0)
+            }
+            // Load-bearing. Later siblings paint over earlier ones, and in the
+            // flipped case the panel is placed *before* Done — whose
+            // background, clip and border would paint over the caret notched
+            // into the panel's edge and the tether reaching across the gutter.
+            // That would be invisible in exactly one column and nowhere else: a
+            // bug that survives every test and most manual passes.
+            .zIndex(1)
+            // The board clears the selection on a click that reaches its
+            // background, and this panel now sits inside that container. Without
+            // absorbing its own strays, clicking the panel's padding, a section
+            // label or its header would close the panel being read.
+            .contentShape(Rectangle())
+            .onTapGesture {}
+            // `BoardSlot.panel` is one constant identity, so changing origin
+            // column re-orders the panel instead of destroying and rebuilding
+            // it — that is what stops a second panel and a second caret
+            // appearing mid-transition. This is the other half of that: a
+            // re-order is a frame change, and a frame change under the
+            // stack-wide `.animation(…, value: selectedCardID)` interpolates,
+            // so Backlog → Done would send the panel gliding across four
+            // columns. The panel's own placement does not animate; the columns
+            // sliding aside still does.
+            //
+            // ⚠️ Deliberately a bare `nil`, and not the `reduceMotion ? nil : …`
+            // every other animation on this board is written as. This one is
+            // unconditional: the panel must not glide for anyone, reduce motion
+            // on or off. So it is *stricter* than reduce motion asks for rather
+            // than an ungated animation — there is no animation here to gate.
+            // Turning it into `reduceMotion ? nil : .something` would reinstate
+            // the glide for everyone who has not switched reduce motion on.
+            .animation(nil, value: model.selectedCardID)
+    }
+
+    /// Everything the framing answers to, gathered from the model in one place.
+    ///
+    /// A computed property rather than four `onChange` handlers: the row's shape
+    /// is one thing, and asking about it in pieces is how three of the pieces
+    /// came to be missing.
+    private var framing: BoardFraming {
+        BoardFraming(
+            selectedCardID: model.selectedCardID,
+            selectedColumn: model.selectedCard?.column,
+            panelOrigin: panelOrigin,
+            spans: model.panelSpans
+        )
+    }
+
+    /// Scroll the board so the selected card's column and its panel are framed
+    /// together, with a lead of the previous column still showing.
+    ///
+    /// The arithmetic is `BoardFraming.offsetX(boardWidth:)`, which is pure and
+    /// pinned by `swift test`. All that is left here is the deferral, which is
+    /// the one part of this no test can see.
+    private func frame(_ framing: BoardFraming, boardWidth: CGFloat) {
+        guard let offset = framing.offsetX(boardWidth: boardWidth) else { return }
+
+        // Deferred by one turn of the main actor, and this is the whole reason
+        // the first attempt did nothing on screen. `onChange` runs *inside* the
+        // update that changed the selection, so the row it scrolls is still the
+        // one without a panel: five columns, content no wider than the
+        // viewport, `scrollDisabled` still true. The offset was computed for
+        // the row that was about to exist and applied to the row that still
+        // did, where it clamps to zero. Both `swift build` and `swift test`
+        // were green through all of it — the board simply never moved, and only
+        // the last column showed it, because that is the one case where the
+        // pair does not already fit.
+        Task { @MainActor in
+            withAnimation(reduceMotion ? nil : .default) {
+                boardScroll.scrollTo(x: offset)
+            }
+        }
     }
 
     /// Startup, said in the same words `RepositoriesView` already uses for it,
@@ -310,6 +481,93 @@ public struct BoardView: View {
         guard let id = model.selectedRepoID, let repo = model.repos.first(where: { $0.id == id })
         else { return true }
         return !repo.isEnabled || model.isBlocked(repo)
+    }
+}
+
+// MARK: - What the board frames, and where
+
+/// Everything the board's framing must answer to, as **one** value.
+///
+/// It exists because framing was keyed on two proxies — `selectedCardID` and
+/// the selected card's column — and three paths reshape the row without
+/// touching either of them:
+///
+/// 1. the **Details** toolbar button, opening the panel on a card that is
+///    already selected;
+/// 2. a **resize** — the drag handle, or View ▸ Narrow/Widen — changing
+///    `panelSpans`, which changes how far the row extends and therefore where a
+///    scroll offset clamps;
+/// 3. `AppModel.armPendingMerge(cardID:prNumber:)`, which selects a card *and*
+///    opens the panel together. It re-framed only when the card it arms was not
+///    the one already selected — and that is the path to the one act in the
+///    product that cannot be taken back, so a confirmation opening off-screen
+///    is the worst of the three.
+///
+/// Each left the board scrolled for the row it had a moment ago, which is the
+/// failure this branch already fixed once for the selection path.
+///
+/// ⚠️ On the first two the recomputed offset is the **same number**, and that is
+/// not an argument against firing. `PanelLayout.minX` sums the slots ahead of
+/// its target and a panel is never among them, so `offsetX` is invariant to
+/// `spans` and, for a column that is not flipped, to whether the panel is open
+/// — pinned by `BoardFramingTests.offsetIsInvariantToThePanelsWidth`. What
+/// changes is whether that number can be *applied*: with the panel shut the row
+/// fits the window and `scrollDisabled` clamps every scroll to zero; opening it
+/// makes the row 1.6–1.7× the viewport and the same offset finally means
+/// something. A trigger that does not fire is therefore the whole bug, even
+/// where the arithmetic would not have moved.
+///
+/// `selectedCardID` is kept even though it is not geometry — two cards in one
+/// column frame identically — because re-selecting inside a column the reader
+/// has scrolled away from must still bring that column back, which is what the
+/// old `onChange(of: selectedCardID)` did and what dropping it would quietly
+/// lose.
+///
+/// The board's **width** is deliberately *not* a member. It is an argument to
+/// `offsetX(boardWidth:)`, so the arithmetic still answers for the window it is
+/// asked about — but a live window resize emits a width per frame, and an
+/// animated scroll on each of them would fight the gesture rather than follow
+/// the reader. What is framed here is a change of *row*, not of window.
+struct BoardFraming: Equatable, Sendable {
+    var selectedCardID: UUID?
+    /// The column the selected card sits in, or `nil` when nothing is selected.
+    var selectedColumn: ElliotModel.Column?
+    /// The column the panel opens beside, or `nil` when no panel is drawn. Folds
+    /// `showingInspector` and the selection together exactly as
+    /// `BoardView.panelOrigin` does — one answer to "is there a panel", shared
+    /// by the order, the width of the row and the framing.
+    var panelOrigin: ElliotModel.Column?
+    /// How many columns wide the panel is.
+    var spans: Int
+
+    /// Where the board must scroll so the selected column and its panel are
+    /// framed together, or `nil` when there is nothing to frame.
+    ///
+    /// Pure, and out here rather than in the view for the reason the whole of
+    /// `PanelLayout` is: `swift test` cannot see the screen, but it can see
+    /// this. It works out where the pair *will* be rather than measuring where
+    /// it is — the row is an `HStack` of known widths, so `PanelLayout.minX`
+    /// answers before the layout that inserts the panel has run.
+    func offsetX(boardWidth: CGFloat) -> CGFloat? {
+        guard let selectedColumn else { return nil }
+        let slots = PanelLayout.boardOrder(selected: panelOrigin)
+        let columnWidth = PanelLayout.columnWidth(boardWidth: boardWidth)
+        let panelWidth = PanelLayout.panelWidth(columnWidth: columnWidth, spans: spans)
+
+        guard let originMinX = PanelLayout.minX(
+            of: .column(selectedColumn), in: slots,
+            columnWidth: columnWidth, panelWidth: panelWidth
+        ) else { return nil }
+        // Only read when the pair is flipped, and it is flipped only when there
+        // is a panel — so the fallback is unreachable rather than a guess.
+        let panelMinX = PanelLayout.minX(
+            of: .panel, in: slots, columnWidth: columnWidth, panelWidth: panelWidth
+        )
+        return PanelLayout.frameOffsetX(
+            originMinX: originMinX,
+            panelMinX: panelMinX ?? originMinX,
+            flipped: panelOrigin != nil && PanelLayout.opensLeft(of: selectedColumn)
+        )
     }
 }
 
@@ -428,6 +686,24 @@ struct ColumnView: View {
         .frame(width: width)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(background)
+        // Clearing the selection belongs to the columns, not to the row.
+        //
+        // It used to sit on the board container and work by bubbling out of a
+        // column's empty space — but only because the old predicate disabled
+        // scrolling whenever five columns fit, and a disabled `ScrollView`
+        // passes a tap through. The panel makes the row wider than the viewport
+        // by design, so scrolling is now always on while it is open, an enabled
+        // `ScrollView` swallows the tap, and the board became impossible to
+        // deselect by clicking — in every column, with `swift build` clean and
+        // all 726 tests green. Caught by looking, and confirmed a regression by
+        // driving `main` through the same gesture.
+        //
+        // Putting it on the row's background instead only moved the bug: that
+        // background also lies under the panel, so clicking the panel being read
+        // closed it. Here the reach is exactly right — a column's own empty
+        // space and nothing else. Cards sit in front and keep their own tap.
+        .contentShape(Rectangle())
+        .onTapGesture { model.selectedCardID = nil }
         .clipShape(RoundedRectangle(cornerRadius: Metric.columnRadius))
         .overlay {
             RoundedRectangle(cornerRadius: Metric.columnRadius)
@@ -487,7 +763,16 @@ struct ColumnView: View {
         .padding(.top, 8)
         .padding(.bottom, 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(column.displayName), \(cards.count) cards. \(consequence?.summary ?? column.standingRule)")
+        // One of the five captions #79 requires to survive the panel. Built by
+        // a pure function so that survival is a claim `swift test` can hold —
+        // the string itself used to be written here, where nothing could.
+        .accessibilityLabel(
+            BoardAccessibility.columnCaption(
+                name: column.displayName,
+                count: cards.count,
+                rule: consequence?.summary ?? column.standingRule
+            )
+        )
     }
 
     private var list: some View {
@@ -513,10 +798,20 @@ struct ColumnView: View {
                     }
 
                     if cards.isEmpty {
+                        // Driven by the gated `.animation(…, value: cards.map(\.id))`
+                        // a few lines down — the last card leaving is what
+                        // makes this appear, and that *is* a change to that
+                        // value. With reduce motion on the gate hands SwiftUI
+                        // `nil` and the hint is simply there.
                         dropHint.transition(.opacity)
                     }
                 }
-                .padding(.horizontal, 8)
+                // The constant, not the 8 it holds. The tether's reach is
+                // `Metric.gutter + Metric.columnListPadding`, computed from the
+                // named one — so a bare literal here is half of one value with
+                // nothing linking it to the other half, and the day it moved the
+                // rail would stop touching the card with no test to say so.
+                .padding(.horizontal, Metric.columnListPadding)
                 .padding(.bottom, 10)
                 .frame(maxWidth: .infinity, alignment: .top)
                 // On the list itself, not the board: this is about membership
@@ -537,6 +832,18 @@ struct ColumnView: View {
                 }
             }
         }
+        // What the reader can currently see of this list, which is what decides
+        // whether the caret still has a card to point at. The `ScrollView`'s own
+        // bounds are the viewport, not the content — a card whose centre leaves
+        // this rectangle has scrolled out, and `PanelLayout.isDetached` says so.
+        //
+        // Only the column the panel opened from reports. The other four have
+        // nothing to say about a caret that is not theirs, and four extra
+        // rectangles arriving at one key is four chances to answer for the wrong
+        // column.
+        .anchorPreference(key: CaretAnchorKey.self, value: .bounds) { bounds in
+            model.selectedCard?.column == column ? CaretAnchors(list: bounds) : CaretAnchors()
+        }
     }
 
     private func draggable(_ card: Card) -> some View {
@@ -552,6 +859,12 @@ struct ColumnView: View {
             // Moving a card is the app's only gesture, and it used to be a
             // teleport: the card vanished from one column and appeared in
             // another with no motion connecting the two.
+            //
+            // Gated by the `.animation(reduceMotion ? nil : …, value:
+            // cards.map(\.id))` on the enclosing `LazyVStack`, which is the
+            // animation that drives it: a card arriving or leaving *is* a
+            // change to that value. Reduce motion turns it off there, once, for
+            // every card in the column.
             .transition(
                 .asymmetric(
                     insertion: .opacity.combined(with: .offset(x: -14)),
@@ -594,10 +907,13 @@ struct ColumnView: View {
             .padding(.top, 4)
         }
         .buttonStyle(.plain)
-        // Singular written out. "1 cards" is the kind of thing that makes a
-        // careful product look careless, and this label is read aloud.
+        // Singular written out, by the same function the column caption above
+        // uses. It was written out here and *not* there, which is how the two
+        // labels on one column came to disagree about "1 cards".
         .accessibilityLabel(
-            "\(group.repoName), \(group.cards.count) \(group.cards.count == 1 ? "card" : "cards") in \(column.displayName)"
+            BoardAccessibility.groupCaption(
+                repoName: group.repoName, count: group.cards.count, column: column.displayName
+            )
         )
     }
 
@@ -661,5 +977,61 @@ struct ColumnView: View {
         if isTargeted { return consequence?.tint ?? Palette.inert }
         guard let consequence, !consequence.isRefused else { return .clear }
         return Surface.washBorder(consequence.tint)
+    }
+}
+
+// MARK: - What a screen reader hears of the board
+
+/// The sentences the board says aloud, as pure functions.
+///
+/// Same reason `LogRowAccessibility` exists one file over: a label written
+/// inline in a `body` is a claim nothing can hold. `swift test` cannot see the
+/// screen, but these it can see — and #79 asks for the five column captions to
+/// still be there *after* a panel was inserted between them, which is a claim
+/// worth being able to make.
+///
+/// Singular is written out in both captions here. "1 cards" is the kind of thing
+/// that makes a careful product look careless, and these strings are read aloud.
+/// The group header had already been fixed for exactly that and the column
+/// caption above it had not — which is the argument for one function rather than
+/// two spellings.
+enum BoardAccessibility {
+
+    /// A column's caption: its name, how many cards are in it, and either the
+    /// consequence of dropping the card in hand or the column's standing rule.
+    ///
+    /// The caller decides which of those two `rule` is — that choice is
+    /// `Consequence.of(model.preview(…))`, the same call the visible caption
+    /// makes, and duplicating it here would be a second answer to it.
+    static func columnCaption(name: String, count: Int, rule: String) -> String {
+        "\(name), \(count) \(cards(count)). \(rule)"
+    }
+
+    /// A repository group inside a column, when the picker says "All
+    /// repositories".
+    static func groupCaption(repoName: String, count: Int, column: String) -> String {
+        "\(repoName), \(count) \(cards(count)) in \(column)"
+    }
+
+    /// What the detail panel announces itself as.
+    ///
+    /// It names the column as well as the card, and that is the whole point of
+    /// the sentence. A sighted reader learns which column the panel belongs to
+    /// from the caret, the tether and the rail across its top — all three of
+    /// which are `.accessibilityHidden(true)`, because they are decoration for a
+    /// relationship that has to be *stated* rather than drawn. This is the
+    /// statement. Drop the column from it and a listener has no way left to
+    /// learn it.
+    ///
+    /// Applied in `DetailPanelView`, not here, and that is not arbitrary: the
+    /// label VoiceOver uses is the one nearest the view, so a second one
+    /// attached out here would be silently inert. It lives in this file only
+    /// because it is a sentence a test can hold, next to the other two.
+    static func panelLabel(title: String, column: ElliotModel.Column) -> String {
+        "Details for \(title), in \(column.displayName)"
+    }
+
+    private static func cards(_ count: Int) -> String {
+        count == 1 ? "card" : "cards"
     }
 }

@@ -377,6 +377,10 @@ public struct AnalysisWindow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .id(note)
+                    // Driven by the `.animation(reduceMotion ? nil : …, value:
+                    // model.analysisNote)` at the foot of this footer, which is
+                    // keyed on the very value that makes the note appear and
+                    // go. Reduce motion switches it off there, once.
                     .transition(.opacity)
             }
 
@@ -432,7 +436,7 @@ public struct AnalysisWindow: View {
             }
         }
         .padding(16)
-        .animation(.snappy(duration: 0.18), value: model.analysisNote)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: model.analysisNote)
     }
 
     private var startConsequence: String {
@@ -734,6 +738,10 @@ struct ProposalRow: View {
             RoundedRectangle(cornerRadius: Metric.cardRadius)
                 .strokeBorder(isSelected ? Surface.washBorder(Palette.armed) : Color.clear)
         }
+        // Driven by the `.animation(reduceMotion ? nil : …, value:
+        // proposed.map(\.id))` on the list this row sits in — accepting or
+        // rejecting a proposal changes exactly that value. Reduce motion
+        // switches it off there, once, for every row.
         .transition(.opacity.combined(with: .scale(scale: 0.98)))
         .onHover { hovering = $0 }
         // The row's three actions appear on hover, which is fine for a pointer

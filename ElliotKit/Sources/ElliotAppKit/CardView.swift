@@ -3,6 +3,7 @@ import SwiftUI
 
 struct CardView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let card: Card
 
     var body: some View {
@@ -26,7 +27,7 @@ struct CardView: View {
             }
 
             if let run = activeRun {
-                RunningStrip(run: run, lastLine: model.liveLog[run.id]?.last)
+                RunningStrip(run: run, lastLine: lastLine(of: run))
             } else if let receipt = lastReceipt {
                 // What `gh` established, not what the agent said about itself.
                 HStack(spacing: 5) {
@@ -43,7 +44,14 @@ struct CardView: View {
                         Fact(text: Elapsed.age(of: ended), tint: Palette.quiet, small: true)
                     }
                 }
-                .transition(.opacity)
+                // Gated here rather than left to an ancestor, and that is not
+                // belt-and-braces. The two gated animations this view sits
+                // under are keyed on `selectedCardID` and on `cards.map(\.id)`;
+                // a receipt appears when a *run finishes*, which changes
+                // neither. Nothing above answers for this one, so it says so
+                // itself. `.identity` is what a transition looks like with
+                // reduce motion on: the row is simply there.
+                .transition(reduceMotion ? .identity : .opacity)
             }
 
             if !facts.isEmpty || repoName != nil || stagnation != nil {
@@ -106,6 +114,23 @@ struct CardView: View {
         .accessibilityAction { toggleSelection() }
         .contextMenu { menu }
         .task(id: card.id) { await model.refreshRuns(cardID: card.id) }
+        // Where the caret points. A card's y inside a `LazyVStack` inside a
+        // scrolling column genuinely cannot be computed — it has to be measured
+        // — and this is the measurement.
+        //
+        // An anchor rather than a `GeometryReader`: a reader wrapped around a
+        // card would take all the space offered and change the card's own
+        // layout, and one in a background would answer in a later update than
+        // the layout that moved the card. A preference writer changes no
+        // geometry at all, and the rect it carries is resolved by whoever reads
+        // it — so the card, its column's viewport and the panel are measured in
+        // one space, with nothing to keep in sync.
+        //
+        // Only the selected card contributes. Every other card writes the empty
+        // value, which `CaretAnchorKey.reduce` merges away.
+        .anchorPreference(key: CaretAnchorKey.self, value: .bounds) { bounds in
+            isSelected ? CaretAnchors(card: bounds) : CaretAnchors()
+        }
     }
 
     @ViewBuilder
@@ -136,6 +161,17 @@ struct CardView: View {
 
     private var isSelected: Bool { model.selectedCardID == card.id }
     private var activeRun: SkillRun? { model.activeRuns[card.id] }
+
+    /// The most recent event of this run that says anything in one line.
+    ///
+    /// Searched backwards rather than taken from the end: `liveLog` holds every
+    /// event now, and most of them — a successful tool result, a `system` line,
+    /// a partial — collapse to nothing. Taking the last event outright would
+    /// blank the strip every time one of those arrived last.
+    private func lastLine(of run: SkillRun) -> String? {
+        guard let events = model.liveLog[run.id] else { return nil }
+        return events.reversed().lazy.compactMap(AppModel.describe).first
+    }
 
     private var refusalMessage: String? {
         model.refusal?.cardID == card.id ? model.refusal?.message : nil

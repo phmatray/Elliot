@@ -32,17 +32,28 @@ struct ElliotApp: App {
             .frame(minWidth: 1_000, minHeight: 600)
             .task { await model.start() }
         }
-        // Wide enough that the five columns and the inspector coexist without
-        // the board scrolling — seeing every column's consequence at once is
-        // the point of the layout.
+        // Wide enough for the five columns to sit side by side with the panel
+        // shut, which is when seeing every column's consequence at once is the
+        // point of the layout.
+        //
+        // With the panel open the board scrolls, **by design and always**: the
+        // panel is measured in columns, so at this size the row comes to 2 618pt
+        // against a 1 640pt window, and there is no window size the app allows
+        // where it fits (`PanelLayout.contentWidth`, pinned by
+        // `PanelLayoutTests`). Widening the default would not buy the old
+        // claim back — it would only move the number. The board frames the card
+        // and its panel together instead, and the columns either side stay one
+        // scroll away.
         .defaultSize(width: 1_640, height: 840)
         .commands { commands }
 
         // Preflight, Repositories and Analysis were a `NavigationStack` push
         // and a modal sheet — both of which cover the board. That is the wrong
         // shape for this app: runs last minutes, the board is what reports
-        // them, and `InspectorView`'s own doc comment already says watching a
-        // run should not blindfold the board. Analysis is the sharpest case —
+        // them, and the detail panel has said since it was a sheet that
+        // watching a run should not blindfold the board — which is now also why
+        // it opens beside the card rather than at the window's edge. Analysis is
+        // the sharpest case —
         // it starts up to six concurrent runs from inside a modal.
         //
         // Each root keeps a `NavigationStack` for the same reason the board
@@ -147,6 +158,15 @@ struct ElliotApp: App {
                 model.showingInspector.toggle()
             }
             .keyboardShortcut("i", modifiers: [.command, .option])
+            .disabled(model.selectedCard == nil)
+
+            // How wide the panel is, is the reader's call and nothing else's —
+            // the panel is measured in board columns, so widening it is spending
+            // columns. There is no toolbar button for it: this is a preference
+            // set once, not a control worth a permanent seat.
+            Button(model.panelSpans >= 3 ? "Narrow Details" : "Widen Details") {
+                model.panelSpans = model.panelSpans >= 3 ? 2 : 3
+            }
             .disabled(model.selectedCard == nil)
 
             Divider()

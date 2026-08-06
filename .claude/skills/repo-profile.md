@@ -16,18 +16,26 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (408 tests; needs no Xcode, no API token, no network —
+- **Full test:** `cd ElliotKit && swift test` (517 tests; needs no Xcode, no API token, no network —
   the end-to-end suite drives `Scripts/fake-claude.sh` instead of the real `claude`)
 - **Single-suite filter (per-task, fast):** `cd ElliotKit && swift test --filter <Suite>` — e.g.
   `--filter ElliotModelTests`, or a single suite/test name (**swift-testing**, `@Test`/`@Suite`, not XCTest)
 - **App bundle:** `./Scripts/build-app.sh` — assembles `dist/Elliot.app` from the two SwiftPM
   executables (`ElliotApp`, `elliot-mcp`), writes `Info.plist`, ad-hoc codesigns. Run it from the repo root.
-- **Format/lint apply:** <!-- TODO: none configured. No `.swiftformat`, `.swiftlint.yml` or `.editorconfig`
-  is committed. The toolchain here ships `swift format` 6.3.0 (`swift format --recursive -i Sources Tests`)
-  — adopt it deliberately and record it here rather than assuming it. -->
-- **Format/lint verify (the gate):** <!-- TODO: no formatting gate exists, and no CI enforces one.
-  Candidate once adopted: `cd ElliotKit && swift format lint --recursive --strict Sources Tests`.
-  Confirm with Philippe whether formatting is a gate at all before failing a PR on it. -->
+- **Format/lint apply:** ⛔ **none, and running the formatter over the tree is forbidden.** This code is
+  formatted **by hand**; `swift-format`'s pretty-printer cannot reproduce it. Measured on a clean
+  checkout: a tree-wide run reindents **~140 files** from 4 spaces to 2, and `lint --strict` reports
+  **22 463** violations, 21 145 of them `Indentation` — neither can judge anything, and the reindent
+  rides along inside whatever pull request is open. `.swift-format` pins 4 spaces and 110 columns,
+  which bounds an accidental run to a reflow rather than a reindentation of everything; it does not
+  make the formatter safe, because the disagreement is the printer's layout, not its width.
+  **Format the lines you wrote, by hand, to match their neighbours.** `swift format lint <one-file>`
+  is readable for a file you just touched; the tree-wide form is not. See `CLAUDE.md` § *Do not run
+  `swift format` over the tree*.
+- **Format/lint verify (the gate):** none. There is no formatting gate and no CI to enforce one, so a
+  pull request is never failed on formatting here. Adopting the formatter wholesale is a live option
+  and a one-way door (one ~1 600-line reformat commit), and it is not a decision to make inside a
+  feature branch.
 - **Prerequisites / caveats:** macOS 15+ and Swift 6.1+ toolchain (`swiftLanguageModes: [.v6]` — strict
   concurrency is on, so data-race errors are build failures, not warnings). `ElliotApp` is a SwiftUI GUI
   target: it builds headlessly but cannot be exercised from a terminal — launch the assembled bundle
@@ -83,7 +91,9 @@ before flipping a PR ready: -->
 | `ElliotKit/Package.swift` | every feature adds a target/product/dependency | **union** the arrays; keep the dependency edges each side declared, and keep `ElliotMCPKit`'s deps free of `ElliotEngine`/`ElliotProcess` |
 | `ElliotKit/Package.resolved` | Renovate bumps it constantly | **regenerate** (`cd ElliotKit && swift package resolve`) — never hand-merge |
 | `ElliotKit/Sources/ElliotStore/Migrations.swift` | both sides append a migration | **union**, appending both `registerMigration` calls in landing order. **Never renumber or edit a migration that already shipped** — a v1 database must still upgrade, and there is a test that proves it |
-| `ElliotKit/Sources/ElliotApp/AppModel.swift` | the single wiring point every feature touches | **union** — new stored properties and methods are additive |
+| `ElliotKit/Sources/ElliotAppKit/AppModel.swift` | the single wiring point every feature touches | **union** — new stored properties and methods are additive |
+| `ElliotKit/Sources/ElliotAppKit/BoardView.swift` | the board, its toolbar and its columns all live here, so any feature that shows something touches it | **union** — take both sides' modifiers and both sides' toolbar items. ⚠️ Never resolve by dropping a `reduceMotion ? nil :` gate or a `.zIndex`; both are load-bearing and neither looks it |
+| `ElliotKit/Sources/ElliotAppKit/DesignSystem.swift` | every feature that draws anything wants a token | **union** — the enums are additive. Do **not** union a new consequence accent in: `BrandColorTests` pins the five, and a sixth is a design decision, not a merge |
 | `Scripts/build-app.sh` (`CFBundleShortVersionString`) | the only version string in the repo | take the **higher** |
 | `README.md` | parallel features document themselves | **union** |
 | `ElliotKit/Tests/**` | both append tests | **union** |
@@ -97,9 +107,36 @@ before flipping a PR ready: -->
   value types, rule engine, prompt builder, decoders) → `ElliotStore` (GRDB, schema, the one atomic
   move) → `ElliotProcess` (spawning, tool discovery) / `ElliotIPC` (wire) → `ElliotEngine` (services,
   scheduler, watchers) → `ElliotMCPKit` / `ElliotApp`. Keep `ElliotModel` dependency-free.
-- **`ElliotApp` is an `executableTarget` with no test target.** Any *rule* written in a SwiftUI view is
-  unprovable by `swift test`. Push decisions down into `ElliotModel` (pure, no I/O, no clock) — this is
-  what #5 did for `CardDraft` and #11 does for the reconciler. Views render and dispatch; they do not judge.
+- **Views and `AppModel` live in `ElliotAppKit`, a library — they *are* testable.** Since #72/#74
+  `ElliotApp` keeps only `@main` and the `Scene` graph; everything else moved to `ElliotAppKit`, which
+  `ElliotAppKitTests` reaches with `@testable`. Only the three scene roots are `public`. So "push it
+  into `ElliotModel`" is now a preference with a reason — pure, no clock, shared with the MCP helper —
+  and no longer a workaround for an unreachable target, which is what it was when #55 moved
+  `MCPRequestHandler`. Views render and dispatch; they do not judge.
+- **What `swift test` still cannot see is layout.** A view's *structure* is assertable; where things
+  sit on screen is not, and that gap has cost this project three merges — `.inspector()` shipped in
+  #47 unverified, crashed in #50, destroyed the window layout in #52, was reverted in #53, and every
+  one was green. **A change that moves anything on screen is not finished until someone has looked at
+  it**: `./Scripts/build-app.sh && open -n --env ELLIOT_HOME=/tmp/elliot-check dist/Elliot.app`, then
+  read the window's accessibility tree — the column captions, the toolbar and the status bar all carry
+  labels, so "did the board survive" is a text diff rather than a squint.
+  - **The store the check runs against is seedable.** `ELLIOT_HOME` points the app at a scratch
+    directory, and with the app **closed** you can `sqlite3` a row into `repo` and `card` directly —
+    the sole-writer rule is about concurrent processes, not about fixtures. That is how you get a
+    card into **Done** without moving one there through the board, which would merge a real pull
+    request. Checkpoint the WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) before and after, or a still-open
+    instance will silently checkpoint your row away.
+  - **Drive it with `cua-driver`**, which reads the tree and clicks by element index without bringing
+    the app to the front. Re-snapshot before every click: element indices are per-snapshot.
+  - **What this actually caught, on #79, with 730 tests green and `swift build` clean:** the framing
+    scroll was a no-op — `onChange` ran inside the update that changed the selection, so it scrolled
+    the row that existed *before* the panel was inserted and clamped to zero. It was invisible in four
+    of five columns because the pair already fits there. **Check the last column**; it is the one
+    where the layout has nowhere to grow into. Second: clicking to deselect stopped working entirely,
+    because the panel widens the row past the viewport and an *enabled* `ScrollView` swallows a tap
+    that a disabled one passes through. Both were found by looking, and the second was only
+    *confirmed* to be a regression by building `origin/main` into a second worktree and driving the
+    identical gesture. When something looks broken, check whether it was already broken.
 - **One funnel.** `BoardService` is the *only* thing that changes a card's column. A drag and an MCP
   `board_move_card` must reach the same two methods; callers supply only an origin. Never add a second
   path that mutates a column.

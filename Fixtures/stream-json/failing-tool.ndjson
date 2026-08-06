@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","session_id":"55555555-5555-5555-5555-555555555555","cwd":"/repo","model":"claude-opus-5","permissionMode":"bypassPermissions","tools":["Bash","Edit"],"slash_commands":[],"mcp_servers":[]}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Building, then running the suite."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_build","name":"Bash","input":{"command":"cd ElliotKit && swift build"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_build","is_error":false,"content":"Build complete."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_test","name":"Bash","input":{"command":"cd ElliotKit && swift test"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_test","is_error":true,"content":"exit 1 - 1 of 459 tests failed"}]}}
+{"type":"result","subtype":"success","duration_ms":161000,"is_error":false,"num_turns":9,"result":"The suite is red and a fetch was refused.","stop_reason":null,"total_cost_usd":0.31,"terminal_reason":"completed","permission_denials":[{"tool_name":"WebFetch","tool_use_id":"tu_fetch"}],"session_id":"55555555-5555-5555-5555-555555555555"}

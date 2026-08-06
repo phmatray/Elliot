@@ -156,6 +156,28 @@ The backlog holds **user stories** (`role` / `want` / `benefit` + acceptance cri
 fields), not loose prose. A card is editable up to the moment it carries an issue number; after that
 `updateCard` refuses rather than letting card and issue drift.
 
+### The detail panel
+
+Selecting a card opens `DetailPanelView` **between the columns**, inserted immediately after the
+card's own column — or before it for the last column, which has no right — two or three column-widths
+wide, tethered to the card by a 2pt rail ending in a caret notched out of the panel's edge. It is a
+plain sibling in the board's `HStack`, never `.inspector()`; that API shipped three times here and
+wrecked the window three times (#47, #50, #52, #53).
+
+The arithmetic is pure and pinned by `PanelLayoutTests`: `PanelLayout` decides the widths, which slot
+the panel takes, which column opens left, where the caret sits and when it detaches. Nothing about
+the layout is decided in a view, because `swift test` cannot see a view. The caret's *position* is
+the exception and is measured, not computed — a card's Y inside a `LazyVStack` is not knowable ahead
+of layout — so it comes from `.anchorPreference(.bounds)` resolved in a single overlay, which puts
+card, list and panel in one coordinate space by construction.
+
+Inside, the GitHub issue body is parsed by `IssueMarkdownParser` (`ElliotModel`, no dependencies,
+total — it never drops a line) into blocks that each get their own view, and a run's log is folded by
+`RunLog.rows` back into the tree it was flattened from: a `tool_result` attaches to its `tool_use`
+**by id, never by arrival order**. The verdict block is the app's central invariant made visible —
+what the agent *said* in demoted italic (`Type.hearsay`), what `gh` *established* in the fact face,
+never the same tier.
+
 ### Run lifecycle
 
 `is_error` is not enough: a run only counts as clean when `permission_denials` is empty too — a run can
@@ -200,6 +222,20 @@ Two invariants carry most of the weight:
 
 ## Things that bite
 
+- **A `ScrollView` that can scroll swallows taps a disabled one passes through.** The board's
+  deselect-on-background-click fired by bubbling out of a column's empty space, and that only worked
+  while five columns fit the window and scrolling was off. The detail panel widens the row past the
+  viewport by design, so scrolling is now always on with it open — and clicking to deselect stopped
+  working, in every column, with `swift build` clean and the whole suite green. The gesture lives on
+  `ColumnView` now. Putting it on the row's background instead only moved the bug: that background
+  also lies under the panel, so a click on the panel being read closed it. **An ancestor's tap fires
+  for taps on its descendants, so any deselect above the panel is a deselect through it.**
+- **`onChange` runs inside the update that changed the value, so it sees the layout as it was.**
+  `BoardView.frame(...)` computed a scroll offset for the row that was *about to* include the panel
+  and applied it to the row that still did not, where it clamped to zero — the board simply never
+  moved. Deferred by one turn of the main actor. It was invisible in four of five columns, because
+  those are the ones where the pair already fits: **when a layout change has a "last column" case,
+  that is the case to check.**
 - **Migrations are additive and shipped ones are frozen.** `ElliotStore/Migrations.swift` — append,
   renumber so versions stay ordered, never edit a migration that has run. `Column`'s raw values are
   persisted, so renaming a case needs a migration.

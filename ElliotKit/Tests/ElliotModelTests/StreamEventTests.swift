@@ -7,6 +7,10 @@ private func decode(_ line: String) -> StreamEvent? {
     StreamEventDecoder.decode(line: Data(line.utf8))
 }
 
+private func decodeAll(_ line: String) -> [StreamEvent] {
+    StreamEventDecoder.decodeAll(line: Data(line.utf8))
+}
+
 @Suite("stream-json decoding")
 struct StreamEventTests {
 
@@ -137,6 +141,70 @@ struct StreamEventTests {
         #expect(event == .partial(text: "Hel"))
     }
 
+    // MARK: - Every block of a line, not just the first
+
+    @Test("An assistant turn carrying prose AND a tool call yields both, in source order")
+    func textAndToolUseInOneTurn() throws {
+        // The reason decodeAll exists: `decode` stops at the first block, so the
+        // tool call below is silently thrown away — a row that never appears.
+        let line = #"""
+        {"type":"assistant","message":{"content":[{"type":"text","text":"Filing it now"},\#
+        {"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"gh issue create"}}]}}
+        """#
+        let events = decodeAll(line)
+        #expect(events.count == 2)
+
+        #expect(events.first == .assistantText("Filing it now"))
+        guard case .assistantToolUse(let name, let id, let preview) = try #require(events.last) else {
+            Issue.record("expected the second block to be a tool use, got \(String(describing: events.last))")
+            return
+        }
+        #expect(name == "Bash")
+        #expect(id == "tu_1")
+        #expect(preview.contains("gh issue create"))
+
+        // decode stays the one-event entry point: exactly the first of them.
+        #expect(decode(line) == events.first)
+    }
+
+    @Test("A turn with several tool calls yields one event per call")
+    func severalToolUsesInOneTurn() {
+        let events = decodeAll(#"""
+        {"type":"assistant","message":{"content":[\#
+        {"type":"tool_use","id":"tu_1","name":"Read","input":{"file_path":"a.swift"}},\#
+        {"type":"tool_use","id":"tu_2","name":"Read","input":{"file_path":"b.swift"}},\#
+        {"type":"tool_use","id":"tu_3","name":"Bash","input":{"command":"swift test"}}]}}
+        """#)
+        #expect(events.count == 3)
+        let ids = events.compactMap { event -> String? in
+            guard case .assistantToolUse(_, let id, _) = event else { return nil }
+            return id
+        }
+        #expect(ids == ["tu_1", "tu_2", "tu_3"])
+    }
+
+    @Test("A user turn with two tool_result blocks yields two events")
+    func severalToolResultsInOneTurn() {
+        let events = decodeAll(#"""
+        {"type":"user","message":{"content":[\#
+        {"type":"tool_result","tool_use_id":"tu_1","is_error":false,"content":"ok"},\#
+        {"type":"tool_result","tool_use_id":"tu_2","is_error":true,"content":"permission denied"}]}}
+        """#)
+        #expect(events.count == 2)
+        #expect(events.first == .toolResult(toolUseID: "tu_1", isError: false, preview: "ok"))
+        #expect(events.last == .toolResult(toolUseID: "tu_2", isError: true, preview: "permission denied"))
+    }
+
+    @Test("An empty text block is skipped, and skipping it does not swallow its neighbours")
+    func emptyTextBlockSkipped() {
+        let events = decodeAll(#"""
+        {"type":"assistant","message":{"content":[{"type":"text","text":""},\#
+        {"type":"thinking","thinking":"…"},\#
+        {"type":"text","text":"Done"}]}}
+        """#)
+        #expect(events == [.assistantText("Done")])
+    }
+
     // MARK: - The decoder must never throw and never drop
 
     @Test("An unrecognised type is kept rather than discarded")
@@ -176,6 +244,46 @@ struct StreamEventTests {
     @Test("Blank lines are skipped", arguments: ["", "\n", "   \n", "\r\n"])
     func blankLinesSkipped(line: String) {
         #expect(decode(line) == nil)
+    }
+
+    @Test("decodeAll keeps every totality guarantee decode has", arguments: ["", "\n", "   \n", "\r\n"])
+    func decodeAllIsBlankOnBlankLines(line: String) {
+        #expect(decodeAll(line).isEmpty)
+        #expect(decode(line) == nil)
+    }
+
+    @Test("Garbage is exactly one malformed event, not a list of them", arguments: [
+        "not json at all",
+        "{",
+        "[1,2,3]",
+        #"{"no_type":true}"#,
+        "null",
+    ])
+    func garbageIsOneMalformed(line: String) throws {
+        let events = decodeAll(line)
+        #expect(events.count == 1)
+        guard case .malformed = try #require(events.first) else {
+            Issue.record("expected malformed for \(line), got \(String(describing: events.first))")
+            return
+        }
+        #expect(decode(line) == events.first)
+    }
+
+    @Test("An unreadable line stays exactly one event", arguments: [
+        #"{"type":"some_future_event","payload":{"a":1}}"#,
+        // A message whose content is not an array of blocks: nothing to walk.
+        #"{"type":"assistant","message":{"content":"just a string"}}"#,
+        // A content array carrying no block this decoder understands.
+        #"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"…"}]}}"#,
+    ])
+    func unreadableLinesStayOneUnknown(line: String) throws {
+        let events = decodeAll(line)
+        #expect(events.count == 1)
+        guard case .unknown = try #require(events.first) else {
+            Issue.record("expected unknown for \(line), got \(String(describing: events.first))")
+            return
+        }
+        #expect(decode(line) == events.first)
     }
 
     @Test("Trailing newlines do not defeat decoding", arguments: ["", "\n", "\r\n"])
