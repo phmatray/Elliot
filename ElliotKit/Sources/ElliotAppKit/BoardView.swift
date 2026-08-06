@@ -359,8 +359,20 @@ public struct BoardView: View {
             flipped: origin != nil && PanelLayout.opensLeft(of: column)
         )
 
-        withAnimation(reduceMotion ? nil : .default) {
-            boardScroll.scrollTo(x: offset)
+        // Deferred by one turn of the main actor, and this is the whole reason
+        // the first attempt did nothing on screen. `onChange` runs *inside* the
+        // update that changed the selection, so the row it scrolls is still the
+        // one without a panel: five columns, content no wider than the
+        // viewport, `scrollDisabled` still true. The offset was computed for
+        // the row that was about to exist and applied to the row that still
+        // did, where it clamps to zero. Both `swift build` and `swift test`
+        // were green through all of it — the board simply never moved, and only
+        // the last column showed it, because that is the one case where the
+        // pair does not already fit.
+        Task { @MainActor in
+            withAnimation(reduceMotion ? nil : .default) {
+                boardScroll.scrollTo(x: offset)
+            }
         }
     }
 
