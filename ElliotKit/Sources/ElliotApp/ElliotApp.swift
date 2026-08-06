@@ -54,6 +54,14 @@ struct ElliotApp: App {
         }
         .defaultSize(width: 900, height: 700)
 
+        // Its own window for now. It is the first band of the Operations
+        // screen (#69) and will be composed into it there; landing it alone
+        // means the ranking is on screen and usable before that screen exists.
+        Window("Up next", id: "nextSteps") {
+            NavigationStack { NextStepsView() }.environment(model)
+        }
+        .defaultSize(width: 520, height: 640)
+
         Window("Preflight", id: "preflight") {
             NavigationStack { PreflightView() }.environment(model)
         }
@@ -174,6 +182,7 @@ private struct OpenWindowButtons: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        Button("Up Next") { openWindow(id: "nextSteps") }
         Button("Analysis…") { openWindow(id: "analysis") }
         Button("Repositories") { openWindow(id: "repositories") }
         Button("Preflight") { openWindow(id: "preflight") }

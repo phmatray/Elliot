@@ -715,6 +715,32 @@ public final class AppModel {
         isOverDailyCeiling = await scheduler.isOverDailyCeiling()
     }
 
+    // MARK: - What to do next
+
+    /// What Elliot thinks should happen next, in order.
+    ///
+    /// The ranking is `rankNextSteps`, the same pure function `board_next`
+    /// answers with over MCP. It was written, tested and served to agents while
+    /// the human got five columns and had to rebuild the order in their head at
+    /// every glance.
+    ///
+    /// Computed rather than stored: it is derived entirely from `cards`, `repos`
+    /// and `activeRuns`, all of which are already observed, and a stored copy is
+    /// one more thing that can be stale.
+    ///
+    /// **No sorting here.** `rankNextSteps` has already ordered them, and a
+    /// second sort is a second opinion that will drift from what the MCP tool
+    /// answers for the same board.
+    public var nextSteps: [NextStep] {
+        rankNextSteps(
+            nextCandidates(
+                cards: cards,
+                repos: repos,
+                activeRunIDs: activeRuns.mapValues(\.id)
+            )
+        )
+    }
+
     /// One query for the whole board rather than one per card.
     public func refreshActiveRuns() async {
         guard let store else { return }
