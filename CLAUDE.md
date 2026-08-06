@@ -173,6 +173,42 @@ a `degraded` flag, which reads exactly like "the window has nothing in it" — t
 one layer down. Before believing a blank tree, snapshot a known-good app (Finder will do) as a control.
 If that is blank too, the finding is about your permissions, not about the change under review.
 
+**Looking and touching are two different grants, and only one of them is usually on.** Check before
+planning a verification pass, because the answer decides what the pass can even ask:
+
+```bash
+cua-driver permissions status --json    # {"accessibility": false, "screen_recording": true}
+```
+
+- **Screen Recording** buys *observation*: `list_windows` (titles, sizes, `is_on_screen`) and a real screenshot of any window. That alone settles "did it open", "how big", "does it render", "is there exactly one".
+- **Accessibility** buys *actuation* — and also the AX tree. Synthetic clicks and key presses are posted to another process's event queue, which macOS gates behind this grant.
+
+⛔ **Without Accessibility, a click or a keystroke fails silently and looks like a working no-op.**
+Measured on #48: `press_key` returns `"effect": "unverifiable"` with
+`"escalation": {"reason": "delivery_failed"}`, `click` returns `"effect": "unverifiable"` — and the
+screenshot afterwards is byte-for-byte the same board. Nothing errors. Read that as "the driver could
+not act", never as "the app ignored the input" — the third member of the same false-negative family as
+the two above. Anything needing a click or a key is **not verifiable** until someone runs
+`cua-driver permissions grant` and ticks the box.
+
+**Seeding the scratch store: the ids are `UUID`s, and a wrong one wedges the board silently.**
+`Repo.id` and `Card.id` are `UUID`, not free text. Insert `'sandbox'` as a repo id and the app starts,
+paints its chrome, and sits on **"Still starting"** for ever while the status bar underneath reads
+**"Ready."** — because the repo observation's `catch` swallows the decode error without a banner
+(`ElliotAppKit/AppModel.swift`, the `hasLoadedRepos` observation). Same store, same build, id swapped
+for `uuidgen` output: the five columns render immediately. So:
+
+```bash
+RID=$(uuidgen)   # and a fresh uuidgen for every card id too
+sqlite3 "$ELLIOT_HOME/elliot.sqlite" "INSERT INTO repo (id,path,…) VALUES ('$RID','/tmp/sandbox',…);"
+sqlite3 "$ELLIOT_HOME/elliot.sqlite" "PRAGMA wal_checkpoint(TRUNCATE);"
+```
+
+Point the seeded repo at a throwaway `git init` directory, not one of Philippe's checkouts: the cards
+then render "Repository blocked — see Preflight", which is the state you want for a look-only pass
+because no transition can spawn an agent from it. Leave **To Do** and **In Progress** empty if you
+want to exercise the "arrows skip empty columns" rule.
+
 ### Board transitions
 
 | From → To | What happens |
@@ -253,6 +289,18 @@ Two invariants carry most of the weight:
 
 ## Things that bite
 
+- **After merging `main`, a stale `.build` fails in ways that look like real breakage — wipe it before
+  believing the failure.** Several agent branches merge `main` mid-flight, and SwiftPM's incremental
+  state does not always survive it. Measured twice in one afternoon, on docs-only branches that could
+  not have caused either:
+  - **Wrong values.** Three `RepoRegistryServiceSyncTests` failed *deterministically* while the identical commit passed in a fresh checkout. The tell was swift-testing printing the literal `.dirty` as `.unlisted` — an enum ordinal from before the merge. If a source literal reports as a different case, nothing is wrong with the code.
+  - **A link error.** `ld: symbol(s) not found` for `ProcessRunner.run(…timeout:)`, referenced from test objects compiled against the pre-merge signature.
+
+  Both cleared with `rm -rf ElliotKit/.build`. Neither is the intermittent signal 10/11 crash, which is
+  a *different* thing and also real: that one aborts the run reporting **no failing test**, so re-run
+  it rather than reading it as your change. Three outcomes, three responses — wrong values or a link
+  error after a merge means wipe the build; a signal means re-run; a named failing test means look at
+  your change.
 - **A `ScrollView` that can scroll swallows taps a disabled one passes through.** The board's
   deselect-on-background-click fired by bubbling out of a column's empty space, and that only worked
   while five columns fit the window and scrolling was off. The detail panel widens the row past the
