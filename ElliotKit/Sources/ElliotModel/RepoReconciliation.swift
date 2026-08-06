@@ -2,18 +2,60 @@ import Foundation
 
 /// Why a repository's row is not simply fine.
 ///
-/// Only the verdicts this reconciler can produce live here. Git state — behind,
-/// dirty, diverged — arrives with the sync follow-up, which refines a row rather
-/// than changing how rows are built.
+/// Two families live here. The first six are what `RepoReconciler` decides from
+/// GitHub, the disk and the store. The rest are what a probe *observes* by
+/// asking git: they refine a row the reconciler already called `.ok`, and
+/// nothing about how rows are built changes to accommodate them.
 public enum RepoIssue: Sendable, Hashable {
     case ok
     case notCloned
     case notRegistered
     case missing
     case misplaced(expected: String)
+
+    /// On disk, registered, and absent from GitHub's answer.
+    ///
+    /// Its own case rather than `.ok` with a telling detail, because `.ok` is
+    /// the verdict nobody scrolls to read and this row has at least three
+    /// causes, none of them "fine": the repository was renamed or transferred,
+    /// so the local remote is stale; it was deleted, so this clone is the only
+    /// copy; or the listing itself was incomplete — pagination, a rate limit, a
+    /// scope the token lacks.
+    ///
+    /// The third is what settles it. An incomplete answer is not a fact about
+    /// the repository at all, and it would mark *many* rows at once. A row that
+    /// says "fine" when the real answer is "I could not check" is a
+    /// non-measurement rendered as a pass, which is the one thing this codebase
+    /// spends its effort refusing to do.
+    ///
+    /// What it deliberately does **not** claim is *which* of the three happened.
+    /// Telling "GitHub said no" from "GitHub did not answer" needs the scanner to
+    /// report its own failure modes upward; the reconciler is pure and cannot
+    /// ask. That is a separate change.
+    case unlisted
     case outOfScope(OutOfScope)
 
+    // Git state. Only a probe produces these.
+    case behind(by: Int)
+    case dirty
+    case ahead
+    case diverged
+    case detached
+    case noRemote
+    case unreadable(String)
+
     public enum OutOfScope: Sendable, Hashable { case fork, archived, otherRoot }
+
+    /// The one verdict a sweep acts on.
+    ///
+    /// Here rather than spelled out at each of its three call sites — the fix a
+    /// probe offers, the rows `syncAll` selects, and the count that enables the
+    /// button. Three copies of "what counts as behind" is three chances for the
+    /// button to promise something the sweep will not do.
+    public var isBehind: Bool {
+        if case .behind = self { return true }
+        return false
+    }
 }
 
 /// The one thing a row's button does. Nothing here deletes.
@@ -22,6 +64,9 @@ public enum RepoFix: Sendable, Hashable {
     case move(from: String, to: String)
     case register(path: String)
     case forget(repoID: UUID)
+    /// Fast-forward, or refuse. Offered only to a clone that is clean, attached
+    /// and strictly behind — the one state where a pull cannot lose anything.
+    case pull(path: String)
 
     /// The button's label. `move` names its destination, because it relocates a
     /// directory in the user's portfolio and must say so before it runs.
@@ -31,6 +76,7 @@ public enum RepoFix: Sendable, Hashable {
         case .move(_, let to): "Move to \((to as NSString).lastPathComponent)"
         case .register: "Register"
         case .forget: "Forget"
+        case .pull: "Pull"
         }
     }
 }
@@ -85,13 +131,18 @@ public enum RepoReconciler {
 
         // A clone or a registration GitHub did not mention still gets a row —
         // silence is how a repository disappears from a sweep unnoticed.
+        //
+        // Unregistered, the verdict stays `.notRegistered`: it is already
+        // actionable and already carries its fix. Registered, it is `.unlisted`
+        // and not `.ok` — nothing is wrong on disk, but nothing was confirmed
+        // either, and those are different answers.
         for slot in disk where byName[slot.nameWithOwner] == nil {
             let path = "\(layout.root)/\(slot.owner)/\(slot.visibility.rawValue)/\(slot.name)"
             let known = registeredByName[slot.nameWithOwner]
             byName[slot.nameWithOwner] = RepoRow(
                 id: slot.nameWithOwner, nameWithOwner: slot.nameWithOwner, path: path,
                 repoID: known?.id, visibility: slot.visibility,
-                issue: known == nil ? .notRegistered : .ok,
+                issue: known == nil ? .notRegistered : .unlisted,
                 detail: "On disk; GitHub did not list it.",
                 fixes: known == nil ? [.register(path: path)] : [])
         }

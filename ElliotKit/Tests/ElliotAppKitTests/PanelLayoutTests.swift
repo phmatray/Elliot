@@ -230,34 +230,87 @@ struct PanelLayoutTests {
 
     @Test("The framing offset leads the pair, flips with it, and never goes negative")
     func frameOffsetXLeadsTheLeadingViewOfThePair() {
+        // What this test is about is *which end leads*, so the viewport is
+        // deliberately generous: with room to spare the lead is always the full
+        // 96pt and cannot confound the answer. The clamp that shortens it has
+        // its own tests below.
+        func offset(_ originMinX: CGFloat, _ panelMinX: CGFloat?, flipped: Bool) -> CGFloat {
+            PanelLayout.frameOffsetX(
+                originMinX: originMinX, panelMinX: panelMinX, flipped: flipped,
+                columnWidth: 300, panelWidth: 300, viewportWidth: 4_000)
+        }
+
         // Not flipped: the origin column leads, the panel follows it.
-        #expect(
-            PanelLayout.frameOffsetX(originMinX: 500, panelMinX: 826, flipped: false) == 404
-        )
+        #expect(offset(500, 826, flipped: false) == 404)
         // Flipped: the panel leads. Using `originMinX` here would scroll past
         // the panel and leave it off-screen to the left.
-        #expect(
-            PanelLayout.frameOffsetX(originMinX: 1_600, panelMinX: 622, flipped: true) == 526
-        )
+        #expect(offset(1_600, 622, flipped: true) == 526)
 
         // Which input is read is *only* decided by `flipped` — same pair, two
         // answers.
-        let flat = PanelLayout.frameOffsetX(originMinX: 1_600, panelMinX: 622, flipped: false)
-        let flipped = PanelLayout.frameOffsetX(originMinX: 1_600, panelMinX: 622, flipped: true)
+        let flat = offset(1_600, 622, flipped: false)
+        let flipped = offset(1_600, 622, flipped: true)
         #expect(flat != flipped)
         #expect(flat == 1_504)
 
         // Never negative: a negative content offset is not a position. Near the
         // leading edge of the board the whole lead is unavailable.
-        #expect(PanelLayout.frameOffsetX(originMinX: 10, panelMinX: 336, flipped: false) == 0)
-        #expect(PanelLayout.frameOffsetX(originMinX: 96, panelMinX: 422, flipped: false) == 0)
-        #expect(PanelLayout.frameOffsetX(originMinX: 400, panelMinX: 0, flipped: true) == 0)
-        #expect(PanelLayout.frameOffsetX(originMinX: -900, panelMinX: -900, flipped: true) == 0)
+        #expect(offset(10, 336, flipped: false) == 0)
+        #expect(offset(96, 422, flipped: false) == 0)
+        #expect(offset(400, 0, flipped: true) == 0)
+        #expect(offset(-900, -900, flipped: true) == 0)
 
         for x in stride(from: CGFloat(-2_000), through: 4_000, by: 53) {
-            #expect(PanelLayout.frameOffsetX(originMinX: x, panelMinX: x, flipped: false) >= 0)
-            #expect(PanelLayout.frameOffsetX(originMinX: x, panelMinX: x, flipped: true) >= 0)
+            #expect(offset(x, x, flipped: false) >= 0)
+            #expect(offset(x, x, flipped: true) >= 0)
         }
+    }
+
+    /// The clamp at the level of the function, rather than through the board's
+    /// arithmetic — the same rule stated in numbers small enough to check by
+    /// eye, including the two cases the board itself never produces.
+    @Test("The lead is what is left after the pair, never more")
+    func frameOffsetXClampsTheLeadToWhatIsLeft() {
+        // Room to spare: the pair is 400 wide in a 1000 viewport, so all 96pt
+        // of lead is affordable.
+        #expect(
+            PanelLayout.frameOffsetX(
+                originMinX: 500, panelMinX: 700, flipped: false,
+                columnWidth: 200, panelWidth: 200, viewportWidth: 1_000) == 404)
+
+        // Exactly the #93 geometry: a 934pt pair in a 1000pt viewport leaves 66
+        // of the 96, so the offset is 482 − 66 = 416.
+        //
+        // ⚠️ Written as the literal on purpose. `#expect(x == 482 - 66)` *fails*
+        // here while `#expect(x == 416)` passes, on a clean build, with the same
+        // CGFloat value on the left — the macro reports the right-hand side as
+        // `416` rather than `416.0`, so the two sides are not being compared as
+        // the same type. Verified against the arithmetic standalone, where the
+        // two do compare equal. Do not "tidy" this back into the subtraction.
+        #expect(
+            PanelLayout.frameOffsetX(
+                originMinX: 482, panelMinX: 718, flipped: false,
+                columnWidth: 226, panelWidth: 698, viewportWidth: 1_000) == 416)
+
+        // Flipped, same geometry: the panel leads and the column trails.
+        #expect(
+            PanelLayout.frameOffsetX(
+                originMinX: 1_190, panelMinX: 482, flipped: true,
+                columnWidth: 226, panelWidth: 698, viewportWidth: 1_000) == 416)
+
+        // A pair wider than the window: no lead at all, leading edge flush. The
+        // rest is the panel genuinely not fitting, which no offset can fix.
+        #expect(
+            PanelLayout.frameOffsetX(
+                originMinX: 500, panelMinX: 700, flipped: false,
+                columnWidth: 200, panelWidth: 800, viewportWidth: 400) == 500)
+
+        // Panel shut: the pair is the column alone, so a panel width that is not
+        // on screen cannot eat the lead.
+        #expect(
+            PanelLayout.frameOffsetX(
+                originMinX: 500, panelMinX: nil, flipped: false,
+                columnWidth: 200, panelWidth: 5_000, viewportWidth: 1_000) == 404)
     }
 
     // MARK: - 8. Where a slot sits in the row
@@ -359,26 +412,37 @@ struct PanelLayoutTests {
                 for selected in ElliotModel.Column.allCases {
                     let pair = framed(boardWidth: boardWidth, spans: spans, selected: selected)
 
-                    // The lead in full, except at the leading edge of the board
-                    // where there is not 96pt of row to give.
+                    // The lead in full, unless something takes it away, and
+                    // there are now two things that can (#93). Either the board
+                    // has less than 96pt of row before the pair, or the viewport
+                    // has less than 96pt left after it — and the lead is capped
+                    // by whichever bites harder.
+                    let room = boardWidth - (pair.trailingMaxX - pair.leadingMinX)
                     #expect(pair.offset >= 0)
-                    #expect(pair.leadingMinX - pair.offset == min(96, pair.leadingMinX))
+                    #expect(
+                        pair.leadingMinX - pair.offset
+                            == min(96, pair.leadingMinX, max(0, room)),
+                        "\(boardWidth)pt, \(spans) spans, \(selected)")
                 }
             }
         }
     }
 
-    @Test("The framed pair fits the window, except at the narrowest one")
+    @Test("The framed pair fits the window at every size")
     func framedPairFitsTheViewport() {
-        // The one measurement that is not free: the lead costs 96pt of
-        // viewport, and at the 1000pt minimum window with the panel at three
-        // spans the pair is 934pt — 1030 with the lead, which is 30pt more than
-        // there is. Every other combination fits outright.
+        // This assertion used to read `overflow == 30`, and the 30 was the bug.
+        // At the 1000pt minimum window with the panel at three spans the pair is
+        // 934pt and a fixed 96pt lead made it 1030 — 30pt more viewport than
+        // exists — so the panel's trailing edge, and the resize handle on it,
+        // sat off screen. It was pinned rather than smoothed over precisely so
+        // that changing it would have to be deliberate. This is that change
+        // (#93): the lead now yields to the pair, 66pt of it fits there, and the
+        // overflow is gone rather than merely smaller.
         //
-        // Pinned rather than smoothed over: the shortfall belongs to the lead,
-        // not to the panel, and a reader who wants the pair whole at that size
-        // has Narrow details (2 spans, 794pt with the lead). Anyone changing
-        // the lead or the span default should have to change this number too.
+        // Kept as an exact `== 0` at that size rather than folded into the
+        // `<= 0` below, because the two say different things. Elsewhere the pair
+        // fits with room to spare; there it fits *exactly*, with the lead giving
+        // up precisely what the pair needed and not a point more.
         for boardWidth in boardWidths {
             for spans in [2, 3] {
                 for selected in ElliotModel.Column.allCases {
@@ -386,9 +450,10 @@ struct PanelLayoutTests {
                     let overflow = pair.trailingMaxX - (pair.offset + boardWidth)
 
                     if boardWidth == 1_000, spans == 3, pair.offset > 0 {
-                        #expect(overflow == 30)
-                        // Without the lead it would fit: the pair itself is
-                        // narrower than the window.
+                        #expect(overflow == 0, "\(selected)")
+                        // And the reason it *can* fit: the pair itself is
+                        // narrower than the window, so only the lead was ever in
+                        // the way.
                         #expect(pair.trailingMaxX - pair.leadingMinX < boardWidth)
                     } else {
                         #expect(overflow <= 0)
@@ -396,6 +461,58 @@ struct PanelLayoutTests {
                 }
             }
         }
+    }
+
+    /// The case #93 is about, at the one size where it bites.
+    ///
+    /// At the 1000pt minimum window the column floor binds at 226pt, so at three
+    /// spans the panel is 698pt and the pair is 934pt. That leaves 66pt for a
+    /// lead that wants 96 — and the lead is what has to give, because the pair
+    /// is the thing being framed. Clamped to 66 the pair ends exactly on the
+    /// viewport's trailing edge.
+    ///
+    /// Asserted for **every** column whose offset is non-zero, which includes
+    /// Done — the flipped pair, where the panel leads and the column trails, and
+    /// where getting the trailing edge wrong would go unnoticed in the four
+    /// columns that are not flipped.
+    @Test("At the minimum window the lead yields to the pair instead of pushing it off")
+    func leadYieldsToThePairAtTheMinimumWindow() {
+        var checkedFlipped = false
+        for selected in ElliotModel.Column.allCases {
+            let pair = framed(boardWidth: 1_000, spans: 3, selected: selected)
+            guard pair.offset > 0 else { continue }
+
+            #expect(
+                pair.trailingMaxX <= pair.offset + 1_000,
+                "\(selected): the panel's trailing edge is past the viewport")
+            // The lead actually applied, rather than the one asked for.
+            #expect(pair.leadingMinX - pair.offset == 66, "\(selected)")
+            if PanelLayout.opensLeft(of: selected) { checkedFlipped = true }
+        }
+        // The flipped column must have been among them, or the loop proved
+        // nothing about the case it was written for.
+        #expect(checkedFlipped, "Done never reached the assertions")
+    }
+
+    /// The clamp is not a blanket shortening: wherever the full lead fits, it is
+    /// still 96pt. Without this the previous test would pass just as well with
+    /// the lead deleted.
+    @Test("Where there is room, the lead is still the full 96pt")
+    func theLeadIsUnchangedWhereItFits() {
+        for boardWidth in [CGFloat(1_640), 2_560] {
+            for spans in [2, 3] {
+                for selected in ElliotModel.Column.allCases {
+                    let pair = framed(boardWidth: boardWidth, spans: spans, selected: selected)
+                    guard pair.offset > 0 else { continue }
+                    #expect(
+                        pair.leadingMinX - pair.offset == 96,
+                        "\(boardWidth)pt, \(spans) spans, \(selected)")
+                }
+            }
+        }
+        // And at the minimum window two spans still has room for all of it.
+        let narrow = framed(boardWidth: 1_000, spans: 2, selected: .inProgress)
+        #expect(narrow.leadingMinX - narrow.offset == 96)
     }
 
     /// The framed pair at one board width, one span setting and one selection:
@@ -417,7 +534,8 @@ struct PanelLayoutTests {
 
         return (
             offset: PanelLayout.frameOffsetX(
-                originMinX: originMinX, panelMinX: panelMinX, flipped: flipped
+                originMinX: originMinX, panelMinX: panelMinX, flipped: flipped,
+                columnWidth: column, panelWidth: panel, viewportWidth: boardWidth
             ),
             leadingMinX: flipped ? panelMinX : originMinX,
             trailingMaxX: flipped ? originMinX + column : panelMinX + panel

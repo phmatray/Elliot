@@ -36,6 +36,11 @@ struct AwaitRunTool: BoardTool {
                 to keep waiting. So check `isTerminal` before you believe the run is over, \
                 and then read `verifiedOutcome` for what it actually achieved.
 
+                The run you get back is the same shape board_list_runs returns. For an \
+                analysis run that means `angle` and, once it is terminal, `analysisReport` — \
+                including `workingTreeChanged`, where `false` means the repository was checked \
+                and clean and an absent field means nobody checked.
+
                 Changes nothing, but it does need Elliot running, and starts it if it is not.
                 """,
             inputSchema: .object([

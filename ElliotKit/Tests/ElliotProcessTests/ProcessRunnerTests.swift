@@ -149,6 +149,45 @@ struct ProcessRunnerTests {
         #expect(!result.succeeded)
     }
 
+    /// A child that swallows SIGTERM is killed, not waited on.
+    ///
+    /// `trap "" TERM` makes the shell deaf to the polite ask — and its `sleep`
+    /// with it, because an *ignored* disposition is inherited across `fork`. So
+    /// only the second rung ends this run. Without it `run` never returns and
+    /// whatever task group is waiting on it never completes, which is exactly
+    /// the shape of #7.
+    ///
+    /// The child loops over short sleeps rather than sleeping once for a long
+    /// time, and that is not cosmetic: a grandchild inherits the write end of
+    /// the stdout pipe, and the final drain blocks until every holder lets go.
+    /// `sleep 60` would therefore keep this run alive for a minute *after* its
+    /// parent was killed, and the test would be measuring the orphan rather
+    /// than the escalation.
+    ///
+    /// The grace is shortened rather than left at the shipped 15 s: what is
+    /// under test is that the second rung fires at all, and waiting out the
+    /// real number would buy nothing but fifteen seconds on every `swift test`.
+    /// That the two spawners share the number is not asserted here because it
+    /// is not assertable — there is one constant and both default to it, so a
+    /// disagreement is a compile error rather than a red test.
+    @Test("A child that ignores SIGTERM is killed rather than waited on")
+    func timeoutEscalatesToSIGKILL() async throws {
+        let result = try await withTimeout(.seconds(60)) {
+            try await ProcessRunner.run(
+                executable: "/bin/sh",
+                arguments: ["-c", #"trap "" TERM; while :; do sleep 0.2; done"#],
+                environment: [:],
+                timeout: .milliseconds(300),
+                hardKillAfter: .milliseconds(300)
+            )
+        }
+        #expect(result.timedOut)
+        #expect(!result.succeeded)
+        // Not merely "it stopped": the status names the signal that stopped it,
+        // so a child that had quietly died of something else could not pass.
+        #expect(result.exitCode == SIGKILL, "expected SIGKILL, got \(result.exitCode)")
+    }
+
     @Test("A child that writes more than one pipe buffer does not deadlock")
     func largeOutputDoesNotDeadlock() async throws {
         // Both pipes must drain concurrently; 1 MiB is well past the 64 KiB

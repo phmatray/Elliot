@@ -139,8 +139,75 @@ open -n --env ELLIOT_HOME=/tmp/elliot-check dist/Elliot.app   # an isolated stor
 
 and then read the window's accessibility tree — the column captions, the toolbar and the status bar
 all carry labels, so "did the board survive" is a text diff rather than a squint. When in doubt,
-build the same check from `main` and compare: that A/B is what proved the 143×144 restored window
-size predates #72 rather than being caused by it.
+build the same check from `main` and compare.
+
+**A secondary window is verifiable too — it opens off-screen, it does not fail to open.** Every PR
+from #75 to #89 carried some version of *"opening a `Window` scene needs the app frontmost, which the
+automation driver refuses"*, and it was never true. A background `openWindow` does open the window; it
+just lands off-screen because the app is not frontmost. The trap is the enumeration, not the window:
+**list all of a pid's windows, never only the ones reporting `is_on_screen`.** Measured on a running
+build, six `Window` scenes declared in `ElliotApp.swift`, two of them open:
+
+```
+id=2737  on_screen=False  820x720 @ (454,215)  title='Preflight'
+id=2730  on_screen=False  900x700 @ (459,220)  title='Repositories'
+id=2727  on_screen=True   143x164 @ (15,803)   title='Elliot'
+```
+
+Both secondary windows are **at their full designed size** and both say `is_on_screen: False`. Filter
+on that flag and they are simply gone — which is exactly how "it didn't open" got written down nine
+times. The cost was real: #83 and #84 merged with *"not verified on screen"* in their bodies, and #84
+shipped a launch crash (`Fatal error: No Observable object of type AppModel found`) that sat on `main`
+until #85 happened to look. Reading the Operations window this way is what found the duplicate rows
+fixed in `ac6e460`, on the one screen that had been held back as unverifiable.
+
+**The 143×164 board window in that listing is the same thing, and it is the Stage Manager strip — not
+`minWidth` being ignored.** #74 reported a 143×144 restored board and called for its own issue; #75's
+body corrected it and CLAUDE.md never caught up. The listing settles it: the same process, in the same
+launch, is showing a 900×700 window, so nothing is clamping the app's widths. Only the board is parked
+in the strip, because the app is not frontmost. Nothing to fix.
+
+⚠️ **An empty accessibility tree is not an empty window.** Reading the tree needs the automation driver
+to hold macOS Accessibility permission; without it every window of every app returns zero elements and
+a `degraded` flag, which reads exactly like "the window has nothing in it" — the same false negative,
+one layer down. Before believing a blank tree, snapshot a known-good app (Finder will do) as a control.
+If that is blank too, the finding is about your permissions, not about the change under review.
+
+**Looking and touching are two different grants, and only one of them is usually on.** Check before
+planning a verification pass, because the answer decides what the pass can even ask:
+
+```bash
+cua-driver permissions status --json    # {"accessibility": false, "screen_recording": true}
+```
+
+- **Screen Recording** buys *observation*: `list_windows` (titles, sizes, `is_on_screen`) and a real screenshot of any window. That alone settles "did it open", "how big", "does it render", "is there exactly one".
+- **Accessibility** buys *actuation* — and also the AX tree. Synthetic clicks and key presses are posted to another process's event queue, which macOS gates behind this grant.
+
+⛔ **Without Accessibility, a click or a keystroke fails silently and looks like a working no-op.**
+Measured on #48: `press_key` returns `"effect": "unverifiable"` with
+`"escalation": {"reason": "delivery_failed"}`, `click` returns `"effect": "unverifiable"` — and the
+screenshot afterwards is byte-for-byte the same board. Nothing errors. Read that as "the driver could
+not act", never as "the app ignored the input" — the third member of the same false-negative family as
+the two above. Anything needing a click or a key is **not verifiable** until someone runs
+`cua-driver permissions grant` and ticks the box.
+
+**Seeding the scratch store: the ids are `UUID`s, and a wrong one wedges the board silently.**
+`Repo.id` and `Card.id` are `UUID`, not free text. Insert `'sandbox'` as a repo id and the app starts,
+paints its chrome, and sits on **"Still starting"** for ever while the status bar underneath reads
+**"Ready."** — because the repo observation's `catch` swallows the decode error without a banner
+(`ElliotAppKit/AppModel.swift`, the `hasLoadedRepos` observation). Same store, same build, id swapped
+for `uuidgen` output: the five columns render immediately. So:
+
+```bash
+RID=$(uuidgen)   # and a fresh uuidgen for every card id too
+sqlite3 "$ELLIOT_HOME/elliot.sqlite" "INSERT INTO repo (id,path,…) VALUES ('$RID','/tmp/sandbox',…);"
+sqlite3 "$ELLIOT_HOME/elliot.sqlite" "PRAGMA wal_checkpoint(TRUNCATE);"
+```
+
+Point the seeded repo at a throwaway `git init` directory, not one of Philippe's checkouts: the cards
+then render "Repository blocked — see Preflight", which is the state you want for a look-only pass
+because no transition can spawn an agent from it. Leave **To Do** and **In Progress** empty if you
+want to exercise the "arrows skip empty columns" rule.
 
 ### Board transitions
 
@@ -222,6 +289,18 @@ Two invariants carry most of the weight:
 
 ## Things that bite
 
+- **After merging `main`, a stale `.build` fails in ways that look like real breakage — wipe it before
+  believing the failure.** Several agent branches merge `main` mid-flight, and SwiftPM's incremental
+  state does not always survive it. Measured twice in one afternoon, on docs-only branches that could
+  not have caused either:
+  - **Wrong values.** Three `RepoRegistryServiceSyncTests` failed *deterministically* while the identical commit passed in a fresh checkout. The tell was swift-testing printing the literal `.dirty` as `.unlisted` — an enum ordinal from before the merge. If a source literal reports as a different case, nothing is wrong with the code.
+  - **A link error.** `ld: symbol(s) not found` for `ProcessRunner.run(…timeout:)`, referenced from test objects compiled against the pre-merge signature.
+
+  Both cleared with `rm -rf ElliotKit/.build`. Neither is the intermittent signal 10/11 crash, which is
+  a *different* thing and also real: that one aborts the run reporting **no failing test**, so re-run
+  it rather than reading it as your change. Three outcomes, three responses — wrong values or a link
+  error after a merge means wipe the build; a signal means re-run; a named failing test means look at
+  your change.
 - **A `ScrollView` that can scroll swallows taps a disabled one passes through.** The board's
   deselect-on-background-click fired by bubbling out of a column's empty space, and that only worked
   while five columns fit the window and scrolling was off. The detail panel widens the row past the

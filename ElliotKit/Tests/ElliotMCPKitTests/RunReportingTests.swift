@@ -522,4 +522,82 @@ struct RunReportingTests {
         #expect(answer.error == "internal_error")
         #expect(answer.hint.contains("builds"))
     }
+
+    // MARK: - An analysis run is more than a UUID
+
+    @Test("An analysis run reports which reading it was, and what it harvested")
+    func analysisRunIsSelfDescribing() async throws {
+        let analysisID = UUID()
+        let run = makeAnalysisRun(
+            repoID: UUID(),
+            analysisID: analysisID,
+            angle: .quickWins,
+            report: AnalysisRunReport(
+                harvestSource: .resultText,
+                kept: 3,
+                dropped: ["story 4: cited a file that does not exist"],
+                workingTreeChanged: false
+            )
+        )
+        let server = ElliotMCPServer(bridge: StubBridge.answering(page([run])))
+
+        let answer = try await call(server, "board_list_runs")
+
+        let reported = try #require(answer["runs"]?[0])
+        #expect(reported["cardID"] == nil)
+        #expect(reported["analysisID"]?.stringValue == analysisID.uuidString)
+        #expect(reported["angle"]?.stringValue == "quickWins")
+        let report = try #require(reported["analysisReport"])
+        // `resultText`, not `artifact`: the stories had to be recovered from
+        // the closing message, which is worth knowing about their quality.
+        #expect(report["source"]?.stringValue == "resultText")
+        #expect(report["kept"]?.intValue == 3)
+        #expect(report["dropped"]?.arrayValue?.count == 1)
+    }
+
+    /// The whole point of the sentinel, asserted where an agent actually reads
+    /// it. Task 1 pins the encoding; this pins that nothing between the codec
+    /// and the tool result collapses the two.
+    @Test("Checked-and-clean does not read the same as never-checked")
+    func workingTreeTriStateSurvivesTheToolSurface() async throws {
+        let clean = makeAnalysisRun(
+            repoID: UUID(), angle: .bugs,
+            report: AnalysisRunReport(
+                harvestSource: .artifact, kept: 1, workingTreeChanged: false
+            )
+        )
+        let unchecked = makeAnalysisRun(
+            repoID: UUID(), angle: .tests,
+            report: AnalysisRunReport(harvestSource: .artifact, kept: 1)
+        )
+        let server = ElliotMCPServer(bridge: StubBridge.answering(page([clean, unchecked])))
+
+        let answer = try await call(server, "board_list_runs")
+
+        let first = try #require(answer["runs"]?[0]?["analysisReport"])
+        let second = try #require(answer["runs"]?[1]?["analysisReport"])
+        // Present and false: the sentinel ran, the tree was untouched.
+        #expect(first["workingTreeChanged"]?.boolValue == false)
+        // Absent: nobody looked. An agent must not read this as clean.
+        #expect(second["workingTreeChanged"] == nil)
+    }
+
+    @Test("A run that wrote to the repository says so, and says what changed")
+    func aRunThatEditedTheRepositoryIsLoud() async throws {
+        let run = makeAnalysisRun(
+            repoID: UUID(), angle: .techDebt,
+            report: AnalysisRunReport(
+                harvestSource: .artifact, kept: 2,
+                workingTreeChanged: true,
+                workingTreeDiff: " M ElliotKit/Sources/ElliotModel/Analysis.swift"
+            )
+        )
+        let server = ElliotMCPServer(bridge: StubBridge.answering(page([run])))
+
+        let answer = try await call(server, "board_list_runs")
+
+        let report = try #require(answer["runs"]?[0]?["analysisReport"])
+        #expect(report["workingTreeChanged"]?.boolValue == true)
+        #expect(report["workingTreeDiff"]?.stringValue?.contains("Analysis.swift") == true)
+    }
 }

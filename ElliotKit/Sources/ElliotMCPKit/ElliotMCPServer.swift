@@ -46,9 +46,19 @@ public struct ElliotMCPServer: Sendable {
 
     public static let tools: [Tool] = registry.map(\.tool)
 
-    /// `uniqueKeysWithValues` on purpose: two tools claiming one name is a
-    /// build-time mistake that should stop the helper, not a silent shadowing
-    /// that makes one of them unreachable.
+    /// `uniqueKeysWithValues` on purpose: two tools claiming one name should
+    /// stop the helper, not shadow one of them into being unreachable.
+    ///
+    /// It stops it at the first *use* of this static — the first tools/call,
+    /// and only that. Measured, not assumed: with a duplicate in the registry,
+    /// reading `tools`, which is what tools/list answers, completes normally,
+    /// because each static initialises lazily on its own. So a session that
+    /// lists the tools and calls none never trips it at all. This comment used
+    /// to say "build time", which is a guarantee nothing here provides — and a
+    /// comment claiming one becomes the evidence every later reader relies on.
+    /// What catches a duplicate ahead of all of it is
+    /// `ToolSurfaceTests.toolNamesAreUnique`, which asserts these same names
+    /// are distinct without ever touching this dictionary.
     private static let byName: [String: any BoardTool] = Dictionary(
         uniqueKeysWithValues: registry.map { ($0.name, $0) }
     )
@@ -166,9 +176,29 @@ public extension ElliotMCPServer {
             name: run.id.uuidString,
             uri: "\(runLogScheme)\(run.id.uuidString)/log",
             title: "\(run.kind) · \(run.state)",
-            description: "NDJSON transcript of the \(run.kind) run started for card \(run.cardID).",
+            description: logDescription(run),
             mimeType: "application/x-ndjson"
         )
+    }
+
+    /// What a run's log is, said in terms of what the run is.
+    ///
+    /// Branching rather than interpolating: `\(run.cardID)` on a `UUID?` is
+    /// Swift's debug description, so this read `for card Optional(…)` on a card
+    /// run and `for card nil` on an analysis one — shipped to an agent, as
+    /// prose, on every resource `listResources` returned.
+    ///
+    /// Internal rather than private so the assertion above can be made against
+    /// the string itself, instead of against a `Resource` built four layers up.
+    internal static func logDescription(_ run: RunDTO) -> String {
+        if let cardID = run.cardID {
+            return "NDJSON transcript of the \(run.kind) run for card \(cardID)."
+        }
+        if let angle = run.angle {
+            return "NDJSON transcript of the \(run.kind) run that read this repository "
+                + "through the \(angle) angle."
+        }
+        return "NDJSON transcript of the \(run.kind) run."
     }
 
     private static func runID(fromLogURI uri: String) -> UUID? {

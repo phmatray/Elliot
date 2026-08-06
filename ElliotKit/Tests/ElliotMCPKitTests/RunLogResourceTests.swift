@@ -118,4 +118,30 @@ struct RunLogResourceTests {
         #expect(content._meta?["served_bytes"]?.intValue
             == ElliotMCPServer.logTailLimit)
     }
+
+    /// The description was `"…run started for card \(run.cardID)"` with
+    /// `cardID` a `UUID?`, so it shipped Swift's debug description of an
+    /// optional to an agent as a sentence: `Optional(9F0E…)` for a card run,
+    /// `nil` for the one kind of run that legitimately has no card.
+    @Test("An analysis run's log names its angle, not a nil card")
+    func analysisLogDescriptionNamesTheAngle() {
+        let run = RunDTO(run: makeAnalysisRun(repoID: UUID(), angle: .techDebt), now: epoch)
+
+        let description = ElliotMCPServer.logDescription(run)
+
+        #expect(description.contains("techDebt"))
+        #expect(!description.contains("nil"))
+        #expect(!description.contains("Optional"))
+    }
+
+    @Test("A card run's log still names its card")
+    func cardLogDescriptionNamesTheCard() {
+        let cardID = UUID()
+        let run = RunDTO(run: makeRun(cardID: cardID, repoID: UUID()), now: epoch)
+
+        let description = ElliotMCPServer.logDescription(run)
+
+        #expect(description.contains(cardID.uuidString))
+        #expect(!description.contains("Optional"))
+    }
 }
