@@ -60,15 +60,29 @@ jobs:
       - name: Every error, deduplicated
         if: always()
         run: |
+          # Every list below is printed through this helper rather than `grep … || echo "(none)"`.
+          # That idiom is dead code: the `||` tests the *pipeline*, and `sort` exits 0 on empty
+          # input, so an empty result printed as a blank line and "no errors found" was
+          # indistinguishable from "the grep produced nothing because the log was not what I
+          # thought". An empty measurement has to say so out loud.
+          show() {
+            local out
+            out=$(eval "$1")
+            if [ -z "$out" ]; then echo "(none)"; else echo "$out"; fi
+          }
+
           for log in /tmp/build.log /tmp/build-tests.log; do
             echo "############ $log ############"
             [ -f "$log" ] || { echo "(step never ran)"; continue; }
             echo "=== error lines ==="
-            grep -E '^[^ ].*: error: ' "$log" | sort -u || echo "(none)"
+            show "grep -E '^[^ ].*: error: ' '$log' | sort -u"
             echo "=== count of distinct error lines ==="
-            grep -E '^[^ ].*: error: ' "$log" | sort -u | wc -l
-            echo "=== distinct files ==="
-            grep -oE '^/[^:]+\.swift' "$log" | sort -u || echo "(none)"
+            grep -E '^[^ ].*: error: ' "$log" | sort -u | wc -l | tr -d ' '
+            # Derived from the ERROR lines only. Grepping the whole log for `^/…\.swift` also
+            # matches compile-progress lines, so a clean target listed files that had nothing
+            # wrong with them — a probe that names innocent files is worse than one that names none.
+            echo "=== distinct files carrying an error ==="
+            show "grep -E '^[^ ].*: error: ' '$log' | grep -oE '^/[^:]+\.swift' | sort -u"
             echo "=== modules the compiler reached ==="
-            grep -oE 'Compiling [A-Za-z]+' "$log" | sort -u || echo "(none)"
+            show "grep -oE 'Compiling [A-Za-z]+' '$log' | sort -u"
           done
