@@ -116,6 +116,49 @@ extension MoveOrigin {
         case .githubImport: return "Elliot placed this here — imported from GitHub."
         }
     }
+
+    /// One field of a history row: a fragment, never a sentence.
+    ///
+    /// A **different function** from `arrivalNote`, returning a **different
+    /// register**, and that is the whole of criterion 4 in #101. The header
+    /// keeps saying "Elliot moved this here — the pull request went ready."; the
+    /// row says "Elliot: the pull request went ready" as one column of a
+    /// tabular line. Nothing is said twice because the two never produce the
+    /// same words — asserted in `MoveHistoryTests`, in both substring
+    /// directions, rather than left to whoever edits this next.
+    ///
+    /// Dropping the newest audit from the list would have been the other way to
+    /// satisfy "not repeated", and it would have produced a history whose most
+    /// recent entry is missing: a history that lies, for a cosmetic reason.
+    var historyLabel: String {
+        switch self {
+        case .userDrag:
+            return "Dragged"
+        case .mcp(let client):
+            // Before #101 this was always the literal "mcp"; an empty name is
+            // still reachable from an older row, and must not leave a dangling
+            // separator pointing at nothing.
+            return client.isEmpty ? "MCP" : "MCP · \(client)"
+        case .system(let reason):
+            return "Elliot: \(reason.historyPhrase)"
+        }
+    }
+}
+
+extension MoveOrigin.SystemReason {
+    /// The reason as a fragment, to sit after "Elliot:" in a history row.
+    ///
+    /// No `default:` — a fifth reason must fail to compile here rather than
+    /// reach the panel as a blank field. That is the real guard on totality;
+    /// the list in `MoveHistoryTests` is only its witness.
+    var historyPhrase: String {
+        switch self {
+        case .prBecameReady: "the pull request went ready"
+        case .prMergedExternally: "merged on GitHub"
+        case .reconciliation: "recovered after a restart"
+        case .githubImport: "imported from GitHub"
+        }
+    }
 }
 
 extension ElliotModel.Column {

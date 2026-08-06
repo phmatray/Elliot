@@ -85,6 +85,10 @@ struct CreateCardTool: BoardTool {
                 // Only with an idempotency_key, and the caller chooses whether
                 // to send one — so the honest static answer is "no".
                 idempotentHint: false,
+                // Adds a local row. This is the tool the rule was argued over:
+                // the card is the first step of a pipeline that ends on
+                // github.com, and it still answers for itself alone. The issue
+                // is filed by the move, and the move is annotated as doing it.
                 openWorldHint: false
             )
         )

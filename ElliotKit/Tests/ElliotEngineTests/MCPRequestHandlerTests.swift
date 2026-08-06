@@ -265,6 +265,55 @@ struct MCPRequestHandlerTests {
         #expect(try await f.store.card(id: card.id)?.column == .todo)
     }
 
+    /// The audit is the only record of *who* moved a card, and until #101 every
+    /// MCP move wrote the literal `"mcp"` — so the board could say an agent did
+    /// it, but never which one. The name travels from `hello` through
+    /// `IPCServer` to here; this end asserts it reaches the row on disk.
+    ///
+    /// Read back through `BoardStore.audits` rather than from the response,
+    /// because the response is what the handler *said* and the audit is what was
+    /// *recorded* — and the recorded one is what the panel will show.
+    @Test("An MCP move records the client that asked for it, not the literal mcp")
+    func moveRecordsTheCallingClient() async throws {
+        let f = try await Fixture.make()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id, title: "Run log", body: "b"
+        ).card
+
+        guard case .ok = await f.handler.handle(
+            .moveCard(id: card.id, to: .todo, followUps: []), client: "agent-x"
+        ) else {
+            Issue.record("expected the move to succeed")
+            return
+        }
+
+        let audit = try #require(try await f.store.audits(cardID: card.id).first)
+        #expect(audit.origin == .mcp(client: "agent-x"))
+        #expect(audit.from == .backlog)
+        #expect(audit.to == .todo)
+    }
+
+    /// The default is what keeps every other call site in this suite compiling,
+    /// so it is asserted rather than assumed — an unnamed caller is still
+    /// recorded as MCP, not as a drag.
+    @Test("A dispatch that names no client still records an MCP origin")
+    func moveWithoutAClientFallsBackToMCP() async throws {
+        let f = try await Fixture.make()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id, title: "Run log", body: "b"
+        ).card
+
+        guard case .ok = await f.handler.handle(
+            .moveCard(id: card.id, to: .todo, followUps: [])
+        ) else {
+            Issue.record("expected the move to succeed")
+            return
+        }
+
+        let audit = try #require(try await f.store.audits(cardID: card.id).first)
+        #expect(audit.origin == .mcp(client: "mcp"))
+    }
+
     @Test("A blocked move refuses in the same words board_next predicts")
     func moveBlockedSpeaksTheSharedText() async throws {
         let f = try await Fixture.make()
