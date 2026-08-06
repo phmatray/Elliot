@@ -15,15 +15,42 @@ struct InspectorView: View {
     @State private var saveError: String?
 
     var body: some View {
-        if let card = model.selectedCard {
-            content(for: card)
-                .background(Color(nsColor: .windowBackgroundColor))
-                .task(id: card.id) {
-                    editor.end()
-                    saveError = nil
-                    await model.refreshRuns(cardID: card.id)
-                }
+        Group {
+            if let card = model.selectedCard {
+                content(for: card)
+                    .task(id: card.id) {
+                        editor.end()
+                        saveError = nil
+                        await model.refreshRuns(cardID: card.id)
+                    }
+            } else {
+                // The panel stays open across a deselect now — closing it is
+                // the user's own gesture and nothing else's. So it needs
+                // something to say when there is nothing selected; rendering
+                // nothing leaves an unexplained blank column.
+                noSelection
+            }
         }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var noSelection: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "square.dashed")
+                .font(.system(size: 22))
+                .foregroundStyle(.tertiary)
+            Text("No card selected")
+                .font(Type.cardTitle)
+                .foregroundStyle(.secondary)
+            Text("Pick a card to see its story, what it did on GitHub, and its runs.")
+                .font(Type.prose)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
     }
 
     private func content(for card: Card) -> some View {
