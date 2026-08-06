@@ -749,6 +749,70 @@ public final class BoardStore: Sendable {
         }
     }
 
+    /// Every move since a moment, oldest first.
+    ///
+    /// Ascending, unlike `audits(cardID:)` next door, and the difference is not
+    /// cosmetic: this feeds a follower that has a watermark and wants what it
+    /// has not seen yet, in the order it happened. Descending would hand it the
+    /// newest `limit` and silently drop the middle of a busy interval — the
+    /// same shape of defect as a page that does not say it was cut.
+    ///
+    /// `since` is exclusive, so passing back the `at` of the last row you
+    /// handled cannot replay it. Notifications are the caller this exists for,
+    /// and a replayed audit is a duplicate banner for something already read.
+    public func moveAudits(since: Date, limit: Int = 200) async throws -> [MoveAudit] {
+        try await reader.read { db in
+            try MoveAudit
+                .filter(SQLColumn("at") > since)
+                .order(SQLColumn("at").asc)
+                .limit(limit)
+                .fetchAll(db)
+        }
+    }
+
+    /// The same query, observed.
+    ///
+    /// Reads the audit trail rather than watching cards change, because the
+    /// audit is the only place that records *why* a card moved. Watching the
+    /// card table would see a column change and have to guess whether a person
+    /// or the board caused it — and guessing there is exactly how a user's own
+    /// drag turns into a notification telling them what they just did.
+    public func observeMoveAudits(since: Date, limit: Int = 200) -> AsyncValueObservation<[MoveAudit]> {
+        ValueObservation
+            .tracking { db in
+                try MoveAudit
+                    .filter(SQLColumn("at") > since)
+                    .order(SQLColumn("at").asc)
+                    .limit(limit)
+                    .fetchAll(db)
+            }
+            .removeDuplicates()
+            .values(in: reader)
+    }
+
+    // MARK: - Seams for the tests, deliberately not public
+    //
+    // `internal`, so `@testable` reaches them and neither the app nor the MCP
+    // helper can. Production records an audit in exactly one place — inside
+    // `move`'s single transaction, beside the column it explains — and a
+    // *public* writer here would be a standing invitation to record a move that
+    // never happened, which is the audit-trail version of a second write path.
+    // The query above still has to be provable against arbitrary `at` and
+    // `origin` values that the compound write cannot be made to produce.
+
+    func insertMoveAudit(_ audit: MoveAudit) async throws {
+        guard let writer else { throw StoreError.readOnly }
+        try await writer.write { db in try audit.insert(db) }
+    }
+
+    /// The indexes on a table, by name.
+    ///
+    /// A migration that only creates an index leaves no trace in any row, so
+    /// this is the only way a test can show it ran at all.
+    func indexNames(on table: String) async throws -> [String] {
+        try await reader.read { db in try db.indexes(on: table).map(\.name) }
+    }
+
     // MARK: - The one compound write
 
     /// Moves a card and, when the move triggers a skill, records the run — in a

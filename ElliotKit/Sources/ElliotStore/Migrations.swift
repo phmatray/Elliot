@@ -83,6 +83,19 @@ enum Migrations {
             }
         }
 
+        // v6, appended rather than renumbered: v5 has shipped, and a migration's
+        // name is its identity in `grdb_migrations`. The issue asked for this as
+        // "v5_moveAuditAtIndex", which was taken while it sat in the backlog.
+        //
+        // Index only, no column changes. `moveAudit_on_card_at` covers "this
+        // card's history"; a follower asking "everything since this moment"
+        // across every card has no leading column to use and scans the table.
+        // That is cheap today and grows with the board, and the follower is a
+        // notification poller that runs for as long as the app is open.
+        migrator.registerMigration("v6_moveAuditAtIndex") { db in
+            try db.create(index: "moveAudit_on_at", on: "moveAudit", columns: ["at"])
+        }
+
         return migrator
     }
 
