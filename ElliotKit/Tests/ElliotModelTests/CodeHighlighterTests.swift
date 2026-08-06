@@ -83,6 +83,43 @@ struct CodeHighlighterTests {
         #expect(CodeHighlighter.tokens(of: "").isEmpty)
     }
 
+    // MARK: - 1b. The declaration
+
+    @Test("A declaration this type has no rules for changes nothing at all")
+    func anUnrecognisedDeclarationIsInert() {
+        // The default path is the contract: a fence declared `rust` must render
+        // exactly as an undeclared one, because this type has no rust rules and
+        // the nearest rules it does have would be a guess. Criterion 2 lives
+        // here — swift, bash and json fences are named explicitly.
+        let languages: [String?] = [nil, "", "   ", "swift", "bash", "sh", "json", "text", "Rust"]
+        for source in corpus {
+            let agnostic = CodeHighlighter.tokens(of: source)
+            for language in languages {
+                #expect(
+                    CodeHighlighter.tokens(of: source, language: language) == agnostic,
+                    "declaring `\(language ?? "nil")` moved a token in \(source.debugDescription)"
+                )
+            }
+        }
+    }
+
+    @Test("The declaration is read from the first word, and case does not matter")
+    func dialectReadsTheInfoString() {
+        // CommonMark lets the info string carry more than the language, and this
+        // repository's own mockup writes ```yaml .github/workflows/ci.yml.
+        #expect(CodeHighlighter.Dialect(declared: "yaml") == .yaml)
+        #expect(CodeHighlighter.Dialect(declared: "yml") == .yaml)
+        #expect(CodeHighlighter.Dialect(declared: "YAML") == .yaml)
+        #expect(CodeHighlighter.Dialect(declared: "yaml .github/workflows/ci.yml") == .yaml)
+
+        #expect(CodeHighlighter.Dialect(declared: nil) == .agnostic)
+        #expect(CodeHighlighter.Dialect(declared: "") == .agnostic)
+        // Near misses are not near enough. `yamlish` is not yaml, and a type
+        // that matched on a prefix would be guessing again.
+        #expect(CodeHighlighter.Dialect(declared: "yamlish") == .agnostic)
+        #expect(CodeHighlighter.Dialect(declared: "swift") == .agnostic)
+    }
+
     // MARK: - 2. Comments
 
     @Test("A hash or a double slash starts a comment, and it runs to end of line")

@@ -94,21 +94,57 @@ public enum CodeHighlighter {
     /// nothing — never a letter.
     private static let quoteOpeners: Set<Character> = ["(", "[", "{", "=", ":", ",", "+"]
 
+    /// Which cue set a fence is read with.
+    ///
+    /// `.agnostic` is the tokeniser described above, unchanged: three shared
+    /// cues and no grammar. A case is added here only when the author's own
+    /// *declaration* makes a rule safe that would be a guess without it.
+    enum Dialect: Equatable {
+        case agnostic
+        case yaml
+
+        /// Reads a fence's info string — the `yaml` in ` ```yaml `.
+        ///
+        /// Only the first word: CommonMark lets the rest carry anything, and
+        /// this repository's fences already use ` ```yaml .github/workflows/ci.yml `.
+        /// Anything unrecognised, including nothing at all, is `.agnostic` — a
+        /// language this type has never heard of is read by the rules that need
+        /// no grammar rather than by the nearest one that looks similar.
+        init(declared: String?) {
+            let word = declared?
+                .split(whereSeparator: \.isWhitespace).first?
+                .lowercased()
+            switch word {
+            case "yaml", "yml": self = .yaml
+            default: self = .agnostic
+            }
+        }
+    }
+
     /// The fence, in order, with every character accounted for.
-    public static func tokens(of code: String) -> [CodeToken] {
+    ///
+    /// `language` is the fence's **declared** info string and never a guess
+    /// about its content. That distinction is the whole safety argument: the
+    /// reason this type has no grammar is that inferring one is the failure
+    /// mode, and reading a declaration the author wrote is not inferring.
+    /// Omitted, every rule below is exactly the language-agnostic set.
+    public static func tokens(of code: String, language: String? = nil) -> [CodeToken] {
+        let dialect = Dialect(declared: language)
         var out: [CodeToken] = []
         // `components(separatedBy:)` round-trips exactly under `joined`, which
         // is what keeps the totality property true across line endings.
         for (offset, line) in code.components(separatedBy: "\n").enumerated() {
             if offset > 0 { append(&out, "\n", .plain) }
-            appendTokens(of: line, to: &out)
+            appendTokens(of: line, to: &out, dialect: dialect)
         }
         return out
     }
 
     // MARK: - One line
 
-    private static func appendTokens(of line: String, to out: inout [CodeToken]) {
+    private static func appendTokens(
+        of line: String, to out: inout [CodeToken], dialect: Dialect
+    ) {
         let chars = Array(line)
         var index = 0
         var plainFrom = 0
