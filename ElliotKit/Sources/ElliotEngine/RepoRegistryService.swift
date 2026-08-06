@@ -149,10 +149,17 @@ public struct RepoRegistryService: Sendable {
     /// Refines the rows the reconciler called `.ok` with what git says about
     /// each clone. Every other row is returned exactly as it arrived.
     ///
-    /// Eight in flight, matching `repo-audit/repo_sync.py`: each item is a fetch
-    /// plus three subprocesses, and 221 of those at once would swamp the machine.
-    /// The result stays in **input order** — the page renders rows in place, so a
-    /// completion-ordered result would make every refresh jump.
+    /// Eight in flight, matching `repo-audit/repo_sync.py`. One row costs up to
+    /// six `git` invocations — two for `isMainCheckout`, then `symbolic-ref`,
+    /// `status`, `fetch`, `rev-list` — so 221 rows at once is well over a
+    /// thousand concurrent subprocesses, and the fetches are the network. The
+    /// cap is by construction here rather than asserted by a test: observing
+    /// "how many ran at once" is not something `swift test` can do without a
+    /// clock, and this project does not assert on wall time.
+    ///
+    /// The result stays in **input order** — the page renders rows in place, so
+    /// a completion-ordered result would make every refresh jump. *That* is
+    /// tested.
     public func probe(_ rows: [RepoRow]) async -> [RepoRow] {
         await withTaskGroup(of: (Int, RepoRow).self) { group in
             var result = rows
