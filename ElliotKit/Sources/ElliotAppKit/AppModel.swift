@@ -799,4 +799,20 @@ public final class AppModel {
             .appendingPathComponent("Contents/MacOS/elliot-mcp").path
         return "claude mcp add elliot -s user -- \(helper)"
     }
+
+    /// Puts rows in front of the model without a database behind them.
+    ///
+    /// `start()` opens the store, captures the login shell, runs three tool
+    /// lookups and sweeps preflight; none of that is what a test of `cards(in:)`
+    /// or `preview` is about, and a test that needed it would not be a unit
+    /// test. Deliberately leaves `board` nil, so anything that tries to *write*
+    /// from a seeded model returns rather than reaching a store that is not
+    /// there — the reason `nudgeSelection` at the end of the board is worth a
+    /// test of its own.
+    func testOnlySeed(repos: [Repo], cards: [Card]) {
+        self.repos = repos
+        self.cards = cards
+        hasLoadedRepos = true
+        selectedRepoID = nil
+    }
 }

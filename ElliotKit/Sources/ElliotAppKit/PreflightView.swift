@@ -3,13 +3,15 @@ import ElliotIPC
 import ElliotModel
 import SwiftUI
 
-struct PreflightView: View {
+public struct PreflightView: View {
+    public init() {}
+
     @Environment(AppModel.self) private var model
     @State private var copied = false
     /// Per-check override of the default open-if-failing state.
     @State private var expansion: [String: Bool] = [:]
 
-    var body: some View {
+    public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 identity

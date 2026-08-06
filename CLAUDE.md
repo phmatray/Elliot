@@ -86,7 +86,8 @@ ElliotIPC       —                  wire protocol, unix socket server and clien
 ElliotEngine    all of the above   BoardService, RunScheduler, Verifier, PRWatcher, Reconciler,
                                    MCPRequestHandler (the wire's live half), preflight
 ElliotMCPKit    Model+IPC+Store    the MCP tools (one file per tool under Tools/)
-ElliotApp       SwiftUI            the board
+ElliotAppKit    SwiftUI            every view, and AppModel — a library, so it is testable
+ElliotApp       ElliotAppKit       @main and the Scene graph, and nothing else
 elliot-mcp      stdio              the helper Claude Code spawns
 ```
 
@@ -119,8 +120,27 @@ the store read-only and routes every mutation back over the unix socket. A read 
 `source: offline-db`; a **write never falls back** — writing a column change straight to the database
 would move a card without firing its rule.
 
-**Rules belong in `ElliotModel`.** `ElliotApp` is an `executableTarget` with no test target, so any rule
-written in a SwiftUI view is unprovable by `swift test`. Views render and dispatch; they do not judge.
+**Rules belong in `ElliotModel`.** Views render and dispatch; they do not judge. This is still the
+rule, but since #72 it is a preference with a reason rather than a workaround: `AppModel` and the
+views live in `ElliotAppKit`, a library, so `ElliotAppKitTests` can reach them. Put a rule in
+`ElliotModel` because it is a rule — pure, no clock, shared with the MCP helper — not because the
+app target is a black box. It no longer is.
+
+**What `swift test` still cannot see is layout.** A view's *structure* is now assertable; where
+things sit on screen is not, and that gap has cost this project three merges: `.inspector()` shipped
+in #47 unverified, crashed in #50, destroyed the window layout in #52, and was reverted in #53 —
+each one green on `swift build` and `swift test`. **A change that moves anything on screen is not
+finished until someone has looked at it.** The cheap way, which needs no Xcode:
+
+```bash
+./Scripts/build-app.sh
+open -n --env ELLIOT_HOME=/tmp/elliot-check dist/Elliot.app   # an isolated store, not yours
+```
+
+and then read the window's accessibility tree — the column captions, the toolbar and the status bar
+all carry labels, so "did the board survive" is a text diff rather than a squint. When in doubt,
+build the same check from `main` and compare: that A/B is what proved the 143×144 restored window
+size predates #72 rather than being caused by it.
 
 ### Board transitions
 

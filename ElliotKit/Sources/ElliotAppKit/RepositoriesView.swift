@@ -9,10 +9,12 @@ import SwiftUI
 /// `RepoReconciler` in `ElliotModel`, and every button is a `RepoFix` that
 /// verdict already carried — `ElliotApp` has no test target, so a rule written
 /// here would be unprovable by `swift test`.
-struct RepositoriesView: View {
+public struct RepositoriesView: View {
+    public init() {}
+
     @Environment(AppModel.self) private var model
 
-    var body: some View {
+    public var body: some View {
         Group {
             if model.isReady {
                 List {

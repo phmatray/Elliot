@@ -17,7 +17,12 @@ import SwiftUI
 /// it was read off the repository, and `isGrounded` — every cited file actually
 /// present — is this feature's `verifiedOutcome`: the difference between a
 /// story that was found and one that was written.
-struct AnalysisWindow: View {
+/// `public` only because `ElliotApp` names it in a `Scene`. Everything else in
+/// this target stays internal — the tests reach it with `@testable`, and a
+/// library that exports its whole surface has stopped being a boundary.
+public struct AnalysisWindow: View {
+    public init() {}
+
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -31,7 +36,7 @@ struct AnalysisWindow: View {
     /// `nil` until the reader opens or closes the strip themselves.
     @State private var lensesExpanded: Bool?
 
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()

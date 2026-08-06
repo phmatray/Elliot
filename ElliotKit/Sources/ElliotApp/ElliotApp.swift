@@ -1,3 +1,4 @@
+import ElliotAppKit
 import SwiftUI
 
 @main
