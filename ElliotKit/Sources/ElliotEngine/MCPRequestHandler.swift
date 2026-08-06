@@ -23,7 +23,14 @@ public struct MCPRequestHandler: Sendable {
     /// Exhaustive by construction — no `default`. A request case added to the
     /// protocol has to be answered here before the app will build, rather than
     /// reaching an agent as an unhelpful internal error.
-    public func handle(_ request: ElliotRequest) async -> ElliotResponse {
+    /// `client` is the name the connection gave in `hello`, forwarded by
+    /// `IPCServer` so an MCP move records *which* agent made it rather than the
+    /// literal "mcp" (#101). Defaulted, so a caller that has no connection to
+    /// name — the tests, and any future in-process dispatch — still records an
+    /// MCP origin rather than being forced to invent one.
+    public func handle(
+        _ request: ElliotRequest, client: String = "mcp"
+    ) async -> ElliotResponse {
         do {
             switch request {
             case .hello:
@@ -40,7 +47,7 @@ public struct MCPRequestHandler: Sendable {
             case .updateCard(let id, let title, let body, let story):
                 return try await updateCard(id: id, title: title, body: body, story: story)
             case .moveCard(let id, let to, let followUps):
-                return try await moveCard(id: id, to: to, followUps: followUps)
+                return try await moveCard(id: id, to: to, followUps: followUps, client: client)
             case .listRuns(let cardID, let limit):
                 return try await listRuns(cardID: cardID, limit: limit)
             case .awaitRun(let id, let timeoutSeconds):
@@ -53,7 +60,8 @@ public struct MCPRequestHandler: Sendable {
                 return try await next(repo: repo, limit: limit)
             case .analyzeRepo(let repo, let angles, let maxStories, let instructions):
                 return try await analyze(
-                    repo: repo, angles: angles, maxStories: maxStories, instructions: instructions
+                    repo: repo, angles: angles, maxStories: maxStories,
+                    instructions: instructions, client: client
                 )
             case .listProposals(let analysisID, let repo, let status, let limit):
                 return try await listProposals(
@@ -224,7 +232,7 @@ public struct MCPRequestHandler: Sendable {
     }
 
     private func moveCard(
-        id: UUID, to column: ElliotModel.Column, followUps: [String]
+        id: UUID, to column: ElliotModel.Column, followUps: [String], client: String
     ) async throws -> ElliotResponse {
         guard let before = try await store.card(id: id) else {
             return .failure(code: .cardNotFound, message: "No card with id \(id).", hint: nil)
@@ -234,7 +242,7 @@ public struct MCPRequestHandler: Sendable {
         // An omitted list already became `[]` at the MCP boundary: an agent
         // saying nothing about follow-ups means "none", not "ask me".
         let result = try await board.move(
-            cardID: id, to: column, origin: .mcp(client: "mcp"), followUps: followUps
+            cardID: id, to: column, origin: .mcp(client: client), followUps: followUps
         )
 
         switch result {
@@ -285,7 +293,8 @@ public struct MCPRequestHandler: Sendable {
     // MARK: - Analysis
 
     private func analyze(
-        repo: String, angles: [String], maxStories: Int, instructions: String
+        repo: String, angles: [String], maxStories: Int, instructions: String,
+        client: String
     ) async throws -> ElliotResponse {
         let repos = try await store.repos()
         guard case .one(let match) = Self.filter(repo, in: repos) else {
@@ -310,7 +319,7 @@ public struct MCPRequestHandler: Sendable {
             angles: resolved,
             extraInstructions: instructions,
             maxStoriesPerAngle: max(1, min(maxStories, 30)),
-            origin: .mcp(client: "mcp")
+            origin: .mcp(client: client)
         )
         return .ok(.analysisStarted(AnalysisDTO(
             analysis: started.analysis,

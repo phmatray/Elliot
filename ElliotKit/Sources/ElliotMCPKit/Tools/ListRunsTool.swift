@@ -65,7 +65,15 @@ struct ListRunsTool: BoardTool {
                     ]),
                 ]),
             ]),
-            annotations: .init(title: "List runs", readOnlyHint: true, openWorldHint: false)
+            annotations: .init(
+                title: "List runs",
+                readOnlyHint: true,
+                // The sharpest case for the rule: these rows carry `resultText`,
+                // which an agent wrote, and `verifiedOutcome`, which came from
+                // `gh`. Both were stored by the run that produced them — this
+                // call fetches nothing, so the world it reads is closed.
+                openWorldHint: false
+            )
         )
     }
 

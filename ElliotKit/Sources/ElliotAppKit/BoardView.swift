@@ -1019,6 +1019,23 @@ enum BoardAccessibility {
         "\(repoName), \(count) \(cards(count)) in \(column)"
     }
 
+    /// One row of a card's move history, read as a sentence.
+    ///
+    /// The visible row is a tabular line — two columns, an age, an origin — and
+    /// read out field by field it would be four disconnected fragments. This is
+    /// the same information as a sentence, which is what
+    /// `.accessibilityElement(children: .combine)` needs to be given instead.
+    ///
+    /// `run` is optional and the clause is omitted entirely when it is `nil`:
+    /// VoiceOver must not say "started" about a move that started nothing.
+    static func historyRowLabel(
+        from: String, to: String, age: String, origin: String, run: String?
+    ) -> String {
+        let base = "\(from) to \(to), \(age), \(origin)"
+        guard let run else { return base }
+        return "\(base). Started \(run)"
+    }
+
     /// What the detail panel announces itself as.
     ///
     /// It names the column as well as the card, and that is the whole point of

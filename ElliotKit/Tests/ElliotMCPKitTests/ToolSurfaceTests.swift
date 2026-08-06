@@ -250,6 +250,55 @@ struct ToolSurfaceTests {
         #expect(try tool("board_cancel_run").annotations.destructiveHint == true)
     }
 
+    /// The rule written on `BoardTool.tool`, as a test: the open-world tools are
+    /// exactly the ones whose call can make Elliot touch something outside this
+    /// machine — by reaching out, or by starting or steering a process that does.
+    ///
+    /// An **exact set**, and deliberately the opposite of the floor used by
+    /// `everyWriteIsRefusedWhileOffline` below. There a new write tool should
+    /// join an existing guarantee automatically, so pinning a count would only
+    /// get in the way. Here a new tool must be *classified*, because nothing but
+    /// a person knows whether it reaches github.com — and the whole of #27 was
+    /// that the question had been answered by default rather than asked. A new
+    /// tool failing this test **is** the question being put.
+    @Test("Exactly the tools that reach outside this machine say that they do")
+    func openWorldIsExactlyTheOutwardTools() {
+        let outward: Set<String> = [
+            // Starts an agent that files issues, opens and merges pull requests.
+            "board_move_card",
+            // Starts one unattended `claude -p` run per angle in a real checkout.
+            "board_analyze_repo",
+            // Aborts a run that is mid-conversation with github.com.
+            "board_cancel_run",
+        ]
+
+        for tool in ElliotMCPServer.tools {
+            let expected = outward.contains(tool.name)
+            #expect(
+                tool.annotations.openWorldHint == expected,
+                "\(tool.name) says \(tool.annotations.openWorldHint.map(String.init) ?? "nothing") "
+            )
+        }
+
+        // The set has to name tools that exist, or a rename empties it in
+        // silence and every assertion above starts passing for the wrong reason.
+        let names = Set(ElliotMCPServer.tools.map(\.name))
+        #expect(outward.isSubset(of: names), "outward names a tool that is not on the surface")
+    }
+
+    @Test("Watching a run and stopping one are not the same reach")
+    func awaitAndCancelDifferOnPurpose() throws {
+        // The subtlest call in the set, and the one most likely to be flattened
+        // by a later reader: both tools point at the same run. Cancelling can
+        // abort a merge halfway and leave github.com in a state this call
+        // caused; waiting cannot change what the run does at all. Annotating
+        // them alike would mean either losing cancel's warning or crying wolf on
+        // every poll of a long merge — and a warning that fires on every poll is
+        // one people learn to dismiss.
+        #expect(try tool("board_cancel_run").annotations.openWorldHint == true)
+        #expect(try tool("board_await_run").annotations.openWorldHint == false)
+    }
+
     @Test("No tool claims to be read-only while going through a write")
     func writesDoNotClaimToBeReadOnly() throws {
         // `board_await_run` writes nothing but travels the write path, which
@@ -273,12 +322,11 @@ struct ToolSurfaceTests {
         for tool in ElliotMCPServer.tools {
             #expect(tool.description?.isEmpty == false, "\(tool.name) has no description")
             #expect(tool.annotations.title?.isEmpty == false, "\(tool.name) has no title")
-            // Left nil this reads as "nobody said", and a client deciding how
-            // loudly to confirm a call has to guess — in whichever direction its
-            // author found convenient. Every tool here has an answer, so saying
-            // it is not optional: `board_cancel_run` reaches github.com and
-            // `board_next` reads one local database, and a caller must be able
-            // to tell those apart without reading our source.
+            // Not "nobody said" — MCP gives `openWorldHint` a default of
+            // **true**, so an omitted annotation is the permissive claim and a
+            // tool that stays silent is telling clients it may reach anywhere.
+            // Every tool here has a real answer and owes it out loud;
+            // `openWorldIsExactlyTheOutwardTools` holds what each one is.
             #expect(tool.annotations.openWorldHint != nil, "\(tool.name) leaves openWorldHint unset")
         }
     }

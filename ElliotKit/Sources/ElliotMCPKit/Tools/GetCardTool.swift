@@ -26,7 +26,13 @@ struct GetCardTool: BoardTool {
                 ]),
                 "required": .array([.string("card_id")]),
             ]),
-            annotations: .init(title: "Get a card", readOnlyHint: true, openWorldHint: false)
+            annotations: .init(
+                title: "Get a card",
+                readOnlyHint: true,
+                // One row of Elliot's database. The issue URL on it was stored
+                // by an earlier run, not fetched now.
+                openWorldHint: false
+            )
         )
     }
 

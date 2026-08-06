@@ -1,5 +1,6 @@
 import ElliotEngine
 import ElliotModel
+import ElliotStore
 import Foundation
 import Testing
 
@@ -54,6 +55,84 @@ struct AppModelTests {
         let model = AppModel()
         model.testOnlySeed(repos: repos, cards: cards)
         return model
+    }
+
+    // MARK: - Move history
+
+    /// The two reads are separate on purpose, and this is where that stays
+    /// true. `refreshRuns` runs from `CardView.task` for **every visible card**,
+    /// so widening its audit read from 1 row to 100 would pull the whole history
+    /// of the board behind a scroll; `refreshHistory` runs from the panel's own
+    /// `.task(id:)`, for the one card that is open.
+    ///
+    /// Asserted against a real store rather than a fake, because the question is
+    /// what SQLite returns for the limit each one passes — a fake would only
+    /// echo the limit back.
+    @Test("Opening a card's panel loads its whole history, newest first")
+    func refreshHistoryLoadsEveryMove() async throws {
+        let store = try BoardStore.inMemory()
+        let model = AppModel()
+        model.testOnlySeedStore(store)
+
+        var repo = Repo(path: "/tmp/r", nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        repo.isEnabled = true
+        try await store.saveRepo(repo)
+        let card = Card(
+            repoID: repo.id, title: "Run log", column: .backlog,
+            columnEnteredAt: epoch, createdAt: epoch, updatedAt: epoch)
+        try await store.saveCard(card)
+
+        try await store.commitMove(
+            card: card, to: .todo, orderIndex: 1, origin: .userDrag, run: nil, now: epoch)
+        // Re-read: `commitMove` takes the card as it was *before* the move, so
+        // passing the stale one would record the same `from` twice.
+        let afterFirst = try #require(try await store.card(id: card.id))
+        try await store.commitMove(
+            card: afterFirst, to: .inProgress, orderIndex: 2,
+            origin: .mcp(client: "agent-x"), run: nil,
+            now: epoch.addingTimeInterval(60))
+
+        await model.refreshHistory(cardID: card.id)
+        let history = try #require(model.historyByCard[card.id])
+
+        #expect(history.count == 2)
+        #expect(history.map(\.to) == [.inProgress, .todo], "newest first")
+        #expect(history[0].origin == .mcp(client: "agent-x"))
+        #expect(history[1].origin == .userDrag)
+    }
+
+    /// Criterion 4's other half: the header's arrival note is fed by
+    /// `refreshRuns`, which this story does not touch. If the two reads were
+    /// ever merged, this is what would notice.
+    @Test("The arrival note still gets its one audit from refreshRuns")
+    func refreshRunsStillFeedsTheArrivalNote() async throws {
+        let store = try BoardStore.inMemory()
+        let model = AppModel()
+        model.testOnlySeedStore(store)
+
+        var repo = Repo(path: "/tmp/r", nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        repo.isEnabled = true
+        try await store.saveRepo(repo)
+        let card = Card(
+            repoID: repo.id, title: "Run log", column: .backlog,
+            columnEnteredAt: epoch, createdAt: epoch, updatedAt: epoch)
+        try await store.saveCard(card)
+
+        try await store.commitMove(
+            card: card, to: .todo, orderIndex: 1, origin: .userDrag, run: nil, now: epoch)
+        let afterFirst = try #require(try await store.card(id: card.id))
+        try await store.commitMove(
+            card: afterFirst, to: .inProgress, orderIndex: 2,
+            origin: .system(reason: .prBecameReady), run: nil,
+            now: epoch.addingTimeInterval(60))
+
+        await model.refreshRuns(cardID: card.id)
+
+        let last = try #require(model.lastMove[card.id])
+        #expect(last.to == .inProgress, "the arrival note reads the newest move")
+        #expect(last.origin == .system(reason: .prBecameReady))
+        // And it did not quietly become the history read.
+        #expect(model.historyByCard[card.id] == nil)
     }
 
     // MARK: - Filtering and ordering
