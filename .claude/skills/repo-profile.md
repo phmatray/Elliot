@@ -32,15 +32,16 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1026 tests in 117 suites**, measured on
-  `feat/135-verified-outcome-once` at `9907092` on 2026-08-06; needs no Xcode, no API token, no
+- **Full test:** `cd ElliotKit && swift test` (**1027 tests in 117 suites**, measured on
+  `feat/135-verified-outcome-once` at `d0d822d` on 2026-08-06; needs no Xcode, no API token, no
   network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
     wrong here three times.** It said 408 while the suite ran 517, then 517 while it ran 788, then
     **820 while it ran 996**. It moved 788 → 820 *during the pull request that corrected it*, when
     `main` gained three suites and the branch was synced. **Trust the run, and correct the line when
-    you notice the gap.** For scale: `main` at `7b8436c` ran **996 in 116**, and #135 added 30 tests
-    and one suite on top.
+    you notice the gap.** For scale: `main` at `7b8436c` ran **996 in 116**, and #135 added 31 tests
+    and one suite on top. It drifted *again* inside #135 — 1026 → 1027 when the code-review pass
+    added a test after the line was written. Re-read it from the last run before you trust it.
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
