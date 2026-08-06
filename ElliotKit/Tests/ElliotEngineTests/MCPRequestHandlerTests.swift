@@ -144,4 +144,98 @@ struct MCPRequestHandlerTests {
         }
         #expect(repos.map(\.nameWithOwner) == ["phmatray/Elliot"])
     }
+
+    @Test("createCard is idempotent under a repeated key")
+    func createCardIdempotent() async throws {
+        let f = try await Fixture.make()
+        let first = await f.handler.handle(.createCard(
+            repo: "phmatray/Elliot", title: "Run log", body: "",
+            story: nil, column: .backlog, idempotencyKey: "k1"
+        ))
+        guard case .ok(.created(let a)) = first else {
+            Issue.record("expected .created, got \(first)")
+            return
+        }
+        #expect(a.alreadyExisted == false)
+
+        let second = await f.handler.handle(.createCard(
+            repo: "phmatray/Elliot", title: "Run log", body: "",
+            story: nil, column: .backlog, idempotencyKey: "k1"
+        ))
+        guard case .ok(.created(let b)) = second else {
+            Issue.record("expected .created, got \(second)")
+            return
+        }
+        #expect(b.alreadyExisted == true)
+        #expect(b.card.id == a.card.id)
+        #expect(try await f.store.cardCount(repoID: f.repo.id, column: nil) == 1)
+    }
+
+    @Test("A filed card refuses edits with its own code, and is left untouched")
+    func updateRefusedOnceFiled() async throws {
+        let f = try await Fixture.make()
+        var card = try await f.board.createCard(
+            repoID: f.repo.id, title: "Run log", body: "original"
+        ).card
+        card.issueNumber = 42
+        try await f.store.saveCard(card)
+
+        let refusal = try #require(failureOf(await f.handler.handle(
+            .updateCard(id: card.id, title: "changed", body: "changed", story: nil)
+        )))
+        // Not `.readOnly`: an agent told "read only" retries when Elliot comes
+        // up, and this refusal never clears.
+        #expect(refusal.code == .cardAlreadyFiled)
+        #expect(refusal.message.contains("42"))
+        #expect(try await f.store.card(id: card.id)?.body == "original")
+    }
+
+    @Test("Backlog to To Do moves the card and names the skill it started")
+    func moveStartsCreateIssue() async throws {
+        let f = try await Fixture.make()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id,
+            title: "Run log",
+            story: UserStory(
+                role: "developer",
+                want: "to see the run log inside the card",
+                benefit: "I can diagnose without a terminal"
+            )
+        ).card
+
+        guard case .ok(.moved(let moved)) = await f.handler.handle(
+            .moveCard(id: card.id, to: .todo, followUps: [])
+        ) else {
+            Issue.record("expected .moved")
+            return
+        }
+        #expect(moved.from == Column.backlog.rawValue)
+        #expect(moved.to == Column.todo.rawValue)
+        #expect(moved.triggered == "create-issue")
+        #expect(moved.runID != nil)
+        #expect(try await f.store.card(id: card.id)?.column == .todo)
+    }
+
+    @Test("A blocked move refuses in the same words board_next predicts")
+    func moveBlockedSpeaksTheSharedText() async throws {
+        let f = try await Fixture.make()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id, title: "Run log", body: "b"
+        ).card
+
+        let sameColumn = try #require(failureOf(await f.handler.handle(
+            .moveCard(id: card.id, to: .backlog, followUps: [])
+        )))
+        #expect(sameColumn.code == .moveBlocked)
+        #expect(sameColumn.message == MoveBlockText.explain(.sameColumn))
+    }
+
+    @Test("moveCard on an unknown card refuses")
+    func moveUnknownCard() async throws {
+        let f = try await Fixture.make()
+        let refusal = try #require(failureOf(await f.handler.handle(
+            .moveCard(id: UUID(), to: .todo, followUps: [])
+        )))
+        #expect(refusal.code == .cardNotFound)
+    }
 }
