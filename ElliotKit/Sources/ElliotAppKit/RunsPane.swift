@@ -175,6 +175,14 @@ struct RunBox: View {
     /// to watch — and stays however the reader last left it once they touch it.
     @State private var expandedOverride: Bool?
 
+    /// The finished log, read from disk once per `LogSource` rather than once
+    /// per render. See `logView`'s `.task(id:)`.
+    ///
+    /// `nil` is "not read yet", which is not "empty" — the read is asynchronous
+    /// now, so for the first frame after the box opens there is a difference
+    /// between the two, and `emptyNote` has to be able to tell them apart.
+    @State private var diskRows: [RunLogRow]?
+
     private var expanded: Bool { expandedOverride ?? run.state.isActive }
 
     var body: some View {
@@ -309,10 +317,22 @@ struct RunBox: View {
                 .lineLimit(1)
                 .truncationMode(.head)
         }
+        // Once per (run, expansion), not once per render. `body` is evaluated
+        // for reasons that have nothing to do with this box — a selection
+        // elsewhere, a window resize, a run's cost arriving — and a finished
+        // `merge-pr` log is not small.
+        .task(id: LogSource(runID: run.id, state: run.state, hasLiveTail: !live.isEmpty)) {
+            await loadDiskRows()
+        }
     }
 
+    /// Three states rather than two. The file is read asynchronously now, so a
+    /// log nobody has looked at yet also has no rows — and telling the reader it
+    /// "may have been cleaned up" would be a claim about a file that has not
+    /// been opened.
     private func emptyNote(_ nothingAtAll: Bool) -> String {
-        nothingAtAll
+        if live.isEmpty, diskRows == nil { return "Reading the log…" }
+        return nothingAtAll
             ? "Nothing in this log — it may have been cleaned up."
             : "Nothing matches this filter."
     }
@@ -323,19 +343,63 @@ struct RunBox: View {
     /// moment it ends — the tail used to be readable lines and the file on disk
     /// raw NDJSON, which made the log look like a different artefact depending
     /// on when you opened it.
+    ///
+    /// The live half is folded here, in `body`, and stays that way on purpose:
+    /// it is at most the 300 events `AppModel` caps the tail at, it is already
+    /// in memory, and it has to be re-read to be live at all. Only the disk half
+    /// is held, because only the disk half is a file read.
     private var rows: [RunLogRow] {
-        RunsPane.rows(of: run, events: live.isEmpty ? diskEvents : live)
+        live.isEmpty ? (diskRows ?? []) : RunsPane.rows(of: run, events: live)
+    }
+
+    /// Reads the log off the main actor and folds it, once per `LogSource`.
+    ///
+    /// `Task.detached` rather than a plain `await`: this view is main-actor
+    /// isolated, so an inherited task would do the blocking read *on* the main
+    /// thread — moving the stall out of `body` and leaving it in the same place
+    /// it hurts.
+    private func loadDiskRows() async {
+        guard live.isEmpty else {
+            // Nothing to read: `rows` is taking the live tail. Dropped rather
+            // than kept, so a run that starts talking cannot hold a stale file
+            // in memory behind the tail that replaced it.
+            diskRows = nil
+            return
+        }
+        let run = run
+        let loaded = await Task.detached(priority: .userInitiated) {
+            RunsPane.rows(of: run, events: RunBox.diskEvents(at: run.logPath))
+        }.value
+        guard !Task.isCancelled else { return }
+        diskRows = loaded
     }
 
     /// `decodeAll` rather than `decode`: an assistant turn that carries prose
     /// *and* a tool call is two rows, and the one-event form would silently keep
     /// only the first.
-    private var diskEvents: [StreamEvent] {
-        guard let text = try? String(contentsOfFile: run.logPath, encoding: .utf8) else { return [] }
+    ///
+    /// `nonisolated` because `View` is `@preconcurrency @MainActor`: a static
+    /// member of a conforming type is inferred main-actor isolated, and calling
+    /// it from a detached task would compile to nothing and trap at run time.
+    nonisolated static func diskEvents(at path: String) -> [StreamEvent] {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
         return text
             .split(separator: "\n")
             .flatMap { StreamEventDecoder.decodeAll(line: Data($0.utf8)) }
     }
+}
+
+/// What makes the log on disk worth reading again.
+///
+/// The identity `.task` is keyed on. Expansion is not in it because the log
+/// view does not exist while the box is collapsed, so appearing *is* the
+/// expansion. What is in it are the two things that change what a read would
+/// return: the run ending, and a live tail arriving or emptying — the tail is
+/// what the disk read is an alternative to.
+private struct LogSource: Equatable {
+    var runID: SkillRun.ID
+    var state: RunState
+    var hasLiveTail: Bool
 }
 
 // MARK: - The verdict

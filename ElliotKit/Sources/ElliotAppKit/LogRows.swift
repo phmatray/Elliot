@@ -129,9 +129,14 @@ struct SessionRow: View {
         return out
     }
 
-    /// The last two components, with the elision spelled out. A run's `cwd` is
-    /// an absolute path and the panel is 344pt wide; the alternative is a chip
-    /// that truncates without saying so.
+    /// The last two components, with the elision spelled out.
+    ///
+    /// A run's `cwd` is an absolute path, and no width the panel can take makes
+    /// one fit. The panel is measured in columns rather than in points —
+    /// `PanelLayout.panelWidth` is two or three of them — and at three spans it
+    /// splits between both panes, so this one gets a column and a half there
+    /// and two columns at the narrow setting, where it is the only pane shown.
+    /// The alternative is a chip that truncates without saying so.
     nonisolated static func abbreviated(_ path: String) -> String {
         let parts = path.split(separator: "/", omittingEmptySubsequences: true)
         guard parts.count > 2 else { return path }

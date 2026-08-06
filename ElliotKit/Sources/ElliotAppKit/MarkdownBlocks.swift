@@ -604,8 +604,8 @@ struct InlineTextView: View {
     var body: some View {
         if InlineTextView.isFlowing(text) {
             InlineFlow {
-                ForEach(Array(InlineTextView.pieces(of: text, context: context).enumerated()), id: \.offset) { _, piece in
-                    piece.view(font: font)
+                ForEach(Array(flowItems.enumerated()), id: \.offset) { _, item in
+                    item.view(font: font)
                 }
             }
         } else {
@@ -613,6 +613,12 @@ struct InlineTextView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
+    }
+
+    /// The atoms the flow places — pieces, with the punctuation that was
+    /// written flush against one carried inside its item rather than beside it.
+    private var flowItems: [InlineItem] {
+        InlineTextView.items(InlineTextView.pieces(of: text, context: context))
     }
 
     /// True when the line holds something clickable, which is the only reason
@@ -665,32 +671,108 @@ struct InlineTextView: View {
     /// as one subview would wrap inside itself — putting the chip after it
     /// beside a three-line block instead of after the last word. Code spans and
     /// chips stay whole: a split code span would draw as two.
+    ///
+    /// One kind of word is not a word: punctuation that opens a run written
+    /// **flush** against the run before it — the comma in `#79, and`. It was an
+    /// atom of its own until #79, which is to say the flow could wrap between
+    /// the chip and the comma, stranding the comma at the start of the next
+    /// line, and put 4pt of spacing there when it did not. It comes out as
+    /// `.glued`, and `items(_:)` folds it into the atom it belongs to.
+    ///
+    /// ⚠️ **Punctuation only, and only when flush.** Drop the first restriction
+    /// and a letter flush against a chip (`a/b.swift*really*`) is glued instead
+    /// of read as a word — `emphasisSurvivesTheSplit` goes red on exactly that,
+    /// which is how the restriction was found. Drop the second and a comma
+    /// opening a run whose predecessor *ended* in a space is dragged back onto
+    /// the word before it; nothing in the suite covers that one, which is why
+    /// it is written down here.
     nonisolated static func pieces(of text: InlineText, context: MarkdownContext) -> [InlinePiece] {
-        text.runs.flatMap { run -> [InlinePiece] in
+        var out: [InlinePiece] = []
+        // Whether what came before ends flush against whatever follows it. A
+        // chip or a code span always does — neither carries a space of its own
+        // — and a prose run does when its last character is not one.
+        var flush = false
+
+        func prose(_ value: String, _ style: InlinePiece.WordStyle) {
+            guard !value.isEmpty else { return }
+            var rest = value[...]
+            if flush, !out.isEmpty {
+                let tail = rest.prefix { trailingPunctuation.contains($0) }
+                if !tail.isEmpty {
+                    out.append(.glued(String(tail), style))
+                    rest = rest.dropFirst(tail.count)
+                }
+            }
+            out += words(rest).map { .word($0, style) }
+            flush = !(value.last?.isWhitespace ?? true)
+        }
+
+        for run in text.runs {
             switch run {
             case .text(let value):
-                return words(value).map { .word($0, .plain) }
+                prose(value, .plain)
             case .emphasis(let value):
-                return words(value).map { .word($0, .emphasis) }
+                prose(value, .emphasis)
             case .strong(let value):
-                return words(value).map { .word($0, .strong) }
+                prose(value, .strong)
             case .code(let value):
-                return [.code(value)]
+                out.append(.code(value))
+                flush = true
             case .issueRef(let number):
-                return [.chip(text: "#\(number)", symbol: "circle.dashed", url: context.url(for: run))]
+                out.append(
+                    .chip(text: "#\(number)", symbol: "circle.dashed", url: context.url(for: run))
+                )
+                flush = true
             case .prRef(let number):
-                return [.chip(text: "PR \(number)", symbol: "arrow.triangle.pull", url: context.url(for: run))]
+                out.append(
+                    .chip(
+                        text: "PR \(number)", symbol: "arrow.triangle.pull",
+                        url: context.url(for: run)
+                    )
+                )
+                flush = true
             case .path(let path):
-                return [.chip(text: path, symbol: "doc.text", url: context.url(for: run))]
+                out.append(.chip(text: path, symbol: "doc.text", url: context.url(for: run)))
+                flush = true
             case .link(let label, let url):
                 // Proportional, not a chip: a link's text is the author's
                 // prose, and the fact face would claim a machine wrote it.
-                return words(label).map { .link($0, url: url) }
+                out += words(label[...]).map { .link($0, url: url) }
+                flush = !(label.last?.isWhitespace ?? true)
             }
         }
+        return out
     }
 
-    nonisolated private static func words(_ value: String) -> [String] {
+    /// The pieces regrouped into what the flow is allowed to break between.
+    ///
+    /// A `.glued` fragment joins the item before it, so the two are one subview
+    /// and the layout cannot separate them. A fragment with nothing before it
+    /// becomes an ordinary word rather than disappearing — the whole file is
+    /// written against runs that vanish.
+    nonisolated static func items(_ pieces: [InlinePiece]) -> [InlineItem] {
+        var out: [InlineItem] = []
+        for piece in pieces {
+            switch piece {
+            case .glued(let value, let style) where out.isEmpty:
+                out.append(InlineItem(piece: .word(value, style)))
+            case .glued:
+                out[out.count - 1].glued.append(piece)
+            default:
+                out.append(InlineItem(piece: piece))
+            }
+        }
+        return out
+    }
+
+    /// What belongs to whatever it follows. A list rather than
+    /// `CharacterSet.punctuationCharacters`: an em dash and an opening bracket
+    /// are punctuation too, and neither trails anything.
+    nonisolated static let trailingPunctuation: Set<Character> = [
+        ",", ".", ";", ":", "!", "?", ")", "]", "}", "'", "\"", "’", "”", "…",
+    ]
+
+    nonisolated private static func words(_ value: Substring) -> [String] {
         value.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
     }
 }
@@ -701,6 +783,10 @@ enum InlinePiece: Hashable, Sendable {
     case code(String)
     case chip(text: String, symbol: String, url: String?)
     case link(String, url: String)
+    /// Punctuation written flush against the piece before it, with the style of
+    /// the run it came from. Drawn exactly like a word; it exists so
+    /// `InlineTextView.items(_:)` can tell the two apart.
+    case glued(String, WordStyle)
 
     enum WordStyle: Hashable, Sendable {
         case plain, emphasis, strong
@@ -711,7 +797,7 @@ enum InlinePiece: Hashable, Sendable {
     @ViewBuilder
     func view(font: Font) -> some View {
         switch self {
-        case .word(let value, let style):
+        case .word(let value, let style), .glued(let value, let style):
             Text(value)
                 .font(style.font(from: font))
         case .code(let value):
@@ -741,6 +827,37 @@ extension InlinePiece.WordStyle {
         case .plain: base
         case .emphasis: base.italic()
         case .strong: base.bold()
+        }
+    }
+}
+
+/// One subview of the flow: a piece, plus anything written flush against its
+/// right side.
+///
+/// The flow wraps *between* subviews, so this is the unit that says what may
+/// not come apart. `glued` is empty for all but a handful of items on a line —
+/// hence the two rendering paths, the same cost decision `isFlowing` makes one
+/// level up.
+struct InlineItem: Hashable, Sendable {
+    var piece: InlinePiece
+    var glued: [InlinePiece] = []
+
+    /// `@MainActor` for the same reason `InlinePiece.view(font:)` is.
+    @MainActor
+    @ViewBuilder
+    func view(font: Font) -> some View {
+        if glued.isEmpty {
+            piece.view(font: font)
+        } else {
+            // Zero spacing and a shared baseline: this is one word as far as
+            // the reader is concerned, and a chip's capsule sits on the same
+            // line as the comma after it.
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                piece.view(font: font)
+                ForEach(Array(glued.enumerated()), id: \.offset) { _, fragment in
+                    fragment.view(font: font)
+                }
+            }
         }
     }
 }

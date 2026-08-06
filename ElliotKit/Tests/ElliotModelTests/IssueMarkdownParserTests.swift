@@ -98,7 +98,13 @@ struct IssueMarkdownParserTests {
 
     @Test(
         "Every non-blank source line survives the parse",
-        arguments: ["full-template.md", "prose-only.md", "adversarial.md"]
+        arguments: [
+            "full-template.md",
+            "prose-only.md",
+            "adversarial.md",
+            "collapsibles.md",
+            "issue-79.md",
+        ]
     )
     func nothingIsDropped(fixture: String) {
         let source = FixturePaths.issue(fixture)
@@ -272,6 +278,156 @@ struct IssueMarkdownParserTests {
         }
         #expect(language == "swift")
         #expect(code.contains("the file simply ends"))
+    }
+
+    // MARK: - `</details>` is only a closer when it is markup
+
+    @Test("A `</details>` in a code span or a fence does not end the disclosure")
+    func closerCountsOnlyAsMarkup() throws {
+        let document = IssueMarkdownParser.parse(FixturePaths.issue("collapsibles.md"))
+        let top = document.blocks.filter { if case .collapsible = $0 { return true } else { return false } }
+        #expect(top.count == 3)
+
+        guard case .collapsible(let summary, let body, _)? = top.first else {
+            Issue.record("expected a collapsible, got \(String(describing: top.first))")
+            return
+        }
+        #expect(summary.plain == "A summary with bold, code and a #47")
+
+        // Everything between the two shapes that used to close it early — the
+        // code span on the first line, the fence in the middle — is inside.
+        let inside = body.map(\.plainText).joined(separator: "\n")
+        #expect(inside.contains("inside a code span"))
+        #expect(inside.contains("Still inside, after the fence."))
+        #expect(inside.contains("Back at the outer level"))
+        #expect(body.contains { if case .collapsible = $0 { return true } else { return false } })
+
+        // …and nothing after it was hoisted, nor the tag left standing as prose.
+        #expect(!document.blocks.contains {
+            if case .paragraph(let text) = $0 { return text.plain.trimmed() == "</details>" }
+            return false
+        })
+    }
+
+    @Test("The repo's own #79 keeps its 📋 Spec disclosure whole")
+    func issue79SpecStaysClosed() throws {
+        let document = IssueMarkdownParser.parse(FixturePaths.issue("issue-79.md"))
+        let collapsibles = document.blocks.compactMap { block -> (InlineText, [IssueBlock])? in
+            if case .collapsible(let summary, let body, _) = block { return (summary, body) }
+            return nil
+        }
+        #expect(collapsibles.count == 2)
+
+        let spec = try #require(collapsibles.last)
+        #expect(spec.0.plain.contains("Spec"))
+        let inside = spec.1.map(\.plainText).joined(separator: "\n")
+        // The line the disclosure used to end on — it writes the tag as
+        // `` `</details>` `` while describing the fixtures — and a landmark
+        // some 150 lines further down that used to be hoisted with it.
+        #expect(inside.contains("adversarial.md"))
+        #expect(inside.contains("CaretRail"))
+        #expect(!spec.1.isEmpty)
+
+        // The tail is inside, so its own headings are not at the top level…
+        #expect(!document.blocks.contains {
+            if case .heading(let level, let text) = $0 { return level == 3 && text.plain == "Views" }
+            return false
+        })
+        // …while the plan, which really does follow the closer, still is.
+        #expect(document.blocks.contains {
+            if case .heading(_, let text) = $0 { return text.plain.contains("Implementation plan") }
+            return false
+        })
+        #expect(!document.blocks.contains {
+            if case .paragraph(let text) = $0 { return text.plain.trimmed() == "</details>" }
+            return false
+        })
+    }
+
+    // MARK: - A `<details>` that closes on its own line
+
+    @Test("A one-line <details> closes there instead of swallowing the rest of the issue")
+    func singleLineCollapsible() throws {
+        let document = IssueMarkdownParser.parse("""
+            Intro paragraph.
+
+            <details><summary>Spec</summary>hidden body</details>
+
+            ## After
+
+            Second paragraph, which used to be swallowed whole.
+            """)
+
+        #expect(document.blocks.count == 4)
+        guard case .collapsible(let summary, let body, _) = document.blocks[1] else {
+            Issue.record("expected a collapsible, got \(document.blocks[1])")
+            return
+        }
+        #expect(summary.plain == "Spec")
+        #expect(body.map(\.plainText) == ["hidden body"])
+        #expect(document.plainText.contains("hidden body"))
+
+        guard case .heading(let level, let after) = document.blocks[2] else {
+            Issue.record("expected a heading, got \(document.blocks[2])")
+            return
+        }
+        #expect(level == 2)
+        #expect(after.plain == "After")
+    }
+
+    @Test("Text after </summary> is body content, not markup")
+    func textAfterTheSummaryTag() throws {
+        let document = IssueMarkdownParser.parse("""
+            <details>
+            <summary>Spec</summary>trailing text here
+
+            More body.
+
+            </details>
+            """)
+
+        guard case .collapsible(let summary, let body, _)? = document.blocks.first else {
+            Issue.record("expected a collapsible, got \(String(describing: document.blocks.first))")
+            return
+        }
+        #expect(summary.plain == "Spec")
+        #expect(body.map(\.plainText) == ["trailing text here", "More body."])
+    }
+
+    @Test("A summary's inline HTML becomes runs rather than printing its own tags")
+    func summaryInlineHTML() throws {
+        let document = IssueMarkdownParser.parse("""
+            <details>
+            <summary><b>Spec</b> for <code>swift build</code> <span class="x">and</span> #47</summary>
+
+            Body.
+
+            </details>
+            """)
+
+        guard case .collapsible(let summary, _, _)? = document.blocks.first else {
+            Issue.record("expected a collapsible, got \(String(describing: document.blocks.first))")
+            return
+        }
+        #expect(summary.plain == "Spec for swift build and #47")
+        #expect(summary.runs.contains { if case .strong("Spec") = $0 { return true } else { return false } })
+        #expect(summary.runs.contains {
+            if case .code("swift build") = $0 { return true } else { return false }
+        })
+        #expect(summary.runs.contains { if case .issueRef(47) = $0 { return true } else { return false } })
+        #expect(!summary.plain.contains("<"))
+    }
+
+    @Test("An angle bracket that is not a tag stays prose, and a code span stays literal")
+    func angleBracketsInASummary() throws {
+        let document = IssueMarkdownParser.parse(
+            "<details><summary>a < b, `Array<Int>`, <details-foo> and Array<Int</summary>x</details>"
+        )
+        guard case .collapsible(let summary, _, _)? = document.blocks.first else {
+            Issue.record("expected a collapsible, got \(String(describing: document.blocks.first))")
+            return
+        }
+        #expect(summary.plain == "a < b, Array<Int>, <details-foo> and Array<Int")
     }
 
     @Test("A ragged table keeps every cell each row actually has")

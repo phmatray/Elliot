@@ -304,13 +304,21 @@ public struct BoardView: View {
             )
             // In a window too narrow for what the row holds the board scrolls,
             // and the card you just selected could be the one off-screen.
-            .onChange(of: model.selectedCardID) { frame(boardWidth: boardWidth) }
-            // A second handler, because `nudgeSelection` never touches
-            // `selectedCardID`: ⌘→ advanced a card into a column the board did
-            // not follow it to. Both route through the one `frame(boardWidth:)`
-            // — updating only the click path is how the keyboard fell behind
-            // the card in the first place.
-            .onChange(of: model.selectedCard?.column) { frame(boardWidth: boardWidth) }
+            //
+            // One handler on one value, and that value is the row itself rather
+            // than a proxy for it. There used to be two — `selectedCardID` and
+            // the selected card's column — and between them they missed every
+            // path that reshapes the row without touching either: the Details
+            // toolbar button opening the panel on a card already selected, a
+            // resize (drag handle, or View ▸ Narrow/Widen) changing
+            // `panelSpans`, and `armPendingMerge`, which selects a card that may
+            // already be selected and opens the panel in the same breath. Each
+            // left the board framed for the row it had a moment ago, which is
+            // the same failure this branch already fixed once for the selection
+            // path — and the third is the one that arms the merge, so the
+            // confirmation for the single irreversible act in the product was
+            // the one that could open off-screen.
+            .onChange(of: framing) { _, framing in frame(framing, boardWidth: boardWidth) }
         }
         .frame(maxWidth: .infinity)
         .background(Color(nsColor: .underPageBackgroundColor))
@@ -396,36 +404,28 @@ public struct BoardView: View {
             .animation(nil, value: model.selectedCardID)
     }
 
+    /// Everything the framing answers to, gathered from the model in one place.
+    ///
+    /// A computed property rather than four `onChange` handlers: the row's shape
+    /// is one thing, and asking about it in pieces is how three of the pieces
+    /// came to be missing.
+    private var framing: BoardFraming {
+        BoardFraming(
+            selectedCardID: model.selectedCardID,
+            selectedColumn: model.selectedCard?.column,
+            panelOrigin: panelOrigin,
+            spans: model.panelSpans
+        )
+    }
+
     /// Scroll the board so the selected card's column and its panel are framed
     /// together, with a lead of the previous column still showing.
     ///
-    /// One helper, both handlers. It works out where the pair *will* be rather
-    /// than measuring where it is: the row is an `HStack` of known widths, so
-    /// `PanelLayout.minX` answers before the layout that inserts the panel has
-    /// run — which is what lets the first click frame the pair instead of
-    /// framing the board as it was a moment ago.
-    private func frame(boardWidth: CGFloat) {
-        guard let column = model.selectedCard?.column else { return }
-        let origin = panelOrigin
-        let slots = PanelLayout.boardOrder(selected: origin)
-        let columnWidth = PanelLayout.columnWidth(boardWidth: boardWidth)
-        let panelWidth = PanelLayout.panelWidth(
-            columnWidth: columnWidth, spans: model.panelSpans
-        )
-
-        guard let originMinX = PanelLayout.minX(
-            of: .column(column), in: slots, columnWidth: columnWidth, panelWidth: panelWidth
-        ) else { return }
-        // Only read when the pair is flipped, and it is flipped only when there
-        // is a panel — so the fallback is unreachable rather than a guess.
-        let panelMinX = PanelLayout.minX(
-            of: .panel, in: slots, columnWidth: columnWidth, panelWidth: panelWidth
-        )
-        let offset = PanelLayout.frameOffsetX(
-            originMinX: originMinX,
-            panelMinX: panelMinX ?? originMinX,
-            flipped: origin != nil && PanelLayout.opensLeft(of: column)
-        )
+    /// The arithmetic is `BoardFraming.offsetX(boardWidth:)`, which is pure and
+    /// pinned by `swift test`. All that is left here is the deferral, which is
+    /// the one part of this no test can see.
+    private func frame(_ framing: BoardFraming, boardWidth: CGFloat) {
+        guard let offset = framing.offsetX(boardWidth: boardWidth) else { return }
 
         // Deferred by one turn of the main actor, and this is the whole reason
         // the first attempt did nothing on screen. `onChange` runs *inside* the
@@ -481,6 +481,93 @@ public struct BoardView: View {
         guard let id = model.selectedRepoID, let repo = model.repos.first(where: { $0.id == id })
         else { return true }
         return !repo.isEnabled || model.isBlocked(repo)
+    }
+}
+
+// MARK: - What the board frames, and where
+
+/// Everything the board's framing must answer to, as **one** value.
+///
+/// It exists because framing was keyed on two proxies — `selectedCardID` and
+/// the selected card's column — and three paths reshape the row without
+/// touching either of them:
+///
+/// 1. the **Details** toolbar button, opening the panel on a card that is
+///    already selected;
+/// 2. a **resize** — the drag handle, or View ▸ Narrow/Widen — changing
+///    `panelSpans`, which changes how far the row extends and therefore where a
+///    scroll offset clamps;
+/// 3. `AppModel.armPendingMerge(cardID:prNumber:)`, which selects a card *and*
+///    opens the panel together. It re-framed only when the card it arms was not
+///    the one already selected — and that is the path to the one act in the
+///    product that cannot be taken back, so a confirmation opening off-screen
+///    is the worst of the three.
+///
+/// Each left the board scrolled for the row it had a moment ago, which is the
+/// failure this branch already fixed once for the selection path.
+///
+/// ⚠️ On the first two the recomputed offset is the **same number**, and that is
+/// not an argument against firing. `PanelLayout.minX` sums the slots ahead of
+/// its target and a panel is never among them, so `offsetX` is invariant to
+/// `spans` and, for a column that is not flipped, to whether the panel is open
+/// — pinned by `BoardFramingTests.offsetIsInvariantToThePanelsWidth`. What
+/// changes is whether that number can be *applied*: with the panel shut the row
+/// fits the window and `scrollDisabled` clamps every scroll to zero; opening it
+/// makes the row 1.6–1.7× the viewport and the same offset finally means
+/// something. A trigger that does not fire is therefore the whole bug, even
+/// where the arithmetic would not have moved.
+///
+/// `selectedCardID` is kept even though it is not geometry — two cards in one
+/// column frame identically — because re-selecting inside a column the reader
+/// has scrolled away from must still bring that column back, which is what the
+/// old `onChange(of: selectedCardID)` did and what dropping it would quietly
+/// lose.
+///
+/// The board's **width** is deliberately *not* a member. It is an argument to
+/// `offsetX(boardWidth:)`, so the arithmetic still answers for the window it is
+/// asked about — but a live window resize emits a width per frame, and an
+/// animated scroll on each of them would fight the gesture rather than follow
+/// the reader. What is framed here is a change of *row*, not of window.
+struct BoardFraming: Equatable, Sendable {
+    var selectedCardID: UUID?
+    /// The column the selected card sits in, or `nil` when nothing is selected.
+    var selectedColumn: ElliotModel.Column?
+    /// The column the panel opens beside, or `nil` when no panel is drawn. Folds
+    /// `showingInspector` and the selection together exactly as
+    /// `BoardView.panelOrigin` does — one answer to "is there a panel", shared
+    /// by the order, the width of the row and the framing.
+    var panelOrigin: ElliotModel.Column?
+    /// How many columns wide the panel is.
+    var spans: Int
+
+    /// Where the board must scroll so the selected column and its panel are
+    /// framed together, or `nil` when there is nothing to frame.
+    ///
+    /// Pure, and out here rather than in the view for the reason the whole of
+    /// `PanelLayout` is: `swift test` cannot see the screen, but it can see
+    /// this. It works out where the pair *will* be rather than measuring where
+    /// it is — the row is an `HStack` of known widths, so `PanelLayout.minX`
+    /// answers before the layout that inserts the panel has run.
+    func offsetX(boardWidth: CGFloat) -> CGFloat? {
+        guard let selectedColumn else { return nil }
+        let slots = PanelLayout.boardOrder(selected: panelOrigin)
+        let columnWidth = PanelLayout.columnWidth(boardWidth: boardWidth)
+        let panelWidth = PanelLayout.panelWidth(columnWidth: columnWidth, spans: spans)
+
+        guard let originMinX = PanelLayout.minX(
+            of: .column(selectedColumn), in: slots,
+            columnWidth: columnWidth, panelWidth: panelWidth
+        ) else { return nil }
+        // Only read when the pair is flipped, and it is flipped only when there
+        // is a panel — so the fallback is unreachable rather than a guess.
+        let panelMinX = PanelLayout.minX(
+            of: .panel, in: slots, columnWidth: columnWidth, panelWidth: panelWidth
+        )
+        return PanelLayout.frameOffsetX(
+            originMinX: originMinX,
+            panelMinX: panelMinX ?? originMinX,
+            flipped: panelOrigin != nil && PanelLayout.opensLeft(of: selectedColumn)
+        )
     }
 }
 
@@ -719,7 +806,12 @@ struct ColumnView: View {
                         dropHint.transition(.opacity)
                     }
                 }
-                .padding(.horizontal, 8)
+                // The constant, not the 8 it holds. The tether's reach is
+                // `Metric.gutter + Metric.columnListPadding`, computed from the
+                // named one — so a bare literal here is half of one value with
+                // nothing linking it to the other half, and the day it moved the
+                // rail would stop touching the card with no test to say so.
+                .padding(.horizontal, Metric.columnListPadding)
                 .padding(.bottom, 10)
                 .frame(maxWidth: .infinity, alignment: .top)
                 // On the list itself, not the board: this is about membership

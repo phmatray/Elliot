@@ -258,6 +258,90 @@ struct ClaudeRunnerTests {
         #expect(finished)
     }
 
+    /// One line, many events — live.
+    ///
+    /// An assistant turn can carry prose *and* one or more tool calls in the
+    /// same `message.content` array. `StreamEventDecoder.decode` is
+    /// `decodeAll(…).first`, so while the runner used it the tail returned the
+    /// prose and dropped every tool call that shared the turn with it. The log
+    /// on disk is read back through `decodeAll`, so the same run read one way
+    /// while it was going and another once it had finished — nothing failed,
+    /// the two simply disagreed.
+    ///
+    /// Asserted on the events seen **before** `.finished`, because "the log
+    /// ends up complete" was already true of the broken version.
+    @Test("A turn carrying prose and tool calls streams all of them, live")
+    func oneTurnStreamsEveryBlockLive() async throws {
+        let dir = try TestPaths.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let ready = dir.appendingPathComponent("ready")
+        let logURL = dir.appendingPathComponent("run.ndjson")
+
+        let run = try ClaudeRun.start(
+            invocation: ClaudeInvocation(runID: UUID(), prompt: "x", cwd: dir.path),
+            config: config(environment: [
+                "FAKE_CLAUDE_FIXTURE": TestPaths.fixture("interleaved-tools.ndjson"),
+                // Spaced out so the lines cannot all land in one read and be
+                // indistinguishable from a batch delivered at the end.
+                "FAKE_CLAUDE_DELAY_MS": "20",
+                "FAKE_CLAUDE_READY": ready.path,
+            ]),
+            logURL: logURL
+        )
+        defer { run.cancel() }
+
+        // Wait on the fact that the child is up, not on a duration: under load a
+        // fixed sleep is either a flake or dead time, and the harness touches
+        // this file for exactly this reason.
+        try await withTimeout(.seconds(5)) {
+            while !FileManager.default.fileExists(atPath: ready.path) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
+
+        // Returned rather than captured: `withTimeout`'s operation is
+        // `@Sendable`, so mutating locals from inside it is a Swift 6 error.
+        let live = try await withTimeout(.seconds(10)) { () -> [StreamEvent] in
+            var beforeFinish: [StreamEvent] = []
+            var didFinish = false
+            for await update in run.updates {
+                switch update {
+                case .event(let event) where !didFinish: beforeFinish.append(event)
+                case .finished: didFinish = true
+                default: break
+                }
+            }
+            return beforeFinish
+        }
+
+        // The fixture's second line is the whole point: text + two tool calls in
+        // one turn. Under `decode` this arrived as the text alone.
+        #expect(live[1] == .assistantText("Reading both files at once."))
+        #expect(live[2] == .assistantToolUse(
+            name: "Read", id: "tu_a", inputPreview: #"{"file_path":"\/repo\/A.swift"}"#
+        ))
+        #expect(live[3] == .assistantToolUse(
+            name: "Read", id: "tu_b", inputPreview: #"{"file_path":"\/repo\/B.swift"}"#
+        ))
+
+        // Six lines, eight events. Stated as an inequality as well as a count
+        // because "one event per line" is exactly the assumption that was wrong:
+        // a run whose events merely equalled its lines would pass a count and
+        // still be dropping blocks.
+        let logged = try String(contentsOf: logURL, encoding: .utf8)
+            .split(separator: "\n").count
+        #expect(logged == 6)
+        #expect(live.count == 8)
+        #expect(live.count > logged)
+
+        // And the live stream says exactly what the file says, which is the
+        // disagreement this closes.
+        let fromDisk = try String(contentsOf: logURL, encoding: .utf8)
+            .split(separator: "\n")
+            .flatMap { StreamEventDecoder.decodeAll(line: Data($0.utf8)) }
+        #expect(live == fromDisk)
+    }
+
     @Test("Cancelling terminates the child and reports it")
     func cancellation() async throws {
         let dir = try TestPaths.temporaryDirectory()

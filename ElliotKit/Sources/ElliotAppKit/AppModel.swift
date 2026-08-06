@@ -403,11 +403,28 @@ public final class AppModel {
             // would stop following the run.
             if events.count > 300 { events.removeFirst(events.count - 300) }
             liveLog[runID] = events
-        case .runStalled:
-            // Silence is not an event, and there is no `StreamEvent` for it.
-            // `RunningStrip` says so from `run.state`, which `markStalled` has
-            // already written.
-            break
+        case .runStalled(let runID, _):
+            // This used to `break`, on the reasoning that `markStalled` had
+            // already written `.stalled` to the store and `RunningStrip` reads
+            // it off `run.state`. Both halves are true and the conclusion is
+            // not: **nothing re-reads a run row on its own.** The store held
+            // `.stalled` and every copy the screen draws from — `activeRuns`,
+            // `recentRuns`, `runsByCard`, `analysisRuns` — went on holding
+            // `.running`, so the card kept its spinner and "No output for a
+            // while" was drawn by nobody.
+            //
+            // That is not cosmetic. There is deliberately no wall-clock kill,
+            // because `merge-pr` waiting hours on CI is legitimate, so silence
+            // is the *only* signal a wedged run gives. Losing it leaves nothing
+            // at all between a run that is thinking and one that is stuck.
+            //
+            // Marked in place rather than re-read, and that is not an
+            // optimisation: the scheduler yields this update *before* it awaits
+            // `markStalled`, so a refresh racing it reads the row as it was and
+            // writes `.running` back over the answer. The guard below is
+            // `markStalled`'s own, so the two cannot disagree about which runs
+            // may stall.
+            markStalled(runID: runID)
         case .runFinished(_, let cardID, _, _):
             // A run takes minutes and nobody watches it for all of them. One
             // Dock bounce, only when Elliot is not the front app — no
@@ -422,6 +439,35 @@ public final class AppModel {
                 await self.refreshOccupancy()
             }
         }
+    }
+
+    /// Marks one run stalled in every copy the screen draws from.
+    ///
+    /// Four collections hold runs and any of them can be the one on screen:
+    /// `activeRuns` feeds the card's `RunningStrip`, `runsByCard` the selected
+    /// card's Runs pane, `recentRuns` the overview, `analysisRuns` the analysis
+    /// window. Marking three of four is a stall that shows on some screens and
+    /// not others, which is worse than one that shows nowhere — so this walks
+    /// all four, through one function.
+    func markStalled(runID: UUID) {
+        activeRuns = activeRuns.mapValues { Self.stalling(runID, $0) }
+        recentRuns = recentRuns.map { Self.stalling(runID, $0) }
+        runsByCard = runsByCard.mapValues { runs in runs.map { Self.stalling(runID, $0) } }
+        analysisRuns = analysisRuns.map { Self.stalling(runID, $0) }
+    }
+
+    /// The rule itself: **only a run that is still running can stall.**
+    ///
+    /// Pure and static so `swift test` can hold it, and written once rather than
+    /// four times. The guard is `RunScheduler.markStalled`'s, deliberately
+    /// spelled the same way: a run that finished between the idle watcher
+    /// noticing the silence and this arriving must keep the outcome it reached,
+    /// not be dragged back to a non-terminal state by a late notice.
+    static func stalling(_ runID: UUID, _ run: SkillRun) -> SkillRun {
+        guard run.id == runID, run.state == .running else { return run }
+        var stalled = run
+        stalled.state = .stalled
+        return stalled
     }
 
     /// One event collapsed to one line, for `CardView`'s running strip and
@@ -1070,5 +1116,24 @@ public final class AppModel {
         self.cards = cards
         hasLoadedRepos = true
         selectedRepoID = nil
+    }
+
+    /// The same trick for the four collections that hold runs.
+    ///
+    /// They are `private(set)` because the store fills them, and a stall has to
+    /// be provable without one: the scheduler yields `.runStalled` *before* it
+    /// writes `.stalled`, so a refresh is exactly the wrong way to learn about
+    /// it and a test that stood a database up would be testing the race rather
+    /// than the rule.
+    func testOnlySeedRuns(
+        active: [UUID: SkillRun] = [:],
+        byCard: [UUID: [SkillRun]] = [:],
+        recent: [SkillRun] = [],
+        analysis: [SkillRun] = []
+    ) {
+        activeRuns = active
+        runsByCard = byCard
+        recentRuns = recent
+        analysisRuns = analysis
     }
 }

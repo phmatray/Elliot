@@ -465,6 +465,79 @@ struct AppModelTests {
         #expect(model.liveLog[runID] == [])
     }
 
+    // MARK: - A stalled run has to reach the screen
+
+    /// A run row, seeded straight into the model's collections.
+    ///
+    /// `SkillRun`'s own initialiser is the one the scheduler uses, so a fixture
+    /// built with it is the real shape rather than a stand-in.
+    private func run(cardID: UUID?, state: RunState = .running) -> SkillRun {
+        var run = SkillRun(
+            cardID: cardID, repoID: UUID(), kind: .createIssue,
+            prompt: "/ai-migration-kit:create-issue x", cwd: "/tmp",
+            logPath: "/tmp/run.ndjson", stderrPath: "/tmp/run.log", createdAt: epoch
+        )
+        run.state = state
+        return run
+    }
+
+    @Test("A stalled run reaches every collection the screen draws from")
+    func stallReachesTheUI() {
+        // `apply(.runStalled)` was a `break`, on the reasoning that the store
+        // already held `.stalled`. Nothing re-reads a run row on its own, so
+        // every copy on screen went on saying `.running`: the card kept its
+        // spinner and "No output for a while" was drawn by nobody. There is
+        // deliberately no wall-clock kill — `merge-pr` waiting hours on CI is
+        // legitimate — so silence is the only signal a wedged run gives, and
+        // losing it leaves nothing between thinking and stuck.
+        let model = model(repos: [], cards: [])
+        let cardID = UUID()
+        let stalling = run(cardID: cardID)
+        let analysis = run(cardID: nil)
+
+        model.testOnlySeedRuns(
+            active: [cardID: stalling],
+            byCard: [cardID: [stalling]],
+            recent: [stalling],
+            analysis: [analysis]
+        )
+
+        model.apply(.runStalled(runID: stalling.id, since: epoch))
+
+        #expect(model.activeRuns[cardID]?.state == .stalled)
+        #expect(model.runsByCard[cardID]?.first?.state == .stalled)
+        #expect(model.recentRuns.first?.state == .stalled)
+        // A different run is untouched: the notice names one run, and the four
+        // collections are walked by id rather than blanket-marked.
+        #expect(model.analysisRuns.first?.state == .running)
+    }
+
+    @Test("A run that finished before the notice arrived keeps its outcome")
+    func stallDoesNotResurrectATerminalRun() {
+        // The guard is `RunScheduler.markStalled`'s, spelled the same way on
+        // purpose. The idle watcher notices silence and the run can end while
+        // the notice is in flight; dragging a succeeded run back to `.stalled`
+        // would be a finished run the board says is still going, and `.stalled`
+        // is not terminal, so it would also hold its card against a further
+        // move.
+        for finished in [RunState.succeeded, .failed, .cancelled, .completedWithDenials, .timedOut] {
+            let done = run(cardID: UUID(), state: finished)
+            #expect(AppModel.stalling(done.id, done).state == finished)
+        }
+        // Queued and cancelling are not "running" either: a queued run has
+        // produced no output because it has not started, and a cancelling one
+        // has already had its SIGTERM.
+        for other in [RunState.queued, .cancelling] {
+            let run = run(cardID: UUID(), state: other)
+            #expect(AppModel.stalling(run.id, run).state == other)
+        }
+        // And the one case that does stall.
+        let running = run(cardID: UUID())
+        #expect(AppModel.stalling(running.id, running).state == .stalled)
+        // Another run's notice changes nothing.
+        #expect(AppModel.stalling(UUID(), running).state == .running)
+    }
+
     // MARK: - Parsed issue bodies
 
     @Test("An issue body is parsed once per body, and again when it changes")
@@ -476,15 +549,44 @@ struct AppModelTests {
 
         let first = model.issueDocument(for: subject)
         #expect(first.acceptanceCriteria.map(\.plain) == ["It builds", "It runs"])
-        // Identical rather than merely equal in spirit: this is the memo being
-        // returned, and `IssueDocument` is `Hashable`, so equality is the only
-        // handle a value type gives.
-        #expect(model.issueDocument(for: subject) == first)
+
+        // ⚠️ `==` cannot see the memo, and asserting it was this test's whole
+        // content until #79. `IssueMarkdownParser.parse` is pure, so a document
+        // parsed a second time is *equal* to the cached one — the assertion went
+        // green with the cache deleted, which is to say it reported a safety it
+        // was not measuring.
+        //
+        // What a second parse cannot do is hand back the same storage. `first`
+        // is still held here, so its buffer cannot have been freed and reused:
+        // a re-parse has to allocate a second array at a second address, and a
+        // memo has to return the first one.
+        let second = model.issueDocument(for: subject)
+        #expect(second == first)
+        // An empty array shares one global storage, which would make the
+        // address below equal either way — vacuous in exactly the manner this
+        // test is being repaired for.
+        #expect(!first.blocks.isEmpty)
+        #expect(storage(of: second.blocks) == storage(of: first.blocks), "the body was parsed twice")
 
         // The key is the body, not the card: an edit or a re-import must not be
-        // served the previous parse.
+        // served the previous parse. Both halves are asserted — the criteria,
+        // which say the answer is the new body's, and the address, which says
+        // the work was actually redone rather than a stale document mutated.
         var edited = subject
         edited.body = "## Acceptance criteria\n\n1. Something else\n"
-        #expect(model.issueDocument(for: edited).acceptanceCriteria.map(\.plain) == ["Something else"])
+        let reparsed = model.issueDocument(for: edited)
+        #expect(reparsed.acceptanceCriteria.map(\.plain) == ["Something else"])
+        #expect(storage(of: reparsed.blocks) != storage(of: first.blocks))
+    }
+
+    /// Where an array's elements live.
+    ///
+    /// The only handle a value type gives on *which* value you were handed, as
+    /// opposed to what it is equal to — and so the only way to watch a cache
+    /// that by construction changes nothing about the answer. Compared as a bit
+    /// pattern and never dereferenced; `withUnsafeBufferPointer` does not copy,
+    /// so two arrays sharing storage report the same address.
+    private func storage(of blocks: [IssueBlock]) -> UInt {
+        blocks.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
     }
 }

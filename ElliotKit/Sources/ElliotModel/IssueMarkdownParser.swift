@@ -215,46 +215,92 @@ public enum IssueMarkdownParser {
     // MARK: - Collapsibles
 
     private static func isDetailsOpener(_ trimmed: String) -> Bool {
-        trimmed.hasPrefix("<details")
+        guard let tag = htmlTag(Array(trimmed), at: 0) else { return false }
+        return tag.name == "details" && !tag.closing
     }
 
     private static func collapsible(in lines: [String], from start: Int) -> (IssueBlock, Int) {
-        var index = start + 1
-        var summary = ""
+        var index = start
+        var header = lines[start]
+        // The tag line can close the disclosure by itself, so the depth starts
+        // at whatever that line's own tags add up to rather than at 1.
+        var depth = scanDetails(header).delta
 
-        if lines[start].contains("<summary>") {
-            summary = summaryText(lines[start])
-        } else if index < lines.count, lines[index].trimmed().hasPrefix("<summary>") {
-            var raw = lines[index].trimmed()
-            while !raw.contains("</summary>"), index + 1 < lines.count {
-                index += 1
-                raw += " " + lines[index].trimmed()
-            }
-            summary = summaryText(raw)
+        // GitHub's template puts `<summary>` on the line after the tag, and an
+        // author may run it over several. Consume that run into one string so
+        // the summary reads whole — but never past a `</details>` that has
+        // already closed the disclosure on the tag line itself.
+        if depth > 0, !header.contains("<summary>"), index + 1 < lines.count,
+           lines[index + 1].trimmed().hasPrefix("<summary>")
+        {
             index += 1
+            header += " " + lines[index].trimmed()
+            depth += scanDetails(lines[index]).delta
         }
+        while depth > 0, header.contains("<summary>"), !header.contains("</summary>"),
+              index + 1 < lines.count
+        {
+            index += 1
+            header += " " + lines[index].trimmed()
+            depth += scanDetails(lines[index]).delta
+        }
+        index += 1
 
-        var depth = 1
         var body: [String] = []
-        while index < lines.count {
-            let trimmed = lines[index].trimmed()
-            if isDetailsOpener(trimmed) { depth += 1 }
-            if trimmed.contains("</details>") {
-                depth -= 1
-                if depth == 0 {
-                    index += 1
-                    break
-                }
+        // Whatever the header carried besides its markup is body content, not
+        // markup: `<summary>Spec</summary>trailing text here` used to lose the
+        // trailing text to the line skip, and a one-line
+        // `<details><summary>S</summary>body</details>` used to lose all of it.
+        let residue = scanDetails(withoutSummary(header)).content.trimmed()
+        if !residue.isEmpty { body.append(residue) }
+
+        var inFence = false
+        while depth > 0, index < lines.count {
+            let line = lines[index]
+            let trimmed = line.trimmed()
+
+            // The body is collected raw here and only re-parsed by
+            // `blocks(in:)` once it is complete, so this loop has to track the
+            // fences itself: a `</details>` inside one is code, not the end of
+            // the disclosure.
+            if inFence {
+                if isFenceCloser(trimmed) { inFence = false }
+                body.append(line)
+                index += 1
+                continue
             }
-            body.append(lines[index])
+            if fenceOpener(trimmed) != nil {
+                inFence = true
+                body.append(line)
+                index += 1
+                continue
+            }
+
+            let scan = scanDetails(line)
+            depth += scan.delta
+            if depth <= 0 {
+                // The closer's line may carry text before it. That text is
+                // content and stays; the tag itself is reconstituted by
+                // `IssueBlock.plainText`.
+                if !scan.content.trimmed().isEmpty { body.append(scan.content) }
+                index += 1
+                break
+            }
+            body.append(line)
             index += 1
         }
 
-        // An unclosed `<details>` runs to end of file. GitHub renders it the
-        // same way, and the alternative — treating the tag as prose — would put
-        // the whole rest of the issue in one paragraph.
+        // A `<details>` that is never closed runs to end of file, the way a
+        // browser closes an unterminated element at the end of the document.
+        // One that *is* closed stops there, including when its `</details>`
+        // sits on the tag line — GitHub closes that one on the same line too,
+        // and running it to the end swallowed the whole rest of the issue.
         return (
-            .collapsible(summary: inline(summary), body: blocks(in: body), lineCount: body.count),
+            .collapsible(
+                summary: inline(summaryMarkdown(summaryText(header))),
+                body: blocks(in: body),
+                lineCount: body.count
+            ),
             index
         )
     }
@@ -264,6 +310,132 @@ public enum IssueMarkdownParser {
         let rest = raw[open.upperBound...]
         guard let close = rest.range(of: "</summary>") else { return String(rest).trimmed() }
         return String(rest[..<close.lowerBound]).trimmed()
+    }
+
+    /// The header with its `<summary>…</summary>` cut out, so what is left is
+    /// the `<details …>` tag and any body text the author put on the same line.
+    private static func withoutSummary(_ raw: String) -> String {
+        guard let open = raw.range(of: "<summary>") else { return raw }
+        let head = String(raw[..<open.lowerBound])
+        let rest = raw[open.upperBound...]
+        guard let close = rest.range(of: "</summary>") else { return head }
+        return head + String(rest[close.upperBound...])
+    }
+
+    /// One pass over a line's `<details>` markup, outside inline code spans.
+    ///
+    /// `delta` is openers minus closers — the depth arithmetic — and `content`
+    /// is what the line carries once those tags are off.
+    ///
+    /// The code-span rule is the whole point. The opener has always been
+    /// matched anchored at the start of a line, but the closer used to be a
+    /// bare `contains("</details>")`, so a line that merely *mentions* the tag
+    /// as `` `</details>` `` — which is exactly how an issue about this parser
+    /// writes it, this repository's own #79 among them — ended the disclosure,
+    /// took its own line out of the document with it, and hoisted everything
+    /// after it to the top level.
+    private static func scanDetails(_ line: String) -> (delta: Int, content: String) {
+        var delta = 0
+        var content = ""
+        let chars = Array(line)
+        var index = 0
+
+        while index < chars.count {
+            // The same code-span rule `inline` applies, so the two agree about
+            // what is quoted text and what is markup.
+            if chars[index] == "`", index + 1 < chars.count, chars[index + 1] != "`",
+               let close = closingBacktick(chars, from: index + 1)
+            {
+                content += String(chars[index...close])
+                index = close + 1
+                continue
+            }
+
+            if let tag = htmlTag(chars, at: index), tag.name == "details" {
+                delta += tag.closing ? -1 : 1
+                index = tag.end
+                continue
+            }
+
+            content.append(chars[index])
+            index += 1
+        }
+
+        return (delta, content)
+    }
+
+    /// A `<summary>`'s inline HTML rewritten as the markers `inline` already
+    /// understands, so `<b>Spec</b>` reads bold instead of printing its own
+    /// tags in the panel's chrome.
+    ///
+    /// Only here, and deliberately. Everywhere else an unrecognised construct
+    /// degrades to `.paragraph`, which keeps the line verbatim — that is the
+    /// totality contract, and rewriting body prose would break it. A summary
+    /// has no such fallback: it is one line of chrome with nowhere for a raw
+    /// tag to go but the screen.
+    private static func summaryMarkdown(_ raw: String) -> String {
+        var out = ""
+        let chars = Array(raw)
+        var index = 0
+
+        while index < chars.count {
+            // A code span is literal, so `` `Array<Int>` `` keeps its brackets
+            // where bare prose loses them — which is what GitHub does too.
+            if chars[index] == "`", index + 1 < chars.count, chars[index + 1] != "`",
+               let close = closingBacktick(chars, from: index + 1)
+            {
+                out += String(chars[index...close])
+                index = close + 1
+                continue
+            }
+
+            guard let tag = htmlTag(chars, at: index) else {
+                out.append(chars[index])
+                index += 1
+                continue
+            }
+            // A tag with no marker of its own — `<span>`, `<img …>` — leaves
+            // only whatever text it wrapped. `<br>` leaves the gap it made.
+            out += inlineMarkers[tag.name] ?? (tag.name == "br" ? " " : "")
+            index = tag.end
+        }
+
+        return out
+    }
+
+    private static let inlineMarkers: [String: String] = [
+        "b": "**", "strong": "**",
+        "i": "*", "em": "*",
+        "code": "`", "kbd": "`", "tt": "`",
+    ]
+
+    /// `<name …>` or `</name>` starting at `index`: the lowercased name, which
+    /// half it is, and the offset just past its `>`.
+    ///
+    /// `nil` when the `<` does not start a tag, so `a < b` and `Array<Int` stay
+    /// prose. A tag with no `>` on the line is not a tag either.
+    private static func htmlTag(
+        _ chars: [Character],
+        at index: Int
+    ) -> (name: String, closing: Bool, end: Int)? {
+        guard index < chars.count, chars[index] == "<" else { return nil }
+        var scan = index + 1
+        let closing = scan < chars.count && chars[scan] == "/"
+        if closing { scan += 1 }
+
+        let nameStart = scan
+        while scan < chars.count, chars[scan].isLetter || chars[scan].isNumber { scan += 1 }
+        guard scan > nameStart else { return nil }
+        let name = String(chars[nameStart..<scan]).lowercased()
+
+        // A name ends at whitespace, `/` or `>`. `<details-foo>` is a different
+        // element, and `Array<Int</summary>` is not a tag at all.
+        guard scan < chars.count, chars[scan] == ">" || chars[scan] == "/" || chars[scan].isWhitespace
+        else { return nil }
+
+        while scan < chars.count, chars[scan] != ">" { scan += 1 }
+        guard scan < chars.count else { return nil }
+        return (name, closing, scan + 1)
     }
 
     // MARK: - Tables
