@@ -5,6 +5,7 @@ import ElliotModel
 import ElliotProcess
 import ElliotStore
 import Foundation
+import OSLog
 import Observation
 
 /// The app's root object: it wires the store, the engine and the MCP socket
@@ -12,6 +13,13 @@ import Observation
 @MainActor
 @Observable
 public final class AppModel {
+    /// Where a failure goes when nobody is looking at the window.
+    ///
+    /// One subsystem for the app, so a bug report can be asked for
+    /// `log show --predicate 'subsystem == "dev.phmatray.elliot"'` and get
+    /// everything rather than a category someone has to guess.
+    nonisolated static let log = Logger(subsystem: "dev.phmatray.elliot", category: "AppModel")
+
     public private(set) var repos: [Repo] = []
     public private(set) var cards: [Card] = []
     public private(set) var runsByCard: [UUID: [SkillRun]] = [:]
@@ -409,6 +417,22 @@ public final class AppModel {
                 // whether this takes the screen or sits beside repositories
                 // already loaded, so a late failure cannot blank a working
                 // board.
+                //
+                // Logged as well as recorded, because criterion 3 asks for both
+                // and they answer different people: the screen tells whoever is
+                // looking at it, `log stream --predicate 'subsystem ==
+                // "dev.phmatray.elliot"'` tells whoever is holding a bug report
+                // and cannot see the screen. It is also the only signal
+                // available when the window itself cannot be read.
+                // ⚠️ `privacy: .public` is load-bearing. `Logger` redacts an
+                // interpolated non-literal by default, so this line read
+                // "repository observation failed: <private>" — a log saying
+                // something went wrong without saying what, which is the exact
+                // shape of the defect being fixed. Verified by reading it back
+                // from `log show`, not by assuming. A GRDB decode error names a
+                // column and a type; it carries no user content.
+                Self.log.error(
+                    "repository observation failed: \(error.localizedDescription, privacy: .public)")
                 await MainActor.run {
                     self?.startupFailure = error.localizedDescription
                 }
