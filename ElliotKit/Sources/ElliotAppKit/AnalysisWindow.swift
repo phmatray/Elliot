@@ -427,7 +427,7 @@ public struct AnalysisWindow: View {
             }
         }
         .padding(16)
-        .animation(.snappy(duration: 0.18), value: model.analysisNote)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: model.analysisNote)
     }
 
     private var startConsequence: String {
