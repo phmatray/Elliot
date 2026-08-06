@@ -203,6 +203,11 @@ public actor BoardService: SystemMoving {
         body: String = "",
         story: UserStory? = nil,
         column: ElliotModel.Column = .backlog,
+        /// The analysis lens that found this card, when one did. Defaulted, so
+        /// every caller that makes a card the board asked for — the New-story
+        /// sheet, `board_create_card`, the GitHub import — keeps saying nothing
+        /// rather than having to say "no lens" out loud.
+        angle: AnalysisAngle? = nil,
         idempotencyKey: String? = nil
     ) async throws -> CreatedCard {
         guard try await store.repo(id: repoID) != nil else { throw BoardError.repoNotFound(repoID) }
@@ -223,6 +228,7 @@ public actor BoardService: SystemMoving {
             title: title,
             body: body,
             story: story,
+            angle: angle,
             column: column,
             orderIndex: try await store.nextOrderIndex(repoID: repoID, column: column),
             columnEnteredAt: now,

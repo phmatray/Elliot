@@ -179,6 +179,38 @@ Five rules hold the page together:
 Preflight gains a **Repository tree** check for the configured root, and names
 the command it used.
 
+## Notifications
+
+Elliot's most important moments happen after you have gone somewhere else: a `merge-pr` deliberately
+has no wall-clock kill, because waiting on CI is legitimate. So it tells macOS about them.
+
+**It notifies about facts it established, never about gestures you made.** A drag, a
+`board_move_card`, a run starting, a move refused — none of these post anything; you were there.
+What posts is a run *finishing*, a run *going quiet*, the board moving a card *by itself*, and an
+analysis *finishing*.
+
+A "landed" notification's body is built from the run's `verifiedOutcome` — what `gh` established —
+and never from `resultText`, which is the agent's own account of its own work. A run that succeeded
+with nothing verified says exactly that rather than quoting the agent.
+
+Four categories, one switch each under ⌘,: **landed** · **needs you** · **the board moved itself** ·
+**analysis ready**. Only *needs you* makes a sound, and only *needs you* gets through while Elliot is
+the front application — the rest are already on the board you are looking at. One notification per
+card at a time, replaced in place: "Opened issue #12" becomes "Draft PR 13 on feat/12-…" rather than
+leaving two claims on screen, one of them stale.
+
+The decision of what to notify and what it says is a pure function in `ElliotModel` with tests. Only
+delivery touches `UNUserNotificationCenter`.
+
+⚠️ **Notifications need a bundle, and a durable one.** `UNUserNotificationCenter.current()` raises
+without a `CFBundleIdentifier`, so `swift run ElliotApp` and `swift test` never reach it — they get a
+no-op delivery instead. And macOS refuses to deliver from a bundle in a scratch location: measured,
+an identically ad-hoc-signed build in `/tmp` had every request rejected with *"Notifications are not
+allowed for this application"* while `authorizationStatus` still read `notDetermined`, whereas the
+same build in `dist/` or `~/Applications` delivered normally. Ad-hoc signing is not the problem;
+location is. Preflight's **Notifications** row reports the last refusal for exactly that reason —
+the status alone would say "not asked yet" forever.
+
 ## Decisions worth knowing
 
 **The board adopts, it does not mirror.** Opening a repository pulls its open issues and pull requests

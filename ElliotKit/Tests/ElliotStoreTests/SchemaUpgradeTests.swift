@@ -80,6 +80,7 @@ private func rewindToV1(_ url: URL) throws {
         try db.execute(sql: #"DROP INDEX "card_on_repo_issue""#)
         try db.execute(sql: #"DROP INDEX "card_on_repo_pr""#)
         try db.execute(sql: #"DROP TABLE "dismissedExternal""#)
+        try db.execute(sql: #"ALTER TABLE "card" DROP COLUMN "angle""#)
         // Every post-v1 migration this file undoes, and asserted rather than
         // assumed: `DELETE` of a row that is not there succeeds, so a stale
         // identifier here would leave this whole file testing an upgrade that
@@ -88,13 +89,14 @@ private func rewindToV1(_ url: URL) throws {
             sql: """
                 DELETE FROM "grdb_migrations"
                 WHERE "identifier" IN (
-                    'v2_repositoryLayout', 'v3_cardIdempotencyKey', 'v5_githubImport'
+                    'v2_repositoryLayout', 'v3_cardIdempotencyKey', 'v5_githubImport',
+                    'v7_cardAngle'
                 )
                 """
         )
         precondition(
-            db.changesCount == 3,
-            "rewindToV1 removed \(db.changesCount) migration rows, expected 3"
+            db.changesCount == 4,
+            "rewindToV1 removed \(db.changesCount) migration rows, expected 4"
         )
     }
 }
@@ -241,6 +243,155 @@ struct SchemaUpgradeTests {
         // that action is not the one "Elliot is not running" would suggest.
         #expect(StoreError.schemaMissing.errorDescription?.contains("Open Elliot.app") == true)
         #expect(StoreError.schemaTooNew.errorDescription?.contains("Update the helper") == true)
+    }
+
+    /// The round trip, first: a lens written is a lens read back. Trivial only
+    /// until you remember that GRDB's UUID strategy is a *function* here, and
+    /// that a Codable record silently ignores a column the schema lacks.
+    @Test("A card's lens survives a write and a read")
+    func angleRoundTrips() async throws {
+        let scratch = try Scratch()
+        let store = try BoardStore.open(at: scratch.database)
+        let repository = repo()
+        try await store.saveRepo(repository)
+
+        var found = card(repoID: repository.id, title: "Bound the await")
+        found.angle = .bugs
+        try await store.saveCard(found)
+        var written = card(repoID: repository.id, title: "Rename the thing")
+        written.angle = nil
+        try await store.saveCard(written)
+
+        let back = try await store.cards(repoID: repository.id)
+        #expect(back.first { $0.id == found.id }?.angle == .bugs)
+        #expect(back.first { $0.id == written.id }?.angle == nil)
+    }
+
+    /// The backfill. A board that upgrades to v6 must not look like a board
+    /// where no analysis ever ran: the lens is already stored on the proposal,
+    /// next to the id of the card it produced, so this reads a fact rather than
+    /// inferring one. Both id columns use the uppercase-string UUID strategy —
+    /// a case mismatch would join nothing and pass silently, which is what this
+    /// test is really pinning.
+    @Test("Upgrading gives an already-accepted card its lens back")
+    func upgradeBackfillsAcceptedCards() async throws {
+        let scratch = try Scratch()
+        let store = try BoardStore.open(at: scratch.database)
+        let repository = repo()
+        try await store.saveRepo(repository)
+
+        let analysis = Analysis(repoID: repository.id, angles: [.techDebt], createdAt: then)
+        try await store.saveAnalysis(analysis)
+
+        let accepted = card(repoID: repository.id, title: "Bound the await")
+        try await store.saveCard(accepted)
+        let orphan = card(repoID: repository.id, title: "Written by hand")
+        try await store.saveCard(orphan)
+
+        try await store.saveProposal(
+            StoryProposal(
+                analysisID: analysis.id, runID: UUID(), repoID: repository.id,
+                angle: .techDebt, title: "Bound the await",
+                story: UserStory(role: "maintainer", want: "a bounded wait", benefit: "no hangs"),
+                status: .accepted, acceptedCardID: accepted.id, createdAt: then
+            )
+        )
+
+        // The migration has already run for this fresh database, so re-run just
+        // the backfill statement to assert what it does rather than when.
+        try await store.backfillCardAngles()
+
+        let back = try await store.cards(repoID: repository.id)
+        #expect(back.first { $0.id == accepted.id }?.angle == .techDebt)
+        #expect(back.first { $0.id == orphan.id }?.angle == nil)
+    }
+
+    /// The migration itself, over rows that were already there.
+    ///
+    /// The two tests above call `backfillCardAngles()` by hand on a database
+    /// born current, which asserts what the statement does but never that the
+    /// **migration** runs it — and the only v6 upgrade that will ever happen in
+    /// the field runs over a board that already holds work. That is this file's
+    /// stated reason for existing, and `rewindToV1` had to learn to undo v6
+    /// before it could be honoured: until it did, every upgrade test here
+    /// re-opened a database that already had the column.
+    ///
+    /// Criterion 6 in one test: a card accepted before the upgrade comes back
+    /// with its lens, and a card that never came from an analysis stays blank.
+    @Test("A board upgraded to v6 gets its accepted cards' lenses back")
+    func migrationBackfillsOverExistingRows() async throws {
+        let scratch = try Scratch()
+        let repository = repo()
+        let accepted = card(repoID: repository.id, title: "Bound the await")
+        let orphan = card(repoID: repository.id, title: "Written by hand")
+
+        do {
+            let old = try BoardStore.open(at: scratch.database)
+            try await old.saveRepo(repository)
+            let analysis = Analysis(repoID: repository.id, angles: [.techDebt], createdAt: then)
+            try await old.saveAnalysis(analysis)
+            try await old.saveCard(accepted)
+            try await old.saveCard(orphan)
+            try await old.saveProposal(
+                StoryProposal(
+                    analysisID: analysis.id, runID: UUID(), repoID: repository.id,
+                    angle: .techDebt, title: "Bound the await",
+                    story: UserStory(
+                        role: "maintainer", want: "a bounded wait", benefit: "no hangs"
+                    ),
+                    status: .accepted, acceptedCardID: accepted.id, createdAt: then
+                )
+            )
+        }
+        try rewindToV1(scratch.database)
+        // The rewind has to have actually happened, or this upgrades a database
+        // that already had the column and proves nothing — the same guard the
+        // idempotency-key test above uses, for the same reason.
+        #expect(!(try columnNames(of: "card", at: scratch.database).contains("angle")))
+
+        let upgraded = try BoardStore.open(at: scratch.database)
+
+        let back = try await upgraded.cards(repoID: repository.id)
+        #expect(back.first { $0.id == accepted.id }?.angle == .techDebt)
+        // Absent rather than defaulted: nothing ever chose a lens for this one.
+        #expect(back.first { $0.id == orphan.id }?.angle == nil)
+    }
+
+    /// The backfill must not overwrite a lens the card already carries.
+    ///
+    /// It is written `WHERE "angle" IS NULL`, and that guard is the difference
+    /// between a migration and a data loss: `backfillCardAngles` is public and
+    /// idempotent by design, and the same statement runs again on every upgrade
+    /// path that replays migrations. A card whose lens was later corrected by
+    /// hand would otherwise be silently reset to whatever its proposal said.
+    @Test("Re-running the backfill leaves a lens that is already set alone")
+    func backfillDoesNotOverwriteAnExistingAngle() async throws {
+        let scratch = try Scratch()
+        let store = try BoardStore.open(at: scratch.database)
+        let repository = repo()
+        try await store.saveRepo(repository)
+
+        let analysis = Analysis(repoID: repository.id, angles: [.techDebt], createdAt: then)
+        try await store.saveAnalysis(analysis)
+
+        var accepted = card(repoID: repository.id, title: "Bound the await")
+        accepted.angle = .bugs
+        try await store.saveCard(accepted)
+
+        try await store.saveProposal(
+            StoryProposal(
+                analysisID: analysis.id, runID: UUID(), repoID: repository.id,
+                angle: .techDebt, title: "Bound the await",
+                story: UserStory(role: "maintainer", want: "a bounded wait", benefit: "no hangs"),
+                status: .accepted, acceptedCardID: accepted.id, createdAt: then
+            )
+        )
+
+        try await store.backfillCardAngles()
+        try await store.backfillCardAngles()
+
+        let back = try await store.cards(repoID: repository.id)
+        #expect(back.first { $0.id == accepted.id }?.angle == .bugs)
     }
 }
 

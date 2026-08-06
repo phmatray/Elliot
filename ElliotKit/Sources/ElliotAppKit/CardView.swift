@@ -8,11 +8,31 @@ struct CardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(card.displayTitle)
-                .font(Type.cardTitle)
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // Symbol then name, the order the Analysis window already uses in
+            // all three of its sites — the lens tile, the run row and the
+            // section header. `.firstTextBaseline` so a title that wraps to two
+            // lines sits under itself rather than under the emoji.
+            //
+            // Nothing is drawn when there is no lens, and no gutter is reserved
+            // for one: a card written by hand was not found through a lens, and
+            // a placeholder meaning "no lens" reads as a mark meaning something.
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                if let angle = card.angle {
+                    Text(angle.symbol)
+                        .font(Type.cardTitle)
+                        // The card is one combined accessibility element, so an
+                        // unlabelled emoji is read as whatever the system calls
+                        // the character, jammed against the title. The lens has
+                        // a name.
+                        .accessibilityLabel(angle.title)
+                        .help(angle.title)
+                }
+                Text(card.displayTitle)
+                    .font(Type.cardTitle)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             // The benefit, not the narrative. The label above already restates
             // the want clause, so the narrative spent both of these lines

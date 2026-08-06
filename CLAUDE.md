@@ -307,6 +307,19 @@ Two invariants carry most of the weight:
 
 ## Things that bite
 
+- **`UNUserNotificationCenter.current()` raises without a bundle identifier — it does not return
+  nil.** So the guard is in `makeNotificationDelivery()`, *before* the centre is touched, and
+  `swift run ElliotApp` / `swift test` get `NoDelivery`. Testing notifications means launching
+  `dist/Elliot.app` from the Finder, exactly like preflight.
+- **A notification API that is refused does not say `denied`.** Measured on a probe bundle signed the
+  way `build-app.sh` signs Elliot: from `/private/tmp`, `requestAuthorization` and `add` both failed
+  with `UNErrorDomain` Code 1 *"Notifications are not allowed for this application"*, nothing was
+  delivered, and `authorizationStatus` stayed **`notDetermined`** — not `denied`. From
+  `~/Applications` and from the repo's own `dist/`, the same binary was granted and delivered. **Ad-hoc
+  signing is not the blocker; location is.** Anything reporting authorization must therefore report the
+  *outcome of the last call*, not just the status, or it promises a question that will never be asked
+  again while every notification fails silently. Same family as `gh secret list` omitting org secrets.
+
 - **After merging `main`, a stale `.build` fails in ways that look like real breakage — wipe it before
   believing the failure.** Several agent branches merge `main` mid-flight, and SwiftPM's incremental
   state does not always survive it. Measured twice in one afternoon, on docs-only branches that could
