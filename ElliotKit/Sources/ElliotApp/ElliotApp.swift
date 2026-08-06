@@ -54,6 +54,14 @@ struct ElliotApp: App {
         }
         .defaultSize(width: 900, height: 700)
 
+        // What the machine is doing, what it will do next, and what it costs.
+        // The board answers "what work exists"; nothing answered the other two,
+        // and the four windows were peers with no home among them.
+        Window("Operations", id: "operations") {
+            NavigationStack { OperationsView() }.environment(model)
+        }
+        .defaultSize(width: 720, height: 780)
+
         // Its own window for now. It is the first band of the Operations
         // screen (#69) and will be composed into it there; landing it alone
         // means the ranking is on screen and usable before that screen exists.
@@ -182,6 +190,7 @@ private struct OpenWindowButtons: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        Button("Operations") { openWindow(id: "operations") }
         Button("Up Next") { openWindow(id: "nextSteps") }
         Button("Analysis…") { openWindow(id: "analysis") }
         Button("Repositories") { openWindow(id: "repositories") }
