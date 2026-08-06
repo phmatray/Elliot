@@ -419,8 +419,14 @@ private struct CodeFenceBlock: View {
     /// No `.foregroundStyle` on the whole run: each segment carries its own,
     /// and `.plain` carries `.primary`, so nothing here falls through to a
     /// colour it did not choose.
+    ///
+    /// The fence's own `language` is handed over, which is the *declaration*
+    /// the author wrote in the info string and the same string the chip above
+    /// displays — never a guess made from the content. A fence with no info
+    /// string, or one naming a language the highlighter has no rules for, is
+    /// tokenised by the language-agnostic cues exactly as before.
     private var highlighted: Text {
-        CodeHighlighter.tokens(of: code).reduce(Text(verbatim: "")) { text, token in
+        CodeHighlighter.tokens(of: code, language: language).reduce(Text(verbatim: "")) { text, token in
             text + Text(verbatim: token.text).foregroundStyle(token.kind.tint)
         }
     }

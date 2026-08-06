@@ -34,9 +34,9 @@ public struct CodeToken: Sendable, Hashable {
 /// still shows what the author wrote" a thing a test can hold rather than a
 /// thing a reader has to notice.
 ///
-/// ### Deliberately language-agnostic
+/// ### Language-agnostic by default, per-language only on the author's word
 ///
-/// There is no `language` parameter, and that is the design rather than an
+/// The default path has no grammar, and that is the design rather than an
 /// omission. The fences in this repository's issues are swift, yaml, bash and
 /// json, and three shared conventions cover all four:
 ///
@@ -44,19 +44,29 @@ public struct CodeToken: Sendable, Hashable {
 /// - a string is whatever sits between a matched pair of quotes on one line;
 /// - a small set of words are keywords in more than one of those languages.
 ///
-/// A per-language grammar would colour more and be wrong more. Every rule
-/// below is written to **fail to `.plain`** rather than to guess: an
-/// unterminated quote is not a string, a `#` with no space after it is not a
-/// comment, and a word that is not in the list is nothing at all.
+/// A per-language grammar *inferred from content* would colour more and be
+/// wrong more, and that remains refused. What `language` adds is different in
+/// kind: it is the fence's **declared** info string — ` ```yaml ` — so the one
+/// fact a grammar needs is one the author supplied rather than one this type
+/// guessed. `Dialect` maps that declaration onto a cue set, and anything it
+/// does not recognise falls back to the three cues above.
+///
+/// Every rule below is still written to **fail to `.plain`** rather than to
+/// guess: an unterminated quote is not a string, a `#` with no space after it
+/// is not a comment, a word that is not in the list is nothing at all, and a
+/// colon that is not followed by a space does not make a YAML key.
 ///
 /// ### What it deliberately does not do
 ///
 /// - No `/* … */`. A block comment spans lines, and a cue that can swallow the
 ///   rest of a fence on one mis-read is the wrong trade at this size.
-/// - No numbers, no YAML keys, no JSON keys. The approved mockup tints a YAML
-///   key like a keyword and its scalar like a string; doing that here means
-///   knowing the document is YAML, which is the grammar this type refuses to
-///   have. Unquoted YAML renders plain, and that is the honest outcome.
+/// - No numbers, and no JSON keys. A JSON key is already a quoted string and
+///   reads as one; a number would need a grammar to tell `15` in a version
+///   from `15` in prose.
+/// - No YAML *inference*. A fence that does not say it is YAML is not treated
+///   as YAML however much it looks like it — `key: value` is a perfectly
+///   ordinary line of English with a colon in it. The keys and scalars the
+///   mockup tints are tinted only when the info string says `yaml`.
 /// - No highlighting of **inline** code spans. `InlineText.Run.code` is
 ///   rendered by its own view and never comes through here; syntax colour
 ///   exists only inside a fence's own surface, which is what stops it reading
@@ -94,22 +104,77 @@ public enum CodeHighlighter {
     /// nothing — never a letter.
     private static let quoteOpeners: Set<Character> = ["(", "[", "{", "=", ":", ",", "+"]
 
+    /// Which cue set a fence is read with.
+    ///
+    /// `.agnostic` is the tokeniser described above, unchanged: three shared
+    /// cues and no grammar. A case is added here only when the author's own
+    /// *declaration* makes a rule safe that would be a guess without it.
+    enum Dialect: Equatable {
+        case agnostic
+        case yaml
+
+        /// Reads a fence's info string — the `yaml` in ` ```yaml `.
+        ///
+        /// Only the first word: CommonMark lets the rest carry anything, and
+        /// this repository's fences already use ` ```yaml .github/workflows/ci.yml `.
+        /// Anything unrecognised, including nothing at all, is `.agnostic` — a
+        /// language this type has never heard of is read by the rules that need
+        /// no grammar rather than by the nearest one that looks similar.
+        init(declared: String?) {
+            let word = declared?
+                .split(whereSeparator: \.isWhitespace).first?
+                .lowercased()
+            switch word {
+            case "yaml", "yml": self = .yaml
+            default: self = .agnostic
+            }
+        }
+    }
+
     /// The fence, in order, with every character accounted for.
-    public static func tokens(of code: String) -> [CodeToken] {
+    ///
+    /// `language` is the fence's **declared** info string and never a guess
+    /// about its content. That distinction is the whole safety argument: the
+    /// reason this type has no grammar is that inferring one is the failure
+    /// mode, and reading a declaration the author wrote is not inferring.
+    /// Omitted, every rule below is exactly the language-agnostic set.
+    public static func tokens(of code: String, language: String? = nil) -> [CodeToken] {
+        let dialect = Dialect(declared: language)
         var out: [CodeToken] = []
         // `components(separatedBy:)` round-trips exactly under `joined`, which
         // is what keeps the totality property true across line endings.
         for (offset, line) in code.components(separatedBy: "\n").enumerated() {
             if offset > 0 { append(&out, "\n", .plain) }
-            appendTokens(of: line, to: &out)
+            appendTokens(of: line, to: &out, dialect: dialect)
         }
         return out
     }
 
     // MARK: - One line
 
-    private static func appendTokens(of line: String, to out: inout [CodeToken]) {
+    private static func appendTokens(
+        of line: String, to out: inout [CodeToken], dialect: Dialect
+    ) {
         let chars = Array(line)
+
+        if dialect == .yaml, let key = yamlKey(chars) {
+            // Indentation and any `- ` marker are structure, not value.
+            append(&out, String(chars[0..<key.start]), .plain)
+            append(&out, String(chars[key.start..<key.end]), .keyword)
+            append(&out, ":", .plain)
+            appendYAMLValue(chars, from: key.end + 1, to: &out)
+            return
+        }
+
+        // A sequence entry that is not a mapping — `- macos-15`. Reached only
+        // after `yamlKey` declined, so `- uses: x` has already been read as the
+        // mapping it is.
+        if dialect == .yaml, let item = yamlSequenceItem(chars) {
+            append(&out, String(chars[0..<item]), .plain)
+            appendYAMLValue(chars, from: item, to: &out)
+            return
+        }
+
         var index = 0
         var plainFrom = 0
 
@@ -154,6 +219,129 @@ public enum CodeHighlighter {
         }
 
         flushPlain(upTo: chars.count)
+    }
+
+    // MARK: - YAML, and only when the author said so
+
+    /// The key at the head of a YAML mapping line: where it starts, and where
+    /// it ends — which is also where its colon is.
+    ///
+    /// Every clause here is written to fail to "there is no key", in the same
+    /// spirit as the comment and string cues:
+    ///
+    /// - the colon must be followed by whitespace or the end of the line. That
+    ///   is YAML's own rule (`a:b` is the scalar `a:b`, not a mapping), and it
+    ///   is what stops a bare `https://example.com` reading as a key called
+    ///   `https` — the same shape of guard that keeps it from reading as a
+    ///   comment;
+    /// - the key may not be empty, and must start with a letter, a digit or an
+    ///   underscore, so a line of punctuation claims nothing;
+    /// - a quoted key falls through to the language-agnostic path, where the
+    ///   existing string cue already renders it.
+    ///
+    /// A leading `- ` is stepped over rather than rejected: `- uses: actions/checkout@v4`
+    /// is a mapping inside a sequence, and it is most of the YAML in this
+    /// repository's issues.
+    private static func yamlKey(_ chars: [Character]) -> (start: Int, end: Int)? {
+        var index = 0
+        // Indentation is spaces in YAML — a tab is invalid there, so accepting
+        // one would be inventing a document the author cannot have written.
+        while index < chars.count, chars[index] == " " { index += 1 }
+        if index + 1 < chars.count, chars[index] == "-", chars[index + 1] == " " {
+            index += 1
+            while index < chars.count, chars[index] == " " { index += 1 }
+        }
+
+        let start = index
+        guard index < chars.count, isKeyStart(chars[index]) else { return nil }
+        while index < chars.count, isKeyBody(chars[index]) { index += 1 }
+        let end = index
+
+        guard end > start, end < chars.count, chars[end] == ":" else { return nil }
+        let after = end + 1
+        guard after == chars.count || chars[after].isWhitespace else { return nil }
+        return (start, end)
+    }
+
+    /// Just past the `-` of a sequence entry, or `nil` when the line is not
+    /// one.
+    ///
+    /// The marker has to be followed by a space or be the whole line, which is
+    /// what keeps `--flag` and `-euo` — both of which appear in this
+    /// repository's fences — from being read as sequence entries.
+    private static func yamlSequenceItem(_ chars: [Character]) -> Int? {
+        var index = 0
+        while index < chars.count, chars[index] == " " { index += 1 }
+        guard index < chars.count, chars[index] == "-" else { return nil }
+        guard index + 1 == chars.count || chars[index + 1] == " " else { return nil }
+        return index + 1
+    }
+
+    /// Everything after a key's colon: a comment, a quoted scalar, or bare
+    /// scalars.
+    ///
+    /// Order matters and is the same order the agnostic path uses — a comment
+    /// wins over what it contains, and a quoted string wins over a `#` inside
+    /// it. Only what is left over becomes a bare scalar, so none of the
+    /// existing refusals is weakened by being reached through here.
+    private static func appendYAMLValue(
+        _ chars: [Character], from start: Int, to out: inout [CodeToken]
+    ) {
+        var index = start
+        var plainFrom = start
+
+        func flushPlain(upTo end: Int) {
+            guard end > plainFrom else { return }
+            append(&out, String(chars[plainFrom..<end]), .plain)
+        }
+
+        while index < chars.count {
+            if isCommentStart(chars, at: index) {
+                flushPlain(upTo: index)
+                append(&out, String(chars[index...]), .comment)
+                return
+            }
+            if let close = stringClose(chars, from: index) {
+                flushPlain(upTo: index)
+                append(&out, String(chars[index...close]), .string)
+                index = close + 1
+                plainFrom = index
+                continue
+            }
+            if isScalarBody(chars[index]) {
+                var end = index
+                while end < chars.count, isScalarBody(chars[end]) { end += 1 }
+                flushPlain(upTo: index)
+                append(&out, String(chars[index..<end]), .string)
+                index = end
+                plainFrom = end
+                continue
+            }
+            index += 1
+        }
+
+        flushPlain(upTo: chars.count)
+    }
+
+    private static func isKeyStart(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber || character == "_"
+    }
+
+    private static func isKeyBody(_ character: Character) -> Bool {
+        isKeyStart(character) || character == "-" || character == "."
+    }
+
+    /// A character that can belong to an unquoted YAML scalar.
+    ///
+    /// Whitespace ends a run, and so does flow-collection punctuation, which is
+    /// structure rather than value — that is what leaves the brackets of
+    /// `branches: [main]` plain while `main` is tinted, exactly as the mockup
+    /// draws it. Everything else belongs to the scalar, including the hyphens
+    /// and digits of `macos-15`, the apostrophe of `don't`, and a `#` glued to
+    /// the text: YAML only starts a comment at a `#` that follows whitespace,
+    /// which `isCommentStart` has already checked above.
+    private static func isScalarBody(_ character: Character) -> Bool {
+        !character.isWhitespace && !"[]{},".contains(character)
     }
 
     // MARK: - The three cues
