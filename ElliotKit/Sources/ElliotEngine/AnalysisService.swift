@@ -209,7 +209,11 @@ public actor AnalysisService {
                     title: proposal.title,
                     body: proposal.rationale,
                     story: proposal.story,
-                    column: .backlog
+                    column: .backlog,
+                    // The one line this whole issue is about: the lens was
+                    // chosen before the run and recorded on the proposal, and
+                    // until now it stopped existing here.
+                    angle: proposal.angle
                 ).card
             } catch {
                 // No card exists yet, so the claim can safely be given back —
