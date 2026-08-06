@@ -177,6 +177,98 @@ public final class BoardStore: Sendable {
         }
     }
 
+    /// Spend since `since`, split by repository, biggest first.
+    ///
+    /// One statement with a GROUP BY rather than one query per repository: on a
+    /// portfolio this is the difference between a page load and three hundred.
+    public func spendByRepo(since: Date) async throws -> [(repoID: UUID, spend: Spend)] {
+        try await reader.read { db in
+            try Row.fetchAll(
+                db,
+                sql: #"""
+                    SELECT
+                        "repoID",
+                        COALESCE(SUM("totalCostUSD"), 0.0) AS total,
+                        COUNT(*) AS runs,
+                        SUM(CASE WHEN "totalCostUSD" IS NULL THEN 1 ELSE 0 END) AS unknown
+                    FROM "skillRun"
+                    WHERE "endedAt" IS NOT NULL AND "endedAt" >= ?
+                    GROUP BY "repoID"
+                    ORDER BY total DESC
+                    """#,
+                arguments: [since]
+            )
+            .compactMap { row -> (repoID: UUID, spend: Spend)? in
+                guard let id: UUID = row["repoID"] else { return nil }
+                return (
+                    id,
+                    Spend(
+                        totalUSD: row["total"] ?? 0,
+                        runs: row["runs"] ?? 0,
+                        unknownCost: row["unknown"] ?? 0
+                    )
+                )
+            }
+        }
+    }
+
+    /// Spend since `since`, split by what the run was doing.
+    ///
+    /// Answers the question the analysis setup screen raises and never answered:
+    /// what a six-lens read actually costs, as against filing an issue.
+    public func spendByKind(since: Date) async throws -> [SkillKind: Spend] {
+        let rows = try await reader.read { db in
+            try Row.fetchAll(
+                db,
+                sql: #"""
+                    SELECT
+                        "kind",
+                        COALESCE(SUM("totalCostUSD"), 0.0) AS total,
+                        COUNT(*) AS runs,
+                        SUM(CASE WHEN "totalCostUSD" IS NULL THEN 1 ELSE 0 END) AS unknown
+                    FROM "skillRun"
+                    WHERE "endedAt" IS NOT NULL AND "endedAt" >= ?
+                    GROUP BY "kind"
+                    """#,
+                arguments: [since]
+            )
+        }
+        var byKind: [SkillKind: Spend] = [:]
+        for row in rows {
+            guard let raw: String = row["kind"], let kind = SkillKind(rawValue: raw) else { continue }
+            byKind[kind] = Spend(
+                totalUSD: row["total"] ?? 0,
+                runs: row["runs"] ?? 0,
+                unknownCost: row["unknown"] ?? 0
+            )
+        }
+        return byKind
+    }
+
+    /// What one analysis cost, across all of its lenses.
+    public func spend(analysisID: UUID) async throws -> Spend {
+        try await reader.read { db in
+            let row = try Row.fetchOne(
+                db,
+                sql: #"""
+                    SELECT
+                        COALESCE(SUM("totalCostUSD"), 0.0) AS total,
+                        COUNT(*) AS runs,
+                        SUM(CASE WHEN "totalCostUSD" IS NULL THEN 1 ELSE 0 END) AS unknown
+                    FROM "skillRun"
+                    WHERE "analysisID" = ? AND "endedAt" IS NOT NULL
+                    """#,
+                arguments: [analysisID.databaseKey]
+            )
+            guard let row else { return Spend.nothing }
+            return Spend(
+                totalUSD: row["total"] ?? 0,
+                runs: row["runs"] ?? 0,
+                unknownCost: row["unknown"] ?? 0
+            )
+        }
+    }
+
     /// The two halves of the settings pair, written once.
     ///
     /// `layout` had its own copy of both, and the scheduler limits would have
