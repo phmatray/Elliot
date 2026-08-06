@@ -25,6 +25,11 @@ public struct BoardView: View {
         @Bindable var model = model
 
         VStack(spacing: 0) {
+            // Above the board, not inside it, because the case it exists for is
+            // a board with *nothing* in it: an empty column set and an
+            // unreachable repository are otherwise the same screen (#42).
+            unreachableBanner
+
             // Three states, not two. The board used to assert "No repository
             // yet" for the whole of startup — through the login-shell capture,
             // three tool lookups and a preflight sweep — to a user whose
@@ -116,7 +121,15 @@ public struct BoardView: View {
             Picker("Repository", selection: $model.selectedRepoID) {
                 Text("All repositories").tag(UUID?.none)
                 ForEach(model.repos) { repo in
-                    Text(repo.displayName).tag(UUID?.some(repo.id))
+                    // Badged in the list too, so a repository that could not be
+                    // refreshed is findable while a *different* one is selected
+                    // — otherwise the only way to learn it failed is to pick it.
+                    if model.importFailure(repoID: repo.id) != nil {
+                        Label(repo.displayName, systemImage: "exclamationmark.triangle.fill")
+                            .tag(UUID?.some(repo.id))
+                    } else {
+                        Text(repo.displayName).tag(UUID?.some(repo.id))
+                    }
                 }
             }
             .labelsHidden()
@@ -453,6 +466,53 @@ public struct BoardView: View {
         .frame(maxHeight: .infinity)
     }
 
+    /// What #42 is actually about: an empty board that means "I could not ask"
+    /// looking exactly like one that means "there is nothing to show".
+    ///
+    /// A bar rather than a status sentence, because `status` is one shared line
+    /// that the next event overwrites — a run finishing, a preflight pass,
+    /// another repository's summary — and the failure was gone seconds later.
+    /// This stays until the repository imports or is forgotten.
+    ///
+    /// Scoped to what the picker is showing: the selected repository, or every
+    /// failed one when "All repositories" is chosen.
+    @ViewBuilder
+    private var unreachableBanner: some View {
+        let failures = model.visibleImportFailures
+
+        if !failures.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(failures, id: \.repo.id) { entry in
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Palette.attention)
+                        Text("\(entry.repo.displayName) could not be refreshed")
+                            .font(Type.rowTitle)
+                        // The reason in the fact face: it is `gh`'s words, not
+                        // ours, and the board's own convention keeps those apart.
+                        Text(entry.message)
+                            .font(Type.factSmall)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        Button("Retry") { Task { await model.refreshFromGitHub() } }
+                            .buttonStyle(.link)
+                            .font(Type.labelSmall)
+                            .disabled(model.isImporting)
+                    }
+                    .help(entry.message)
+                }
+            }
+            .padding(.horizontal, Metric.gutter)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.attention.opacity(0.12))
+            .overlay(alignment: .bottom) { Divider() }
+            .accessibilityIdentifier("import-failure-banner")
+        }
+    }
+
     private var emptyState: some View {
         ContentUnavailableView {
             Label("No repository yet", systemImage: "folder.badge.plus")
@@ -682,6 +742,11 @@ struct ColumnView: View {
     /// Per column and per repository, so collapsing a repository in Backlog does
     /// not hide it in To Do — the two are different questions.
     @State private var collapsed: Set<UUID> = []
+    /// The card a drop would land above, or `nil` when the pointer is not over
+    /// one. Held on the column rather than as `@State` inside each card, so
+    /// exactly one insertion cue can be drawn at a time — two bars would say the
+    /// card is about to land in two places.
+    @State private var insertAbove: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -855,6 +920,47 @@ struct ColumnView: View {
     private func draggable(_ card: Card) -> some View {
         CardView(card: card)
             .id(card.id)
+            // Arriving at a *position* starts nothing, so the cue is
+            // `Palette.inert` and not an accent. `armed` means a gesture starts
+            // an agent and `irreversible` means it merges; spending either here
+            // is exactly the dilution #47 spent its effort undoing.
+            .overlay(alignment: .top) {
+                if insertAbove == card.id {
+                    Rectangle()
+                        .fill(Palette.inert)
+                        .frame(height: 2)
+                        .allowsHitTesting(false)
+                }
+            }
+            .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: insertAbove)
+            // Nested inside the column's own drop target on purpose, and this is
+            // the hazard #47's review named: a card covers most of a populated
+            // column, so if this swallowed drops the column could not receive
+            // them and "drop anywhere in the column" — the app's whole gesture —
+            // would break. It does not swallow them: a drop on a card is still a
+            // drop into this column, because `reorder` performs the column move
+            // itself when the card comes from elsewhere. What changes is only
+            // *where in the column* it lands.
+            .dropDestination(for: String.self) { items, _ in
+                insertAbove = nil
+                guard let id = items.first.flatMap(UUID.init(uuidString:)) else { return false }
+                // A card dropped on itself. Refused at the gesture so the drag
+                // snaps back rather than animating into a placement that
+                // `CardReorder.placement` is about to decline anyway.
+                guard id != card.id else { return false }
+
+                // Only a drop from *another* column can be refused; asking
+                // `refuse` about a same-column drop would answer "same column"
+                // and put a refusal note on a gesture that is allowed.
+                if model.card(id: id)?.column != card.column,
+                   model.refuse(cardID: id, to: card.column) {
+                    return false
+                }
+                Task { await model.reorder(cardID: id, in: card.column, above: card) }
+                return true
+            } isTargeted: { targeted in
+                insertAbove = targeted ? card.id : (insertAbove == card.id ? nil : insertAbove)
+            }
             .onDrag {
                 // An action closure, not a view builder: safe to record the
                 // selection here, and it means starting a drag arms the console
@@ -1017,6 +1123,23 @@ enum BoardAccessibility {
     /// repositories".
     static func groupCaption(repoName: String, count: Int, column: String) -> String {
         "\(repoName), \(count) \(cards(count)) in \(column)"
+    }
+
+    /// One row of a card's move history, read as a sentence.
+    ///
+    /// The visible row is a tabular line — two columns, an age, an origin — and
+    /// read out field by field it would be four disconnected fragments. This is
+    /// the same information as a sentence, which is what
+    /// `.accessibilityElement(children: .combine)` needs to be given instead.
+    ///
+    /// `run` is optional and the clause is omitted entirely when it is `nil`:
+    /// VoiceOver must not say "started" about a move that started nothing.
+    static func historyRowLabel(
+        from: String, to: String, age: String, origin: String, run: String?
+    ) -> String {
+        let base = "\(from) to \(to), \(age), \(origin)"
+        guard let run else { return base }
+        return "\(base). Started \(run)"
     }
 
     /// What the detail panel announces itself as.

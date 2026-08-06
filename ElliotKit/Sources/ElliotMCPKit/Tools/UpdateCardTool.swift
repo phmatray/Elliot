@@ -54,6 +54,9 @@ struct UpdateCardTool: BoardTool {
                 // Overwrites text that nothing keeps a copy of.
                 destructiveHint: true,
                 idempotentHint: true,
+                // Edits a local row, and is refused outright once the card
+                // carries an issue number — so it cannot even race the record
+                // on github.com, let alone reach it.
                 openWorldHint: false
             )
         )

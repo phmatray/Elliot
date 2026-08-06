@@ -33,11 +33,19 @@ struct AnalyzeRepoTool: BoardTool {
                             "type": .string("string"),
                             "enum": .array(AnalysisAngle.allCases.map { .string($0.rawValue) }),
                         ]),
+                        // ⚠️ Hand-written, unlike the `enum` above it, which comes
+                        // from `allCases`. So a new angle is *accepted* the moment
+                        // it exists but goes unglossed here until someone adds it —
+                        // which is not what "adding an angle is a case and a
+                        // paragraph" implies, and is why `ToolSurfaceTests` asserts
+                        // every raw value appears in this string.
                         "description": .string(
                             "One run per angle. bugs = defects; quickWins = high value for one "
                             + "sitting; features = capabilities the code is asking for; "
                             + "techDebt = structure costing something now; tests = uncovered "
-                            + "invariants; docsAndDX = friction a newcomer hits."
+                            + "invariants; docsAndDX = friction a newcomer hits; "
+                            + "uxAndUI = what the person using the app runs into; "
+                            + "bestPractices = where the code left a written convention."
                         ),
                     ]),
                     "max_stories": .object([
@@ -59,7 +67,13 @@ struct AnalyzeRepoTool: BoardTool {
                 title: "Analyse a repository",
                 readOnlyHint: false,
                 destructiveHint: false,
-                openWorldHint: false
+                // Starts one unattended `claude -p` run per angle in a real
+                // checkout, under the repository's own permission mode. That is
+                // the same class of act as board_move_card, and this said
+                // `false` until #27 — the tool's own description said "each
+                // angle is its own `claude -p` run" on the line above while the
+                // annotation claimed a closed world.
+                openWorldHint: true
             )
         )
     }

@@ -183,6 +183,12 @@ public final class AppModel {
     /// it. `BoardStore.audits` had no non-test caller before this.
     public private(set) var lastMove: [UUID: MoveAudit] = [:]
 
+    /// Every move the selected card has made, newest first, as the store
+    /// returned them. Filled by `refreshHistory` from the panel's own `.task`,
+    /// never from `CardView` — see `refreshRuns` for why the two reads are not
+    /// one read.
+    public private(set) var historyByCard: [UUID: [MoveAudit]] = [:]
+
     public struct PendingMerge: Identifiable, Sendable {
         public var id: UUID { cardID }
         public var cardID: UUID
@@ -194,9 +200,13 @@ public final class AppModel {
     private var scheduler: RunScheduler?
     private var watcher: PRWatcher?
     private var importer: GitHubImportService?
-    /// Repositories already imported this session. In memory on purpose: a
-    /// relaunch re-importing costs two `gh` calls and cannot duplicate anything.
-    private var importedThisSession: Set<UUID> = []
+    /// What has been brought in from GitHub this session, and what could not be.
+    ///
+    /// In memory on purpose: a relaunch re-importing costs two `gh` calls and
+    /// cannot duplicate anything. It used to be a bare `Set<UUID>` inserted into
+    /// *before* the await, which made "we tried" indistinguishable from "we
+    /// succeeded" — see ``ImportSessionState``.
+    private var importSession = ImportSessionState()
     private var registry: RepoRegistryService?
     private var ipcServer: IPCServer?
     private var toolConfig: ToolConfig?
@@ -315,8 +325,8 @@ public final class AppModel {
             let server = IPCServer(
                 socketPath: StoreLocation.socketURL.path,
                 token: token
-            ) { request in
-                await handler.handle(request)
+            ) { request, client in
+                await handler.handle(request, client: client)
             }
             try server.start()
             ipcServer = server
@@ -634,23 +644,40 @@ public final class AppModel {
     /// Drop a card between two of its new neighbours.
     ///
     /// `orderIndex` is a `Double` so an insert is `(prev + next) / 2` rather
-    /// than a renumbering — the store has always supported this, and the board
-    /// simply never offered it.
+    /// than a renumbering — the store has always supported this, and until #49
+    /// the board simply never offered it.
+    ///
+    /// **Where the drop lands is decided by `CardReorder.placement`, not here.**
+    /// It used to be three `if`s in this method, which meant the self-drop guard
+    /// #47's review asked for would have lived somewhere no test could see it.
+    /// This method now does only the two things a model layer must: perform the
+    /// column move when the placement says one is needed, and write.
     public func reorder(cardID: UUID, in column: ElliotModel.Column, above target: Card?) async {
         guard let board, let moving = card(id: cardID) else { return }
-        let ordered = cards(in: column).filter { $0.id != cardID }
 
-        let index = target.flatMap { t in ordered.firstIndex { $0.id == t.id } } ?? ordered.count
-        let previous = index > 0 ? ordered[index - 1].orderIndex : nil
-        let next = index < ordered.count ? ordered[index].orderIndex : nil
+        let placement = CardReorder.placement(
+            moving: moving, onto: target, in: column, columnCards: cards(in: column))
+
+        let previous: Double?
+        let next: Double?
+        switch placement {
+        case .none:
+            // A card dropped on itself. Nothing is written — not even the index
+            // it already has.
+            return
+        case .reorder(let p, let n):
+            (previous, next) = (p, n)
+        case .moveThenReorder(let destination, let p, let n):
+            // Crossing columns is a move first — it may file an issue, open a
+            // pull request or merge one — and only then a placement. A refused
+            // move places nothing, which is why this returns rather than
+            // falling through.
+            await move(cardID: cardID, to: destination)
+            guard refusal == nil, card(id: cardID)?.column == destination else { return }
+            (previous, next) = (p, n)
+        }
 
         do {
-            if moving.column != column {
-                // Crossing columns is a move first — it may file an issue or
-                // merge a pull request — and only then a placement.
-                await move(cardID: cardID, to: column)
-                guard refusal == nil, card(id: cardID)?.column == column else { return }
-            }
             try await board.reorder(cardID: cardID, between: previous, and: next)
         } catch {
             status = error.localizedDescription
@@ -741,7 +768,26 @@ public final class AppModel {
         runsByCard[cardID] = (try? await store?.runs(cardID: cardID, limit: 20)) ?? []
         // Read here rather than from a new call site: `CardView.task` and the
         // inspector already call this per card.
+        //
+        // Still one row, deliberately, and it is `refreshHistory` below that
+        // reads the rest. This runs from `CardView.task` for **every visible
+        // card**, so widening it to the full history would put the whole board's
+        // audit trail behind a scroll to feed one sentence in a header.
         lastMove[cardID] = (try? await store?.audits(cardID: cardID, limit: 1))??.first
+    }
+
+    /// Every move one card has made, for the panel that is open on it.
+    ///
+    /// Separate from `refreshRuns` for the reason written there — this is called
+    /// only from `DetailPanelView.task(id:)`, so the 100-row read happens once
+    /// per selection rather than once per visible card.
+    ///
+    /// A failed read leaves `[]` rather than the previous card's rows: an empty
+    /// history draws no block at all, which is honest, where stale rows would
+    /// attribute one card's moves to another.
+    public func refreshHistory(cardID: UUID) async {
+        historyByCard[cardID] =
+            (try? await store?.audits(cardID: cardID, limit: MoveHistory.auditLimit)) ?? []
     }
 
     // MARK: - Scheduler limits
@@ -988,23 +1034,87 @@ public final class AppModel {
             ? "Refreshing \(targets[0].displayName) from GitHub…"
             : "Refreshing \(targets.count) repositories from GitHub…"
 
-        let summaries = await importer.importAll(targets)
-        targets.forEach { importedThisSession.insert($0.id) }
+        // Imported one at a time rather than through `importAll`, so each
+        // summary is attributable to the repository that produced it.
+        // `importAll` filters on `isEnabled`, so its output can be *shorter*
+        // than its input and position does not identify anything; matching on
+        // `ImportSummary.repoName` would be no better, since that is
+        // `displayName` and two repositories may share one. Here the id is in
+        // hand at the point the outcome is recorded, so there is nothing to
+        // match. The `isEnabled` filter is kept.
+        var summaries: [ImportSummary] = []
+        for repo in targets where repo.isEnabled {
+            let summary = await importer.importRepo(repo)
+            summaries.append(summary)
+            record(summary, for: repo.id)
+        }
         isImporting = false
         status = summaries.map(\.sentence).joined(separator: "   ")
     }
 
+    /// One place where an `ImportSummary` becomes session state, so the two
+    /// call sites cannot drift apart — which is how the second site came to
+    /// carry the same bug as the first.
+    ///
+    /// Internal rather than private so `ElliotAppKitTests` can drive an outcome
+    /// without standing up a `GitHubImportService` and a real `gh`. That is the
+    /// same seam `testOnlySeed` uses, and it is what lets criterion 5 be met
+    /// here rather than only one layer down in `ImportSessionState`.
+    func record(_ summary: ImportSummary, for repoID: UUID) {
+        if let failure = summary.failure {
+            importSession.recordFailure(repoID: repoID, message: failure)
+        } else {
+            importSession.recordSuccess(repoID: repoID)
+        }
+    }
+
+    /// Why this repository shows no cards, when the answer is not "it has none".
+    ///
+    /// Survives `status` being overwritten by the next event, which is the half
+    /// of #42 that actually bites: the one-shot sentence was the only signal.
+    public func importFailure(repoID: UUID?) -> String? {
+        repoID.flatMap { importSession.failure(repoID: $0) }
+    }
+
+    /// Whether anything in view could not be refreshed — for the "All
+    /// repositories" case, where no single id is selected.
+    public var importFailures: [(repo: Repo, message: String)] {
+        repos.compactMap { repo in
+            importSession.failure(repoID: repo.id).map { (repo, $0) }
+        }
+    }
+
+    /// The failures the board should be showing, given what the picker is on.
+    ///
+    /// Here rather than in `BoardView` because it is a decision — "which of
+    /// these does the user need to see right now" — and a view cannot be
+    /// tested. One repository selected shows only its own failure; "All
+    /// repositories" shows every one, because in that case an empty board is
+    /// the sum of all of them.
+    public var visibleImportFailures: [(repo: Repo, message: String)] {
+        guard let selectedRepoID else { return importFailures }
+        return importFailures.filter { $0.repo.id == selectedRepoID }
+    }
+
     /// The first time a repository is shown, bring in what GitHub already knows.
     /// Once per repository per session — the button covers the rest.
+    /// This is the unattended path, so it guards on `shouldAutoImport`: one
+    /// attempt per repository per session whatever the outcome. A failure stays
+    /// retryable — but by a gesture (Refresh), never by the view re-evaluating.
+    /// That is criterion 4 held by construction rather than by an assumption
+    /// about when SwiftUI re-runs `.task(id:)`.
     public func importIfNeeded(repoID: UUID?) async {
-        guard let repoID, !importedThisSession.contains(repoID), !isImporting,
+        guard let repoID, importSession.shouldAutoImport(repoID: repoID), !isImporting,
               let repo = repos.first(where: { $0.id == repoID }), repo.isEnabled,
               let importer
         else { return }
 
-        importedThisSession.insert(repoID)
         isImporting = true
         let summary = await importer.importRepo(repo)
+        // Recorded *after* the await, and branched on the outcome. Inserting
+        // before it is the bug this fixes: `importRepo` never throws, so a
+        // failed fetch used to leave the repository marked done for the session.
+        record(summary, for: repoID)
         isImporting = false
         status = summary.sentence
     }
@@ -1016,7 +1126,11 @@ public final class AppModel {
         let targets = selectedRepoID.flatMap { id in repos.filter { $0.id == id } } ?? repos
         for repo in targets {
             try? await store.clearDismissals(repoID: repo.id)
-            importedThisSession.remove(repo.id)
+            // `forget`, not just "un-succeed": this has to restore the
+            // unattended attempt too, or a repository whose import failed
+            // earlier would not pick the dismissed cards back up until the
+            // user pressed Refresh.
+            importSession.forget(repoID: repo.id)
         }
         status = "Dismissed items forgotten — refresh to bring them back."
     }
@@ -1175,5 +1289,16 @@ public final class AppModel {
         runsByCard = byCard
         recentRuns = recent
         analysisRuns = analysis
+    }
+
+    /// Puts a real store behind the model without `start()`.
+    ///
+    /// The two seams above exist to avoid a database; this one exists because
+    /// the thing under test *is* a read. `refreshHistory` and `refreshRuns`
+    /// differ only in the limit they pass, and a fake would assert the limit I
+    /// wrote rather than the rows SQLite returns — which is the whole question
+    /// (#101). `board` stays nil, so a seeded model still cannot write.
+    func testOnlySeedStore(_ store: BoardStore) {
+        self.store = store
     }
 }

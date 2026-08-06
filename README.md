@@ -40,9 +40,9 @@ than letting the two drift.
 ## Where stories come from
 
 The backlog holds user stories, and Elliot can write them. *Analyze…* reads a
-registered repository through six lenses — bugs, quick wins, features, tech
-debt, tests, docs & DX — one `claude -p` run each, and comes back with proposed
-stories you go through and accept.
+registered repository through eight lenses — bugs, quick wins, features, tech
+debt, tests, docs & DX, UX & UI, best practices — one `claude -p` run each, and
+comes back with proposed stories you go through and accept.
 
 Proposals are **not cards**. They live in their own table and their own window,
 so a 30-story analysis does not drown the board and the five columns keep one
@@ -270,6 +270,17 @@ writing, cancellation, launch sweep — against `Scripts/fake-claude.sh`, withou
 spending a token or touching GitHub. The fake is driven by environment
 variables (`FAKE_CLAUDE_FIXTURE`, `_DELAY_MS`, `_MODE=hang|trap|crash`,
 `_ARGV_OUT`) and is equally usable by hand from a terminal.
+
+`gh` has the same treatment in `Scripts/fake-gh.sh`, which answers `issue list`
+and `pr list` from `Fixtures/gh/*.json` (`FAKE_GH_ISSUES`, `FAKE_GH_PRS`,
+`FAKE_GH_MODE=ok|fail`, `FAKE_GH_ARGV_OUT`). That is how the GitHub import is
+tested end to end — real subprocess, real JSON decode, real store writes —
+without `gh` existing on the machine:
+
+```bash
+FAKE_GH_ISSUES=Fixtures/gh/issues-basic.json \
+  ./Scripts/fake-gh.sh issue list --repo x --json number | python3 -m json.tool
+```
 
 Two invariants carry most of the weight:
 

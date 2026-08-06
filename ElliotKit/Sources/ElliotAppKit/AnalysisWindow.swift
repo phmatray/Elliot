@@ -50,8 +50,8 @@ public struct AnalysisWindow: View {
             Divider()
             footer
         }
-        // A window, not a modal sheet: this screen starts up to six concurrent
-        // runs and then watches them for minutes. The note that used to live
+        // A window, not a modal sheet: this screen starts up to eight runs,
+        // three at a time, and then watches them for minutes. The note that used to live
         // above the footer is now *in* it — inserting a row between the list
         // and the buttons moved the buttons out from under the cursor that had
         // just pressed one.
@@ -450,8 +450,8 @@ public struct AnalysisWindow: View {
 
 // MARK: - A lens, before it runs
 
-/// An angle as something you arm, not a row in a settings list. The six lenses
-/// are what this feature *is*; a column of checkboxes says otherwise.
+/// An angle as something you arm, not a row in a settings list. The eight
+/// lenses are what this feature *is*; a column of checkboxes says otherwise.
 struct LensTile: View {
     let angle: AnalysisAngle
     let isOn: Bool

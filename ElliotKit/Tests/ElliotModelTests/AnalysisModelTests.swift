@@ -93,6 +93,22 @@ struct AnalysisModelTests {
         #expect(analysisRun.analysisAngle == .bugs)
     }
 
+    /// The raw values are written into SQLite — `analysis.angles` as JSON and
+    /// `skillRun.analysisAngle` as a column — so renaming a case orphans every
+    /// stored row that named it, silently and with no migration to notice.
+    ///
+    /// The one assertion here that does not come for free: `everyAngleIsBriefed`
+    /// and `anglesAreDistinguishable` both take `arguments: allCases` and so
+    /// cover a new case the moment it exists, but neither would notice a case
+    /// being *renamed*.
+    @Test("The persisted raw values are pinned, in board order")
+    func rawValuesArePersistedContract() {
+        #expect(AnalysisAngle.allCases.map(\.rawValue) == [
+            "bugs", "quickWins", "features", "techDebt", "tests", "docsAndDX",
+            "uxAndUI", "bestPractices",
+        ])
+    }
+
     @Test("Only the three plugin skills have a slash name")
     func onlySkillsHaveSlashNames() {
         #expect(SkillKind.createIssue.slashName == "/ai-migration-kit:create-issue")

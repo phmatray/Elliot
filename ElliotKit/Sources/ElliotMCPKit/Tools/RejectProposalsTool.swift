@@ -34,6 +34,8 @@ struct RejectProposalsTool: BoardTool {
                 title: "Reject proposals",
                 readOnlyHint: false,
                 destructiveHint: false,
+                // Marks stored proposals rejected. Nothing leaves the machine,
+                // and nothing on github.com knows these existed.
                 openWorldHint: false
             )
         )

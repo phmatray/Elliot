@@ -70,6 +70,30 @@
   target: it builds headlessly but cannot be exercised from a terminal — launch the assembled bundle
   from the **Finder** (`open dist/Elliot.app`), not from a shell, because the preflight checks exist
   precisely to survive *not* inheriting your shell `PATH`.
+- **If `swift test` hangs, or the SwiftPM build lock looks held, look for a stale
+  `swiftpm-testing-helper` — from *another worktree*.** This is the shape of #7, and its whole cost
+  was that it does not present as a stale process: it presents as the toolchain being broken. The
+  build lock stays held, `swift test` never returns, and nothing on screen points at a directory you
+  are not in. Several worktrees share this repository, which is exactly the arrangement where one
+  worktree's leftover affects another's build.
+  ```bash
+  ps -eo pid,ppid,etime,command | grep '[s]wiftpm-testing-helper'
+  ```
+  **Read the `--test-bundle-path` in the output, not just the PID: it names the owning worktree.**
+  That is what makes the sighting actionable — you can tell your own helper from a concurrent
+  session's, and killing the wrong one turns a rare stall into someone else's reproducible failure.
+  - ⚠️ **A PPID of 1 does *not* on its own mean "stale".** Measured 2026-08-06 (#30): SIGKILL the
+    `swift test` parent and the helper reparents to PID 1 — and then **exits by itself within about
+    200 ms**. Orphaned is a state this process passes *through* during normal teardown. So sample
+    twice, a second apart, and only act on a helper that is still there the second time. A one-shot
+    `ps` that greps for `ppid == 1` will accuse healthy processes.
+  - **Measured after #18, this no longer recurs** — see the *Resolved* note in #30 for the four
+    experiments and their numbers. Treat a fresh sighting that *survives* a second sample as new
+    information and record it on #30 rather than just killing it.
+  - ⚠️ **Do not reach for a pre-emptive "kill stray helpers" script.** This repository is regularly
+    driven from several sessions at once; such a script cannot tell a wedged helper from a healthy
+    concurrent one, and would convert a rare stall into a reproducible failure for whoever else is
+    building.
 
 ## CI gates (the exact commands CI fails on — satisfy these locally before ready/merge)
 `.github/workflows/ci.yml`, job **`build-and-test`**, on `pull_request` → `main` and `push` → `main`.
@@ -220,6 +244,16 @@ enforces it. -->
   driven by `FAKE_CLAUDE_FIXTURE`, `FAKE_CLAUDE_DELAY_MS`, `FAKE_CLAUDE_MODE=hang|trap|crash`,
   `FAKE_CLAUDE_ARGV_OUT`, and — for an analysis — `FAKE_CLAUDE_STORIES` / `FAKE_CLAUDE_TOUCH`. The fake
   is equally usable by hand from a terminal when reproducing a run.
+- **`gh` is fakeable too — do not plan around it being untestable.** `Scripts/fake-gh.sh` answers
+  `issue list` and `pr list` from `Fixtures/gh/*.json` (`FAKE_GH_ISSUES`, `FAKE_GH_PRS`,
+  `FAKE_GH_MODE=ok|fail`, `FAKE_GH_FAIL_REPO`, `FAKE_GH_EXIT`, `FAKE_GH_ARGV_OUT`). `FAKE_GH_FAIL_REPO`
+  fails for one `--repo` only, which is the only way to test that an unreachable repository does not
+  cost a healthy one its refresh — `importAll` shares one client across the pass.
+  `GHClient` spawns `ToolConfig.ghPath`,
+  so a test just points that at the script; no protocol and no production change are needed, and the
+  real subprocess and real ISO-8601 decode stay under test. This entry exists because the opposite
+  conclusion was drawn once: #40 judged the import untestable and turned three of #17's acceptance
+  criteria into a manual checklist, which #41 then had to undo.
 - Launched from the Finder the process sees only `/usr/bin:/bin:/usr/sbin:/sbin` — the login-shell
   environment is **captured**, never inherited (`LoginShellEnvironment.capture()`), and `claude`/`gh`/`git`
   are located through `ToolLocator`. Anything spawning a tool must go through `ToolConfig`.

@@ -53,7 +53,12 @@ struct ListCardsTool: BoardTool {
                     ]),
                 ]),
             ]),
-            annotations: .init(title: "List board cards", readOnlyHint: true, openWorldHint: false)
+            annotations: .init(
+                title: "List board cards",
+                readOnlyHint: true,
+                // Elliot's own rows. Nothing is fetched and no run is started.
+                openWorldHint: false
+            )
         )
     }
 

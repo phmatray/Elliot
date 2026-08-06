@@ -32,7 +32,13 @@ struct ListReposTool: BoardTool {
                 "type": .string("object"),
                 "properties": .object([:]),
             ]),
-            annotations: .init(title: "List repositories", readOnlyHint: true, openWorldHint: false)
+            annotations: .init(
+                title: "List repositories",
+                readOnlyHint: true,
+                // The registry Elliot keeps locally; github.com is never asked
+                // whether these repositories still exist.
+                openWorldHint: false
+            )
         )
     }
 

@@ -67,6 +67,10 @@ struct AwaitRunTool: BoardTool {
                 readOnlyHint: false,
                 destructiveHint: false,
                 idempotentHint: true,
+                // Watches a run that may well be talking to github.com, and
+                // that is not the same as talking to it: this call cannot
+                // change what the run does. Launching Elliot, which is why
+                // `readOnlyHint` is false, is an act on this machine.
                 openWorldHint: false
             )
         )
