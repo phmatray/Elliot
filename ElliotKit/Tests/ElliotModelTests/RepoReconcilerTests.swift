@@ -67,6 +67,37 @@ struct RepoReconcilerTests {
         #expect(rows[0].fixes.isEmpty)
     }
 
+    /// The distinction this suite exists to hold: "nothing is wrong here" and "I
+    /// could not check" are different answers, and only one of them is `.ok`.
+    /// The detail string is unchanged — it was never the problem; the verdict it
+    /// rode on was.
+    @Test("A registered clone GitHub did not list is unlisted, never ok")
+    func unlisted() {
+        let repo = registered("/R/phmatray/private/Koine", "phmatray/Koine")
+        let rows = RepoReconciler.rows(
+            github: [], disk: [slot("/R/phmatray/private/Koine")],
+            registered: [repo], layout: layout)
+        #expect(rows[0].issue == .unlisted)
+        #expect(rows[0].detail == "On disk; GitHub did not list it.")
+        #expect(rows[0].repoID == repo.id)
+        // No fix: Elliot cannot resolve this from here. Whether the repository
+        // was renamed, deleted, or simply missing from an incomplete answer is a
+        // question about GitHub, and the reconciler is pure — it does not ask.
+        #expect(rows[0].fixes.isEmpty)
+    }
+
+    /// The other half of the claim above: an *unregistered* clone GitHub did not
+    /// list keeps `.notRegistered`, because that verdict is already actionable
+    /// and carries the fix. Only the `.ok` pairing was the lie.
+    @Test("An unregistered clone GitHub did not list is still offered registration")
+    func unlistedAndUnregistered() {
+        let rows = RepoReconciler.rows(
+            github: [], disk: [slot("/R/phmatray/private/Koine")],
+            registered: [], layout: layout)
+        #expect(rows[0].issue == .notRegistered)
+        #expect(rows[0].fixes == [.register(path: "/R/phmatray/private/Koine")])
+    }
+
     @Test("Forks and archived repos are listed with a reason but carry no fix")
     func outOfScopeFromGitHub() {
         let rows = RepoReconciler.rows(
