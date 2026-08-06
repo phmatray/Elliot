@@ -217,7 +217,12 @@ public final class BoardStore: Sendable {
     /// Answers the question the analysis setup screen raises and never answered:
     /// what a six-lens read actually costs, as against filing an issue.
     public func spendByKind(since: Date) async throws -> [SkillKind: Spend] {
-        let rows = try await reader.read { db in
+        // The annotation is load-bearing on Swift 6.1.2 and must not be removed as redundant: 6.1
+        // infers this closure's result as `()`, and the `for row in rows` below then fails with
+        // "for-in loop requires '()' to conform to 'Sequence'". 6.3 infers `[Row]` and does not
+        // need it. Measured twice on 6.1.2 — GitHub Actions run 31118743562 (macos-15) and a
+        // `swift:6.1.2` Linux container — same file, same line, same column. Issue #116.
+        let rows: [Row] = try await reader.read { db in
             try Row.fetchAll(
                 db,
                 sql: #"""
