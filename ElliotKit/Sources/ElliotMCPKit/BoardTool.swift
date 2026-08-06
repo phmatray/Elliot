@@ -12,6 +12,49 @@ import MCP
 /// dependency this protocol never hands it.
 protocol BoardTool: Sendable {
     /// What `tools/list` publishes. Its `name` is also the dispatch key.
+    ///
+    /// ### `openWorldHint`, decided once for the whole surface
+    ///
+    /// MCP defines it as "this tool may interact with an 'open world' of
+    /// external entities … if false, the tool's domain of interaction is
+    /// closed", and it **defaults to `true`**. An omitted annotation is
+    /// therefore the permissive claim rather than a neutral one, which is why
+    /// every tool here answers it out loud and a test holds that they do.
+    ///
+    /// The rule, applied to all of them:
+    ///
+    /// > `openWorldHint` is true when **this call** can make Elliot touch a
+    /// > system outside this machine — by reaching out itself, or by starting
+    /// > or steering a process that does.
+    ///
+    /// Both halves of that sentence settle an argument that has already been
+    /// had once.
+    ///
+    /// **This call, not the workflow it belongs to.** A card from
+    /// board_create_card is the first step of a pipeline whose later move files
+    /// a GitHub issue, so it is tempting to give the first step the reach of
+    /// the last. That flattens the surface: if every tool in the chain is
+    /// open-world then the one that *merges pull requests* no longer stands
+    /// out, and a client that prompts on all of them trains people to click
+    /// through prompts. The tool that reaches github.com is the one that says
+    /// so; the others describe what they do in their own descriptions.
+    ///
+    /// **A row we stored is not an open world, even when its text came from
+    /// one.** board_list_runs returns a run's `resultText` — an agent's prose —
+    /// and its `verifiedOutcome`, which came from `gh`. MCP's own guidance
+    /// notes this hint is partly about "what its output might carry back",
+    /// which read alone would make every read on this surface open. The
+    /// specification's example settles it the other way: *the world of a web
+    /// search tool is open, whereas that of a memory tool is not* — a memory
+    /// tool returns stored text of unbounded origin and its world is still
+    /// closed. What opens a world is that the call can pull in something
+    /// **new**, not that stored bytes have a distant provenance.
+    ///
+    /// ⚠️ So `false` here says "this call reached nothing outside", and never
+    /// "this content is trustworthy". Provenance is answered on this surface by
+    /// something better than a boolean: `verifiedOutcome` is what `gh`
+    /// established and `resultText` is what the agent said it did, and they are
+    /// deliberately two different fields.
     var tool: Tool { get }
 
     /// Answers one call. Arguments arrive exactly as the agent sent them:
