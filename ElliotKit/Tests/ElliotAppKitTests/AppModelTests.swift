@@ -588,7 +588,7 @@ struct AppModelTests {
         #expect(model.recentRuns.first?.state == .stalled)
         // A different run is untouched: the notice names one run, and the four
         // collections are walked by id rather than blanket-marked.
-        #expect(model.analysisRuns.first?.state == .running)
+        #expect(model.analysis?.runs.first?.state == .running)
     }
 
     @Test("A run that finished before the notice arrived keeps its outcome")
