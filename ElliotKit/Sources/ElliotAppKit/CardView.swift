@@ -106,6 +106,23 @@ struct CardView: View {
         .accessibilityAction { toggleSelection() }
         .contextMenu { menu }
         .task(id: card.id) { await model.refreshRuns(cardID: card.id) }
+        // Where the caret points. A card's y inside a `LazyVStack` inside a
+        // scrolling column genuinely cannot be computed — it has to be measured
+        // — and this is the measurement.
+        //
+        // An anchor rather than a `GeometryReader`: a reader wrapped around a
+        // card would take all the space offered and change the card's own
+        // layout, and one in a background would answer in a later update than
+        // the layout that moved the card. A preference writer changes no
+        // geometry at all, and the rect it carries is resolved by whoever reads
+        // it — so the card, its column's viewport and the panel are measured in
+        // one space, with nothing to keep in sync.
+        //
+        // Only the selected card contributes. Every other card writes the empty
+        // value, which `CaretAnchorKey.reduce` merges away.
+        .anchorPreference(key: CaretAnchorKey.self, value: .bounds) { bounds in
+            isSelected ? CaretAnchors(card: bounds) : CaretAnchors()
+        }
     }
 
     @ViewBuilder

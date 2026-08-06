@@ -254,6 +254,17 @@ public struct BoardView: View {
                 }
                 .padding(Metric.gutter)
                 .frame(minWidth: boardWidth, alignment: .leading)
+                // The caret and its tether, drawn over the whole row rather
+                // than inside the panel. They sit *outside* the panel's bounds
+                // by design, and in the flipped case they hang over Done — up
+                // here nothing clips them and nothing paints over them. The
+                // card, the origin column's viewport and the panel all arrive
+                // as anchors, so one `GeometryProxy` resolves the three in one
+                // space and the caret is drawn from the layout pass that is
+                // happening rather than the one before it.
+                .overlayPreferenceValue(CaretAnchorKey.self) { anchors in
+                    CaretRail(anchors: anchors, flipped: isPanelFlipped)
+                }
             }
             .scrollPosition($boardScroll)
             // Derived from the same width function the row is built from, never
@@ -277,12 +288,21 @@ public struct BoardView: View {
         }
         .frame(maxWidth: .infinity)
         .background(Color(nsColor: .underPageBackgroundColor))
-        // Clicking the board's own background clears the selection, so the
-        // console goes quiet without hunting for a close button. It fires by
-        // bubbling — from a column's empty space and from the padding ring —
-        // which is why the panel, now inside this container, absorbs its own.
-        .contentShape(Rectangle())
-        .onTapGesture { model.selectedCardID = nil }
+        // No deselect gesture here any more; `ColumnView` carries it.
+        //
+        // It lived here and fired by bubbling, which stopped working the moment
+        // the panel widened the row past the viewport: an enabled `ScrollView`
+        // swallows the tap, so nothing deselected at all. Moving it to the row's
+        // background fixed that and broke the opposite direction — that
+        // background also lies under the panel, so a click on the panel being
+        // read closed it, and the panel's own empty `onTapGesture` did not
+        // absorb it.
+        //
+        // An ancestor's tap fires for taps on its descendants, so any deselect
+        // above the panel is a deselect *through* the panel. The reach has to be
+        // the columns themselves. What that gives up is the 10pt padding ring,
+        // which no longer deselects; Escape still does, and the columns cover
+        // the gesture anyone actually makes.
     }
 
     /// The column the panel opens beside, or `nil` when there is no panel — the
@@ -300,9 +320,23 @@ public struct BoardView: View {
         panelOrigin == nil ? nil : model.panelSpans
     }
 
+    /// Which edge of the panel the caret hangs off, decided by the same function
+    /// that put the panel on that side of its column. Reading it off
+    /// `panelOrigin` rather than off the card is deliberate: the panel and its
+    /// caret cannot then disagree about which column they belong to.
+    private var isPanelFlipped: Bool {
+        panelOrigin.map(PanelLayout.opensLeft(of:)) ?? false
+    }
+
     /// The detail panel, as one slot of the row.
     private func panel(width: CGFloat) -> some View {
         DetailPanelView(columnWidth: width)
+            // Where the caret's flat side goes. The panel's anchor is also the
+            // whole "is there a caret" condition — it exists exactly while the
+            // panel is built, so there is no second copy of that question.
+            .anchorPreference(key: CaretAnchorKey.self, value: .bounds) {
+                CaretAnchors(panel: $0)
+            }
             // Load-bearing. Later siblings paint over earlier ones, and in the
             // flipped case the panel is placed *before* Done — whose
             // background, clip and border would paint over the caret notched
@@ -531,6 +565,24 @@ struct ColumnView: View {
         .frame(width: width)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(background)
+        // Clearing the selection belongs to the columns, not to the row.
+        //
+        // It used to sit on the board container and work by bubbling out of a
+        // column's empty space — but only because the old predicate disabled
+        // scrolling whenever five columns fit, and a disabled `ScrollView`
+        // passes a tap through. The panel makes the row wider than the viewport
+        // by design, so scrolling is now always on while it is open, an enabled
+        // `ScrollView` swallows the tap, and the board became impossible to
+        // deselect by clicking — in every column, with `swift build` clean and
+        // all 726 tests green. Caught by looking, and confirmed a regression by
+        // driving `main` through the same gesture.
+        //
+        // Putting it on the row's background instead only moved the bug: that
+        // background also lies under the panel, so clicking the panel being read
+        // closed it. Here the reach is exactly right — a column's own empty
+        // space and nothing else. Cards sit in front and keep their own tap.
+        .contentShape(Rectangle())
+        .onTapGesture { model.selectedCardID = nil }
         .clipShape(RoundedRectangle(cornerRadius: Metric.columnRadius))
         .overlay {
             RoundedRectangle(cornerRadius: Metric.columnRadius)
@@ -639,6 +691,18 @@ struct ColumnView: View {
                     proxy.scrollTo(landed.cardID, anchor: .center)
                 }
             }
+        }
+        // What the reader can currently see of this list, which is what decides
+        // whether the caret still has a card to point at. The `ScrollView`'s own
+        // bounds are the viewport, not the content — a card whose centre leaves
+        // this rectangle has scrolled out, and `PanelLayout.isDetached` says so.
+        //
+        // Only the column the panel opened from reports. The other four have
+        // nothing to say about a caret that is not theirs, and four extra
+        // rectangles arriving at one key is four chances to answer for the wrong
+        // column.
+        .anchorPreference(key: CaretAnchorKey.self, value: .bounds) { bounds in
+            model.selectedCard?.column == column ? CaretAnchors(list: bounds) : CaretAnchors()
         }
     }
 

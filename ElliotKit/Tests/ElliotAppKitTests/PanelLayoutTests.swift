@@ -433,6 +433,72 @@ struct PanelLayoutTests {
         #expect(PanelLayout.tetherReach == 18)
         #expect(Metric.columnListPadding == 8)
     }
+
+    // MARK: - The caret against the panel's edge
+
+    /// Nothing here is a pixel position: every assertion is stated against a
+    /// panel edge handed in as a parameter, which is the only thing the caret's
+    /// placement is a function of. Where that edge falls on screen is the
+    /// board's business and is measured, not computed.
+
+    @Test("The caret's point clears the panel and its mouth covers the border")
+    func caretStraddlesThePanelEdge() {
+        let edge: CGFloat = 500
+        let width = CaretMetric.depth + CaretMetric.border
+        let centre = CaretMetric.caretCenterX(panelEdgeX: edge, flipped: false)
+
+        // The mouth sits *inside* the panel by exactly the border width, which
+        // is what stops the panel's own outline running across it: a triangle
+        // with a line drawn over its base is glued to the wall rather than
+        // notched out of it.
+        #expect(centre + width / 2 == edge + CaretMetric.border)
+        #expect(centre - width / 2 == edge - CaretMetric.depth)
+    }
+
+    @Test("Flipping mirrors the caret and the tether about the panel's edge")
+    func flippingMirrorsBothDecorations() {
+        // The case that is invisible in exactly one column and nowhere else.
+        for edge: CGFloat in [0, 320, 1_280] {
+            let caretRight = CaretMetric.caretCenterX(panelEdgeX: edge, flipped: true)
+            let caretLeft = CaretMetric.caretCenterX(panelEdgeX: edge, flipped: false)
+            #expect(caretRight - edge == edge - caretLeft)
+
+            let tetherRight = CaretMetric.tetherCenterX(panelEdgeX: edge, flipped: true)
+            let tetherLeft = CaretMetric.tetherCenterX(panelEdgeX: edge, flipped: false)
+            #expect(tetherRight - edge == edge - tetherLeft)
+        }
+    }
+
+    @Test("The tether starts at the panel's edge and ends at the card's")
+    func tetherSpansEdgeToCard() {
+        let edge: CGFloat = 500
+        let half = PanelLayout.tetherReach / 2
+
+        let near = CaretMetric.tetherCenterX(panelEdgeX: edge, flipped: false)
+        #expect(near + half == edge)
+        #expect(near - half == edge - PanelLayout.tetherReach)
+
+        let far = CaretMetric.tetherCenterX(panelEdgeX: edge, flipped: true)
+        #expect(far - half == edge)
+        #expect(far + half == edge + PanelLayout.tetherReach)
+
+        // The caret is drawn over the tether, so a caret that reached as far as
+        // the rail does would swallow it whole and leave a triangle with no line
+        // leaving it — which is the dash-near-the-card failure the reach exists
+        // to avoid, arrived at from the other end.
+        #expect(CaretMetric.depth < PanelLayout.tetherReach)
+    }
+
+    @Test("Detached drops the tether outright and leaves the caret faint")
+    func detachedStatesSayTheyDoNotKnow() {
+        // The tether cannot point at a card that is not on screen, so it goes
+        // rather than fades. The caret stays visible — the panel still has an
+        // edge the reader has to be able to find — but at a weight that is
+        // plainly not the attached one.
+        #expect(CaretMetric.detachedTether == 0)
+        #expect(CaretMetric.detachedCaret > 0)
+        #expect(CaretMetric.detachedCaret < 0.5)
+    }
 }
 
 private extension BoardSlot {
