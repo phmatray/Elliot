@@ -516,7 +516,7 @@ struct LensRunRow: View {
                 // The setup screen warns that each lens costs a full read of
                 // the repository. This is that warning, settled.
                 if let cost = run.totalCostUSD {
-                    Fact(text: String(format: "$%.4f", cost), tint: Palette.quiet, small: true)
+                    Fact(text: MoneyFormat.usd(cost), tint: Palette.quiet, small: true)
                 }
                 if !run.state.isTerminal {
                     Button("Cancel") { Task { await model.cancelRun(id: run.id) } }
