@@ -1,0 +1,54 @@
+# TEMPORARY — measurement only, for issue #116. Delete before this branch merges.
+#
+# Triggers on push to `probe/116-swift61-floor` and nothing else: it must never
+# gate a pull request, and `workflow_dispatch` is unavailable because a
+# dispatchable workflow has to exist on the default branch first, which this
+# deliberately does not.
+#
+# The question: the manifest says `swift-tools-version: 6.1`, and nobody has
+# ever built the package on a 6.1 toolchain. `macos-15` carries Apple Swift
+# 6.1.2. Run 31118743562 died at the FIRST error, in `ElliotStore`, which every
+# other target depends on — so nothing past it was type-checked and "one error"
+# is a lower bound of unknown tightness.
+name: floor-probe
+
+on:
+  push:
+    branches: [probe/116-swift61-floor]
+
+permissions:
+  contents: read
+
+jobs:
+  swift-61:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          swift --version
+          xcodebuild -version || true
+          sw_vers
+
+      # `continue-on-error` so a failure still leaves a readable log and the
+      # next step can count the errors. The job is a probe, not a gate.
+      - name: swift build
+        id: build
+        continue-on-error: true
+        working-directory: ElliotKit
+        run: |
+          set -o pipefail
+          swift build 2>&1 | tee /tmp/build.log
+          echo "exit=$?"
+
+      # The whole point of the probe: the complete list, not the first line.
+      - name: Every error, deduplicated
+        if: always()
+        run: |
+          echo "=== error lines ==="
+          grep -E '^[^ ].*: error: ' /tmp/build.log | sort -u || echo "(none)"
+          echo "=== count ==="
+          grep -cE '^[^ ].*: error: ' /tmp/build.log || true
+          echo "=== distinct files ==="
+          grep -oE '^/[^:]+\.swift' /tmp/build.log | sort -u || true
