@@ -14,6 +14,47 @@ enum BoardSlot: Hashable {
     case panel
 }
 
+/// One half of the panel's body: what the card *says*, or what has been *run*
+/// against it.
+///
+/// Two cases and no more. At two spans they are named by a segmented switch a
+/// column and a bit wide, and a third tab would either truncate or wrap — and a
+/// pane a reader cannot reach is the exact failure the switch is here to avoid.
+enum PanelPane: String, CaseIterable, Hashable, Sendable, Identifiable {
+    case issue
+    case runs
+
+    var id: String { rawValue }
+
+    /// The bare word. The switch appends the issue number and the run count to
+    /// it, because those belong to the card rather than to the pane.
+    var displayName: String {
+        switch self {
+        case .issue: "Issue"
+        case .runs: "Runs"
+        }
+    }
+}
+
+/// One block of the panel's **header**, in reading order.
+///
+/// A separate type from `PanelPane`, and that separation is the point rather
+/// than tidiness: `headerRegions` returns these and `panes` returns those, so
+/// `.mergeConfirmation` **cannot be placed inside a pane** — not "is not", but
+/// cannot be, at compile time.
+///
+/// #85 moved the merge confirmation onto this panel deliberately above
+/// everything else on it, because it is the only thing there waiting on the
+/// reader and the one act in the product that cannot be undone. At two spans a
+/// pane is hidden; a confirmation drawn inside the Issue pane while the reader
+/// sits on Runs is an armed merge with nowhere to confirm it — and
+/// `armPendingMerge` opens the panel *in order to* show it.
+enum PanelHeaderRegion: Hashable, Sendable {
+    case mergeConfirmation
+    case nextStep
+    case paneSwitch
+}
+
 /// The board's arithmetic, with no view attached to it.
 ///
 /// This exists because of #47, #50, #52 and #53: `.inspector()` shipped three
@@ -70,6 +111,50 @@ enum PanelLayout {
         guard let spans else { return columns + Metric.gutter * (count + 1) }
         let panel = panelWidth(columnWidth: columnWidth(boardWidth: boardWidth), spans: spans)
         return columns + panel + Metric.gutter * (count + 2)
+    }
+
+    // MARK: - What the panel shows
+
+    /// Whether both panes fit side by side.
+    ///
+    /// Three spans is the mockup's two-pane body. Below that the panel is barely
+    /// more than a column wide, and two panes in it would each be narrower than
+    /// the card they describe.
+    static func showsBothPanes(spans: Int) -> Bool { spans >= 3 }
+
+    /// The panes the panel actually builds, in reading order.
+    ///
+    /// One entry when only one fits, and it is the selected one — **not** both
+    /// with one hidden. Criterion 5: the pane that is not showing has to be
+    /// absent from the view tree, because a hidden-but-present pane is still
+    /// reachable by VoiceOver, and a reader who chose Runs would be read the
+    /// issue body they did not ask for.
+    static func panes(spans: Int, selected: PanelPane) -> [PanelPane] {
+        showsBothPanes(spans: spans) ? PanelPane.allCases : [selected]
+    }
+
+    /// What the panel draws above its body, in reading order.
+    ///
+    /// ⚠️ **The selected pane is deliberately not a parameter.** That absence is
+    /// the guarantee: no header block can vary with which pane is showing, so
+    /// the merge confirmation cannot be hidden by the switch. Nothing here
+    /// avoids the bug — the signature makes it unwritable.
+    ///
+    /// `.mergeConfirmation` comes first for the same reason it lives here at
+    /// all, and it is the one block that survives edit mode: the editor replaces
+    /// the body, so there is no pane to switch and no next step to take until it
+    /// closes, but an armed merge is still waiting on an answer.
+    static func headerRegions(
+        spans: Int, isEditing: Bool, isMergePending: Bool, hasNextStep: Bool
+    ) -> [PanelHeaderRegion] {
+        var regions: [PanelHeaderRegion] = []
+        if isMergePending { regions.append(.mergeConfirmation) }
+        guard !isEditing else { return regions }
+        if hasNextStep { regions.append(.nextStep) }
+        // Exactly when something is hidden. A switch offering a choice between
+        // two panes that are both already on screen is furniture.
+        if !showsBothPanes(spans: spans) { regions.append(.paneSwitch) }
+        return regions
     }
 
     // MARK: - Order

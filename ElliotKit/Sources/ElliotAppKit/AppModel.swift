@@ -72,6 +72,19 @@ public final class AppModel {
     /// step with it.
     public var showingInspector = true
 
+    /// How many board columns wide the detail panel is.
+    ///
+    /// A **reader preference**, not a function of the window: the panel is
+    /// measured in columns (`PanelLayout.panelWidth`) so that it reads as being
+    /// *of* the column it came from, and how much of the board a reader is
+    /// willing to give up for it is their call, not the window's.
+    ///
+    /// 3 is the mockup's two-pane body — the issue and the runs side by side. At
+    /// 2 only one pane fits and a segmented switch appears to choose it; the
+    /// merge confirmation stays in the header at both, where no switch can hide
+    /// it.
+    public var panelSpans = 3
+
     /// Which rows of a run log the panel is showing.
     ///
     /// One filter for the pane rather than one per run box: it is a reading

@@ -1,0 +1,412 @@
+import ElliotModel
+import SwiftUI
+
+/// The selected card, drawn as a panel that belongs to the column it came from.
+///
+/// `InspectorView`, which this succeeds, was a 344pt strip pinned to the
+/// trailing edge of the window — as far from the card that was clicked as the
+/// window allows, with nothing connecting the two, and with the run log stacked
+/// underneath several screens of issue body. This one is measured **in columns**
+/// (`PanelLayout.panelWidth`), takes its top rail from the origin column's
+/// `railTint`, and at three spans reads the issue and the runs side by side.
+///
+/// ⚠️ **The container does not clip, and must not.** The caret notched into its
+/// edge and the tether reaching across the gutter to the card both sit *outside*
+/// these bounds; a `.clipShape` here is precisely what would erase them. Each
+/// pane clips itself instead, rounding only the bottom corner it actually owns.
+///
+/// The shape of the panel — which blocks are in the header, which panes are
+/// built — is decided by `PanelLayout`, not here. `ElliotApp` has no test
+/// target and this view has no assertions in it: what a test can hold lives in
+/// those pure functions, and this places what they return.
+struct DetailPanelView: View {
+    @Environment(AppModel.self) private var model
+
+    /// The board's column width, passed in rather than measured here.
+    ///
+    /// The panel is measured in columns, so it needs the same number the columns
+    /// were laid out with. A second `GeometryReader` inside the one that already
+    /// answered that question would be a second answer to it.
+    let columnWidth: CGFloat
+
+    @State private var editor = CardEditor()
+    @State private var saveError: String?
+
+    /// Which pane is showing when only one fits.
+    ///
+    /// `@State` rather than a field on `AppModel`: the panel keeps **one**
+    /// identity across selections — `BoardSlot.panel` is a single case for
+    /// exactly that reason — so this survives clicking from card to card, and
+    /// resets only when the panel closes, which is when a reading mode has
+    /// stopped meaning anything.
+    @State private var pane: PanelPane = .issue
+
+    /// No empty state on purpose: the board only builds this view when a card is
+    /// selected, so there is no reachable "nothing selected" case. One existed
+    /// briefly, while `.inspector()` kept the panel open across a deselect —
+    /// reverted with it in #52.
+    var body: some View {
+        if let card = model.selectedCard {
+            panel(card)
+                .frame(width: PanelLayout.panelWidth(
+                    columnWidth: columnWidth, spans: model.panelSpans
+                ))
+                .frame(maxHeight: .infinity, alignment: .top)
+                .task(id: card.id) {
+                    editor.end()
+                    saveError = nil
+                    await model.refreshRuns(cardID: card.id)
+                }
+        }
+    }
+
+    // MARK: - The container
+
+    private func panel(_ card: Card) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            rail(card)
+            header(card)
+            Divider()
+            if editor.isEditing {
+                editorBody
+                Divider()
+                editorActions(card)
+            } else {
+                paneRow(card)
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor), in: outline)
+        .overlay {
+            outline.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+        }
+        // The only shadow on the board: the panel floats above the columns it is
+        // placed between, and that is what says it is not one of them.
+        .shadow(
+            color: .black.opacity(Metric.panelElevation.opacity),
+            radius: Metric.panelElevation.radius,
+            y: Metric.panelElevation.y
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Card details")
+    }
+
+    /// The panel's silhouette, used as a background fill and as a border — never
+    /// as a clip. See the ⚠️ on the type.
+    private var outline: RoundedRectangle {
+        RoundedRectangle(cornerRadius: Metric.panelRadius)
+    }
+
+    /// The origin column's standing cost, carried onto the panel so the panel
+    /// reads as *of* that column rather than as a floating window that happens
+    /// to be nearby. The same two points of colour the column itself wears.
+    private func rail(_ card: Card) -> some View {
+        UnevenRoundedRectangle(
+            topLeadingRadius: Metric.panelRadius, topTrailingRadius: Metric.panelRadius
+        )
+        .fill(card.column.railTint)
+        .frame(height: Metric.railHeight)
+        .accessibilityHidden(true)
+    }
+
+    // MARK: - Header
+
+    private func header(_ card: Card) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top) {
+                Text(card.displayTitle)
+                    .font(Type.sheetTitle)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button {
+                    model.selectedCardID = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close details")
+            }
+
+            HStack(spacing: 6) {
+                ConsoleLabel(text: card.column.displayName, tint: card.column.railTint)
+                if let repo = model.repo(for: card) {
+                    Fact(text: repo.nameWithOwner, tint: Palette.quiet, small: true)
+                }
+                Spacer()
+                Fact(text: "here \(Elapsed.age(of: card.columnEnteredAt))",
+                     tint: Palette.quiet, small: true)
+            }
+
+            // In Review is the only column Elliot fills by itself, and a card
+            // that turned up there explained nothing about how. The decision was
+            // `PRWatcher`'s and was already recorded; this only reads it back.
+            if let note = arrivalNote(card) {
+                Text(note)
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.inert)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !editor.isEditing, card.issueNumber == nil {
+                Button("Edit story", systemImage: "pencil") { editor.begin(from: card) }
+                    .controlSize(.small)
+            }
+
+            // Drawn from `PanelLayout.headerRegions`, which takes no pane
+            // argument — so nothing below can be hidden by the switch, including
+            // the one block that must never be.
+            ForEach(headerRegions(card), id: \.self) { region in
+                switch region {
+                case .mergeConfirmation:
+                    if let pending = pendingMerge(card) {
+                        MergeConfirmation(pending: pending)
+                    }
+                case .nextStep:
+                    nextStep(card)
+                case .paneSwitch:
+                    paneSwitch(card)
+                }
+            }
+        }
+        .padding(14)
+    }
+
+    private func headerRegions(_ card: Card) -> [PanelHeaderRegion] {
+        PanelLayout.headerRegions(
+            spans: model.panelSpans,
+            isEditing: editor.isEditing,
+            isMergePending: pendingMerge(card) != nil,
+            hasNextStep: card.column.naturalNext != nil
+        )
+    }
+
+    /// The armed merge, but only this card's. `pendingFollowUps` is one field on
+    /// the model and the panel draws one card.
+    private func pendingMerge(_ card: Card) -> AppModel.PendingMerge? {
+        guard let pending = model.pendingFollowUps, pending.cardID == card.id else { return nil }
+        return pending
+    }
+
+    /// Only for the move that actually put the card where it is now — an older
+    /// audit describes a column it has since left.
+    private func arrivalNote(_ card: Card) -> String? {
+        guard let audit = model.lastMove[card.id], audit.to == card.column else { return nil }
+        return audit.origin.arrivalNote
+    }
+
+    // MARK: - Next step
+
+    /// The same verdict the columns show, as a button that says what it does.
+    @ViewBuilder
+    private func nextStep(_ card: Card) -> some View {
+        if let next = card.column.naturalNext {
+            let consequence = Consequence.of(model.preview(card, to: next))
+            VStack(alignment: .leading, spacing: 6) {
+                ConsoleLabel(text: "Next step")
+                Button {
+                    Task { await model.move(cardID: card.id, to: next) }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: consequence.isRefused ? "hand.raised.fill" : "arrow.right")
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Move to \(next.displayName)")
+                                .font(Type.rowTitle)
+                            Text(consequence.summary)
+                                .font(Type.prose)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(consequence.isRefused
+                        ? Surface.washFaint(consequence.tint)
+                        : Surface.wash(consequence.tint))
+                    .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: Metric.cardRadius)
+                            .strokeBorder(Surface.washBorder(consequence.tint), lineWidth: 1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(consequence.isRefused)
+                .help(consequence.summary)
+            }
+        }
+    }
+
+    // MARK: - The pane switch
+
+    /// Only drawn when a pane is actually hidden — `headerRegions` decides that,
+    /// so the switch and the body cannot disagree about how many panes there are.
+    private func paneSwitch(_ card: Card) -> some View {
+        Picker("Details to show", selection: $pane) {
+            ForEach(PanelPane.allCases) { which in
+                Text(paneTitle(which, card: card)).tag(which)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .accessibilityLabel("Details to show")
+    }
+
+    /// ⚠️ Built as a `String` and handed to `Text` as one. Interpolating an `Int`
+    /// into a `Text` directly makes it a `LocalizedStringKey`, which formats the
+    /// number for the reader's locale — issue 1234 rendered as "Issue #1.234" on
+    /// a European machine, the same bug `MergeConfirmation` documents. An issue
+    /// number is an identifier, not a quantity.
+    private func paneTitle(_ which: PanelPane, card: Card) -> String {
+        switch which {
+        case .issue:
+            guard let issue = card.issueNumber else { return which.displayName }
+            return "\(which.displayName) #\(issue)"
+        case .runs:
+            let count = model.runsByCard[card.id]?.count ?? 0
+            guard count > 0 else { return which.displayName }
+            return "\(which.displayName) · \(count)"
+        }
+    }
+
+    // MARK: - Body
+
+    /// One pane, or two side by side. Never two with one hidden: what is not
+    /// showing is not built, which is the difference between a pane a
+    /// screen-reader skips and one it reads out anyway.
+    private func paneRow(_ card: Card) -> some View {
+        let panes = PanelLayout.panes(spans: model.panelSpans, selected: pane)
+
+        return HStack(spacing: 0) {
+            ForEach(Array(panes.enumerated()), id: \.element) { index, which in
+                if index > 0 { Divider() }
+                paneContent(which, card: card)
+                    .frame(maxWidth: .infinity)
+                    .clipShape(paneShape(index: index, of: panes.count))
+            }
+        }
+    }
+
+    private func paneContent(_ which: PanelPane, card: Card) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                switch which {
+                case .issue:
+                    provenance(card)
+                    IssuePane(card: card)
+                case .runs:
+                    RunsPane(card: card)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The bottom corner this pane owns, and only that one.
+    ///
+    /// The rounding at the foot of the panel has to be the panes' own, because
+    /// the container is not allowed to clip — see the ⚠️ on the type. A single
+    /// pane owns both corners; the leading of two owns the left, the trailing
+    /// the right.
+    private func paneShape(index: Int, of count: Int) -> UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            bottomLeadingRadius: index == 0 ? Metric.panelRadius : 0,
+            bottomTrailingRadius: index == count - 1 ? Metric.panelRadius : 0
+        )
+    }
+
+    // MARK: - Editing
+
+    /// Editing replaces the body rather than sitting inside a pane: a card is
+    /// only editable until it carries an issue number, and while it is being
+    /// rewritten there is nothing on GitHub to read beside it.
+    private var editorBody: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                CardFieldsEditor(draft: $editor.draft)
+                if let saveError {
+                    Text(saveError).font(Type.prose).foregroundStyle(Palette.refused)
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // Square: the actions row below owns the bottom of the panel.
+        .clipShape(Rectangle())
+    }
+
+    private func editorActions(_ card: Card) -> some View {
+        HStack {
+            Spacer()
+            Button("Cancel", role: .cancel) { editor.end(); saveError = nil }
+            Button("Save changes") { save(card, editor.draft) }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!editor.draft.isValid)
+        }
+        .padding(12)
+    }
+
+    private func save(_ card: Card, _ draft: CardDraft) {
+        Task {
+            if await model.updateCard(id: card.id, draft: draft) {
+                editor.end()
+                saveError = nil
+            } else {
+                // Filed, or deleted, since the editor opened. Stay in edit mode
+                // — the typed text is still here.
+                saveError = model.status
+            }
+        }
+    }
+
+    // MARK: - Provenance
+
+    /// Everything here was read back from `gh` — never parsed out of what the
+    /// agent said — so it is all set in the fact face. It heads the Issue pane
+    /// because it is what GitHub holds, which is what that pane is about.
+    @ViewBuilder
+    private func provenance(_ card: Card) -> some View {
+        if card.issueNumber != nil || card.prNumber != nil || card.branch != nil {
+            VStack(alignment: .leading, spacing: 6) {
+                ConsoleLabel(text: "On GitHub")
+                if let issue = card.issueNumber {
+                    row("Issue", "#\(issue)", url: card.issueURL)
+                }
+                if let pr = card.prNumber {
+                    row("Pull request", "\(pr)", url: card.prURL)
+                }
+                if let branch = card.branch {
+                    row("Branch", branch, url: nil)
+                }
+                if card.issueNumber != nil {
+                    Text("The issue is the record now — edit it on GitHub, not here.")
+                        .font(Type.prose)
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 2)
+                }
+            }
+        }
+    }
+
+    private func row(_ label: String, _ value: String, url: String?) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(Type.prose)
+                .foregroundStyle(.secondary)
+                .frame(width: 84, alignment: .leading)
+            Fact(text: value, tint: .primary)
+                .textSelection(.enabled)
+            if let url, let real = URL(string: url) {
+                Button {
+                    NSWorkspace.shared.open(real)
+                } label: {
+                    Image(systemName: "arrow.up.forward.square").font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Open \(label) on GitHub")
+            }
+            Spacer()
+        }
+    }
+}

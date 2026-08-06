@@ -149,6 +149,15 @@ struct ElliotApp: App {
             .keyboardShortcut("i", modifiers: [.command, .option])
             .disabled(model.selectedCard == nil)
 
+            // How wide the panel is, is the reader's call and nothing else's —
+            // the panel is measured in board columns, so widening it is spending
+            // columns. There is no toolbar button for it: this is a preference
+            // set once, not a control worth a permanent seat.
+            Button(model.panelSpans >= 3 ? "Narrow Details" : "Widen Details") {
+                model.panelSpans = model.panelSpans >= 3 ? 2 : 3
+            }
+            .disabled(model.selectedCard == nil)
+
             Divider()
 
             OpenWindowButtons()
