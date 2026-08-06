@@ -1,9 +1,14 @@
 import ElliotAppKit
 import SwiftUI
+import UserNotifications
 
 @main
 struct ElliotApp: App {
     @State private var model = AppModel()
+    /// Apple requires the notification delegate be set before the app finishes
+    /// launching, which is earlier than `AppModel.start()` runs — hence an
+    /// adaptor rather than a line in `.task`.
+    @NSApplicationDelegateAdaptor(NotificationAppDelegate.self) private var appDelegate
 
     init() {
         // Needed when the binary is run directly rather than from inside a
@@ -30,7 +35,17 @@ struct ElliotApp: App {
             }
             .environment(model)
             .frame(minWidth: 1_000, minHeight: 600)
-            .task { await model.start() }
+            .task {
+                // The delegate exists before this runs; it only lacked the model
+                // to select a card on.
+                appDelegate.handler.model = model
+                await model.start()
+            }
+        }
+
+        // ⌘, for free.
+        Settings {
+            NotificationSettingsView()
         }
         // Wide enough for the five columns to sit side by side with the panel
         // shut, which is when seeing every column's consequence at once is the
@@ -54,7 +69,7 @@ struct ElliotApp: App {
         // watching a run should not blindfold the board — which is now also why
         // it opens beside the card rather than at the window's edge. Analysis is
         // the sharpest case —
-        // it starts up to six concurrent runs from inside a modal.
+        // it starts up to eight runs, three at a time, from inside a modal.
         //
         // Each root keeps a `NavigationStack` for the same reason the board
         // does: `RepositoriesView` and `PreflightView` were written as
@@ -215,5 +230,33 @@ private struct OpenWindowButtons: View {
         Button("Analysis…") { openWindow(id: "analysis") }
         Button("Repositories") { openWindow(id: "repositories") }
         Button("Preflight") { openWindow(id: "preflight") }
+    }
+}
+
+
+/// Sets the notification delegate before the app finishes launching.
+///
+/// Apple's requirement, and the reason this exists at all rather than a line in
+/// `AppModel.start()`: a delegate set later misses a click that launched the
+/// app. The bundle guard is the same one the delivery factory uses —
+/// `UNUserNotificationCenter.current()` raises without a bundle identifier, so
+/// `swift run ElliotApp` must not reach it.
+@MainActor
+final class NotificationAppDelegate: NSObject, NSApplicationDelegate {
+    /// Built lazily: `NotificationClickHandler` is main-actor isolated, and
+    /// `NSApplicationDelegateAdaptor` constructs its delegate off that actor.
+    /// `applicationWillFinishLaunching` is already on the main actor, which is
+    /// the only place this is touched.
+    private var _handler: NotificationClickHandler?
+    var handler: NotificationClickHandler {
+        if let _handler { return _handler }
+        let made = NotificationClickHandler()
+        _handler = made
+        return made
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        UNUserNotificationCenter.current().delegate = handler
     }
 }

@@ -261,6 +261,33 @@ struct ToolSurfaceTests {
     /// a person knows whether it reaches github.com — and the whole of #27 was
     /// that the question had been answered by default rather than asked. A new
     /// tool failing this test **is** the question being put.
+    /// `board_analyze_repo` advertises its angles twice: the schema's `enum`,
+    /// which comes from `allCases` and so cannot go stale, and a hand-written
+    /// `description` glossing each one, which can and did.
+    ///
+    /// Adding `uxAndUI` and `bestPractices` (#99) left that sentence describing
+    /// six of eight, so an agent picking angles read a list missing the two
+    /// newest — accepted by the schema, invisible in the prose. The enum's
+    /// contract is "adding an angle is a case and a paragraph"; this is what
+    /// makes the second half of that true of the MCP surface as well.
+    @Test("Every angle the analyze tool accepts is also glossed in its description")
+    func everyAngleIsGlossedForAnAgent() throws {
+        let angles = try #require(
+            tool("board_analyze_repo").inputSchema.objectValue?["properties"]?
+                .objectValue?["angles"]?.objectValue)
+        let description = try #require(angles["description"]?.stringValue)
+        let accepted = try #require(
+            angles["items"]?.objectValue?["enum"]?.arrayValue).compactMap(\.stringValue)
+
+        #expect(accepted.count == AnalysisAngle.allCases.count)
+        for angle in AnalysisAngle.allCases {
+            #expect(accepted.contains(angle.rawValue), "\(angle.rawValue) is not accepted")
+            #expect(
+                description.contains(angle.rawValue),
+                "\(angle.rawValue) is accepted but not glossed — an agent cannot tell what it is")
+        }
+    }
+
     @Test("Exactly the tools that reach outside this machine say that they do")
     func openWorldIsExactlyTheOutwardTools() {
         let outward: Set<String> = [

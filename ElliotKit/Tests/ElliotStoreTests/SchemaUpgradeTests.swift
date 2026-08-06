@@ -90,7 +90,7 @@ private func rewindToV1(_ url: URL) throws {
                 DELETE FROM "grdb_migrations"
                 WHERE "identifier" IN (
                     'v2_repositoryLayout', 'v3_cardIdempotencyKey', 'v5_githubImport',
-                    'v6_cardAngle'
+                    'v7_cardAngle'
                 )
                 """
         )

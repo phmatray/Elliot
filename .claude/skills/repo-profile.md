@@ -223,6 +223,16 @@ before flipping a PR ready: -->
   driven by `FAKE_CLAUDE_FIXTURE`, `FAKE_CLAUDE_DELAY_MS`, `FAKE_CLAUDE_MODE=hang|trap|crash`,
   `FAKE_CLAUDE_ARGV_OUT`, and — for an analysis — `FAKE_CLAUDE_STORIES` / `FAKE_CLAUDE_TOUCH`. The fake
   is equally usable by hand from a terminal when reproducing a run.
+- **`gh` is fakeable too — do not plan around it being untestable.** `Scripts/fake-gh.sh` answers
+  `issue list` and `pr list` from `Fixtures/gh/*.json` (`FAKE_GH_ISSUES`, `FAKE_GH_PRS`,
+  `FAKE_GH_MODE=ok|fail`, `FAKE_GH_FAIL_REPO`, `FAKE_GH_EXIT`, `FAKE_GH_ARGV_OUT`). `FAKE_GH_FAIL_REPO`
+  fails for one `--repo` only, which is the only way to test that an unreachable repository does not
+  cost a healthy one its refresh — `importAll` shares one client across the pass.
+  `GHClient` spawns `ToolConfig.ghPath`,
+  so a test just points that at the script; no protocol and no production change are needed, and the
+  real subprocess and real ISO-8601 decode stay under test. This entry exists because the opposite
+  conclusion was drawn once: #40 judged the import untestable and turned three of #17's acceptance
+  criteria into a manual checklist, which #41 then had to undo.
 - Launched from the Finder the process sees only `/usr/bin:/bin:/usr/sbin:/sbin` — the login-shell
   environment is **captured**, never inherited (`LoginShellEnvironment.capture()`), and `claude`/`gh`/`git`
   are located through `ToolLocator`. Anything spawning a tool must go through `ToolConfig`.

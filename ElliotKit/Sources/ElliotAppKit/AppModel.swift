@@ -5,6 +5,7 @@ import ElliotModel
 import ElliotProcess
 import ElliotStore
 import Foundation
+import OSLog
 import Observation
 
 /// The app's root object: it wires the store, the engine and the MCP socket
@@ -12,6 +13,13 @@ import Observation
 @MainActor
 @Observable
 public final class AppModel {
+    /// Where a failure goes when nobody is looking at the window.
+    ///
+    /// One subsystem for the app, so a bug report can be asked for
+    /// `log show --predicate 'subsystem == "dev.phmatray.elliot"'` and get
+    /// everything rather than a category someone has to guess.
+    nonisolated static let log = Logger(subsystem: "dev.phmatray.elliot", category: "AppModel")
+
     public private(set) var repos: [Repo] = []
     public private(set) var cards: [Card] = []
     public private(set) var runsByCard: [UUID: [SkillRun]] = [:]
@@ -63,6 +71,23 @@ public final class AppModel {
     /// repository yet" for the whole of startup, to a user whose repositories
     /// were sitting in the database the entire time.
     public private(set) var hasLoadedRepos = false
+
+    /// Why the repository list could not be read, when it could not be.
+    ///
+    /// Recorded rather than swallowed (#118). Cleared by any delivery that
+    /// succeeds, so it names a live problem rather than a historical one.
+    public private(set) var startupFailure: String?
+
+    /// Which of the board's four screens is the true one.
+    ///
+    /// Asked of `ElliotModel` rather than decided here, because the defect this
+    /// answers was two surfaces reading two facts with nothing owning the pair.
+    /// The view renders what this returns; it does not choose.
+    public var boardPhase: BoardPhase {
+        BoardPhase.of(
+            hasLoadedRepos: hasLoadedRepos, isReady: isReady,
+            repoCount: repos.count, failure: startupFailure)
+    }
 
     /// Sheet and inspector state, here rather than in a view, because a menu
     /// command cannot reach a view's `@State`.
@@ -212,6 +237,13 @@ public final class AppModel {
     private var toolConfig: ToolConfig?
     private var analysisService: AnalysisService?
     private var observationTasks: [Task<Void, Never>] = []
+    /// Posts what the pure policy decides. Built by a factory that hands back a
+    /// no-op when there is no bundle to post from, so `swift run ElliotApp` and
+    /// `swift test` never reach `UNUserNotificationCenter`.
+    private var presenter: NotificationPresenter?
+    /// When this launch began. The audit observation starts here so relaunching
+    /// does not replay a week of history as a week of banners.
+    private let launchedAt = Date()
     private var proposalObservation: Task<Void, Never>?
 
     public init() {}
@@ -281,6 +313,15 @@ public final class AppModel {
             let preflight = PreflightService(environment: environment, config: config)
             globalChecks = await preflight.globalChecks(layout: layout)
 
+            let presenter = NotificationPresenter(delivery: makeNotificationDelivery())
+            self.presenter = presenter
+            // Asked once, on launch, and never nagged about again. A denial
+            // degrades Elliot to exactly what it was before this feature.
+            await presenter.requestAuthorizationIfNeeded()
+            // Read back from the system rather than inferred from what the
+            // request returned — see `UserNotificationDelivery.summary`.
+            globalChecks.append(await presenter.authorizationSummary())
+
             let analysisService = AnalysisService(
                 store: store, launcher: scheduler, board: board, gh: ghClient
             )
@@ -313,6 +354,38 @@ public final class AppModel {
             status = summary == .init()
                 ? "Ready."
                 : "Ready — recovered \(summary.orphanedRuns == 1 ? "1 interrupted run" : "\(summary.orphanedRuns) interrupted runs")."
+
+            // The first import is kicked from here, and the order above is
+            // load-bearing — do not reshuffle it without reading this (#120).
+            //
+            // `BoardView` imports from `.task(id: selectedRepoID)`, and by now
+            // that has almost certainly already fired and done nothing:
+            // `observe(store:)` publishes a selection one local read after
+            // launch, while everything between it and here waits on the login
+            // shell, three tool lookups, a reconciler sweep and a PR watcher.
+            // It found `importer` nil and returned — and `.task(id:)` re-runs
+            // on an id *change*, so it never asks again. The result was that a
+            // cold launch on an already-registered repository imported nothing
+            // at all, silently, which is indistinguishable from a repository
+            // with no open work.
+            //
+            // The obvious repair — build `importer` before `observe(store:)` —
+            // is not available: it needs `ghClient`, which needs the located
+            // `gh`, which needs the very shell capture that `observe` is
+            // deliberately hoisted above so the board stops claiming "No
+            // repository yet" for the whole of startup.
+            //
+            // So both orders are covered instead of one being enforced: if the
+            // selection arrived early, this call does the import; if the
+            // repositories are still loading, this is a no-op on a nil id and
+            // the view's `.task` does it when the id changes, by which time
+            // `importer` exists either way. `shouldAutoImport` keeps that to
+            // exactly one unattended import per repository per session, so the
+            // pair cannot double-import.
+            //
+            // After `status` is set, not before: `importIfNeeded` writes the
+            // import's own sentence there, and "Ready." would overwrite it.
+            await importIfNeeded(repoID: selectedRepoID)
         } catch {
             status = "Could not start: \(error.localizedDescription)"
         }
@@ -347,9 +420,84 @@ public final class AppModel {
         ipcServer?.stop()
     }
 
+    // MARK: - Notifications
+
+    /// Selecting from a notification click, kept apart from ordinary selection
+    /// so the intent is legible: a click may arrive for a card that has since
+    /// been deleted, and that selects nothing rather than clearing what the
+    /// user was looking at.
+    public func selectRepoFromNotification(_ repoID: UUID) {
+        guard repos.contains(where: { $0.id == repoID }) else { return }
+        selectedRepoID = repoID
+    }
+
+    public func selectCardFromNotification(_ cardID: UUID) {
+        guard cards.contains(where: { $0.id == cardID }) else { return }
+        selectedCardID = cardID
+    }
+
+    /// Turns a scheduler update into a `NotificationEvent`, or drops it.
+    ///
+    /// Re-reads the run from the store rather than trusting the update's own
+    /// `state` and `outcome`: the notification body is built from
+    /// `verifiedOutcome`, and the row is where the verifier wrote it. A card or
+    /// repository that has since been deleted drops the event silently — that
+    /// is not an error, and a banner about a card you removed would be worse
+    /// than saying nothing.
+    private func notify(runID: UUID, stalled: Bool) {
+        guard presenter != nil, let store else { return }
+        Task { [weak self] in
+            guard
+                let run = try? await store.run(id: runID),
+                let cardID = run.cardID,
+                let card = try? await store.card(id: cardID),
+                let repo = try? await store.repo(id: card.repoID)
+            else { return }
+            let event: NotificationEvent = stalled
+                ? .runStalled(run: run, card: card, repo: repo)
+                : .runFinished(run: run, card: card, repo: repo)
+            await self?.presenterHandle(event)
+        }
+    }
+
+    private func presenterHandle(_ event: NotificationEvent) async {
+        await presenter?.handle(event)
+    }
+
+    /// The board's own moves, read from the trail that records *why*.
+    ///
+    /// Watching cards instead would see a column change and have to guess who
+    /// caused it, and that guess is how a user's own drag becomes a
+    /// notification telling them what they just did. `since: launchedAt` so a
+    /// relaunch replays nothing.
+    private func observeMoveAudits(store: BoardStore) {
+        let auditObservation = store.observeMoveAudits(since: launchedAt)
+        observationTasks.append(Task { [weak self] in
+            var seen = Set<UUID>()
+            do {
+                for try await audits in auditObservation {
+                    for audit in audits where !seen.contains(audit.id) {
+                        seen.insert(audit.id)
+                        guard
+                            let card = try? await store.card(id: audit.cardID),
+                            let repo = try? await store.repo(id: card.repoID)
+                        else { continue }
+                        await self?.presenterHandle(
+                            .systemMove(audit: audit, card: card, repo: repo)
+                        )
+                    }
+                }
+            } catch {
+                // The board is unaffected; only this channel stopped.
+                await MainActor.run { self?.status = "Stopped following the move trail." }
+            }
+        })
+    }
+
     // MARK: - Observation
 
     private func observe(store: BoardStore) {
+        observeMoveAudits(store: store)
         let cardObservation = store.observeCards()
         observationTasks.append(Task { [weak self] in
             do {
@@ -372,12 +520,45 @@ public final class AppModel {
                         // empty store is a loaded store, and the board's real
                         // empty state must be reachable.
                         self?.hasLoadedRepos = true
+                        // A delivery that arrives is the answer to whatever
+                        // failed before it. Left set, a transient error would
+                        // keep accusing a store that is now being read.
+                        self?.startupFailure = nil
                         if self?.selectedRepoID == nil { self?.selectedRepoID = repos.first?.id }
                     }
                 }
             } catch {
-                // Repos change rarely; a dropped observation is not worth a
-                // banner of its own.
+                // The old comment here reasoned about *frequency* — "repos
+                // change rarely, a dropped observation is not worth a banner" —
+                // when what decides this is *severity*. A dropped update is
+                // cosmetic; a failure on the **first** delivery is terminal,
+                // because `hasLoadedRepos` is only ever set inside the loop, so
+                // it stays false for the life of the process and the board sits
+                // on "Still starting" for ever with "Ready." underneath (#118).
+                //
+                // Recorded rather than shown directly: `BoardPhase` decides
+                // whether this takes the screen or sits beside repositories
+                // already loaded, so a late failure cannot blank a working
+                // board.
+                //
+                // Logged as well as recorded, because criterion 3 asks for both
+                // and they answer different people: the screen tells whoever is
+                // looking at it, `log stream --predicate 'subsystem ==
+                // "dev.phmatray.elliot"'` tells whoever is holding a bug report
+                // and cannot see the screen. It is also the only signal
+                // available when the window itself cannot be read.
+                // ⚠️ `privacy: .public` is load-bearing. `Logger` redacts an
+                // interpolated non-literal by default, so this line read
+                // "repository observation failed: <private>" — a log saying
+                // something went wrong without saying what, which is the exact
+                // shape of the defect being fixed. Verified by reading it back
+                // from `log show`, not by assuming. A GRDB decode error names a
+                // column and a type; it carries no user content.
+                Self.log.error(
+                    "repository observation failed: \(error.localizedDescription, privacy: .public)")
+                await MainActor.run {
+                    self?.startupFailure = error.localizedDescription
+                }
             }
         })
     }
@@ -439,11 +620,13 @@ public final class AppModel {
             // `markStalled`'s own, so the two cannot disagree about which runs
             // may stall.
             markStalled(runID: runID)
-        case .runFinished(_, let cardID, _, _):
+            notify(runID: runID, stalled: true)
+        case .runFinished(let runID, let cardID, _, _):
             // A run takes minutes and nobody watches it for all of them. One
             // Dock bounce, only when Elliot is not the front app — no
             // notification permission, and nothing to dismiss.
             if !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
+            notify(runID: runID, stalled: false)
             // `cardID` is nil for an analysis run: it belongs to a repository,
             // not to a card.
             if let cardID { Task { await self.refreshRuns(cardID: cardID) } }
@@ -1212,6 +1395,31 @@ public final class AppModel {
     public func refreshAnalysisRuns() async {
         guard let store, let id = activeAnalysisID else { return }
         analysisRuns = (try? await store.runs(analysisID: id)) ?? []
+        await notifyIfAnalysisFinished(id: id, store: store)
+    }
+
+    /// Ids of analyses already announced, so six angles produce one banner.
+    ///
+    /// An analysis is many runs; this fires when the **last** of them reaches a
+    /// terminal state. Announcing per angle would be six notifications for one
+    /// act, which is the fastest way to make a channel worth muting.
+    private var announcedAnalyses: Set<UUID> = []
+
+    private func notifyIfAnalysisFinished(id: UUID, store: BoardStore) async {
+        guard !announcedAnalyses.contains(id) else { return }
+        // An empty list is a analysis that has not started, not one that
+        // finished — `allSatisfy` on nothing is true, and would announce it.
+        guard !analysisRuns.isEmpty, analysisRuns.allSatisfy(\.state.isTerminal) else { return }
+        announcedAnalyses.insert(id)
+
+        guard
+            let repoID = analysisRuns.first?.repoID,
+            let repo = try? await store.repo(id: repoID)
+        else { return }
+        // What the harvest actually kept, counted from the store rather than
+        // from whatever the agents said they found.
+        let kept = (try? await store.proposals(analysisID: id))?.count ?? 0
+        await presenterHandle(.analysisFinished(analysisID: id, repo: repo, proposalCount: kept))
     }
 
     public func recentAnalyses() async -> [Analysis] {
@@ -1300,5 +1508,16 @@ public final class AppModel {
     /// (#101). `board` stays nil, so a seeded model still cannot write.
     func testOnlySeedStore(_ store: BoardStore) {
         self.store = store
+    }
+
+    /// Puts an importer behind the model without `start()`.
+    ///
+    /// The thing under test in #120 is *when* `importer` becomes non-nil
+    /// relative to the selection, and the real answer takes a login-shell
+    /// capture and three tool lookups to arrive. This lets a test move that
+    /// moment by hand and check both orders, with the importer pointed at
+    /// `Scripts/fake-gh.sh` so no real `gh` is involved.
+    func testOnlyAttachImporter(_ importer: GitHubImportService) {
+        self.importer = importer
     }
 }

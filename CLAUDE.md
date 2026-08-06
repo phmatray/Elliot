@@ -282,12 +282,43 @@ log writing, cancellation, launch sweep — against `Scripts/fake-claude.sh`, dr
 live at `Fixtures/` (repository root, not a resource bundle) so the same files are usable by hand from a
 terminal when reproducing a run.
 
+**`gh` is fakeable the same way, and cheaper.** `Scripts/fake-gh.sh` answers `issue list` and `pr list`
+from `Fixtures/gh/*.json`, driven by `FAKE_GH_ISSUES`, `FAKE_GH_PRS`, `FAKE_GH_MODE=ok|fail`,
+`FAKE_GH_FAIL_REPO`, `FAKE_GH_EXIT`, `FAKE_GH_ARGV_OUT`. `GHClient` spawns `ToolConfig.ghPath`, so pointing that at the
+script is the entire seam — no protocol, no production change, and the **real** subprocess and the
+**real** ISO-8601 decode stay under test. Anything other than those two subcommands exits 64 on
+purpose: an unexpected call must fail loudly, because returning an empty list would look exactly like a
+repository with no open work.
+
+`FAKE_GH_FAIL_REPO` fails for one `--repo` value and answers normally for the rest. That exists because
+`importAll` shares one `GHClient` across a pass, so a blanket `FAKE_GH_MODE=fail` can only show that
+*everything* failed — and the claim worth testing is that an unreachable repository does not cost a
+healthy one its refresh.
+
+> Do not conclude that a `gh`-backed path is untestable and relegate it to a manual pass — that is what
+> #40 did, and it left three of #17's acceptance criteria unproven until #41. There is no ready-file
+> and no delay in this fake, and that is not an oversight: it prints and exits, so a test has nothing
+> to wait for.
+
 Two invariants carry most of the weight:
 - the first digit run of an `implement-issue` prompt is the issue number, because the skill resolves its
   argument with `grep -oE '[0-9]+' | head -1`;
 - a system-originated move never triggers a skill.
 
 ## Things that bite
+
+- **`UNUserNotificationCenter.current()` raises without a bundle identifier — it does not return
+  nil.** So the guard is in `makeNotificationDelivery()`, *before* the centre is touched, and
+  `swift run ElliotApp` / `swift test` get `NoDelivery`. Testing notifications means launching
+  `dist/Elliot.app` from the Finder, exactly like preflight.
+- **A notification API that is refused does not say `denied`.** Measured on a probe bundle signed the
+  way `build-app.sh` signs Elliot: from `/private/tmp`, `requestAuthorization` and `add` both failed
+  with `UNErrorDomain` Code 1 *"Notifications are not allowed for this application"*, nothing was
+  delivered, and `authorizationStatus` stayed **`notDetermined`** — not `denied`. From
+  `~/Applications` and from the repo's own `dist/`, the same binary was granted and delivered. **Ad-hoc
+  signing is not the blocker; location is.** Anything reporting authorization must therefore report the
+  *outcome of the last call*, not just the status, or it promises a question that will never be asked
+  again while every notification fails silently. Same family as `gh secret list` omitting org secrets.
 
 - **After merging `main`, a stale `.build` fails in ways that look like real breakage — wipe it before
   believing the failure.** Several agent branches merge `main` mid-flight, and SwiftPM's incremental

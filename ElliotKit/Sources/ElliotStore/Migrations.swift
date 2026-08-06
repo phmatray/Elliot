@@ -83,14 +83,32 @@ enum Migrations {
             }
         }
 
-        // v6, additive: a card can now say which analysis lens found it.
+        // v6, appended rather than renumbered: v5 has shipped, and a migration's
+        // name is its identity in `grdb_migrations`. The issue asked for this as
+        // "v5_moveAuditAtIndex", which was taken while it sat in the backlog.
+        //
+        // Index only, no column changes. `moveAudit_on_card_at` covers "this
+        // card's history"; a follower asking "everything since this moment"
+        // across every card has no leading column to use and scans the table.
+        // That is cheap today and grows with the board, and the follower is a
+        // notification poller that runs for as long as the app is open.
+        migrator.registerMigration("v6_moveAuditAtIndex") { db in
+            try db.create(index: "moveAudit_on_at", on: "moveAudit", columns: ["at"])
+        }
+
+        // v7, additive: a card can now say which analysis lens found it.
+        //
+        // v7 and not v6: this was written as v6 while `v6_moveAuditAtIndex`
+        // sat unmerged, and that one reached `main` first. A migration's
+        // name is its identity in `grdb_migrations`, so the unshipped one is
+        // the one that moves — the same trade v3, v4 and v5 each made above.
         //
         // The backfill is not a guess. `storyProposal` has recorded both the
         // lens and the id of the card it produced since v4, so every card that
         // came from an analysis already carries the answer one join away —
         // without this, the feature would ship empty on every existing board
         // and look like a feature that does not work.
-        migrator.registerMigration("v6_cardAngle") { db in
+        migrator.registerMigration("v7_cardAngle") { db in
             try db.alter(table: "card") { t in
                 t.add(column: "angle", .text)
             }

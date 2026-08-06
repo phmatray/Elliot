@@ -5,8 +5,8 @@ import Foundation
 /// The lens is data, not a code path: `briefing` is the paragraph handed to the
 /// model, so adding an angle is a case and a paragraph. Each briefing says both
 /// what to look for *and* what to leave alone — without the second half every
-/// lens drifts back towards generic code review, and six lenses return the same
-/// six lists.
+/// lens drifts back towards generic code review, and eight lenses return the
+/// same eight lists.
 public enum AnalysisAngle: String, Codable, CaseIterable, Sendable, Hashable {
     case bugs
     case quickWins
@@ -14,6 +14,8 @@ public enum AnalysisAngle: String, Codable, CaseIterable, Sendable, Hashable {
     case techDebt
     case tests
     case docsAndDX
+    case uxAndUI
+    case bestPractices
 
     public var title: String {
         switch self {
@@ -23,6 +25,8 @@ public enum AnalysisAngle: String, Codable, CaseIterable, Sendable, Hashable {
         case .techDebt: "Tech debt"
         case .tests: "Tests"
         case .docsAndDX: "Docs & DX"
+        case .uxAndUI: "UX & UI"
+        case .bestPractices: "Best practices"
         }
     }
 
@@ -34,6 +38,8 @@ public enum AnalysisAngle: String, Codable, CaseIterable, Sendable, Hashable {
         case .techDebt: "🧹"
         case .tests: "🧪"
         case .docsAndDX: "📖"
+        case .uxAndUI: "🎨"
+        case .bestPractices: "📐"
         }
     }
 
@@ -89,6 +95,29 @@ public enum AnalysisAngle: String, Codable, CaseIterable, Sendable, Hashable {
             next, commands that need flags nobody would guess, and documented \
             behaviour that no longer matches the code. Leave typos and prose \
             polish alone.
+            """
+        case .uxAndUI:
+            """
+            Look for what the person using this app runs into: a state with no \
+            empty, loading or error case, a control that gives no sign it \
+            worked, a destructive action with no confirmation and no undo, a \
+            keyboard or VoiceOver path that dead-ends, and copy that names \
+            internals rather than what the reader wants. Prefer a screen you \
+            can point at over a principle. Leave visual taste alone — spacing, \
+            colour and type are already decided here, and reopening them is a \
+            design decision rather than a finding.
+            """
+        case .bestPractices:
+            """
+            Look for where the code has left the conventions this project \
+            wrote down and the idioms of the language and frameworks it uses: \
+            a rule stated in CLAUDE.md or a target's own documentation that \
+            the code no longer follows, error handling or concurrency done a \
+            different way in each file, an API that fights the platform's \
+            naming and lifecycle expectations, and a pattern copied from \
+            before a better one existed here. Cite the rule you are measuring \
+            against. Leave anything you cannot tie to a written convention or \
+            a documented idiom alone — that is taste, and another lens owns it.
             """
         }
     }

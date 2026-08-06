@@ -182,6 +182,73 @@ struct ClaudeRunnerTests {
         #expect(log.split(separator: "\n").count == 8)
     }
 
+    @Test("Four thousand events reach the caller and the log, terminal one included")
+    func aLargeRunLosesNothing() async throws {
+        // Volume coverage of the decode path, and **not** a race detector —
+        // stated plainly because it was written as one and measurement said
+        // otherwise. With #26's historical drain defect reintroduced, the direct
+        // probe in `StreamingProcessDrainTests` failed 60 times out of 60 while
+        // this test passed. The reason is structural: the burst is followed by
+        // the fixture's own eight lines, and replaying those through the shell
+        // takes long enough for the reader to empty the pipe, so nothing is left
+        // in flight at exit and there is no window to lose anything in. Any
+        // shape that *would* contend has to put the burst last, which is exactly
+        // where the terminal event has to be.
+        //
+        // What it does hold is worth holding: `successfulRun` next door proves
+        // eight lines survive, and this proves four thousand do — through the
+        // log mirror — so a buffering bug that only appears past one chunk
+        // cannot hide behind a small fixture.
+        let burst = 4_000
+
+        for iteration in 1...5 {
+            let dir = try TestPaths.temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let logURL = dir.appendingPathComponent("run.ndjson")
+
+            let run = try ClaudeRun.start(
+                invocation: ClaudeInvocation(runID: UUID(), prompt: "x", cwd: dir.path),
+                config: config(environment: [
+                    "FAKE_CLAUDE_FIXTURE": TestPaths.fixture("create-issue-success.ndjson"),
+                    "FAKE_CLAUDE_BURST": "\(burst)",
+                ]),
+                logURL: logURL
+            )
+            defer { run.cancel() }
+            let (events, outcome) = try await collect(run, timeout: .seconds(60))
+
+            let result = try #require(outcome?.result, "iteration \(iteration) lost the terminal event")
+            #expect(result.isClean, "iteration \(iteration)")
+            #expect(result.totalCostUSD == 0.1834, "iteration \(iteration)")
+            #expect(outcome?.exitCode == 0, "iteration \(iteration)")
+
+            // The **log** is the lossless record, and it must hold every line.
+            let log = try String(contentsOf: logURL, encoding: .utf8)
+            #expect(log.split(separator: "\n").count == burst + 8, "iteration \(iteration)")
+
+            // `updates` is not lossless and must not be asserted as though it
+            // were. It is `AsyncStream(bufferingPolicy: .bufferingNewest(512))`
+            // — deliberately bounded, so a consumer that falls behind drops the
+            // oldest rather than growing without limit or applying backpressure
+            // to the run. An earlier version of this test asserted
+            // `events.count == burst + 8` and passed only because the consumer
+            // usually keeps up; under a full parallel `swift test` it does not,
+            // and it failed having received 3 985 of 4 008. That was a defect in
+            // the test, not in the runner.
+            //
+            // What the bound guarantees is the thing worth asserting: the
+            // terminal event is the *newest*, so it is never the one dropped —
+            // `#require(outcome?.result)` above is that assertion. And the raw
+            // bytes reach the log before anything is parsed, which is why the
+            // count that must be exact is the log's.
+            // Only the bound that cannot depend on scheduling. A lower bound on
+            // how many events *arrived* would be the same defect again, one
+            // number further down: it would pass on an idle machine and fail on
+            // a busy one, which is what "flaky" means.
+            #expect(events.count <= burst + 8, "iteration \(iteration): more events than lines")
+        }
+    }
+
     @Test("A run refused a tool is reported as not clean, despite exiting zero")
     func runWithDenials() async throws {
         let dir = try TestPaths.temporaryDirectory()

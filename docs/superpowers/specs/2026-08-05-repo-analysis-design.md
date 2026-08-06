@@ -405,3 +405,15 @@ confirm that an analysis which modified your code is reported.
 5. **Duplicate hints depend on `gh`.** With `gh` unavailable, deduplication falls
    back to local cards only, and the window says so rather than implying the
    check was complete.
+
+---
+
+## Amended 2026-08-06
+
+Two lenses were added — `uxAndUI` and `bestPractices` — so the standing set is **eight**, not six.
+This does not overturn *"no seventh enum case"* above: that line rules out **user-defined** lenses,
+for which `extraInstructions` is still the answer. Growing the standing set is what the enum's own
+doc comment invites, and it cost a case and a paragraph exactly as that comment predicted.
+
+The body of this document is left as the record of what was decided on 2026-08-05 — including its
+count of six — rather than rewritten, so its line 33 stays readable as what was true then.
