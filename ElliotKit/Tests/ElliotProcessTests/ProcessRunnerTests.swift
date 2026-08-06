@@ -166,7 +166,11 @@ struct ProcessRunnerTests {
             // to resume on. How long they take is nobody's business here — but
             // until they are through, not one child can finish.
             for _ in 0..<10 { try await Task.sleep(for: .milliseconds(5)) }
-            FileManager.default.createFile(atPath: gatePath, contents: nil)
+            // Checked, because a gate that could not be written produces the
+            // identical symptom — every child running out its fuse — and the
+            // message below would then blame the scheduler for a full disk.
+            let opened = FileManager.default.createFile(atPath: gatePath, contents: nil)
+            #expect(opened, "could not create the gate at \(gatePath)")
 
             let codes = await commands
             #expect(codes.count == width)
@@ -268,6 +272,14 @@ struct ProcessRunnerTests {
             // three results in a few thousand when the analogous race went
             // unguarded in the collecting handlers.
             for attempt in 0..<50 {
+                // The one thing that shortens this loop. `withTimeout` cannot
+                // interrupt a `ProcessRunner.run` already in flight — it parks
+                // in a `withCheckedContinuation`, which no cancellation reaches
+                // — so its 120 s reads like a ceiling it is not: without this
+                // check, one wedged iteration would be followed by 49 more, and
+                // the "bounded" test would sit on the build lock for over half
+                // an hour. Cancelled here, it stops after the current one.
+                try Task.checkCancellation()
                 let result = try await ProcessRunner.run(
                     executable: "/bin/sh",
                     arguments: ["-c", "yes abcdefghij | head -c \(bulk); printf 'LAST-LINE\\n'"],
