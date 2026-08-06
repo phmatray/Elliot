@@ -555,6 +555,16 @@ public struct RunDTO: Codable, Sendable, Hashable {
     public var id: UUID
     /// Null for an analysis run, which reads a repository and has no card.
     public var cardID: UUID?
+    /// The analysis this run belongs to. Exactly one of `cardID` and
+    /// `analysisID` is set.
+    public var analysisID: UUID?
+    /// The lens this run read the repository through: `bugs`, `quickWins`,
+    /// `features`, `techDebt`, `tests` or `docsAndDX`. Null for a card run.
+    ///
+    /// True from the moment the run is queued, unlike `analysisReport` — an
+    /// agent watching a running analysis still needs to know which of six
+    /// readings it is watching.
+    public var angle: String?
     /// `create-issue`, `implement-issue`, `merge-pr` or `analyze-repo` — the
     /// same vocabulary `MoveDTO.triggered` and `NextDTO.wouldTrigger` use, so
     /// one word means one thing across the whole wire.
@@ -571,6 +581,10 @@ public struct RunDTO: Codable, Sendable, Hashable {
     /// `resultText` will still describe a merge, because that is the agent's
     /// account of its own work and not a fact.
     public var verifiedOutcome: VerifiedOutcomeDTO?
+    /// What the run had to say about itself: where its stories came from, what
+    /// was dropped, and whether the repository moved under it. Null for a card
+    /// run, and for an analysis run that has not finished.
+    public var analysisReport: AnalysisReportDTO?
     public var exitCode: Int32?
     public var prompt: String
     public var startedAt: Date?
@@ -593,11 +607,14 @@ public struct RunDTO: Codable, Sendable, Hashable {
     public init(run: SkillRun, now: Date = Date()) {
         id = run.id
         cardID = run.cardID
+        analysisID = run.analysisID
+        angle = run.analysisAngle?.rawValue
         kind = run.kind.skillName
         state = run.state.rawValue
         isTerminal = run.state.isTerminal
         isActive = run.state.isActive
         verifiedOutcome = run.verifiedOutcome.map(VerifiedOutcomeDTO.init)
+        analysisReport = run.analysisReport.map(AnalysisReportDTO.init)
         exitCode = run.exitCode
         prompt = run.prompt
         startedAt = run.startedAt
@@ -616,12 +633,15 @@ public struct RunDTO: Codable, Sendable, Hashable {
 
     public init(
         id: UUID,
-        cardID: UUID,
+        cardID: UUID?,
+        analysisID: UUID? = nil,
+        angle: String? = nil,
         kind: String,
         state: String,
         isTerminal: Bool,
         isActive: Bool,
         verifiedOutcome: VerifiedOutcomeDTO? = nil,
+        analysisReport: AnalysisReportDTO? = nil,
         exitCode: Int32? = nil,
         prompt: String,
         startedAt: Date? = nil,
@@ -636,11 +656,14 @@ public struct RunDTO: Codable, Sendable, Hashable {
     ) {
         self.id = id
         self.cardID = cardID
+        self.analysisID = analysisID
+        self.angle = angle
         self.kind = kind
         self.state = state
         self.isTerminal = isTerminal
         self.isActive = isActive
         self.verifiedOutcome = verifiedOutcome
+        self.analysisReport = analysisReport
         self.exitCode = exitCode
         self.prompt = prompt
         self.startedAt = startedAt

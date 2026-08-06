@@ -130,6 +130,86 @@ struct AnalysisWireTests {
         #expect(back.workingTreeChanged == nil)
         #expect(back == unchecked)
     }
+
+    @Test("A run DTO built from an analysis run says which analysis and which angle")
+    func analysisRunIsIdentifiable() throws {
+        let analysisID = UUID()
+        let run = SkillRun.analysis(
+            repoID: UUID(),
+            analysisID: analysisID,
+            analysisAngle: .techDebt,
+            prompt: "read this repository",
+            cwd: "/tmp/repo",
+            state: .succeeded,
+            logPath: "/tmp/run.ndjson",
+            stderrPath: "/tmp/run.err",
+            analysisReport: AnalysisRunReport(
+                harvestSource: .artifact, kept: 4, workingTreeChanged: false
+            ),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+
+        let dto = RunDTO(run: run)
+
+        #expect(dto.cardID == nil)
+        #expect(dto.analysisID == analysisID)
+        #expect(dto.angle == "techDebt")
+        #expect(dto.analysisReport?.source == "artifact")
+        #expect(dto.analysisReport?.kept == 4)
+        #expect(dto.analysisReport?.workingTreeChanged == false)
+
+        // Two readings of one repository are told apart by the angle, so the
+        // angle has to still be there on the other side of the socket.
+        let line = try WireCodec.encodeLine(Envelope(body: dto))
+        let back = try WireCodec.decode(Envelope<RunDTO>.self, from: line.dropLast())
+        #expect(back.body == dto)
+    }
+
+    @Test("A run DTO built from a card run carries no analysis fields")
+    func cardRunHasNoAnalysisFields() {
+        let run = SkillRun.card(
+            cardID: UUID(),
+            repoID: UUID(),
+            kind: .createIssue,
+            prompt: "/ai-migration-kit:create-issue",
+            cwd: "/tmp/repo",
+            logPath: "/tmp/run.ndjson",
+            stderrPath: "/tmp/run.err",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+
+        let dto = RunDTO(run: run)
+
+        #expect(dto.analysisID == nil)
+        #expect(dto.angle == nil)
+        #expect(dto.analysisReport == nil)
+    }
+
+    /// The memberwise initialiser declared `cardID: UUID` while the property is
+    /// `UUID?`, so the one kind of run that has no card could not be built with
+    /// it. Nothing called it, which is why nothing caught it.
+    @Test("The memberwise initialiser can express an analysis run")
+    func memberwiseInitTakesNoCard() {
+        let analysisID = UUID()
+
+        let dto = RunDTO(
+            id: UUID(),
+            cardID: nil,
+            analysisID: analysisID,
+            angle: "bugs",
+            kind: "analyze-repo",
+            state: "succeeded",
+            isTerminal: true,
+            isActive: false,
+            prompt: "read this repository",
+            logPath: "/tmp/a.ndjson",
+            stderrPath: "/tmp/a.err"
+        )
+
+        #expect(dto.cardID == nil)
+        #expect(dto.analysisID == analysisID)
+        #expect(dto.angle == "bugs")
+    }
 }
 
 @Suite("Analysis MCP tools")
