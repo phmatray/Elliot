@@ -3,6 +3,29 @@ import PackageDescription
 
 let package = Package(
     name: "ElliotKit",
+    // ⚠️ UNVERIFIED, and deliberately recorded as such (#116, criterion 5). This is a *deployment*
+    // claim — the oldest macOS the built binary may run on — and it is a different question from the
+    // `swift-tools-version` above, which is a *build toolchain* claim. Run 31118743562 disproved the
+    // toolchain one; it says nothing whatever about this one, and conflating the two is how a claim
+    // gets convicted or acquitted without evidence.
+    //
+    // What is measured, on 2026-08-07:
+    //   • Elliot's own sources compile at `-target arm64-apple-macosx15.0` (read out of
+    //     `swift build --verbose`), and both executables record `minos 15.0` in LC_BUILD_VERSION.
+    //   • So Swift's availability checking has already proven every API these sources *call* exists
+    //     on macOS 15 — that is what compiling green at this triple means.
+    //   • And nothing bypasses that proof: `git grep -nE '(if|guard) #available|#unavailable|@available\('`
+    //     over `ElliotKit/Sources` returns **nothing at all**. There is no availability guard, no
+    //     `NSClassFromString`, no `responds(to:)` — no escape hatch for the checker to miss.
+    //
+    // What is NOT measured: whether `Elliot.app` actually *runs* there. Nobody has launched it on
+    // macOS 15. Existence of an API is not its behaviour, the binaries are built against the macOS
+    // 26.5 SDK, and `Scripts/build-app.sh` stamps `LSMinimumSystemVersion 15.0` on that untested
+    // basis. Settling it needs a macOS 15 machine or VM, which this repository has never had.
+    //
+    // Left at .v15 rather than raised: raising it would be the same sin in the other direction —
+    // convicting a claim no one has tested. Tracked as **issue #142** rather than left as a comment
+    // nobody queries; settle it there and replace this block with what was seen.
     platforms: [.macOS(.v15)],
     products: [
         .executable(name: "elliot-mcp", targets: ["elliot-mcp"]),
