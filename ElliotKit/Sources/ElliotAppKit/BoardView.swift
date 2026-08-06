@@ -52,9 +52,6 @@ public struct BoardView: View {
         .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.selectedCardID)
         .toolbar { toolbarContent }
         .navigationTitle("Elliot")
-        .sheet(item: $model.pendingFollowUps) { pending in
-            FollowUpSheet(pending: pending)
-        }
         .task(id: model.selectedRepoID) {
             await model.importIfNeeded(repoID: model.selectedRepoID)
         }

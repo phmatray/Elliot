@@ -220,6 +220,49 @@ struct AppModelTests {
         #expect(model.selectedCard == nil)
     }
 
+    // MARK: - The merge confirmation must be reachable
+
+    @Test("Arming a merge selects its card and opens the panel, in that order")
+    func armingMakesTheConfirmationReachable() {
+        // The confirmation moved out of a sheet and into the details panel
+        // (#65). The panel only draws for a selected card and only when it is
+        // open, so if these three ever came apart the merge would become
+        // unreachable — the one way that change could fail *closed*. A sheet did
+        // not care what was selected; this does.
+        let a = repo("Elliot")
+        let review = card("ready", repoID: a.id, column: .inReview, order: 1, issue: 4, pr: 9)
+        let other = card("elsewhere", repoID: a.id, column: .todo, order: 2)
+        let model = model(repos: [a], cards: [review, other])
+
+        // Deliberately start from the state ⌘→ leaves: another card selected and
+        // the panel shut.
+        model.selectedCardID = other.id
+        model.showingInspector = false
+
+        model.armPendingMerge(cardID: review.id, prNumber: 9)
+
+        #expect(model.selectedCardID == review.id)
+        #expect(model.showingInspector)
+        #expect(model.pendingFollowUps?.cardID == review.id)
+        #expect(model.pendingFollowUps?.prNumber == 9)
+    }
+
+    @Test("Cancelling a pending merge leaves the card where it was")
+    func cancellingMovesNothing() {
+        let a = repo("Elliot")
+        let review = card("ready", repoID: a.id, column: .inReview, order: 1, issue: 4, pr: 9)
+        let model = model(repos: [a], cards: [review])
+
+        model.armPendingMerge(cardID: review.id, prNumber: 9)
+        model.cancelPendingMerge()
+
+        #expect(model.pendingFollowUps == nil)
+        // Still in review, and still selected: cancelling a confirmation is not
+        // a reason to lose your place.
+        #expect(model.card(id: review.id)?.column == .inReview)
+        #expect(model.selectedCardID == review.id)
+    }
+
     // MARK: - Log rendering
 
     @Test("A stream event becomes one readable line, or none")
