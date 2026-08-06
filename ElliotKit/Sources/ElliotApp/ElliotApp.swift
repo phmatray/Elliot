@@ -96,11 +96,14 @@ struct ElliotApp: App {
             .keyboardShortcut("r")
             .disabled(model.repos.isEmpty || model.isImporting)
 
+            // Not gated on the selection: the panel is a view preference, and
+            // it now has something to show when nothing is selected. This also
+            // keeps it consistent with the toolbar button, which had the same
+            // gate removed in #50.
             Button(model.showingInspector ? "Hide Details" : "Show Details") {
                 model.showingInspector.toggle()
             }
             .keyboardShortcut("i", modifiers: [.command, .option])
-            .disabled(model.selectedCard == nil)
 
             Divider()
 

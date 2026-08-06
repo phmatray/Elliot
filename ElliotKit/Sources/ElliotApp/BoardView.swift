@@ -33,10 +33,15 @@ public struct BoardView: View {
         // The platform inspector, not a hand-rolled panel: the fixed 344 pt
         // frame forced the board to scroll on a laptop display whenever details
         // were open, and could not be dragged narrower.
-        .inspector(isPresented: Binding(
-            get: { model.showingInspector && model.selectedCard != nil },
-            set: { model.showingInspector = $0 }
-        )) {
+        //
+        // Driven by `showingInspector` and nothing else, which is load-bearing
+        // rather than tidy. `.inspector` is an `NSSplitViewItem`; collapsing it
+        // animates, and AppKit will not accept a constraint invalidation posted
+        // from inside that animation's layout pass. A derived binding — the
+        // `get` here used to also read `selectedCard` — meant clearing the
+        // selection collapsed the split item as a side effect, in the same
+        // update that made the toolbar recompute, and AppKit threw. See #50.
+        .inspector(isPresented: $model.showingInspector) {
             InspectorView()
                 .inspectorColumnWidth(min: 300, ideal: Metric.inspectorWidth, max: 520)
         }
@@ -170,16 +175,25 @@ public struct BoardView: View {
         }
 
         ToolbarItem {
-            // A toggle, not a button: it has two states and the toolbar was
-            // showing one icon for both.
-            Toggle(isOn: Binding(
-                get: { model.showingInspector },
-                set: { model.showingInspector = $0 }
-            )) {
+            // A plain Button that flips the flag, which is Apple's own
+            // `.inspector` pattern and is deliberate here rather than lazy.
+            //
+            // This was a `Toggle` reading `showingInspector`, so the toolbar
+            // re-vended its items at the exact moment its own collapse
+            // animation was running — the crash in #50. A Button reads none of
+            // that state, so nothing in the toolbar changes while the split
+            // item animates. The inspector being on screen is its own state
+            // indicator.
+            //
+            // No `.disabled` on the selection either, for the same reason and a
+            // better one: whether the panel is open is a view preference, not a
+            // function of what is selected.
+            Button {
+                model.showingInspector.toggle()
+            } label: {
                 Label("Details", systemImage: "sidebar.right")
             }
-            .disabled(model.selectedCard == nil)
-            .help("Show or hide the selected card's details")
+            .help("Show or hide the card details panel")
         }
 
         ToolbarItem {
