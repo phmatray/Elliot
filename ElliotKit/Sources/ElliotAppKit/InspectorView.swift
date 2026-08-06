@@ -44,7 +44,7 @@ struct InspectorView: View {
                         }
                     } else {
                         nextStep(card)
-                        story(card)
+                        IssuePane(card: card)
                         provenance(card)
                         runs(card)
                     }
@@ -156,42 +156,14 @@ struct InspectorView: View {
         }
     }
 
-    // MARK: - Story
-
-    @ViewBuilder
-    private func story(_ card: Card) -> some View {
-        if let story = card.story {
-            VStack(alignment: .leading, spacing: 6) {
-                ConsoleLabel(text: "Story")
-                // A point larger than the card glances at it: this is where
-                // the story is read rather than recognised.
-                Text(story.narrative)
-                    .font(Type.bodyProse)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-
-                if !story.acceptanceCriteria.isEmpty {
-                    ConsoleLabel(text: "Acceptance criteria").padding(.top, 4)
-                    ForEach(Array(story.acceptanceCriteria.enumerated()), id: \.offset) { index, item in
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Fact(text: "\(index + 1)", tint: Palette.quiet, small: true)
-                            Text(item)
-                                .font(Type.prose)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-            }
-        } else if !card.body.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                ConsoleLabel(text: "Note")
-                Text(card.body)
-                    .font(Type.bodyProse)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-        }
-    }
+    // MARK: - Story and body
+    //
+    // Both now live in `IssuePane`, and the reason is a bug rather than a
+    // tidy-up: the two sections that stood here were joined by an `else if`, so
+    // a card carrying a story *and* a body showed only the story. They are not
+    // alternatives — one is what Elliot was told, the other is what GitHub
+    // holds — and `IssuePane.sections(for:document:)` now decides that as data
+    // a test can read.
 
     // MARK: - Provenance
 
