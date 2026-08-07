@@ -1400,7 +1400,7 @@ public final class AppModel {
             // Written into the session, which in setup is `nil` — so this is
             // discarded, exactly as it was before, when the footer's first
             // branch made a note unreachable while no analysis was open
-            // (`AnalysisWindow.swift:363`). Logged so the failure stops
+            // (`AnalysisPanelView.swift`, the `footer`). Logged so the failure stops
             // vanishing outright; showing it needs a surface the setup footer
             // does not have, and that is its own issue.
             analysis?.note = error.localizedDescription
