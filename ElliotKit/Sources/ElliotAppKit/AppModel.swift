@@ -1929,6 +1929,13 @@ public final class AppModel {
     /// about is none of that: it is which rows the figures reach, and whether
     /// the failure joined on read agrees with the banner. Seeding the pair is
     /// what lets those be asserted without the fan-out that produces them.
+    /// ⚠️ Rendering `RepositoriesView` itself needs one more thing this seam
+    /// deliberately does not give: `isReady`, which the page's whole body sits
+    /// behind. Without it the view draws "Still starting", so a render taken
+    /// this way is a picture of the empty state. #209's on-screen check added an
+    /// `isReady:` parameter here temporarily to take its screenshot and removed
+    /// it again rather than leave a seam with no caller — if you are here to
+    /// render the page, that is the line you need.
     func testOnlySeedRepoBoard(rows: [RepoRow], tallies: [UUID: RepoBoardTally] = [:]) {
         repoRows = rows
         repoTallies = tallies
