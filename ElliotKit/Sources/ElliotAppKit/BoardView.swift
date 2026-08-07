@@ -862,12 +862,17 @@ struct StatusBar: View {
 struct ColumnView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openWindow) private var openWindow
     let column: ElliotModel.Column
     let width: CGFloat
     @State private var isTargeted = false
     /// Per column and per repository, so collapsing a repository in Backlog does
     /// not hide it in To Do — the two are different questions.
     @State private var collapsed: Set<UUID> = []
+    /// Which days in Done are folded away. A separate set from `collapsed`
+    /// rather than a widened one: a repository and a day are different things
+    /// to have folded, and one column never shows both.
+    @State private var collapsedDays: Set<Date> = []
     /// The card a drop would land above, or `nil` when the pointer is not over
     /// one. Held on the column rather than as `@State` inside each card, so
     /// exactly one insertion cue can be drawn at a time — two bars would say the
@@ -976,10 +981,19 @@ struct ColumnView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 6) {
-                    // Grouped only when the picker says "All repositories".
-                    // With one repository chosen every card belongs to it, and a
-                    // header repeating its name on every column is furniture.
-                    if let groups {
+                    // Done is grouped by *day*, and that branch is taken before
+                    // the repository one on purpose. Nesting the two would give
+                    // this column two levels of heading where every other has
+                    // one, and nothing is lost by choosing: `CardView` already
+                    // prints the repository name on the card itself whenever
+                    // the picker says "All repositories", which is exactly when
+                    // `groups` is non-nil.
+                    if column == .done {
+                        shippingLogRows
+                    } else if let groups {
+                        // Grouped only when the picker says "All repositories".
+                        // With one repository chosen every card belongs to it, and a
+                        // header repeating its name on every column is furniture.
                         ForEach(groups) { group in
                             groupHeader(group)
                             if !collapsed.contains(group.repoID) {
@@ -1075,6 +1089,16 @@ struct ColumnView: View {
                 // `CardReorder.placement` is about to decline anyway.
                 guard id != card.id else { return false }
 
+                // Done is drawn in `columnEnteredAt` order, so a placement
+                // inside it cannot be honoured: `reorder` would write an
+                // `orderIndex` the column does not read and the card would
+                // redraw exactly where it was. Refused at the gesture, so the
+                // drag snaps back — the same answer #47's review demanded for
+                // every other move the board is about to decline. A drop from
+                // *another* column still passes, because that is a column
+                // change and `reorder` performs it.
+                if card.column == .done, model.card(id: id)?.column == .done { return false }
+
                 // Only a drop from *another* column can be refused; asking
                 // `refuse` about a same-column drop would answer "same column"
                 // and put a refusal note on a gesture that is allowed.
@@ -1085,6 +1109,11 @@ struct ColumnView: View {
                 Task { await model.reorder(cardID: id, in: card.column, above: card) }
                 return true
             } isTargeted: { targeted in
+                // No insertion cue in Done: it would promise a position the
+                // column cannot show. The column's own highlight still says the
+                // drop is accepted, which for a card arriving from elsewhere it
+                // is.
+                guard card.column != .done else { return }
                 insertAbove = targeted ? card.id : (insertAbove == card.id ? nil : insertAbove)
             }
             .onDrag {
@@ -1117,6 +1146,71 @@ struct ColumnView: View {
     private var groups: [CardGroup]? {
         guard model.selectedRepoID == nil else { return nil }
         return groupByRepo(cards, repos: model.repos)
+    }
+
+    /// Done's cards, bucketed by the day they landed and cut to the horizon.
+    ///
+    /// Computed per access, like `groups` beside it and for the same reason:
+    /// the rule is cheap, and caching it would need something to invalidate the
+    /// cache — including at midnight, when the answer changes without any card
+    /// moving.
+    private var doneLog: ShippingLog { model.doneLog() }
+
+    /// A heading per day, newest first, each foldable.
+    ///
+    /// The rows are `draggable(_:)` exactly like every other column's, so a
+    /// finished card can still be dragged back out — Done is a horizon on what
+    /// is *drawn*, never a change to what a card is or what may be done to it.
+    @ViewBuilder
+    private var shippingLogRows: some View {
+        let log = doneLog
+        ForEach(log.days) { day in
+            ShipDayHeader(
+                label: day.label,
+                count: day.cards.count,
+                collapsed: collapsedDays.contains(day.start)
+            ) {
+                if collapsedDays.contains(day.start) {
+                    collapsedDays.remove(day.start)
+                } else {
+                    collapsedDays.insert(day.start)
+                }
+            }
+            if !collapsedDays.contains(day.start) {
+                ForEach(day.cards) { card in
+                    draggable(card)
+                }
+            }
+        }
+        if log.olderCount > 0 {
+            olderFooter(log.olderCount)
+        }
+    }
+
+    /// Where the rest of the finished work went.
+    ///
+    /// Drawn only when the horizon actually hid something, so a board younger
+    /// than the horizon never grows a control that would open an empty window.
+    /// Nothing here is destructive and nothing is lost — the cards it counts
+    /// are in the database exactly as they were, which is what lets this be a
+    /// quiet line rather than a warning.
+    private func olderFooter(_ count: Int) -> some View {
+        Button {
+            openWindow(id: "archive")
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "archivebox")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                Fact(text: "\(count) older", tint: Palette.quiet, small: true)
+                Spacer()
+                ConsoleLabel(text: "Open Archive")
+            }
+            .contentShape(Rectangle())
+            .padding(.top, 6)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(BoardAccessibility.olderFooter(count: count))
     }
 
     /// Deliberately carries no `dropDestination`.
@@ -1249,6 +1343,28 @@ enum BoardAccessibility {
     /// repositories".
     static func groupCaption(repoName: String, count: Int, column: String) -> String {
         "\(repoName), \(count) \(cards(count)) in \(column)"
+    }
+
+    /// One day's heading in the Done column, or in the archive.
+    ///
+    /// Here rather than spelled out in `ShipDayHeader` for the reason recorded
+    /// on `groupCaption`: the singular has to be written out by the one
+    /// function that knows how, or a third label on this column joins the two
+    /// that once disagreed about "1 cards".
+    static func shipDayCaption(day: String, count: Int) -> String {
+        "\(day), \(count) \(cards(count))"
+    }
+
+    /// Done's footer: how many finished cards the horizon is not drawing, and
+    /// where the rest of them are.
+    ///
+    /// Empty at zero rather than "0 older cards", because at zero the footer is
+    /// **not drawn at all** — a label announcing a control that is not on
+    /// screen is worse than no label. The visible row is terser than this
+    /// ("37 older · Open Archive"); a sentence is what VoiceOver needs.
+    static func olderFooter(count: Int) -> String {
+        guard count > 0 else { return "" }
+        return "\(count) older \(cards(count)). Open Archive."
     }
 
     /// One row of a card's move history, read as a sentence.

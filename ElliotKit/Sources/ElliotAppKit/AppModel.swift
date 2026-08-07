@@ -758,6 +758,29 @@ public final class AppModel {
             .sorted { $0.orderIndex < $1.orderIndex }
     }
 
+    /// Done as a dated log rather than a pile.
+    ///
+    /// Built on `cards(in:)` so the repository picker is applied in exactly one
+    /// place — a second filter here is how the board and this column would come
+    /// to disagree about what "All repositories" means.
+    ///
+    /// The log re-sorts by `columnEnteredAt`, which makes Done the one column
+    /// whose on-screen order is not `orderIndex`. That is deliberate:
+    /// `orderIndex` records a position a human chose while the card was still
+    /// in play, and it says nothing once the card is finished. Noted here
+    /// because an asymmetry nobody wrote down reads as a bug to whoever finds
+    /// it next.
+    ///
+    /// `now` and `calendar` are parameters with ambient defaults: the view
+    /// wants the wall clock, and a test cannot have one.
+    public func doneLog(
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        horizonDays: Int? = ShippingLog.defaultHorizonDays
+    ) -> ShippingLog {
+        shippingLog(cards(in: .done), now: now, calendar: calendar, horizonDays: horizonDays)
+    }
+
     public func repo(for card: Card) -> Repo? {
         repos.first { $0.id == card.repoID }
     }
@@ -1520,6 +1543,43 @@ public final class AppModel {
     public func recentAnalyses() async -> [Analysis] {
         guard let store else { return [] }
         return (try? await store.analyses(repoID: selectedRepoID, limit: 20)) ?? []
+    }
+
+    /// One page of the finished history, and how many rows the same filter
+    /// matches overall.
+    ///
+    /// Both halves come back together because the archive cannot use one
+    /// without the other: the page is what it draws, the total is the only
+    /// thing that can say whether to offer another. Read in one call so they
+    /// answer the same filter — asking separately is how a "Load more" that
+    /// loads nothing gets built.
+    ///
+    /// Honours `selectedRepoID`, like every other read on this model. The
+    /// caller has to re-ask when that changes — this reads it, it does not
+    /// watch it.
+    ///
+    /// **`nil` means "could not look", and is not the same as an empty page.**
+    /// `store` is nil until `start()` has opened it, and macOS restores an open
+    /// `Window` scene at launch — so the archive's first read can genuinely
+    /// arrive before there is a database to read. Collapsing that into
+    /// `([], 0)` let the window state "Nothing has reached Done yet." on the
+    /// strength of a question it never got to ask, permanently, because nothing
+    /// re-ran the read. Same distinction the board draws everywhere else
+    /// between an answer and an absence of one.
+    public func archivePage(
+        search: String,
+        limit: Int,
+        offset: Int
+    ) async -> (cards: [Card], total: Int)? {
+        guard let store else { return nil }
+        let term = search.isEmpty ? nil : search
+        guard
+            let cards = try? await store.doneCards(
+                repoID: selectedRepoID, search: term, limit: limit, offset: offset
+            ),
+            let total = try? await store.doneCardCount(repoID: selectedRepoID, search: term)
+        else { return nil }
+        return (cards, total)
     }
 
     public func updateProposal(_ proposal: StoryProposal) async {
