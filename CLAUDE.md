@@ -64,11 +64,15 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
     6.2.4), so **the test targets cannot be compiled on that image at all**. Whether macOS 15 can
     *host* Xcode 26.4 is unmeasured — an image's contents are not Apple's requirements, and inferring
     one from the other is the mistake #116 is about.
-- **CI here is one workflow, and it is not a build.** `.github/workflows/swift-floor.yml` asserts the
-  runner's toolchain against the floor `Package.swift` declares, and builds on it. There is still **no
-  build-and-test CI and no branch protection** — that is #21, in flight on #102 — so a pull request is
-  otherwise judged by a local `swift test` only, and "wait for green CI" is still not a thing that can
-  happen here.
+- **CI here is two workflows, and they answer different questions.**
+  `.github/workflows/swift-floor.yml` (#116) asserts the runner's toolchain against the floor
+  `Package.swift` declares and builds on it; `.github/workflows/ci.yml` (#21) runs `swift build` then
+  `swift test`. ⚠️ **`swift build --build-tests` is not `swift test`** — the floor job compiles the
+  eight test targets and executes no `@Test`, so a green `swift-floor` is not a suite that passed.
+  **Branch protection is still off**, so both checks are advisory: `gh api
+  repos/phmatray/Elliot/branches/main/protection` returns 404 `Branch not protected`, and a red check
+  does not block a merge. "Wait for green CI" now returns a real verdict; it still does not stop
+  anything.
   - ⚠️ **A conflicted pull request fires no `pull_request` workflow at all — and it fails by silence,
     not by saying so.** Measured in #140: after `main` moved, GitHub created **zero** runs for the
     head SHA for 25 minutes, `check-runs` returned `total_count: 0`, a close/reopen produced nothing,
@@ -163,10 +167,12 @@ been copied too. It had already cost three defects, each fixed in one file — `
 tails), `3b1c226`/#18 (`waitUntilExit` parking a cooperative thread), `36b6da6`/#105 (SIGKILL
 escalation `ProcessRunner` never got) — and #26 opened a fourth investigation aimed at one file.
 `DrainDuplicationTests` keeps the measurement runnable: it re-derives that comment count and fails
-naming the invariant that is written twice, because this repository has **no build-and-test CI** and a
-gate that is not a test is a gate nobody re-runs. (The one workflow that does exist, `swift-floor.yml`,
-guards the toolchain floor and runs no tests, so the argument stands unchanged — but "no CI" flatly
-was the wording until #116 added it, and a stale claim in this file is what #116 was about.)
+naming the invariant that is written twice, because **a gate that is not a test is a gate nobody
+re-runs**. Since #21 that argument is stronger rather than weaker — `ci.yml` executes `swift test` on
+every pull request, so a guard shaped as a test is now the *only* kind of guard this repository
+enforces off one laptop. (The wording here has been corrected twice: flatly "no CI" until #116 added
+`swift-floor.yml`, then "no build-and-test CI" until #21 added `ci.yml`. A stale claim in this file is
+what #116 was about, and the shape of it recurs.)
 
 The single behavioural delta is recorded at both ends: `ProcessRunner` gave up its
 `state.withLock { !$0.exited } &&` conjunct in the SIGKILL backstop, since a sink may hold that lock
@@ -277,9 +283,26 @@ where changes land. `not_included` names all of it in every reply — **read it 
 something failed to appear**, and use the accessibility tree above for anything in the toolbar.
 
 ⚠️ **A long `ELLIOT_HOME` silently costs you the MCP socket.** `sun_path` is capped at 104 bytes on
-macOS, so a scratch home under a deep path makes `startIPC` fail; the app runs fine, the helper
-answers `app_unavailable`, and the reply reads as "Elliot is not running" while it is plainly on
-screen. Keep the check store short — `/tmp/elliot-check` is short on purpose.
+macOS, so a scratch home under a deep path makes `startIPC` fail; the app runs fine, and Preflight
+says so under *MCP socket*. Keep the check store short — `/tmp/elliot-check` is short on purpose.
+
+**Since #168 the helper names that instead of blaming the app.** It used to decide everything from
+`IPCClient.isAppRunning()` — *does something answer at this path* — so a socket that was never bound
+was indistinguishable from an app that was never launched, and the reply read as "Elliot is not
+running" while it was plainly on screen. `AppBridge` now measures the path against
+`UnixSocket.pathFits` **before** it asks whether the app is up, and both `read` and `write` consult
+that one guard. Measured on the fix's own branch, same machine, same home, within a minute of each
+other, with that Elliot's 1599×937 board captured on screen at the time:
+
+| | reply to `board_next` |
+|---|---|
+| the helper on `main` | `isError: false`, `source: offline-db`, *"Elliot is not running; this is a snapshot of its database."* |
+| the helper after #168 | `app_unavailable` — *"the path ELLIOT_HOME leads to is 112 bytes, and a unix socket path must be under 104"* |
+
+The old answer is the worse of the two and it is the one that looks fine: correct rows under a false
+explanation, `isError: false`, no reason to doubt it. That is why a read here **refuses** rather than
+falling back to the snapshot. ⚠️ It covers the **length** cause only — a socket directory that cannot
+be created or written still reads as an absent app.
 
 **A secondary window is verifiable too — it opens off-screen, it does not fail to open.** Every PR
 from #75 to #89 carried some version of *"opening a `Window` scene needs the app frontmost, which the
