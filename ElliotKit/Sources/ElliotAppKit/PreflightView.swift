@@ -387,7 +387,7 @@ public struct PreflightView: View {
                             }
                             .padding(.top, 2)
                         }
-                        if let outcome = model.lastCheckFixOutcome {
+                        if let outcome = model.fixOutcome(for: result) {
                             // What the last fix did, in its own words. Shown
                             // rather than swallowed because `apply` reports a
                             // *partial* success — four labels asked for, three

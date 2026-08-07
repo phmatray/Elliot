@@ -161,19 +161,26 @@ public struct GHClient: Sendable {
         ).map(\.name)
     }
 
-    /// Creates one label.
+    /// Creates one label. **Returns whether it actually created it.**
     ///
-    /// A name that already exists is **success**. `gh label create` exits
-    /// non-zero for it, but the caller asked for a repository that has this
-    /// label and that is the repository they have — and between the check and
-    /// the button a second Elliot window, or a hand-created label, can make it
-    /// true. Turning that into a red banner would report a failure that is not
-    /// one.
+    /// A name that already exists is **success**, not an error: `gh label
+    /// create` exits non-zero for it, but the caller wanted a repository that
+    /// has this label and that is the repository they have — and between the
+    /// check and the button a second Elliot window, or a hand-created label, can
+    /// make it true. Turning that into a red banner would report a failure that
+    /// is not one.
+    ///
+    /// It is nevertheless **distinguished from creating**, because `labels()`
+    /// reads one page: a repository past that limit can have a label the check
+    /// reported missing, and reporting "created" for it would put a sentence
+    /// beside a row that still says it is missing — two claims about one label,
+    /// in one panel, one of them false.
     ///
     /// The tolerance is deliberately narrow: it keys on `gh`'s own words, so a
-    /// refusal for permissions or a repository that does not exist still
-    /// throws. Swallowing those would report labels as created that are not.
-    public func createLabel(_ label: RequiredLabel, repo: String) async throws {
+    /// refusal for permissions or a repository that does not exist still throws.
+    /// Swallowing those would report labels as created that are not.
+    @discardableResult
+    public func createLabel(_ label: RequiredLabel, repo: String) async throws -> Bool {
         do {
             _ = try await ProcessRunner.check(
                 executable: config.ghPath,
@@ -184,8 +191,10 @@ public struct GHClient: Sendable {
                 environment: config.environment,
                 timeout: .seconds(30)
             )
+            return true
         } catch let error as ProcessError {
             guard Self.isAlreadyExists(error) else { throw error }
+            return false
         }
     }
 

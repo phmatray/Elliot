@@ -44,7 +44,7 @@ struct PreflightTests {
     func fixLabelsReadAsButtons() {
         let repoID = UUID()
         let create = CheckFix.createLabels(
-            repoID: repoID,
+            repoID: repoID, nameWithOwner: "phmatray/Elliot",
             labels: [RequiredLabel(name: "bug", color: "d73a4a", description: "x")]
         )
         let seed = CheckFix.seedCard(
@@ -126,7 +126,7 @@ struct PreflightTests {
         #expect(!check.detail.contains("enhancement"))
 
         #expect(check.fixes.count == 2)
-        if case .createLabels(_, let labels) = check.fixes[0] {
+        if case .createLabels(_, _, let labels) = check.fixes[0] {
             #expect(labels.map(\.name) == ["documentation", "question"])
         } else {
             Issue.record("the first fix should create the missing labels")
@@ -163,7 +163,7 @@ struct PreflightTests {
 
         #expect(check.status == .warn)
         #expect(check.fixes.count == 2)
-        if case .createLabels(_, let labels) = check.fixes[0] {
+        if case .createLabels(_, _, let labels) = check.fixes[0] {
             #expect(labels.count == LabelPolicy.default.count)
         } else {
             Issue.record("expected a create-labels fix")
@@ -207,7 +207,7 @@ struct PreflightTests {
             RequiredLabel(name: "question", color: "d876e3", description: "q"),
         ]
         let outcome = await service(["FAKE_GH_ARGV_OUT": argv]).apply(
-            .createLabels(repoID: repo.id, labels: missing),
+            .createLabels(repoID: repo.id, nameWithOwner: repo.nameWithOwner, labels: missing),
             repo: repo,
             board: board
         )
@@ -233,7 +233,7 @@ struct PreflightTests {
             "FAKE_GH_STDERR": "HTTP 403: Resource not accessible",
         ]).apply(
             .createLabels(
-                repoID: repo.id,
+                repoID: repo.id, nameWithOwner: repo.nameWithOwner,
                 labels: [RequiredLabel(name: "documentation", color: "0075ca", description: "d")]
             ),
             repo: repo,
@@ -269,7 +269,7 @@ struct PreflightTests {
     @Test("Fixes are identifiable and hashable, so a view can list them")
     func fixesAreListable() {
         let repoID = UUID()
-        let a = CheckFix.createLabels(repoID: repoID, labels: [])
+        let a = CheckFix.createLabels(repoID: repoID, nameWithOwner: "phmatray/Elliot", labels: [])
         let b = CheckFix.seedCard(
             repoID: repoID, title: "t",
             story: UserStory(role: "r", want: "w", benefit: "b")
@@ -284,5 +284,65 @@ struct PreflightTests {
         )
         #expect(Set([result]).count == 1)
         #expect(result.fixes.count == 2)
+    }
+
+    @Test("The button writes to the repository the check asked about")
+    func fixCarriesTheResolvedName() async {
+        // The stored `Repo.nameWithOwner` and the live one diverge: both
+        // registration paths fall back to a bare directory name when `gh` was
+        // unavailable, and nothing repairs it. A fix built from the stored value
+        // would run `gh label create --repo Elliot` — rejected for not being
+        // OWNER/REPO — for a finding that was perfectly right.
+        var stale = repo
+        stale.nameWithOwner = "Elliot"
+
+        let check = await service().labelsCheck(
+            stale, nameWithOwner: "phmatray/Elliot", required: LabelPolicy.default
+        )
+
+        guard case .createLabels(_, let nameWithOwner, _) = check.fixes[0] else {
+            Issue.record("expected a create-labels fix")
+            return
+        }
+        #expect(nameWithOwner == "phmatray/Elliot")
+    }
+
+    @Test("Pressing Add a card twice leaves one card, not two")
+    func seedCardIsIdempotent() async throws {
+        // The button does not go away after a press: the labels are still
+        // missing, so the row is rebuilt with the same two fixes. Without a key
+        // an impatient second press writes a second identical card.
+        let (store, board, _, repo) = try await seededBoard()
+        let fix = CheckFix.seedCard(
+            repoID: repo.id, title: "Decide a label taxonomy",
+            story: UserStory(role: "r", want: "w", benefit: "b")
+        )
+
+        _ = await service().apply(fix, repo: repo, board: board)
+        _ = await service().apply(fix, repo: repo, board: board)
+
+        #expect(try await store.cards(repoID: repo.id).count == 1)
+    }
+
+    @Test("A label that already existed is not reported as created")
+    func alreadyThereIsSaidApart() async throws {
+        // `labels()` reads one page, so a repository past that limit can hold a
+        // label the check called missing. Calling it "created" would put a
+        // sentence beside a row that still says it is missing.
+        let (_, board, _, repo) = try await seededBoard()
+        let outcome = await service([
+            "FAKE_GH_MODE": "fail",
+            "FAKE_GH_STDERR": "already exists",
+        ]).apply(
+            .createLabels(
+                repoID: repo.id, nameWithOwner: repo.nameWithOwner,
+                labels: [RequiredLabel(name: "question", color: "d876e3", description: "q")]
+            ),
+            repo: repo, board: board
+        )
+
+        #expect(outcome.succeeded)
+        #expect(outcome.detail.contains("already existed"))
+        #expect(!outcome.detail.contains("Created"))
     }
 }

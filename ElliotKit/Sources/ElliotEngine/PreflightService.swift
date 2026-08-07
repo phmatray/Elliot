@@ -29,7 +29,20 @@ public enum CheckStatus: String, Sendable, Hashable {
 ///   starts an unattended agent, outside the board, would not.
 public enum CheckFix: Sendable, Hashable, Identifiable {
     /// Create these labels in this repository, now.
-    case createLabels(repoID: UUID, labels: [RequiredLabel])
+    ///
+    /// ⚠️ `nameWithOwner` is carried rather than read back off the `Repo`, and
+    /// that is not tidiness. The check asks `gh` about the **live**
+    /// `repoInfo(cwd:)` value while `Repo.nameWithOwner` is whatever was stored
+    /// at registration — and both registration paths fall back to a bare
+    /// directory name when `gh` was unavailable
+    /// (`AppModel.swift`, `RepoRegistryService.swift`: `info?.nameWithOwner ?? …`).
+    /// Nothing ever repairs it. So a repository registered while `gh` was down
+    /// stores `Elliot`, the check correctly reports labels missing from
+    /// `phmatray/Elliot`, and the button runs `gh label create … --repo Elliot`,
+    /// which `gh` rejects for not being `[HOST/]OWNER/REPO`: every label failing
+    /// for a finding that was right. After a rename it is worse — the write
+    /// silently targets the wrong repository.
+    case createLabels(repoID: UUID, nameWithOwner: String, labels: [RequiredLabel])
     /// Put a card in Backlog describing work someone should look at.
     case seedCard(repoID: UUID, title: String, story: UserStory)
 
@@ -37,7 +50,7 @@ public enum CheckFix: Sendable, Hashable, Identifiable {
     /// `RepoFix.label` is: two screens must not spell the same act two ways.
     public var label: String {
         switch self {
-        case .createLabels(_, let labels):
+        case .createLabels(_, _, let labels):
             // The count is in the text on purpose: "Create labels" on a row
             // listing four of them is a button whose blast radius is guesswork.
             "Create \(labels.count) label\(labels.count == 1 ? "" : "s")"
@@ -48,7 +61,7 @@ public enum CheckFix: Sendable, Hashable, Identifiable {
 
     public var id: String {
         switch self {
-        case .createLabels(let repoID, let labels):
+        case .createLabels(let repoID, _, let labels):
             "createLabels:\(repoID):\(labels.map(\.name).joined(separator: ","))"
         case .seedCard(let repoID, let title, _):
             "seedCard:\(repoID):\(title)"
@@ -63,7 +76,7 @@ public enum CheckFix: Sendable, Hashable, Identifiable {
     /// is a fix applied to the wrong one waiting to happen.
     public var repoID: UUID {
         switch self {
-        case .createLabels(let repoID, _), .seedCard(let repoID, _, _): repoID
+        case .createLabels(let repoID, _, _), .seedCard(let repoID, _, _): repoID
         }
     }
 }
@@ -386,7 +399,9 @@ public struct PreflightService: Sendable {
                 + "does not have, and files the issue anyway.",
             command: "gh label list --repo \(target)",
             fixes: [
-                .createLabels(repoID: repo.id, labels: missing),
+                // The **resolved** name, not the stored one — see the case's
+                // own comment for what diverges and what it costs.
+                .createLabels(repoID: repo.id, nameWithOwner: target, labels: missing),
                 // For the case the button cannot serve: a repository that wants
                 // its *own* taxonomy. Deciding one edits `repo-profile.md`, a
                 // committed file, so it belongs in an issue and a pull request —
@@ -431,13 +446,19 @@ public struct PreflightService: Sendable {
         _ fix: CheckFix, repo: Repo, board: BoardService
     ) async -> CheckFixOutcome {
         switch fix {
-        case .createLabels(_, let labels):
+        case .createLabels(_, let nameWithOwner, let labels):
             var created: [String] = []
+            var alreadyThere: [String] = []
             var failed: [String] = []
             for label in labels {
                 do {
-                    try await gh.createLabel(label, repo: repo.nameWithOwner)
-                    created.append(label.name)
+                    // The resolved name the *check* asked about, never the
+                    // stored one — see `CheckFix.createLabels`.
+                    if try await gh.createLabel(label, repo: nameWithOwner) {
+                        created.append(label.name)
+                    } else {
+                        alreadyThere.append(label.name)
+                    }
                 } catch {
                     failed.append(label.name)
                 }
@@ -454,10 +475,26 @@ public struct PreflightService: Sendable {
                             + "could not create \(failed.joined(separator: ", "))."
                 )
             }
+            // "Created" and "was already there" are kept apart on purpose.
+            // `labels()` reads one page, so a repository past that page can
+            // report a label missing that `gh label create` then refuses as
+            // existing — and calling that "created" would put a sentence beside
+            // a row that still says the label is missing. Two claims about the
+            // same label, in the same panel, one of them false.
+            var parts: [String] = []
+            if !created.isEmpty {
+                parts.append(
+                    "Created \(created.count) label\(created.count == 1 ? "" : "s"): "
+                        + created.joined(separator: ", "))
+            }
+            if !alreadyThere.isEmpty {
+                parts.append(
+                    "\(alreadyThere.joined(separator: ", ")) already existed — "
+                        + "this repository has more labels than one page lists.")
+            }
             return CheckFixOutcome(
                 succeeded: true,
-                detail: "Created \(created.count) label\(created.count == 1 ? "" : "s"): "
-                    + created.joined(separator: ", ") + "."
+                detail: parts.isEmpty ? "Nothing to create." : parts.joined(separator: ". ") + "."
             )
 
         case .seedCard(_, let title, let story):
@@ -467,7 +504,14 @@ public struct PreflightService: Sendable {
                 // starts an unattended agent is precisely what this design
                 // refuses, and the card is how the agent is reached instead.
                 _ = try await board.createCard(
-                    repoID: repo.id, title: title, story: story, column: .backlog
+                    repoID: repo.id, title: title, story: story, column: .backlog,
+                    // The button does not disappear after a press — the labels
+                    // are still missing, so the same row is rebuilt with the
+                    // same two fixes. Without a key, a second press (or an
+                    // impatient double-click, since nothing disables the button
+                    // during the await) leaves two identical cards. `fix.id` is
+                    // already a stable key for exactly this.
+                    idempotencyKey: fix.id
                 )
                 return CheckFixOutcome(
                     succeeded: true,

@@ -33,7 +33,7 @@ struct PreflightFixTests {
             id: "repo.labels", title: "Labels", status: .warn, detail: "Missing: question.",
             fixes: [
                 .createLabels(
-                    repoID: repoID,
+                    repoID: repoID, nameWithOwner: "phmatray/Elliot",
                     labels: [RequiredLabel(name: "question", color: "d876e3", description: "q")]
                 ),
                 .seedCard(
@@ -61,7 +61,7 @@ struct PreflightFixTests {
         // position on screen, which is how a fix ends up applied to the wrong
         // one.
         let repoID = UUID()
-        #expect(CheckFix.createLabels(repoID: repoID, labels: []).repoID == repoID)
+        #expect(CheckFix.createLabels(repoID: repoID, nameWithOwner: "o/r", labels: []).repoID == repoID)
         #expect(
             CheckFix.seedCard(
                 repoID: repoID, title: "t",
@@ -78,9 +78,32 @@ struct PreflightFixTests {
         // No repository with this id was ever registered. Silence here would be
         // a button that appears to work and does not — the failure mode this
         // whole screen is being taught to avoid.
-        await model.apply(.createLabels(repoID: UUID(), labels: []))
+        await model.apply(.createLabels(repoID: UUID(), nameWithOwner: "o/r", labels: []))
 
-        #expect(model.lastCheckFixOutcome?.succeeded == false)
-        #expect(model.lastCheckFixOutcome?.detail.isEmpty == false)
+        #expect(model.lastCheckFix?.outcome.succeeded == false)
+        #expect(model.lastCheckFix?.outcome.detail.isEmpty == false)
+    }
+
+    @Test("A fix's sentence appears under the row that offered it, and nowhere else")
+    func outcomeIsScopedToItsOwnRow() async throws {
+        // It was a single model-wide property read inside the row loop, so one
+        // sentence appeared under *every* check of *every* repository: press
+        // "Create 2 labels" on one and another repository's "Working tree" check
+        // announced "Created 2 labels", as if that were about it.
+        _ = TestHome.root
+        let model = AppModel()
+        let repoID = UUID()
+        let fix = CheckFix.createLabels(repoID: repoID, nameWithOwner: "o/r", labels: [])
+
+        await model.apply(fix)   // fails — no such repository — but records against `fix`
+
+        let owner = CheckResult(
+            id: "repo.labels", title: "Labels", status: .warn, detail: "d", fixes: [fix]
+        )
+        let bystander = CheckResult(
+            id: "repo.clean", title: "Working tree", status: .warn, detail: "d"
+        )
+        #expect(model.fixOutcome(for: owner) != nil)
+        #expect(model.fixOutcome(for: bystander) == nil)
     }
 }
