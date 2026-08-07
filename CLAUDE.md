@@ -368,13 +368,36 @@ cua-driver permissions status --json
 - **Screen Recording** buys *observation*: window **titles**, and a real screenshot of a window or the display.
 - **Accessibility** buys *actuation* — and also the AX tree. Synthetic clicks and key presses are posted to another process's event queue, which macOS gates behind this grant.
 
-⛔ **So "can this machine observe the UI" is not a question with an answer.** Ask it of an identity,
-and establish *yours* before planning a verification pass, because it decides what the pass can even
-ask. Walk your own ancestry — the last entry is the app your grants are read against:
+⛔ **So "can this machine observe the UI" is not a question with an answer.** Ask it of an identity —
+and ask it with the two calls that answer directly. Both are instant, neither prompts, and neither
+touches another app:
 
 ```bash
-P=$PPID; while [ "$P" -gt 1 ]; do ps -o pid=,ppid=,comm= -p "$P"; P=$(ps -o ppid= -p "$P" | tr -d ' '); done
+cat > /tmp/grants.swift <<'EOF'
+import ApplicationServices
+import CoreGraphics
+print("accessibility   ->", AXIsProcessTrusted())
+print("screenRecording ->", CGPreflightScreenCaptureAccess())
+EOF
+swift /tmp/grants.swift        # -> false, false  (2026-08-07, from an Elliot-spawned agent shell)
 ```
+
+⛔ **Probe with those, not by firing a click at the board.** A synthetic click that lands on a card in
+a registered repository *is the act of execution* — it can start an unattended `claude -p` at
+`bypassPermissions` — so "just try it and see" is the one probe that can do real work by accident.
+The table below records what each channel *answered*; it is a reference, not a script to run top to
+bottom against your everyday board.
+
+Then, if you want to know *whose* grants those are, walk your ancestry — the last entry is the app
+they are read against:
+
+```bash
+P=$PPID; while [ -n "$P" ] && [ "$P" -gt 1 ] 2>/dev/null; do ps -o pid=,comm= -p "$P" || break; P=$(ps -o ppid= -p "$P" | tr -d ' '); done
+```
+
+⚠️ **An empty walk is an answer, not a failure**: a process started by launchd has no ancestor to
+name and is its own responsible process — which is exactly what `cua-driver` reports about itself
+above (`"responsible_ppid": 1`). The walk names an inherited identity; it cannot name a self-owned one.
 
 Measured 2026-08-07 from a Claude Code session whose walk came back
 `zsh ← claude ← Elliot.app/Contents/MacOS/Elliot` — an agent run **Elliot itself spawned**, so
@@ -400,69 +423,84 @@ process enumeration simply is not gated, and every *UI* read one line later retu
 `set frontmost` succeeds, so the committed recipe below **starts working and then fails**. A channel
 that answers is evidence about that channel and nothing else — probe the capability you actually need.
 
-⚠️ **A key press that does not arrive means "could not act", never "the app ignored it".** Here it at
-least says so — `1002`, its own error code, distinct from the `-1719`/`-25211` pair, so a keyboard
-failure is diagnosable rather than mysterious. That is the exception. `realclick.swift` posts a
-`CGEvent` and exits **0 having delivered nothing**, because `CGEventPost` returns no receipt; the
-blank `title` fields are the same silence one layer over, since the geometry arrives and only the
-names are withheld. When an input appears to do nothing, **establish the grant before believing the
-app** — a claim about a gesture built on a dropped event is a claim about your permissions.
+⚠️ **A key press that does not arrive means "could not act", never "the app ignored it".** Ungranted
+it at least says so — `1002`, its own error code, distinct from the `-1719`/`-25211` pair, so a
+keyboard failure is diagnosable rather than mysterious. That is the exception, and `realclick.swift`
+was the rule until #161: it posted a `CGEvent` and exited **0 having delivered nothing**, because
+`CGEventPost` returns no receipt. It now refuses by name (`AXIsProcessTrusted`, exit 77). The blank
+`title` fields are the same silence one layer over — geometry arrives, names are withheld.
+
+⛔ **And the grant is not the end of it: keys have been measured to go missing from a shell that
+*held* both grants.** #161's pass, same machine, same day, from a different identity: synthetic
+**clicks** landed and each had its effect, while ⌘F-then-type left a search field on its placeholder
+and Escape did not deselect — with the app frontmost by pid. So clicks working is **no evidence** that
+keys do. This matters for `Scripts/probe-deselect.sh`, whose set-up drives `key code 125/124` to pick
+a card: if that returns `exit 3 nothing selected after ↓`, suspect the keystroke before you suspect
+the board. **Establish delivery on the channel you are about to rely on** — a claim about a gesture
+built on an event that never arrived is a claim about your permissions.
 
 ✅ **What still works with neither grant is `board_screenshot` (#155)**, because Elliot renders its own
 hierarchy in-process and TCC is never consulted. In the same minute that `screencapture -o -l5600`
 refused, `board_screenshot` returned that very window — id `5600`, 1510×925 both times — at full size,
-`source: live`. It is the only observation channel here that does not depend on who your parent is, so
-reach for it first and treat the shell recipes as the fallback. Read its `not_included` before
-concluding something is missing.
+`source: live`. Reach for it first and treat the shell recipes as the fallback. Read its
+`not_included` before concluding something is missing — and note its own aiming hazard, recorded at
+length below: the helper resolves its socket through `ELLIOT_HOME`, so one registered against the
+default home photographs **your everyday board** while you review a worktree branch, and the picture
+looks perfectly correct. Free of TCC is not free of targeting.
 
-**Window ids and geometry survive without Screen Recording too — only the names are withheld**, so
-this is how you find a window to aim at, and it is the enumeration the `is_on_screen` rule above is
-about. `CGWindowListCopyWindowInfo` is *not* the obsoleted `CGWindowListCreateImage`; it still
-compiles on our own floor:
+**Window ids and geometry survive without Screen Recording too — only the names are withheld**, which
+is a second grant-independent way to look. `Scripts/list-windows.swift` is that enumeration,
+committed rather than retyped, with the three corrections below in its own header:
 
 ```bash
-cat > /tmp/lswin.swift <<'EOF'
-import CoreGraphics
-let pid = CommandLine.arguments.count > 1 ? Int(CommandLine.arguments[1]) : nil
-for w in (CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID)
-    as? [[String: Any]] ?? []) {
-    guard let p = w[kCGWindowOwnerPID as String] as? Int, pid == nil || p == pid else { continue }
-    let b = w[kCGWindowBounds as String] as? [String: Any] ?? [:]
-    print(p, w[kCGWindowNumber as String] as? Int ?? -1,
-          w[kCGWindowIsOnscreen as String] as? Bool ?? false,
-          b["Width"] ?? 0, b["Height"] ?? 0, b["X"] ?? 0, b["Y"] ?? 0,
-          w[kCGWindowOwnerName as String] as? String ?? "?",
-          "title='\(w[kCGWindowName as String] as? String ?? "")'")
-}
-EOF
-ps -eo pid,command | grep 'MacOS/Elliot$' | grep -v grep    # the pid you want
-swift /tmp/lswin.swift <pid>                                # omit <pid> to list every app's windows
+ps -eo pid,command | grep 'MacOS/Elliot$' | grep -v grep   # the pid you want
+swift Scripts/list-windows.swift <pid>                     # omit <pid> for every app's windows
 ```
 
-⛔ **Use that `ps` line, not `pgrep -f`.** Measured 2026-08-07:
-`pgrep -f 'Elliot.app/Contents/MacOS/Elliot'` returns **nothing**, and the shorter
-`pgrep -f 'Elliot.app'` returns the six `elliot-mcp` helpers **without the app itself** — macOS does
-not expose a LaunchServices-started GUI app's argv to `pgrep`, so it answers confidently with the
-wrong pids rather than failing. Another one that does not say *no*.
+⛔ **Use that `ps` line, not `pgrep -f` — and the reason is this section's own thesis.** Measured
+2026-08-07 from an Elliot-spawned shell, `pgrep -f 'Elliot.app/Contents/MacOS/Elliot'` returns
+**nothing** while `pgrep -a -f …` returns `45434`. It is *not* that GUI apps are invisible —
+`pgrep -f 'Arc.app/Contents/MacOS/Arc'` finds Arc from the same shell. `man pgrep`: `-a` "Include
+process ancestors in the match list. By default, the current pgrep or pkill process and all of its
+ancestors are excluded." **Elliot is excluded because Elliot is your ancestor** — the same fact that
+decides your grants also hides the app from your process search, and it answers with the wrong pids
+rather than failing. (An earlier draft of this very paragraph blamed LaunchServices; that was wrong,
+and code review caught it.)
 
 ⛔ **Do not filter on `is_on_screen`** — that is the trap recorded above, and it is why "the window
 didn't open" got written down nine times. ⚠️ **And do not read an empty `title` as an unnamed
-window**: without Screen Recording every name in that list is blank while the geometry is perfect,
-which is the whole list looking complete and being wrong in one column. Cross-check the size against
-`board_screenshot`'s `width`/`height` — that is how id `5600` was confirmed to be the board.
+window**: without Screen Recording every name is blank while the geometry is perfect — a list that
+looks complete and is wrong in one column. The script says so itself rather than letting you misread
+it. **Disambiguate by size**, since the designed sizes are distinct: board ~1510×925, Preflight
+820×720, Repositories 900×700, and a 1728×33 row is a titlebar shim rather than a window.
 
-⚠️ **A different terminal can legitimately answer differently, and that is the mechanism rather than a
-contradiction.** #161 measured the same commands the same day and found menu enumeration, window
-capture and clicks all working — from a shell with a different responsible process. Both readings are
-true of their own identity. **Re-run the probes rather than trusting this table**; what is durable here
-is the ancestry walk and the shape of the answers, not the booleans.
+⚠️ **A window id is not yet a readable picture.** If you do hold Screen Recording and feed one of
+these ids to `screencapture -l`, a window whose app is not frontmost is parked in the Stage Manager
+strip at ~143×160 and **nothing in it can be read as text** — which renders as "the board came back
+143×164", the #74 misreading the paragraph above exists to correct. Activate the pid first, or use
+`board_screenshot`, which draws the window at its designed size regardless.
 
-**To actually get a grant, grant it to the identity the walk named** — `cua-driver permissions grant`
-only ever settles the daemon, so it does nothing for an agent shell whose parent is Elliot; that one
-needs *Elliot.app* ticked under System Settings ▸ Privacy & Security ▸ Accessibility (and Screen
-Recording for capture). Until then, anything needing a click, a key or a `screencapture` is **not
-verifiable from here** — which is a reason to reach for `board_screenshot` and the structural tests,
-not a reason to assert the change works.
+⚠️ **The same commands answered differently earlier the same day, and why is UNMEASURED.** #161 found
+menu enumeration, window capture and clicks all working; hours later, every one of them refused. Two
+explanations fit and neither has been tested: a different responsible process (that pass recorded no
+ancestry walk — the walk is what #161 added), or **the grant being destroyed by a rebuild**, since
+`Scripts/build-app.sh` does `rm -rf "$APP"` then `codesign --force --sign -`, and an ad-hoc signature
+over a deleted-and-recreated bundle is a new TCC subject. Do not repeat either as the cause: writing
+an inferred mechanism down as a measured one is the mistake this whole section is about, and it has
+already cost this file one wrong `pgrep` explanation and one wrong #140 diagnosis. **Re-run the two
+preflights rather than trusting this table**; what is durable is the method, not the booleans.
+
+**To get a grant, grant it to the identity the walk named** — `cua-driver permissions grant` only ever
+settles the daemon, so it does nothing for an agent shell whose ancestor is Elliot; that one needs
+*Elliot.app* ticked under System Settings ▸ Privacy & Security ▸ Accessibility (and Screen Recording
+for capture). Two things make that less simple than it sounds:
+
+- ⛔ **It grants far more than a verification pass.** Elliot spawns unattended `claude -p` runs at `bypassPermissions`, and each inherits Elliot as its responsible process — so ticking that box lets **every** future run post synthetic clicks and keystrokes into any application and read any app's accessibility tree. That is a standing capability bought for one afternoon of looking; decide it deliberately, and prefer `board_screenshot` when it will do.
+- ⚠️ **It expires the next time you build.** `build-app.sh` deletes and re-ad-hoc-signs the bundle, so the grant you just ticked is dropped by the very command this file tells you to run before a look-at-the-app pass — silently, back to `-1719`. And *three* Elliots are routinely on disk at different worktree paths; each is its own TCC subject, so tick the bundle you are actually going to launch.
+
+Until then, anything needing a click, a key or a `screencapture` is **not verifiable from here** —
+a reason to reach for `board_screenshot` and the structural tests, not a reason to assert the change
+works.
 
 Recognise the shape rather than the tool, because it keeps recurring in this project: **a permission
 that silently changes behaviour instead of erroring.** A blank accessibility tree that reads as an
@@ -653,14 +691,17 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
 way** — see the grants table above. `set frontmost` is not gated, so it succeeds and the two lines
 after it may not: `get {position, size}` returns `-1719` and `screencapture` returns *could not create
 image from display* under an identity without the grants. Measured 2026-08-07 from an Elliot-spawned
-agent shell, where **both** were refused; from a terminal that holds them, all three run. Establish
-which you are before reading a failure as a fact about the app.
+agent shell, where **both** were refused. Check `AXIsProcessTrusted()` /
+`CGPreflightScreenCaptureAccess()` before reading a failure here as a fact about the app.
 
 When the grants *are* held, `osascript -e 'tell application "System Events" to click at {x, y}'`
-selects a card and `key code 53` is Escape — but read the ⛔ below first: that call is an
-accessibility **press**, not a mouse click. One more false negative to know: `entire contents` of the
-window can return **empty** while `count of UI elements` returns 6. An empty AX dump is not an empty
-window.
+selects a card — but read the ⛔ below first: that call is an accessibility **press**, not a mouse
+click. ⛔ **Do not assume `key code 53` is Escape just because the click worked.** In the one pass
+measured from a shell holding both grants, clicks landed and **keystrokes did not arrive at all** —
+⌘F-then-type left the field on its placeholder and Escape did not deselect, app frontmost by pid. The
+two channels are separately unreliable; verify the one you depend on. One more false negative to know:
+`entire contents` of the window can return **empty** while `count of UI elements` returns 6. An empty
+AX dump is not an empty window.
 
 ### Run lifecycle
 
