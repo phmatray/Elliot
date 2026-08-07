@@ -1178,6 +1178,16 @@ enum BoardAccessibility {
         "\(repoName), \(count) \(cards(count)) in \(column)"
     }
 
+    /// One day's heading in the Done column, or in the archive.
+    ///
+    /// Here rather than spelled out in `ShipDayHeader` for the reason recorded
+    /// on `groupCaption`: the singular has to be written out by the one
+    /// function that knows how, or a third label on this column joins the two
+    /// that once disagreed about "1 cards".
+    static func shipDayCaption(day: String, count: Int) -> String {
+        "\(day), \(count) \(cards(count))"
+    }
+
     /// One row of a card's move history, read as a sentence.
     ///
     /// The visible row is a tabular line — two columns, an age, an origin — and
