@@ -1,4 +1,4 @@
-// swift-tools-version: 6.3
+// swift-tools-version: 6.9
 //
 // MEASURED, not assumed (#116). This line said 6.1 until 2026-08-07, and nothing had ever built the
 // package on a 6.1 toolchain — the first CI run this repository ever had failed on one in under two
