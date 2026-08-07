@@ -58,6 +58,20 @@ public struct PRStatus: Codable, Sendable, Hashable {
     /// served a six-day-old snapshot without saying so, and a stale board looks
     /// exactly like a current one.
     public static let maximumAge: TimeInterval = 600
+
+    /// How often a row is re-read while nothing about it has changed.
+    ///
+    /// Shorter than `maximumAge`, and the gap between the two is the design.
+    /// They answer different questions: `maximumAge` is a *display* rule — do
+    /// not trust a reading this old — and this is a *fetch* rule — go and look
+    /// again. Keeping the fetch strictly inside the trust window means the
+    /// display rule never fires while Elliot is running, and fires exactly when
+    /// it should: after the app was closed, asleep, or unable to reach `gh`.
+    ///
+    /// Setting them equal, or leaving the fetch out altogether, would park every
+    /// card on "not established" ten minutes after its last change and leave it
+    /// there — a freshness rule with no way to become fresh.
+    public static let refreshInterval: TimeInterval = 300
 }
 
 // MARK: - The three facets
@@ -203,6 +217,25 @@ public extension PRStatus {
             ci: ci, merge: merge, review: review,
             checkedAt: checkedAt, headRefOid: headRefOid, isStale: false,
             sign: Self.sign(ci: ci, merge: merge, review: review))
+    }
+
+    /// Whether this pull request is worth spending a `gh pr view` on.
+    ///
+    /// The cost of the whole feature lives in this one function. `PRWatcher`
+    /// already lists a repository's pull requests every tick; `headRefOid` rides
+    /// along on that listing as a cheap scalar, and comparing it here is what
+    /// turns a per-card call into one that is usually skipped.
+    ///
+    /// A reading is worth taking when there is none, when the commit under
+    /// review has changed, when something was still running and will have
+    /// finished, or when the row is old enough to be drifting toward
+    /// `maximumAge`. Otherwise the facts are about a finished commit and cannot
+    /// have changed.
+    static func needsRefresh(stored: PRStatus?, currentHeadOid: String?, now: Date) -> Bool {
+        guard let stored else { return true }
+        if let currentHeadOid, currentHeadOid != stored.headRefOid { return true }
+        if stored.checks.contains(where: \.isPending) { return true }
+        return now.timeIntervalSince(stored.checkedAt) >= refreshInterval
     }
 
     /// Most blocking first, first match winning.

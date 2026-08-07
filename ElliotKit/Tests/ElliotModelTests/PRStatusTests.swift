@@ -284,6 +284,56 @@ struct PRStatusTests {
         }
     }
 
+    // MARK: - When it is worth spending a call
+
+    @Test("Nothing stored is always worth a reading")
+    func noRowNeedsARefresh() {
+        #expect(PRStatus.needsRefresh(stored: nil, currentHeadOid: head, now: soon))
+    }
+
+    @Test("A finished reading on the same commit is NOT worth a second call")
+    func settledRowIsSkipped() {
+        // This is the skip. A cache that never hits is just a slower poller,
+        // so it is the assertion this feature's cost claim rests on.
+        let stored = status(checks: [run("build", "SUCCESS")])
+        #expect(!PRStatus.needsRefresh(stored: stored, currentHeadOid: head, now: soon))
+    }
+
+    @Test("A moved commit is worth a reading — the stored facts are about another PR")
+    func movedHeadNeedsARefresh() {
+        let stored = status(checks: [run("build", "SUCCESS")])
+        #expect(PRStatus.needsRefresh(stored: stored, currentHeadOid: "9999999", now: soon))
+    }
+
+    @Test("A check still running is worth another look, because it will finish")
+    func pendingCheckNeedsARefresh() {
+        let stored = status(checks: [run("build", nil, status: "IN_PROGRESS")])
+        #expect(PRStatus.needsRefresh(stored: stored, currentHeadOid: head, now: soon))
+    }
+
+    @Test("A row drifting toward the trust window is refreshed before it falls out of it")
+    func agingRowIsRefreshedBeforeItGoesUnknown() {
+        let stored = status(checks: [run("build", "SUCCESS")])
+        let due = stored.checkedAt.addingTimeInterval(PRStatus.refreshInterval)
+        #expect(PRStatus.needsRefresh(stored: stored, currentHeadOid: head, now: due))
+        // …and it is still trusted at that moment, which is the point of the gap:
+        // the card never has to show "not established" while Elliot is running.
+        #expect(!stored.resolved(now: due, currentHeadOid: head).isStale)
+    }
+
+    @Test("The fetch interval is strictly inside the trust window")
+    func refreshHappensBeforeTrustExpires() {
+        // Equal values would let a row expire in the same instant it becomes due,
+        // leaving a visible flicker of "not established" on every card.
+        #expect(PRStatus.refreshInterval < PRStatus.maximumAge)
+    }
+
+    @Test("Not knowing the current head does not by itself force a call")
+    func nilHeadDoesNotForceARefresh() {
+        let stored = status(checks: [run("build", "SUCCESS")])
+        #expect(!PRStatus.needsRefresh(stored: stored, currentHeadOid: nil, now: soon))
+    }
+
     // MARK: - It survives the database round trip
 
     @Test("A status encodes and decodes unchanged")
