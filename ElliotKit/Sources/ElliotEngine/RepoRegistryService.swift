@@ -71,7 +71,7 @@ public struct RepoRegistryService: Sendable {
             return await group.reduce(into: [GHRepoSummary]()) { $0 += $1 }
         }
         return RepoReconciler.rows(
-            github: remotes,
+            listing: GitHubListing(repos: remotes),
             disk: RepoTreeScanner(layout: layout).scan(),
             registered: (try? await store.repos()) ?? [],
             layout: layout)

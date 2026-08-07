@@ -41,12 +41,20 @@ public struct GitHubListing: Sendable, Hashable {
         self.failures = failures
     }
 
-    /// Whether this owner's listing is missing rather than empty.
+    /// This owner's failure, if its listing is missing rather than empty.
     ///
     /// Asked per owner, not per pass: one owner's rate limit must not cost a
     /// second owner its verdicts, which is the same partial-failure rule #131
     /// established for the board.
+    public func failure(for owner: String) -> OwnerListingFailure? {
+        failures.first { $0.owner == owner }
+    }
+
+    /// The same question, when only the answer's existence matters. Defined in
+    /// terms of `failure(for:)` rather than beside it, so "which owners failed"
+    /// is decided once — two lookups written separately are two chances for a
+    /// row to be excused while the banner still names it, or the reverse.
     public func listingFailed(for owner: String) -> Bool {
-        failures.contains { $0.owner == owner }
+        failure(for: owner) != nil
     }
 }

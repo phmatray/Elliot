@@ -294,6 +294,11 @@ public struct RepositoriesView: View {
         // broken. The fill keeps it in this file's "wants a decision" tier
         // rather than the neutral one a fork sits in.
         case .unlisted: "questionmark.circle.fill"
+        // The dashed outline against `.unlisted`'s filled one, because the
+        // difference between the two verdicts is exactly an answer that is
+        // missing rather than negative. Same family so nobody has to learn a
+        // second symbol; a different weight so the two rows never read alike.
+        case .notChecked: "questionmark.circle.dashed"
         case .notCloned, .notRegistered, .missing, .misplaced: "exclamationmark.triangle.fill"
         // The git-state verdicts a probe produces. Grouped, and drawn exactly as
         // the `default:` arm drew them before this file became exhaustive —
@@ -315,6 +320,12 @@ public struct RepositoriesView: View {
         // spends the same tint on "Nothing verified for this run", which is the
         // same claim about a run that this is about a repository.
         case .unlisted: Palette.attention
+        // The same tint, and no sixth accent invented for it: `BrandColorTests`
+        // pins five, and a new one is a design decision rather than a merge. The
+        // distinction between "GitHub said nothing about it" and "GitHub was
+        // never asked" is carried by the word and the symbol, which is where the
+        // test asserts it.
+        case .notChecked: Palette.attention
         case .notCloned, .notRegistered, .missing, .misplaced: Palette.attention
         // As above: the tint the `default:` arm gave them, preserved verbatim.
         case .behind, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable:
@@ -330,6 +341,7 @@ public struct RepositoriesView: View {
         case .missing: "missing"
         case .misplaced: "misplaced"
         case .unlisted: "unlisted"
+        case .notChecked: "not checked"
         case .outOfScope(.fork): "fork"
         case .outOfScope(.archived): "archived"
         case .outOfScope(.otherRoot): "out of scope"
