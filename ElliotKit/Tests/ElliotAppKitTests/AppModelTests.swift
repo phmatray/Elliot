@@ -1,5 +1,6 @@
 import ElliotEngine
 import ElliotModel
+import ElliotProcess
 import ElliotStore
 import Foundation
 import Synchronization
@@ -1010,4 +1011,203 @@ struct AppModelTests {
     private func storage(of blocks: [IssueBlock]) -> UInt {
         blocks.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
     }
+
+    // MARK: - A start that failed has to land somewhere setup can read
+
+    /// A real `AnalysisService`, because the thing under test is what
+    /// `startAnalysis` does with a **thrown** error and the cheapest honest way
+    /// to throw one is to ask the real service for a repository the store has
+    /// never heard of. Nothing is spawned: `start` throws on its first `guard`,
+    /// long before it queues a run, and the launcher below is inert anyway.
+    private func analysisService(store: BoardStore) -> AnalysisService {
+        // `start`'s success path resolves an artifact path through
+        // `StoreLocation` and creates the directory for it, so the home has to
+        // be final before any of these run.
+        _ = TestHome.root
+        let launcher = InertLauncher()
+        return AnalysisService(
+            store: store,
+            launcher: launcher,
+            board: BoardService(store: store, launcher: launcher),
+            gh: GHClient(
+                config: ToolConfig(
+                    claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+                    gitPath: "/usr/bin/false", environment: [:]))
+        )
+    }
+
+    /// A model in the state the Start button is actually pressable from: one
+    /// repository, selected, nothing refusing it.
+    ///
+    /// The selection is not decoration. `startFailure` is scoped to the
+    /// repository the failure was thrown for, and Start passes
+    /// `model.selectedRepoID` — so a test that left the picker empty would be
+    /// exercising a combination the button cannot produce.
+    ///
+    /// The repository is seeded onto the **model** and not into the **store**,
+    /// which is what makes `start` throw `repoNotFound`: the panel offers it,
+    /// the service cannot find it. Callers that want a start to *succeed* save
+    /// it to the store as well.
+    private func analysisModel(store: BoardStore, repo: Repo) -> AppModel {
+        let model = AppModel()
+        model.testOnlySeed(repos: [repo], cards: [])
+        model.selectedRepoID = repo.id
+        model.testOnlyAttachAnalysisService(analysisService(store: store))
+        return model
+    }
+
+    @Test("A start that throws is recorded where the setup footer can read it")
+    func failedStartIsRecorded() async throws {
+        let subject = repo("subject")
+        let model = analysisModel(store: try BoardStore.inMemory(), repo: subject)
+        // Nothing is refusing this repository, so the failure is what the footer
+        // has to say — not the preflight gate, which outranks it.
+        #expect(model.analysisRefusal == nil)
+
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+
+        // The defect, stated: the message went to `analysis?.note`, and
+        // `analysis` is `nil` in setup — a *failed* start creates no session —
+        // so the assignment compiled, read as if it did something, and threw
+        // the message away.
+        #expect(model.analysis == nil)
+        // Exactly what the `catch` already computes, and nothing friendlier:
+        // rewording these errors is its own piece of work.
+        #expect(model.startFailure == AnalysisError.repoNotFound(subject.id).localizedDescription)
+    }
+
+    @Test("Pressing Start again clears the previous failure before the attempt")
+    func startClearsBeforeItAttempts() async throws {
+        let subject = repo("subject")
+        let model = analysisModel(store: try BoardStore.inMemory(), repo: subject)
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.startFailure != nil)
+
+        // Detaching the service makes the second `startAnalysis` return at its
+        // own `guard let analysisService` without attempting anything at all.
+        // So a `nil` afterwards can only have come from a clear placed **above**
+        // that guard — it cannot be a second failure that happened to be absent,
+        // and it cannot be `openAnalysis` clearing it on the way through.
+        model.testOnlyAttachAnalysisService(nil)
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+
+        #expect(model.startFailure == nil)
+    }
+
+    @Test("A start that succeeds leaves no failure standing behind it")
+    func successfulStartClearsTheFailure() async throws {
+        let store = try BoardStore.inMemory()
+        let subject = repo("subject")
+        let model = analysisModel(store: store, repo: subject)
+
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.startFailure != nil)
+
+        // Now the service can find it, so the same press succeeds.
+        try await store.saveRepo(subject)
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+
+        // The review state is never entered with a stale failure standing behind
+        // it — otherwise finishing the analysis would drop the reader back onto
+        // a setup form reporting a failure that has since been superseded.
+        #expect(model.analysis != nil)
+        #expect(model.startFailure == nil)
+    }
+
+    @Test("Opening an earlier analysis clears it — it belongs to a start that did not happen")
+    func openingAnAnalysisClearsTheFailure() async throws {
+        let subject = repo("subject")
+        let model = analysisModel(store: try BoardStore.inMemory(), repo: subject)
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.startFailure != nil)
+
+        // The header's *Earlier analyses* menu. What is on screen afterwards is
+        // an analysis that did run; a sentence about one that did not would be
+        // read as belonging to it.
+        model.openAnalysis(id: UUID())
+
+        #expect(model.startFailure == nil)
+    }
+
+    @Test("A failure belongs to the repository it was thrown for, not to the picker")
+    func failureIsScopedToItsRepository() async throws {
+        // Found by the code-review pass on this branch, and it is #134's defect
+        // one axis over: stored flat, a failure against A went on rendering — in
+        // the refusal accent — beside a *live* Start button for B.
+        let a = repo("a")
+        let b = repo("b")
+        let model = AppModel()
+        model.testOnlySeed(repos: [a, b], cards: [])
+        model.selectedRepoID = a.id
+        model.testOnlyAttachAnalysisService(analysisService(store: try BoardStore.inMemory()))
+
+        await model.startAnalysis(repoID: a.id, angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.startFailure != nil)
+
+        model.selectedRepoID = b.id
+        #expect(model.startFailure == nil, "B's Start is live; A's failure says nothing about it")
+
+        // And back, deliberately: nothing has been attempted for A in between,
+        // so the sentence is exactly as true as it was.
+        model.selectedRepoID = a.id
+        #expect(model.startFailure != nil)
+    }
+
+    @Test("A failure outranks the consequence until it is cleared, whatever the lenses do")
+    func failureSurvivesTogglingLenses() async throws {
+        // The spec's rule, and the one with teeth: toggling a lens changes what
+        // the *next* start would spend, it does not un-fail the last one. The
+        // slot must not go back to advertising a cost after refusing to pay one.
+        let subject = repo("subject")
+        let model = analysisModel(store: try BoardStore.inMemory(), repo: subject)
+        model.analysisAngles = [.bugs]
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+        let failure = try #require(model.startFailure)
+
+        model.analysisAngles = [.bugs, .tests, .docsAndDX]
+
+        #expect(model.startFailure == failure)
+        // Asserted through the value the footer actually renders, so this covers
+        // the precedence and not merely the storage.
+        let shown = AnalysisFooterMessage.setup(
+            angleCount: model.analysisAngles.count,
+            failure: model.startFailure,
+            refusal: model.analysisRefusal)
+        #expect(shown.text == failure)
+        #expect(shown.tone == .refused)
+    }
+
+    @Test("Finishing an analysis does not invent a failure")
+    func closingSetsNoFailure() {
+        // ⚠️ **Bounded, and worth saying which bound.** The only inversion this
+        // catches is `closeAnalysis` *assigning* a failure — the direction the
+        // doc comment forbids. It cannot catch a `closeAnalysis` that *clears*
+        // one, because the state that would need is unreachable: the only route
+        // into an open analysis is `openAnalysis`, which clears on the way in.
+        // `failureSurvivesTogglingLenses` above is where the teeth are.
+        let model = AppModel()
+        model.testOnlySeed(repos: [], cards: [])
+        model.openAnalysis(id: UUID())
+
+        model.closeAnalysis()
+
+        #expect(model.startFailure == nil)
+    }
+}
+
+/// Launches nothing.
+///
+/// `AnalysisService` needs a launcher to be constructed, and these tests are
+/// about `AppModel`'s `catch`, not about what would have been spawned — the one
+/// start that succeeds here queues its run and this drops it on the floor.
+private actor InertLauncher: RunLaunching {
+    func launch(runID: UUID) async {}
+    func cancel(runID: UUID) async {}
 }

@@ -46,7 +46,24 @@ public struct RepositoriesView: View {
         .task(id: model.isReady) {
             // Only on first arrival: rebuilding costs one `gh repo list` per
             // owner, and coming back from a fix already refreshed the list.
-            if model.isReady, model.repoRows.isEmpty { await model.refreshRepoRows() }
+            if model.isReady, model.repoRows.isEmpty {
+                await model.refreshRepoRows()
+            } else if model.isReady {
+                // The figures alone: three grouped statements, no `gh` and no
+                // disk scan, so the guard above would be paying the wrong price
+                // here. `else` rather than a second unconditional call, because
+                // `refreshRepoRows()` reads the tallies itself — running both
+                // is six statements where three answer.
+                //
+                // ⚠️ This is *not* "on every arrival", which is what this
+                // comment claimed until code review measured it. `.task` runs
+                // when the view is created and is cancelled when it goes away,
+                // so re-focusing a Repositories window that stayed open re-runs
+                // nothing. What bounds the staleness is the header's **Refresh**,
+                // which goes through `reloadRepoRows()` and reassigns all three
+                // values together.
+                await model.refreshRepoTallies()
+            }
         }
     }
 
@@ -287,6 +304,33 @@ public struct RepositoriesView: View {
                         .truncationMode(.middle)
                         .textSelection(.enabled)
                 }
+                // Only for a row Elliot drives. `board` is nil for every other,
+                // so nothing is drawn at all rather than a zero — blank never
+                // means zero, because a row that shows nothing is a row with no
+                // element here (#209, criterion 4).
+                if let board = row.board {
+                    Fact(text: Self.boardLine(board), tint: Palette.quiet, small: true)
+                        .help(board.spendToday.sentence())
+                    if let reason = board.refreshFailure {
+                        // The banner's own symbol and tint, because it is the
+                        // same fact — and no Retry: this page's header already
+                        // carries Refresh, and a second control re-running the
+                        // same failing call is #131's rejected retry restated.
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 9))
+                                .foregroundStyle(Palette.attention)
+                            Text(Self.refreshFailureLine(reason))
+                                .font(Type.factSmall)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .help(Self.refreshFailureLine(reason))
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(Self.refreshFailureLine(reason))
+                    }
+                }
             }
 
             Spacer(minLength: 8)
@@ -388,6 +432,48 @@ public struct RepositoriesView: View {
         }
     }
 
+    /// What one repository's board holds, as one line.
+    ///
+    /// `nonisolated static` for the reason `countSentence` and `verdict` are:
+    /// what the page *says* is assertable, and `ElliotAppKitTests` reads exactly
+    /// this string — which is what makes the on-screen check an
+    /// accessibility-tree diff rather than a squint.
+    ///
+    /// **`no cards` rather than `0 cards`.** Criterion 3 asks the row to say so,
+    /// and a zero is what a reader skims past. It is only ever reached by a row
+    /// entitled to figures at all: a row Elliot does not drive has `board == nil`
+    /// and draws no element, which is criterion 4 and is decided in
+    /// `RepoBoardDigest`, not here.
+    ///
+    /// Spend is appended only when there is some, on the convention
+    /// `SyncSummary.sentence` already holds — a clean pass does not advertise a
+    /// zero. It is written as a plain amount rather than through
+    /// `Spend.sentence`, whose "at least; N of M runs never reported a cost"
+    /// qualifier is a paragraph on a row; the row hands that sentence to
+    /// `.help(…)` instead, so the unknown-cost caveat is one hover away rather
+    /// than lost.
+    nonisolated static func boardLine(_ tally: RepoBoardTally, locale: Locale = .current) -> String {
+        var clauses: [String] = [
+            tally.cards == 0 ? "no cards" : "\(tally.cards) card\(tally.cards == 1 ? "" : "s")"
+        ]
+        if tally.runsInFlight > 0 { clauses.append("\(tally.runsInFlight) running") }
+        if tally.spendToday.totalUSD > 0 {
+            clauses.append("\(MoneyFormat.usd(tally.spendToday.totalUSD, locale: locale)) today")
+        }
+        return clauses.joined(separator: " · ")
+    }
+
+    /// Why this repository's cards may be stale, in `gh`'s own words.
+    ///
+    /// The reason is quoted rather than paraphrased, and the row keeps its
+    /// verdict beside it: `ok` and *"could not be refreshed"* answer two
+    /// different questions — where the clone is, and whether what is on its
+    /// board is current — and a row that dropped either would be answering the
+    /// wrong one.
+    nonisolated static func refreshFailureLine(_ reason: String) -> String {
+        "could not be refreshed: \(reason)"
+    }
+
     nonisolated static func verdict(_ issue: RepoIssue) -> String {
         switch issue {
         case .ok: "ok"
@@ -421,7 +507,10 @@ public struct RepositoriesView: View {
     /// one for everything else. Rows are never dropped for having an owner we do
     /// not manage — silence is how a repository disappears from a sweep.
     private var sections: [OwnerSection] {
-        let grouped = Dictionary(grouping: model.repoRows) { row in
+        // `repoBoardRows`, not `repoRows`: the figures are attached by
+        // `RepoBoardDigest` on read, so the join with the session's refresh
+        // failures happens here rather than a refresh behind the board's banner.
+        let grouped = Dictionary(grouping: model.repoBoardRows) { row in
             row.nameWithOwner.flatMap { $0.split(separator: "/").first.map(String.init) } ?? ""
         }
         var sections = model.layout.owners.compactMap { owner in

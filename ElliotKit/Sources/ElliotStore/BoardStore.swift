@@ -305,6 +305,72 @@ public final class BoardStore: Sendable {
         }
     }
 
+    /// What is on each repository's board, as of one pass.
+    ///
+    /// Three grouped reads and not one query per repository, for the reason
+    /// `spendByRepo` gives: on this portfolio that is the difference between a
+    /// page load and three hundred. The spend half *is* `spendByRepo`, reused
+    /// rather than restated.
+    ///
+    /// A repository with nothing at all — no cards, no runs, nothing spent — is
+    /// **absent** from the answer, the way a silent repository is absent from
+    /// `spendByRepo`. That absence is deliberate and is the seam
+    /// `RepoBoardDigest` turns into `.empty`: a `LEFT JOIN` over every
+    /// registration here would answer criterion 3 in SQL, where no test of the
+    /// entitlement rule could reach it.
+    ///
+    /// `since` is a parameter rather than a clock inside the store, matching
+    /// `spend(since:)`, and it applies to **spend only**. Cards and runs in
+    /// flight are the board's state now, not a window over it.
+    ///
+    /// The decode happens inside each `read` block, like every other aggregate
+    /// here: `Row` is not `Sendable`, so handing rows out silently resolves
+    /// `read` to the blocking overload — see the note on `spendByKind`.
+    public func repoBoardTallies(since: Date) async throws -> [UUID: RepoBoardTally] {
+        let cards = try await reader.read { db in
+            try Row.fetchAll(
+                db,
+                Card.select(Card.Columns.repoID, count(Card.Columns.id).forKey("n"))
+                    .group(Card.Columns.repoID)
+            )
+            .reduce(into: [UUID: Int]()) { counts, row in
+                guard let id: UUID = row["repoID"] else { return }
+                counts[id] = row["n"] ?? 0
+            }
+        }
+        // `Self.activeStates` rather than a state list written out here: a
+        // second copy of "in flight" is a second answer to it, and this one
+        // would drift from the one `nonTerminalRuns()` and `activeRuns` share.
+        let inFlight = try await reader.read { db in
+            try Row.fetchAll(
+                db,
+                SkillRun
+                    .filter(Self.activeStates.contains(SkillRun.Columns.state))
+                    .select(SkillRun.Columns.repoID, count(SkillRun.Columns.id).forKey("n"))
+                    .group(SkillRun.Columns.repoID)
+            )
+            .reduce(into: [UUID: Int]()) { counts, row in
+                guard let id: UUID = row["repoID"] else { return }
+                counts[id] = row["n"] ?? 0
+            }
+        }
+        let spend = Dictionary(
+            try await spendByRepo(since: since).map { ($0.repoID, $0.spend) },
+            uniquingKeysWith: { first, _ in first })
+
+        // The union of the three, not the card count filtered by the others: a
+        // repository whose cards were forgotten still spent what it spent, and
+        // a run can outlive the card that started it.
+        var tallies: [UUID: RepoBoardTally] = [:]
+        for id in Set(cards.keys).union(inFlight.keys).union(spend.keys) {
+            tallies[id] = RepoBoardTally(
+                cards: cards[id] ?? 0,
+                runsInFlight: inFlight[id] ?? 0,
+                spendToday: spend[id] ?? .nothing)
+        }
+        return tallies
+    }
+
     /// The two halves of the settings pair, written once.
     ///
     /// `layout` had its own copy of both, and the scheduler limits would have

@@ -7,7 +7,12 @@ import Foundation
 /// — must not read the same as a run that cost nothing. Collapsing the two is
 /// exactly the bug `workingTreeChanged` avoids by distinguishing checked-and-
 /// clean from never-checked, and here it would quietly understate a bill.
-public struct Spend: Sendable, Equatable {
+/// `Codable, Sendable, Hashable` since #209, which put a `Spend` inside a
+/// `RepoBoardTally` and so inside a `RepoRow`: the row is `Hashable` and the
+/// tally follows this codebase's convention for a new model type, and a
+/// conformance is only as wide as its narrowest member. Three stored values,
+/// all of them `Double` or `Int`, so both are synthesised.
+public struct Spend: Codable, Sendable, Hashable {
     public var totalUSD: Double
     /// Every run in the period, whether or not its cost is known.
     public var runs: Int
