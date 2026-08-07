@@ -111,11 +111,27 @@ public struct GHMergeStatus: Codable, Sendable, Hashable {
         public var conclusion: String?
         public var state: String?
 
-        public init(name: String? = nil, context: String? = nil, conclusion: String? = nil, state: String? = nil) {
+        /// A CheckRun's lifecycle — `QUEUED`, `IN_PROGRESS`, `COMPLETED`.
+        ///
+        /// Distinct from `state`, which is what a *legacy StatusContext* carries;
+        /// the two shapes arrive in the same array and only one of the two fields
+        /// is ever populated. Requesting `statusCheckRollup` already returns this
+        /// — it was simply never decoded, which is why nothing could tell a check
+        /// still running from one that had passed.
+        ///
+        /// Appended last, here and in the memberwise `init`, so every existing
+        /// call site keeps compiling unchanged.
+        public var status: String?
+
+        public init(
+            name: String? = nil, context: String? = nil, conclusion: String? = nil,
+            state: String? = nil, status: String? = nil
+        ) {
             self.name = name
             self.context = context
             self.conclusion = conclusion
             self.state = state
+            self.status = status
         }
 
         /// `gh` reports check runs under `name` and legacy statuses under
@@ -126,6 +142,20 @@ public struct GHMergeStatus: Codable, Sendable, Hashable {
             let verdict = (conclusion ?? state ?? "").uppercased()
             return ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"]
                 .contains(verdict)
+        }
+
+        /// Still to come. A check that has not finished cannot be counted green,
+        /// and a check that says *nothing at all* is counted as pending too —
+        /// erring toward "not yet" rather than toward a pass nobody established.
+        public var isPending: Bool {
+            if let status, !status.isEmpty {
+                return status.uppercased() != "COMPLETED"
+            }
+            if let state, !state.isEmpty {
+                return ["PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"]
+                    .contains(state.uppercased())
+            }
+            return conclusion == nil
         }
     }
 
