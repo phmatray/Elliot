@@ -428,9 +428,15 @@ public struct BoardView: View {
             // Where the caret's flat side goes. The panel's anchor is also the
             // whole "is there a caret" condition — it exists exactly while the
             // panel is built, so there is no second copy of that question.
-            .anchorPreference(key: CaretAnchorKey.self, value: .bounds) {
-                CaretAnchors(panel: $0)
-            }
+            //
+            // Through the helper like the other two. Safe as a bare modifier
+            // *today*, because nothing inside `DetailPanelView` writes this key
+            // — but that is a fact about the panel's current contents, not about
+            // this line, and the day it gains a child that reports a caret
+            // anchor the child's value would be replaced exactly as
+            // `ColumnView.list` replaced the card's. #159 was one site making
+            // that bet and losing it.
+            .reportsCaretAnchor { CaretAnchors(panel: $0) }
             // Load-bearing. Later siblings paint over earlier ones, and in the
             // flipped case the panel is placed *before* Done — whose
             // background, clip and border would paint over the caret notched
@@ -1052,7 +1058,19 @@ struct ColumnView: View {
         // nothing to say about a caret that is not theirs, and four extra
         // rectangles arriving at one key is four chances to answer for the wrong
         // column.
-        .anchorPreference(key: CaretAnchorKey.self, value: .bounds) { bounds in
+        //
+        // ⚠️ **`reportsCaretAnchor`, never a bare `.anchorPreference`, and that
+        // is the whole of #159.** This view is an *ancestor* of the `CardView`s,
+        // and the modifier applied directly to an ancestor does not merge with
+        // what its subtree contributed through `reduce` — it **replaces** it.
+        // The selected card's `CaretAnchors(card:)` reached here and was
+        // overwritten one level below the overlay, so `card` was permanently
+        // `nil`, `PanelLayout.isDetached` answered `true` on its first `guard`
+        // for ever, and the tether drew at opacity 0 while the caret sat faint
+        // at `panel.midY`. A truthful rendering of a false input, which is why
+        // the gutter looked empty and every number `PanelLayoutTests` pins was
+        // right the whole time.
+        .reportsCaretAnchor { bounds in
             model.selectedCard?.column == column ? CaretAnchors(list: bounds) : CaretAnchors()
         }
     }

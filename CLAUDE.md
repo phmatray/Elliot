@@ -388,12 +388,95 @@ the exception and is measured, not computed — a card's Y inside a `LazyVStack`
 of layout — so it comes from `.anchorPreference(.bounds)` resolved in a single overlay, which puts
 card, list and panel in one coordinate space by construction.
 
+**Every writer of `CaretAnchorKey` must be a *sibling* of the others — #159.** `reduce` merges
+sibling subtrees and is the whole defence for the three-anchor design; it is **no defence one level
+up**, because `.anchorPreference` applied to a view that is an *ancestor* of another writer
+**replaces** that writer's value outright and `reduce` is never called for the pair. `ColumnView.list`
+was that ancestor: it wrote `list` on the `ScrollView` holding the cards, so the selected card's
+rectangle was discarded one level below the overlay. It reports through a `.background` now — a
+separate subtree, so the card's contribution is never in a position to be replaced.
+
+What that cost is the lesson worth keeping, and it is not "test the arithmetic": **the arithmetic
+was pure, extracted, and tested, and the decoration still never appeared.** With `card` nil,
+`isDetached` returns true on its first `guard`, so the tether drew at opacity 0 and the caret at 0.35
+against `panel.midY` — a *truthful* rendering of a false input. Nothing was wrong with any function
+`PanelLayoutTests` pins; they were being fed `nil`. The step between the three writers and the one
+reader had no test and no measurement, which is precisely the gap `PanelLayout`'s own extraction
+created and then hid: everything either side of it was green, so intuition had nothing to push
+against.
+
+`CaretAnchorTests` closes it, and its shape is the transferable part. Five tests drive a
+board-shaped hierarchy through a real layout pass (`ImageRenderer` — no window, no store, no running
+app) and assert the anchors arrive; a sixth **reads `BoardView.swift`** the way
+`DrainDuplicationTests` reads its sources. That last one is not belt-and-braces: reverting the fix
+leaves all five behavioural tests green, because they build a *miniature* and so prove the rule
+rather than the board. Verified by actually reverting it. **When a test builds its own model of the
+code, ask what it would say if the code changed underneath it** — and if the honest answer is
+"nothing", the shape needs pinning where the shape lives.
+
 Inside, the GitHub issue body is parsed by `IssueMarkdownParser` (`ElliotModel`, no dependencies,
 total — it never drops a line) into blocks that each get their own view, and a run's log is folded by
 `RunLog.rows` back into the tree it was flattened from: a `tool_result` attaches to its `tool_use`
 **by id, never by arrival order**. The verdict block is the app's central invariant made visible —
 what the agent *said* in demoted italic (`Type.hearsay`), what `gh` *established* in the fact face,
 never the same tier.
+
+##### Watching the caret's anchors arrive
+
+When the caret or the tether is wrong, the question is almost never the arithmetic — that is
+`PanelLayout`'s and it is pinned by `PanelLayoutTests`. It is which of the three anchors reached the
+overlay. Make that observable by writing the three flags from inside the `.overlayPreferenceValue`
+closure in `BoardView.board`:
+
+```swift
+.overlayPreferenceValue(CaretAnchorKey.self) { anchors in
+    let _ = {
+        let line = "card:\(anchors.card != nil) list:\(anchors.list != nil) panel:\(anchors.panel != nil)\n"
+        let url = URL(fileURLWithPath: "/tmp/caret-probe.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: url)
+        }
+    }()
+    CaretRail(anchors: anchors, flipped: isPanelFlipped)
+}
+```
+
+Inside the `ViewBuilder`, not in `.onAppear` — the latter fires once, and what you want is a reading
+per re-evaluation. **To a file, not to `Logger`**: `.debug` is not persisted at all, and on
+2026-08-07 nothing from `subsystem == "dev.phmatray.elliot"` reached `log show` at *any* level, so a
+diagnosis planned around that command silently produces no output rather than an error.
+
+Then drive it against a scratch store (see the seeding recipe above) and read the file after
+selecting a card in Backlog, in Done, and with the analysis panel open.
+
+**Prefer `board_screenshot` (#155) when it is pointed at the right app** — it renders a named window
+from Elliot's own hierarchy, so none of the aiming problems below arise. The catch is which Elliot
+answers: the MCP helper finds its socket through `ELLIOT_HOME`, so a helper registered against the
+default home talks to *your everyday board*, not the scratch instance you just launched. For a
+look-at-my-branch pass that is the wrong target, and it fails by returning a perfectly good
+screenshot of the wrong app. Either register a helper for the scratch home or capture by pid, below.
+
+⚠️ **Three Elliots are routinely running** — this worktree's, another worktree's, and the main
+checkout's. `screencapture -R <region>` captures a *screen region*, so it returns whichever window is
+frontmost there: it can hand you a different Elliot's board, showing "No repository yet", while your
+seeded one renders perfectly. **A region is not a window** — the "target by `unix id`, never by name"
+rule applies to screenshots too. Activate the pid first, then capture:
+
+```bash
+MINE=$(ps -eo pid,command | grep '<your-worktree>/dist/Elliot.app/Contents/MacOS/Elliot' | grep -v grep | awk '{print $1}')
+osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $MINE) to true"
+osascript -e "tell application \"System Events\" to tell (first process whose unix id is $MINE) to get {position, size} of window 1"
+/usr/sbin/screencapture -x -R <x>,<y>,<w>,<h> /tmp/board.png
+```
+
+The shell holds Accessibility even when the `cua-driver` daemon does not, so
+`osascript -e 'tell application "System Events" to click at {x, y}'` selects a card and
+`key code 53` is Escape. One more false negative to know: `entire contents` of the window can return
+**empty** while `count of UI elements` returns 6. An empty AX dump is not an empty window.
 
 ### Run lifecycle
 

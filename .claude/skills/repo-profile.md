@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1161 tests in 134 suites**, measured on
-  `feat/155-board-screenshot` on 2026-08-07 after merging `main` at `533158b`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1167 tests in 135 suites**, five-sample run on
+  `fix/159-caret-tether-not-drawn` on 2026-08-07 after merging `main` at `c9b8531`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -51,7 +51,17 @@
     your own untouched run and compare against *that*, never against this line. Sixth in #155
     (1061 → 1098, 124 → 129), taken from a five-sample run rather than one — and then **again inside
     the same pull request** after merging `main`, which is the seventh correction and the clearest
-    demonstration yet that this line is a date-stamp, not a fact.
+    demonstration yet that this line is a date-stamp, not a fact. Eighth and ninth in #159
+    (1076 → 1122 → 1125), then a **tenth** at 1167 in 135 when this branch merged #155's own landing.
+    - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
+      to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
+      authors each measured honestly, each counted from the last number they could see, and the
+      count only means anything in landing order. If a third branch is open while you read this,
+      **your number is already wrong** — take the run, not the line.
+    - #159's split is still the useful detail: its untouched branch already ran 1116 before a line of
+      its own tests existed, so 40 of its 46 were unrecorded drift and only 6 were the branch's own.
+      A correction here is rarely evidence that the previous author miscounted; it is mostly the
+      interval since they looked.
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
