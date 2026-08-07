@@ -48,7 +48,7 @@ public struct RepositoriesView: View {
             // owner, and coming back from a fix already refreshed the list.
             if model.isReady, model.repoRows.isEmpty { await model.refreshRepoRows() }
         }
-        .forgetConfirmation(model: model)
+        .forgetConfirmation(model: model, on: .repositories)
     }
 
     // MARK: - Header

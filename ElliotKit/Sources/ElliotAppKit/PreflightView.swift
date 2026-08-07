@@ -200,7 +200,7 @@ public struct PreflightView: View {
         }
         .frame(maxWidth: .infinity)
         .navigationTitle("Preflight")
-        .forgetConfirmation(model: model)
+        .forgetConfirmation(model: model, on: .preflight)
     }
 
     /// `static` for the same reason `RepositoriesView.icon` is: what a screen

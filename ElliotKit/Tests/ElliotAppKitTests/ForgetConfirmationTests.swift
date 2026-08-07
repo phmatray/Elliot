@@ -62,12 +62,34 @@ struct ForgetConfirmationTests {
     func confirmDeletes() async throws {
         let (model, store, repo) = try await board()
         await model.requestForget(repoID: repo.id, origin: .preflight)
+        let request = try #require(model.forgetRequest)
 
-        await model.confirmForget()
+        await model.confirmForget(request)
 
         #expect(model.forgetRequest == nil)
         #expect(try await store.repo(id: repo.id) == nil)
         #expect(try await store.forgetImpact(repoID: repo.id).isEmpty)
+    }
+
+    /// The dialog's own dismissal clears `forgetRequest` **before** the Forget
+    /// button's `Task` body runs, so this is the real sequence on screen, not a
+    /// contrived one.
+    ///
+    /// It is the whole reason `confirmForget` takes the request. A version
+    /// reading the property back returns at its guard here: dialog closed,
+    /// status bar silent, repository still registered — a gate that looks like
+    /// it worked. Code review caught it; nothing in this suite did, because
+    /// every other test confirms with the state still intact.
+    @Test("Confirming still deletes when the dismissal has already cleared the prompt")
+    func confirmSurvivesTheDismissalRace() async throws {
+        let (model, store, repo) = try await board()
+        await model.requestForget(repoID: repo.id, origin: .preflight)
+        let request = try #require(model.forgetRequest)
+
+        model.cancelForget()  // what SwiftUI's `isPresented` setter does, synchronously
+        await model.confirmForget(request)
+
+        #expect(try await store.repo(id: repo.id) == nil)
     }
 
     @Test("The Repositories page's Forget fix opens the prompt instead of deleting")
@@ -108,6 +130,47 @@ struct ForgetConfirmationTests {
         // And it still says the safe part, which was the only true thing the
         // old text said.
         #expect(preflight.contains("clone on disk is untouched"))
+    }
+
+    /// A failed delete must not be reported as a completed one.
+    ///
+    /// `try? await store.deleteRepo(…)` followed by an unconditional "Forgot X."
+    /// is the shape `apply(_ fix:)`'s own doc comment warns about — a fix that
+    /// failed quietly reading exactly like one that worked — and it was in the
+    /// first draft of this method.
+    @Test("A forget that could not run says so instead of claiming success")
+    func aFailedForgetIsNotReportedAsDone() async throws {
+        // A read-only store is the reachable failure — `deleteRepo` throws
+        // `StoreError.readOnly` — and it needs a file, following the pattern in
+        // `BoardStoreTests.readOnlyStore`.
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("elliot-forget-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dbURL = dir.appendingPathComponent("elliot.sqlite")
+
+        var repo = Repo(path: "/tmp/Elliot", nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        repo.isEnabled = true
+        let writable = try BoardStore.open(at: dbURL)
+        try await writable.saveRepo(repo)
+        try await writable.saveCard(Card(
+            repoID: repo.id, title: "A card", column: .backlog, orderIndex: 0,
+            columnEnteredAt: epoch, createdAt: epoch, updatedAt: epoch))
+
+        let model = AppModel()
+        model.testOnlySeedStore(try BoardStore.openReadOnly(at: dbURL))
+        model.testOnlySeed(repos: [repo], cards: [])
+
+        // Counting still works — it is a read — so the dialog is raised as usual
+        // and only the delete behind it fails.
+        await model.requestForget(repoID: repo.id, origin: .preflight)
+        let request = try #require(model.forgetRequest)
+        await model.confirmForget(request)
+
+        #expect(!model.status.contains("Forgot Elliot."))
+        #expect(model.status.contains("Could not forget Elliot"))
+        // And the registration is still there, which is what the sentence claims.
+        #expect(try await writable.repo(id: repo.id) != nil)
     }
 
     /// Both screens must *present* the dialog, not merely ask for it.

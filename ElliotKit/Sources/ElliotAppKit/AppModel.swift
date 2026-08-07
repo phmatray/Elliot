@@ -1570,15 +1570,42 @@ public final class AppModel {
         forgetRequest = nil
     }
 
-    public func confirmForget() async {
-        guard let request = forgetRequest else { return }
+    /// Takes the request rather than reading `forgetRequest`, and that is
+    /// load-bearing, not a style choice.
+    ///
+    /// SwiftUI clears `isPresented` **synchronously** as it dismisses the
+    /// dialog, and the Forget button's action can only be `Task { … }` because
+    /// this is `async`. So the modifier's `set:` — which treats a dismissal as a
+    /// cancel — always runs first, and a no-argument version reading
+    /// `forgetRequest` would find it nil and return at its guard: the dialog
+    /// would close, the status bar would stay quiet, and nothing would be
+    /// deleted. The button would look like it worked. Handing the value in is
+    /// the same fix as `presenting:` one layer up (#9).
+    public func confirmForget(_ request: ForgetRequest) async {
+        // Idempotent: the dismissal usually cleared it already, but a
+        // programmatic confirm must not leave a stale prompt behind.
         forgetRequest = nil
         switch request.origin {
         case .preflight:
-            try? await store?.deleteRepo(id: request.id)
-            status = "Forgot \(request.displayName). The clone on disk is untouched."
+            guard let store else {
+                status = "Could not forget \(request.displayName): the board is not open yet."
+                return
+            }
+            do {
+                try await store.deleteRepo(id: request.id)
+                status = "Forgot \(request.displayName). The clone on disk is untouched."
+            } catch {
+                // `try?` here would report a completed forget over a registration
+                // that survived — the failure mode `apply(_:)` exists to avoid.
+                status = "Could not forget \(request.displayName): "
+                    + error.localizedDescription
+            }
         case .repositories:
-            guard let registry else { return }
+            guard let registry else {
+                status = "Could not forget \(request.displayName): the repository "
+                    + "registry is not ready."
+                return
+            }
             let outcome = await registry.apply(.forget(repoID: request.id), layout: layout)
             status = outcome.detail
             await refreshRepoRows()
