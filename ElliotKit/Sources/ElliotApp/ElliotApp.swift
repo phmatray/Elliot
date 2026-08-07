@@ -101,6 +101,14 @@ struct ElliotApp: App {
         }
         .defaultSize(width: 820, height: 720)
 
+        // Everything the board's Done horizon is not drawing. Wrapped, like
+        // Repositories and Operations: it carries a `.navigationTitle` and a
+        // `.searchable`, and both want the container.
+        Window("Archive", id: "archive") {
+            NavigationStack { ArchiveView() }.environment(model)
+        }
+        .defaultSize(width: 620, height: 720)
+
         // A window rather than the fixed 580x580 sheet it was. That sheet had
         // already grown an internal ScrollView because at three or four
         // acceptance criteria — the documented normal path — it pushed its own
@@ -230,6 +238,7 @@ private struct OpenWindowButtons: View {
         Button("Analysis…") { openWindow(id: "analysis") }
         Button("Repositories") { openWindow(id: "repositories") }
         Button("Preflight") { openWindow(id: "preflight") }
+        Button("Archive") { openWindow(id: "archive") }
     }
 }
 

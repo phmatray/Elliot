@@ -1476,6 +1476,32 @@ public final class AppModel {
         return (try? await store.analyses(repoID: selectedRepoID, limit: 20)) ?? []
     }
 
+    /// One page of the finished history, and how many rows the same filter
+    /// matches overall.
+    ///
+    /// Both halves come back together because the archive cannot use one
+    /// without the other: the page is what it draws, the total is the only
+    /// thing that can say whether to offer another. Read in one call so they
+    /// answer the same filter — asking separately is how a "Load more" that
+    /// loads nothing gets built.
+    ///
+    /// Honours `selectedRepoID`, like every other read on this model, so the
+    /// picker means the same thing in the archive as on the board.
+    public func archivePage(
+        search: String,
+        limit: Int,
+        offset: Int
+    ) async -> (cards: [Card], total: Int) {
+        guard let store else { return ([], 0) }
+        let term = search.isEmpty ? nil : search
+        let cards =
+            (try? await store.doneCards(
+                repoID: selectedRepoID, search: term, limit: limit, offset: offset
+            )) ?? []
+        let total = (try? await store.doneCardCount(repoID: selectedRepoID, search: term)) ?? 0
+        return (cards, total)
+    }
+
     public func updateProposal(_ proposal: StoryProposal) async {
         try? await analysisService?.updateProposal(proposal)
     }
