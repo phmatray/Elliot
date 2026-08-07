@@ -27,7 +27,16 @@ import Foundation
 /// and report a repository nobody checked as unchecked-for-the-wrong-reason —
 /// a statement about the user's checkout, derived from the age of their app
 /// bundle. Absent has to keep meaning one thing, so the pairing is refused.
-public let elliotProtocolVersion = 4
+///
+/// **5** — the wire carries a picture of a window: `screenshot` and
+/// `ScreenshotDTO`. Purely additive to the app, and refused anyway in the one
+/// direction that matters. A 5 helper sending `.screenshot` to a 4 app sends a
+/// case that app has no branch for, and a request that cannot be decoded fails
+/// somewhere inside the socket rather than at the handshake — which is the
+/// difference between "your helper is older than your Elliot" and an agent
+/// concluding the board is broken. The other direction is harmless and is
+/// refused for the same reason every other pairing is: one number, one meaning.
+public let elliotProtocolVersion = 5
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
@@ -104,6 +113,17 @@ public enum ElliotRequest: Codable, Sendable, Equatable {
     case listProposals(analysisID: UUID?, repo: String?, status: String?, limit: Int)
     case acceptProposals(ids: [UUID])
     case rejectProposals(ids: [UUID])
+    /// A picture of one of Elliot's own windows, so an agent can check a change
+    /// that moved something on screen.
+    ///
+    /// A read: it changes nothing, and it deliberately does **not** launch the
+    /// app. Photographing a board that was not running answers a question about
+    /// a live board with a picture of a fresh one.
+    ///
+    /// `window` is a scene id rather than a title, because titles are localised
+    /// and change with the selection; `maxInlineBytes` is a base64 budget, and
+    /// non-positive means "you decide".
+    case screenshot(window: String, maxInlineBytes: Int)
 
     /// The three parts of a user story, separately — so a skill generating
     /// stories from a repository can fill them in rather than hand over prose
@@ -192,6 +212,85 @@ public enum ElliotPayload: Codable, Sendable {
     case analysisStarted(AnalysisDTO)
     case proposals([ProposalDTO])
     case proposalsDecided(DecisionDTO)
+    case screenshot(ScreenshotDTO)
+}
+
+// MARK: - Screenshots
+
+/// One window, photographed, and an honest account of what the photograph does
+/// not contain.
+///
+/// The capture renders Elliot's own view hierarchy in-process, so it needs no
+/// Screen Recording grant and works while the window is off-screen and the app
+/// is in the background — measured, and the reason the tool exists at all. The
+/// price is that anything drawn in a *different* window (an attached sheet, a
+/// popover, a menu) and anything belonging to another app is simply absent.
+///
+/// `notIncluded` is therefore load-bearing rather than decorative. "The popover
+/// is not in the picture" and "the popover did not open" must not look alike;
+/// this repository has written the second down nine times while the first was
+/// true. Anything the capture knows it left out is named here, at capture time,
+/// because that is the only moment it is knowable.
+public struct ScreenshotDTO: Codable, Sendable, Hashable {
+    /// The scene id captured — `board`, `preflight`, … — not the window's title.
+    public var window: String
+    /// The window's actual title, which is what a human recognises.
+    public var title: String
+    /// Points, not pixels: `scale` says how many pixels each of these bought.
+    public var width: Int
+    public var height: Int
+    /// The backing scale actually rendered at. Reported rather than assumed to
+    /// be 2 — a second display can differ, and a picture whose dimensions nobody
+    /// can explain is a picture nobody trusts.
+    public var scale: Double
+    /// The full-resolution PNG on disk. Always written, always returned, even
+    /// when the inline copy was dropped — the lossless sink, exactly as a run's
+    /// log file is the lossless sink behind a bounded live stream.
+    public var pngPath: String
+    /// The inline image, base64. `nil` when it could not be made to fit the
+    /// budget; the reply then says why rather than shipping a blank picture.
+    public var pngBase64: String?
+    /// Size of the inline copy after any downscaling, in encoded bytes.
+    public var byteCount: Int
+    /// The scale it *was* drawn at, set only when the budget bit. Absent means
+    /// the picture is full-size, which is a different statement from "small".
+    public var downscaledFrom: Double?
+    /// Whether the window was on screen. **`false` is not a failure**: the whole
+    /// point is that a background window still photographs at its designed size.
+    public var isVisible: Bool
+    public var isKeyWindow: Bool
+    /// What this picture cannot show, in words — `"attached sheet: New story"`,
+    /// `"2 child windows"`. Empty means nothing was left out, and is the only
+    /// reading of empty.
+    public var notIncluded: [String]
+
+    public init(
+        window: String,
+        title: String,
+        width: Int,
+        height: Int,
+        scale: Double,
+        pngPath: String,
+        pngBase64: String?,
+        byteCount: Int,
+        downscaledFrom: Double? = nil,
+        isVisible: Bool,
+        isKeyWindow: Bool,
+        notIncluded: [String] = []
+    ) {
+        self.window = window
+        self.title = title
+        self.width = width
+        self.height = height
+        self.scale = scale
+        self.pngPath = pngPath
+        self.pngBase64 = pngBase64
+        self.byteCount = byteCount
+        self.downscaledFrom = downscaledFrom
+        self.isVisible = isVisible
+        self.isKeyWindow = isKeyWindow
+        self.notIncluded = notIncluded
+    }
 }
 
 // MARK: - Limits

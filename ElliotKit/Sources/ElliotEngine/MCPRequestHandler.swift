@@ -71,6 +71,16 @@ public struct MCPRequestHandler: Sendable {
                 return try await decide(ids: ids, accept: true)
             case .rejectProposals(let ids):
                 return try await decide(ids: ids, accept: false)
+            case .screenshot:
+                // Placeholder from the wire commit of #155; the capturer is
+                // injected in the next one. Refuses rather than answering,
+                // because a handler with no way to reach a window must not
+                // report an empty capture as a capture.
+                return .failure(
+                    code: .internalError,
+                    message: "Screenshots are not wired into this build.",
+                    hint: nil
+                )
             }
         } catch let error as BoardError {
             switch error {

@@ -15,9 +15,13 @@ struct AnalysisWireTests {
     /// sentinel never ran". That is a claim about the user's repository,
     /// produced by the age of their app bundle, and refusing the pairing is
     /// what the handshake is for.
-    @Test("The protocol version moved, so an old helper fails loudly")
+    /// Pinned to 4 until #155 added `screenshot` and moved it to 5. The number
+    /// now lives in `ScreenshotWireTests.versionBumped`; what this suite still
+    /// asserts is the floor its own cases need — analysis reached the wire at 4,
+    /// so anything below that cannot carry them.
+    @Test("The protocol version is at least the one that introduced analysis")
     func versionBumped() {
-        #expect(elliotProtocolVersion == 4)
+        #expect(elliotProtocolVersion >= 4)
     }
 
     @Test("Every new request round-trips through the wire codec", arguments: [

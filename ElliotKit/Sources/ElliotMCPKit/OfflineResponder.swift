@@ -79,6 +79,19 @@ struct OfflineResponder: Sendable {
                 return Self.readOnly("Accepting a proposal")
             case .rejectProposals:
                 return Self.readOnly("Rejecting a proposal")
+            case .screenshot:
+                // `app_unavailable`, not `read_only`. Nothing is being written;
+                // there is simply no window. Saying "read only" would send an
+                // agent looking for a permission problem that does not exist,
+                // and `read_only` is the code that means "come back when Elliot
+                // is up *and* stop trying to write" — only half of which is true
+                // here.
+                return .failure(
+                    code: .appUnavailable,
+                    message: "Elliot is not running; a snapshot of its database has no window to "
+                        + "photograph.",
+                    hint: "Open Elliot.app."
+                )
             }
         } catch {
             return .failure(code: .internalError, message: error.localizedDescription, hint: nil)
