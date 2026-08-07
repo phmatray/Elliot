@@ -283,9 +283,26 @@ where changes land. `not_included` names all of it in every reply — **read it 
 something failed to appear**, and use the accessibility tree above for anything in the toolbar.
 
 ⚠️ **A long `ELLIOT_HOME` silently costs you the MCP socket.** `sun_path` is capped at 104 bytes on
-macOS, so a scratch home under a deep path makes `startIPC` fail; the app runs fine, the helper
-answers `app_unavailable`, and the reply reads as "Elliot is not running" while it is plainly on
-screen. Keep the check store short — `/tmp/elliot-check` is short on purpose.
+macOS, so a scratch home under a deep path makes `startIPC` fail; the app runs fine, and Preflight
+says so under *MCP socket*. Keep the check store short — `/tmp/elliot-check` is short on purpose.
+
+**Since #168 the helper names that instead of blaming the app.** It used to decide everything from
+`IPCClient.isAppRunning()` — *does something answer at this path* — so a socket that was never bound
+was indistinguishable from an app that was never launched, and the reply read as "Elliot is not
+running" while it was plainly on screen. `AppBridge` now measures the path against
+`UnixSocket.pathFits` **before** it asks whether the app is up, and both `read` and `write` consult
+that one guard. Measured on the fix's own branch, same machine, same home, within a minute of each
+other, with that Elliot's 1599×937 board captured on screen at the time:
+
+| | reply to `board_next` |
+|---|---|
+| the helper on `main` | `isError: false`, `source: offline-db`, *"Elliot is not running; this is a snapshot of its database."* |
+| the helper after #168 | `app_unavailable` — *"the path ELLIOT_HOME leads to is 112 bytes, and a unix socket path must be under 104"* |
+
+The old answer is the worse of the two and it is the one that looks fine: correct rows under a false
+explanation, `isError: false`, no reason to doubt it. That is why a read here **refuses** rather than
+falling back to the snapshot. ⚠️ It covers the **length** cause only — a socket directory that cannot
+be created or written still reads as an absent app.
 
 **A secondary window is verifiable too — it opens off-screen, it does not fail to open.** Every PR
 from #75 to #89 carried some version of *"opening a `Window` scene needs the app frontmost, which the

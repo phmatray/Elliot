@@ -66,6 +66,7 @@ enum BlockingIO {
 /// helper launches the app instead, and says so plainly if it cannot.
 public struct AppBridge: Sendable, BridgeProviding {
     private let client: IPCClient
+    private let socketPath: String
     private let bundleIdentifier: String
 
     public init(
@@ -75,13 +76,55 @@ public struct AppBridge: Sendable, BridgeProviding {
     ) {
         let resolvedToken = token ?? IPCClient.readToken(at: StoreLocation.tokenURL) ?? ""
         client = IPCClient(socketPath: socketPath, token: resolvedToken)
+        self.socketPath = socketPath
         self.bundleIdentifier = bundleIdentifier
     }
 
     public var isAppRunning: Bool { client.isAppRunning() }
 
+    /// The socket path is unusable, said in the one way that is actionable —
+    /// or nil, which is every ordinary call (#168).
+    ///
+    /// Consulted **before** `isAppRunning()` by both halves of the bridge,
+    /// because that check asks "does something answer at this path" and a path
+    /// the app could never bind has nothing to answer. Its "no" is therefore
+    /// indistinguishable from an app that is down, and the helper spent five
+    /// `board_screenshot` calls telling a reader to launch an Elliot whose
+    /// window was on screen in front of them.
+    ///
+    /// The check is arithmetic on a string this process already has: both
+    /// processes *compute* the socket path from `ELLIOT_HOME` rather than
+    /// exchanging it, so the helper can measure a path it has never bound. That
+    /// also means the answer cannot go stale — there is no artefact to expire,
+    /// which is why this is the fix rather than a sentinel file the app writes.
+    ///
+    /// One function, two callers, on purpose: `read` and `write` telling
+    /// different stories about the same path is the shape of the defect being
+    /// fixed, one layer along.
+    private static func unusableSocketPath(_ path: String) -> ElliotResponse? {
+        guard !UnixSocket.pathFits(path) else { return nil }
+        return .failure(
+            code: .appUnavailable,
+            message: "Elliot could not open its MCP socket: the path ELLIOT_HOME leads to is "
+                + "\(path.utf8.count) bytes, and a unix socket path must be under "
+                + "\(UnixSocket.maxPathBytes). The path is \(path)",
+            hint: "Set a shorter ELLIOT_HOME and restart Elliot, then re-register this helper. "
+                + "Elliot itself may well be up — its board works without the MCP socket, and "
+                + "Preflight reports the socket separately."
+        )
+    }
+
     /// A read: answered live, or from a read-only snapshot of the database.
     public func read(_ request: ElliotRequest) async -> BridgeOutcome {
+        // Before anything asks whether the app is up. A read here must **not**
+        // fall back to the snapshot: the database is perfectly readable, so an
+        // offline answer would be correct data under a false explanation —
+        // the same defect one layer down, and harder to see because the rows
+        // would look right. `.live` rather than a third case because the
+        // refusal is a `.failure`, which `render` returns whole without ever
+        // reading `source`.
+        if let refusal = Self.unusableSocketPath(socketPath) { return .live(refusal) }
+
         let client = client
         // Which of the two snapshot stories is true is decided here and nowhere
         // else: a socket that fails mid-request also lands in the fallback, and
@@ -141,6 +184,12 @@ public struct AppBridge: Sendable, BridgeProviding {
 
     /// A write: only ever served by the running app.
     public func write(_ request: ElliotRequest) async -> ElliotResponse {
+        // Same guard as `read`, and ahead of `isAppRunning()` for the same
+        // reason — plus one this half feels on its own: the launch below polls
+        // for twenty seconds before giving up, so without this the helper spent
+        // that long waiting for an app to bind a socket it cannot bind.
+        if let refusal = Self.unusableSocketPath(socketPath) { return refusal }
+
         let client = client
         let bundleIdentifier = bundleIdentifier
         return await BlockingIO.run {

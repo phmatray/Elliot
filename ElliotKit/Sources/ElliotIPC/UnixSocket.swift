@@ -22,13 +22,36 @@ enum SocketError: Error, LocalizedError {
 /// Raw sockets rather than `NWListener`: its Unix-domain support is thinly
 /// documented and has surprising teardown behaviour, and this is 100 lines with
 /// nothing hidden.
-enum UnixSocket {
+public enum UnixSocket {
+
+    /// The most bytes `sun_path` will hold — 104 on macOS, read from the
+    /// platform rather than written down, exactly as the bind below always did.
+    ///
+    /// Public because the MCP helper has to answer the same question the app
+    /// does before it can tell an agent why a call failed. Both processes derive
+    /// the socket path from `ELLIOT_HOME` instead of exchanging it, so the
+    /// helper can measure a path it has never bound — which is the whole reason
+    /// #168 was cheap to fix.
+    public static var maxPathBytes: Int { MemoryLayout.size(ofValue: sockaddr_un().sun_path) }
+
+    /// Whether `bind` and `connect` will accept this path.
+    ///
+    /// `<`, not `<=`: `strcpy` writes a terminating NUL, so the last byte of the
+    /// field is not available to the path. `makeAddress` calls this rather than
+    /// repeating the comparison, because a checker that says yes to a path the
+    /// binder then refuses is worse than no checker — it moves the confusing
+    /// failure one layer further from its cause.
+    public static func pathFits(_ path: String) -> Bool { path.utf8.count < maxPathBytes }
 
     static func makeAddress(path: String) throws -> sockaddr_un {
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        let maxLength = MemoryLayout.size(ofValue: address.sun_path)
-        guard path.utf8.count < maxLength else { throw SocketError.pathTooLong(path) }
+        // Through `maxPathBytes` as well, so the size the bytes are copied into
+        // and the size they were measured against are one expression. They were
+        // two identical `MemoryLayout.size(ofValue:)` calls for one commit,
+        // which is the drift this pair exists to prevent, inside the pair.
+        let maxLength = maxPathBytes
+        guard pathFits(path) else { throw SocketError.pathTooLong(path) }
         withUnsafeMutablePointer(to: &address.sun_path) { pointer in
             pointer.withMemoryRebound(to: CChar.self, capacity: maxLength) { destination in
                 _ = strcpy(destination, path)
