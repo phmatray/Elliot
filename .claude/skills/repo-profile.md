@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1328 tests in 149 suites**, 5 of 5 samples on
-  `fix/147-proposal-editor-card-draft` on 2026-08-07 off `main` at `dc5c2ce`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1330 tests in 150 suites**, 5 of 5 samples on
+  `fix/145-card-not-found-hint` on 2026-08-08 off `main` at `2494882`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -107,6 +107,13 @@
       its own tests existed, so 40 of its 46 were unrecorded drift and only 6 were the branch's own.
       A correction here is rarely evidence that the previous author miscounted; it is mostly the
       interval since they looked.
+    - **Landing #145 the drift was zero and every test of the delta is the branch's own** — the rare
+      complement to the bullet above, and worth recording because the entry is otherwise a list of
+      the opposite. `git merge-base HEAD origin/main` was `2494882`, i.e. **`main` had not moved at
+      all** between branching and the ready-flip, so the +2 tests and +1 suite are exactly what this
+      branch added (`RefusalHintTests`, and one test in `OfflineParityTests`) with nothing else mixed
+      in. Which is the entry's thesis stated the other way round: the number is honest when the
+      interval is short, and the interval — not the author — is what usually spoils it.
   - ⛔ **Do not write the number down before the run prints it.** Resolving one of these collisions in
     #140, this line was first filled in with a *predicted* 1177 — arrived at by adding the two
     branches together — and the run said **1161**. Caught immediately, but it is exactly the act the
