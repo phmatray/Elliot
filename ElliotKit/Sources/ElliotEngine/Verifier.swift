@@ -80,7 +80,14 @@ public struct Verifier: Sendable {
         guard let match = PRMatcher.bestMatch(among: prs, issue: issue, runStartedAt: run.startedAt) else {
             return .unverified(reason: "No pull request references issue #\(issue) yet.")
         }
-        if match.isMerged { return .merged(commitSHA: nil, number: nil, url: nil, branch: nil) }
+        if match.isMerged {
+            return .merged(
+                commitSHA: nil,
+                number: match.number,
+                url: match.url,
+                branch: match.headRefName
+            )
+        }
         return .prOpen(
             number: match.number,
             url: match.url,
@@ -97,11 +104,22 @@ public struct Verifier: Sendable {
         }
         let status = try await gh.mergeStatus(repo: repo.nameWithOwner, number: pr)
 
+        // `branch` is nil on this path on purpose, and it is not worth a second
+        // `gh` call to fill: `GHMergeStatus` carries a URL but no head ref, and
+        // a card that reached merge-pr already learned its branch from the
+        // `.prOpen` that put it in In Review. `CardOutcome.applied` writes each
+        // field only when non-nil, so nil here keeps that branch rather than
+        // blanking it.
         if status.isMerged {
-            return .merged(commitSHA: status.mergeCommit?.oid, number: nil, url: nil, branch: nil)
+            return .merged(
+                commitSHA: status.mergeCommit?.oid,
+                number: pr,
+                url: status.url,
+                branch: nil
+            )
         }
         if status.state.uppercased() == "CLOSED" {
-            return .closedUnmerged(number: nil, url: nil, branch: nil)
+            return .closedUnmerged(number: pr, url: status.url, branch: nil)
         }
 
         let failing = status.failingChecks
