@@ -48,6 +48,12 @@ public struct GHPullRequest: Codable, Sendable, Hashable {
     public var createdAt: Date?
     public var mergedAt: Date?
 
+    /// The head commit, carried on the **listing** so the board can tell whether
+    /// a status it stored still describes this pull request — without paying for
+    /// a second call. One cheap scalar; it is what turns the per-card `pr view`
+    /// into something that can be skipped.
+    public var headRefOid: String?
+
     public init(
         number: Int,
         url: String,
@@ -57,7 +63,8 @@ public struct GHPullRequest: Codable, Sendable, Hashable {
         isDraft: Bool,
         state: String,
         createdAt: Date? = nil,
-        mergedAt: Date? = nil
+        mergedAt: Date? = nil,
+        headRefOid: String? = nil
     ) {
         self.number = number
         self.url = url
@@ -68,6 +75,7 @@ public struct GHPullRequest: Codable, Sendable, Hashable {
         self.state = state
         self.createdAt = createdAt
         self.mergedAt = mergedAt
+        self.headRefOid = headRefOid
     }
 
     public var isOpen: Bool { state.uppercased() == "OPEN" }
@@ -99,6 +107,19 @@ public struct GHMergeStatus: Codable, Sendable, Hashable {
     public var mergeCommit: MergeCommit?
     public var url: String?
     public var statusCheckRollup: [StatusCheck]?
+
+    /// `MERGEABLE` · `CONFLICTING` · `UNKNOWN`.
+    public var mergeable: String?
+    /// `CLEAN` · `DIRTY` · `BLOCKED` · `BEHIND` · `UNSTABLE` · `DRAFT` ·
+    /// `HAS_HOOKS` · `UNKNOWN`. GitHub computes this lazily, so the first
+    /// request for a pull request it has not considered lately answers
+    /// `UNKNOWN` — observed on #164 and #154.
+    public var mergeStateStatus: String?
+    /// `APPROVED` · `CHANGES_REQUESTED` · `REVIEW_REQUIRED`, or `""` when nobody
+    /// has reviewed. An empty string, not null.
+    public var reviewDecision: String?
+    /// The commit the checks above were run against.
+    public var headRefOid: String?
 
     public struct MergeCommit: Codable, Sendable, Hashable {
         public var oid: String?
@@ -155,7 +176,10 @@ public struct GHMergeStatus: Codable, Sendable, Hashable {
                 return ["PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"]
                     .contains(state.uppercased())
             }
-            return conclusion == nil
+            // Empty, not just absent: captured from the wire, `gh` renders an
+            // unfinished check's conclusion as `""` rather than as null. Testing
+            // `conclusion == nil` alone counted a running check as finished.
+            return (conclusion ?? "").isEmpty
         }
     }
 
@@ -164,19 +188,48 @@ public struct GHMergeStatus: Codable, Sendable, Hashable {
         mergedAt: Date? = nil,
         mergeCommit: MergeCommit? = nil,
         url: String? = nil,
-        statusCheckRollup: [StatusCheck]? = nil
+        statusCheckRollup: [StatusCheck]? = nil,
+        mergeable: String? = nil,
+        mergeStateStatus: String? = nil,
+        reviewDecision: String? = nil,
+        headRefOid: String? = nil
     ) {
         self.state = state
         self.mergedAt = mergedAt
         self.mergeCommit = mergeCommit
         self.url = url
         self.statusCheckRollup = statusCheckRollup
+        self.mergeable = mergeable
+        self.mergeStateStatus = mergeStateStatus
+        self.reviewDecision = reviewDecision
+        self.headRefOid = headRefOid
     }
 
     public var isMerged: Bool { state.uppercased() == "MERGED" && mergedAt != nil }
 
     public var failingChecks: [String] {
         (statusCheckRollup ?? []).filter(\.hasFailed).map(\.label)
+    }
+
+    /// This reading, as the dated row the board keeps.
+    ///
+    /// An absent field becomes `""`, which the facets read as *unknown* for
+    /// mergeability and as *nobody reviewed* for the review. That asymmetry is
+    /// deliberate and safe in one direction only: `ReviewState.none` is never a
+    /// sign, so a field nobody asked for cannot invent a warning. Mergeability
+    /// goes the other way and degrades to `.unknown`, which is the honest answer
+    /// when nothing was requested.
+    public func prStatus(repoID: UUID, prNumber: Int, checkedAt: Date) -> PRStatus {
+        PRStatus(
+            repoID: repoID,
+            prNumber: prNumber,
+            headRefOid: headRefOid ?? "",
+            checkedAt: checkedAt,
+            rawMergeStateStatus: mergeStateStatus ?? "",
+            rawMergeable: mergeable ?? "",
+            rawReviewDecision: reviewDecision ?? "",
+            checks: statusCheckRollup ?? []
+        )
     }
 }
 

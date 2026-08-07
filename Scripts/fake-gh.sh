@@ -8,6 +8,12 @@
 #
 #   FAKE_GH_ISSUES     path to a JSON file printed for `issue list` (default [])
 #   FAKE_GH_PRS        path to a JSON file printed for `pr list`    (default [])
+#   FAKE_GH_PR_VIEW    path to a JSON file printed for `pr view`    (NO default —
+#                      unset or missing exits 65). `gh` answers a list with `[]`
+#                      for an empty repository, so an absent list fixture has a
+#                      correct stand-in; there is no such thing as an empty
+#                      object, so inventing one here would be a decode error
+#                      dressed up as a missing fixture
 #   FAKE_GH_MODE       ok   = print the fixtures (default)
 #                      fail = write to stderr and exit non-zero
 #   FAKE_GH_FAIL_REPO  fail only when `--repo` is this exact value, and answer
@@ -20,9 +26,9 @@
 #   FAKE_GH_ARGV_OUT   file to dump argv into, one argument per line, so a test
 #                      can assert what was actually asked of `gh`
 #
-# Anything other than `issue list` or `pr list` exits non-zero on purpose: an
-# unexpected call has to fail loudly rather than return an empty list, which
-# would look exactly like a repository with no open work.
+# Anything other than `issue list`, `pr list` or `pr view` exits non-zero on
+# purpose: an unexpected call has to fail loudly rather than return an empty
+# list, which would look exactly like a repository with no open work.
 #
 # There is no ready-file and no delay here, and that is not an oversight —
 # nothing about this fake is asynchronous, so a test has nothing to wait for.
@@ -74,9 +80,22 @@ emit() {
   fi
 }
 
+# `pr view` answers a single object, so it has no empty stand-in — a missing
+# fixture is a wiring mistake and says so, with its own exit code so a test can
+# tell "you forgot the fixture" from "you called something I do not know" (64).
+emit_object() {
+  if [ -n "${1:-}" ] && [ -f "$1" ]; then
+    cat "$1"
+  else
+    echo "fake-gh: pr view needs FAKE_GH_PR_VIEW to name a readable file" >&2
+    exit 65
+  fi
+}
+
 case "${1:-} ${2:-}" in
   "issue list") emit "${FAKE_GH_ISSUES:-}" ;;
   "pr list")    emit "${FAKE_GH_PRS:-}" ;;
+  "pr view")    emit_object "${FAKE_GH_PR_VIEW:-}" ;;
   *)
     echo "fake-gh: unexpected invocation: $*" >&2
     exit 64
