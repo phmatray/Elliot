@@ -1,11 +1,28 @@
 import ElliotModel
 import SwiftUI
 
-/// The fields of a backlog item, shared by the sheet that creates one and the
-/// inspector that corrects one. One field set, one validation rule —
-/// `CardDraft` holds both.
+/// The fields of a backlog item, shared by the sheet that creates one, the
+/// inspector that corrects one, and the row that corrects a proposal. One field
+/// set, one validation rule — `CardDraft` holds both.
 struct CardFieldsEditor: View {
+    /// What is being edited, which decides whether a note is even an option.
+    ///
+    /// Not a boolean trap: the distinction is real. A *card* may be a plain
+    /// note, so it gets the picker and both branches. A *proposal* is always a
+    /// story — `StoryProposal` carries a `UserStory` and has nowhere to put a
+    /// note — so offering the picker there would offer a mode that silently
+    /// discards what was typed. The pin that makes `.story` safe is not here
+    /// but in `CardDraft(proposal:)`, where `swift test` can hold it.
+    enum Kind {
+        /// Board label, story/note picker, whichever branch is selected, preview.
+        case card
+        /// Board label, story fields, preview. No picker, no note.
+        case story
+    }
+
     @Binding var draft: CardDraft
+    /// Defaulted, so the card sheet and the detail inspector are unchanged.
+    var kind: Kind = .card
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -15,14 +32,19 @@ struct CardFieldsEditor: View {
                     .textFieldStyle(.roundedBorder)
             }
 
-            Picker("", selection: $draft.isStory) {
-                Text("User story").tag(true)
-                Text("Plain note").tag(false)
+            if kind == .card {
+                Picker("", selection: $draft.isStory) {
+                    Text("User story").tag(true)
+                    Text("Plain note").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
 
-            if draft.isStory {
+            // In `.story` the note branch is unreachable by construction rather
+            // than merely unselected: there is no picker to reach it with, and
+            // the draft was seeded with `isStory` pinned.
+            if kind == .story || draft.isStory {
                 storyFields
             } else {
                 VStack(alignment: .leading, spacing: 4) {
