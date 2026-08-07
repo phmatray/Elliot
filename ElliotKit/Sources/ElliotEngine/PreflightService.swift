@@ -54,6 +54,18 @@ public enum CheckFix: Sendable, Hashable, Identifiable {
             "seedCard:\(repoID):\(title)"
         }
     }
+
+    /// Which repository this acts on.
+    ///
+    /// Carried by the fix rather than inferred from where its button sits: the
+    /// Preflight screen renders checks for several repositories from one list,
+    /// and a button that had to be told its repository by its position on screen
+    /// is a fix applied to the wrong one waiting to happen.
+    public var repoID: UUID {
+        switch self {
+        case .createLabels(let repoID, _), .seedCard(let repoID, _, _): repoID
+        }
+    }
 }
 
 public struct CheckResult: Sendable, Hashable, Identifiable {

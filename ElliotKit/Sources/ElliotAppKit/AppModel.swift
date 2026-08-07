@@ -1433,6 +1433,55 @@ public final class AppModel {
         PreflightService.isBlocking(repoChecks[repo.id] ?? [])
     }
 
+    /// What the last **Preflight** fix did. Shown beside the row that offered it.
+    ///
+    /// Its own property beside `lastFixOutcome`, which belongs to the
+    /// Repositories page: two screens showing one sentence would each clear the
+    /// other's, so a label created here would wipe the result of a Clone over
+    /// there. They share the display *type* — one shape for "what a fix did" —
+    /// and not the slot.
+    public private(set) var lastCheckFixOutcome: FixOutcome?
+
+    /// Performs a `CheckFix` and **re-runs the checks** rather than editing the
+    /// row to look fixed.
+    ///
+    /// Re-running is the point. A row edited in place to say "pass" is a row
+    /// that lies when the fix half-worked — and `apply` reports partial success
+    /// precisely because half-working is the realistic outcome of creating four
+    /// labels over a network. Asking again is the only answer that cannot drift
+    /// from what GitHub actually has.
+    public func apply(_ fix: CheckFix) async {
+        guard let toolConfig, let board else {
+            lastCheckFixOutcome = FixOutcome(
+                detail: "Elliot is still starting; try again in a moment.", succeeded: false
+            )
+            return
+        }
+        // Resolved from the fix's own `repoID`, never from which row was
+        // pressed. A repository that is no longer registered is said out loud —
+        // a button that silently does nothing is the failure this screen is
+        // being taught to avoid.
+        guard let repo = repos.first(where: { $0.id == fix.repoID }) else {
+            lastCheckFixOutcome = FixOutcome(
+                detail: "That repository is no longer registered.", succeeded: false
+            )
+            return
+        }
+
+        let preflight = PreflightService(
+            environment: LoginShellEnvironment(
+                variables: toolConfig.environment, capturedVia: "session"
+            ),
+            config: toolConfig
+        )
+        let outcome = await preflight.apply(fix, repo: repo, board: board)
+        lastCheckFixOutcome = FixOutcome(detail: outcome.detail, succeeded: outcome.succeeded)
+        // A seeded card needs no reload here: the board observes the store, so
+        // it arrives the way every other card does. Only the checks have to be
+        // asked again.
+        await refreshRepoChecks(using: preflight)
+    }
+
     // MARK: - Analysis
 
     /// Why an analysis cannot start right now, or `nil` when it can.
