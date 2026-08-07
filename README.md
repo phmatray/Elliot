@@ -54,9 +54,13 @@ analysis does not drown the board and the five columns keep one meaning.
 Accepting calls the same `BoardService.createCard` the New Card window uses, and
 the card lands in Backlog, where nothing runs.
 
-Hiding the panel is not ending the analysis: runs in flight keep going and
-proposals keep arriving, so re-showing it finds everything that landed
-meanwhile. *Finish*, in its footer, is the act that ends a session.
+Hiding the panel is not ending the analysis: runs in flight keep going, proposals
+keep arriving, and the lenses you ticked, the instructions you typed and the
+proposals you staged are all still there when you show it again. *Finish*, in its
+footer, is the act that ends a session.
+
+Starting is refused for a repository Preflight is failing, one that is switched
+off, or none at all — and the panel says which, where the disabled button is.
 
 The same four steps are available over MCP: `board_analyze_repo`,
 `board_list_proposals`, `board_accept_proposals`, `board_reject_proposals`.

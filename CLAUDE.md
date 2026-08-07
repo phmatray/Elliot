@@ -326,6 +326,26 @@ proposal observation with it — so a toggle that called it would stop proposals
 lenses were still reading. Only *Finish* ends a session. The detail panel has no such distinction,
 which is why the analysis needed its own rule rather than a copy of `showingInspector`.
 
+⚠️ **Hiding also destroys the view, so nothing the reader has typed may be `@State` in it.** Hiding
+removes `.analysis` from `boardOrder`, which tears `AnalysisPanelView` down. The lens set, the extra
+instructions, the story limit and the staged proposal selection therefore live on `AppModel`
+(`analysisAngles`, `analysisInstructions`, `analysisMaxStories`, `analysisSelection`) — as `@State`
+they made the hide lossy in exactly the way this feature's own prose says it is not, and the test
+that "proved" the hide was safe only ever looked at `analysis`, the half that already lived on the
+model.
+
+⚠️ **An analysis must not start in a repository Preflight refused, and `AnalysisService` will not
+stop it.** `start` checks `isEnabled` and the in-flight dedupe and nothing else, so the gate lives in
+`AppModel.analysisRefusal` — one sentence read by both the toolbar tooltip and the panel's footer,
+and the value the Start button is disabled by. It used to be a `.disabled(…)` on the toolbar button;
+#151 removed that (a toggle you cannot switch off is worse than one that opens onto an explanation)
+and very nearly removed the gate with it.
+
+⛔ **The analysis panel carries no `.keyboardShortcut(.defaultAction)`.** It did as a `Window` scene,
+where Return was scoped to it. As a sibling in the board window it would share Return with
+`DetailPanelView`'s Save, with nothing in the code deciding between them — and the claimant here
+spawns up to eight unattended runs.
+
 Opening the analysis panel scrolls the board to its leading edge
 (`BoardFraming.offsetX(from:boardWidth:)`), because a panel the reader just asked for that lands
 off-screen reads as a panel that did not open — the same false negative that got written down nine

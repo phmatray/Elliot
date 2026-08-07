@@ -256,18 +256,11 @@ public struct BoardView: View {
 
     /// Says which gate is closed, rather than repeating the one that is open.
     ///
-    /// The button is disabled for three different reasons and the tooltip named
-    /// only the first, so a blocked or switched-off repository produced a
-    /// disabled control whose explanation was about something else.
+    /// The refusal itself is `AppModel.analysisRefusal`, so this tooltip and the
+    /// panel's own footer say the same sentence and the Start button is disabled
+    /// by the same value that explains why.
     private var analyseHelp: String {
-        guard let id = model.selectedRepoID,
-              let repo = model.repos.first(where: { $0.id == id })
-        else { return "Pick a single repository to analyse." }
-        if !repo.isEnabled { return Consequence.reason(.repoDisabled) }
-        if model.isBlocked(repo) {
-            return "A Preflight check is failing for this repository — fix it there first."
-        }
-        return "Read this repository through several lenses and propose stories."
+        model.analysisRefusal ?? "Read this repository through several lenses and propose stories."
     }
 
     /// The five columns and, when a card is selected, its detail panel between
@@ -640,13 +633,6 @@ public struct BoardView: View {
         Task { await model.addRepo(path: url.path) }
     }
 
-    /// Analysis is refused for the same repositories cards are: a blocked repo
-    /// would fail at the first run anyway, and saying so here is cheaper.
-    private var isSelectedRepoBlocked: Bool {
-        guard let id = model.selectedRepoID, let repo = model.repos.first(where: { $0.id == id })
-        else { return true }
-        return !repo.isEnabled || model.isBlocked(repo)
-    }
 }
 
 // MARK: - What the board frames, and where

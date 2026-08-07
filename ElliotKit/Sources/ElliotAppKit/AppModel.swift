@@ -147,6 +147,25 @@ public final class AppModel {
     /// rationale and an evidence strip.
     public var analysisSpans = 3
 
+    /// What the analysis panel's setup form holds, and which proposals are
+    /// staged for a bulk accept or reject.
+    ///
+    /// ⚠️ **On the model, not in the view, because hiding the panel destroys the
+    /// view.** `showingAnalysisPanel = false` removes `.analysis` from
+    /// `PanelLayout.boardOrder`, which tears down `AnalysisPanelView` and every
+    /// `@State` in it. As `@State` these four made the hide lossy in a way the
+    /// README, `CLAUDE.md` and the ✕'s own tooltip all say it is not: tick six
+    /// lenses, type instructions, raise the limit, glance at Backlog, and come
+    /// back to two lenses and an empty field. `AnalysisSessionTests` proved only
+    /// that `analysis` survived — the half that already lived here.
+    ///
+    /// Same argument as ``logFilter`` below, one panel over.
+    public var analysisAngles: Set<AnalysisAngle> = [.bugs, .quickWins]
+    public var analysisInstructions = ""
+    public var analysisMaxStories = 8
+    /// The proposals staged for the footer's Accept / Reject.
+    public var analysisSelection: Set<UUID> = []
+
     /// Which rows of a run log the panel is showing.
     ///
     /// One filter for the pane rather than one per run box: it is a reading
@@ -1385,6 +1404,28 @@ public final class AppModel {
 
     // MARK: - Analysis
 
+    /// Why an analysis cannot start right now, or `nil` when it can.
+    ///
+    /// One answer, read by both surfaces: the toolbar button's tooltip and the
+    /// panel's own footer. It used to be a `private var` on `BoardView` feeding
+    /// a `.disabled(…)` built from a *second* expression beside it, and #151
+    /// removed that `.disabled` — correctly, because a disabled toggle is a
+    /// toggle you cannot switch off, but the same expression was the **only**
+    /// preflight gate on the analysis path. `AnalysisService.start` checks
+    /// `isEnabled` and the in-flight dedupe and nothing else, so eight
+    /// unattended runs could have started in a checkout Preflight had already
+    /// refused. The gate belongs on the act, not on the panel's visibility.
+    public var analysisRefusal: String? {
+        guard let id = selectedRepoID, let repo = repos.first(where: { $0.id == id }) else {
+            return "Pick a single repository to analyse."
+        }
+        if !repo.isEnabled { return Consequence.reason(.repoDisabled) }
+        if isBlocked(repo) {
+            return "A Preflight check is failing for this repository — fix it there first."
+        }
+        return nil
+    }
+
     public func startAnalysis(
         repoID: UUID, angles: [AnalysisAngle], instructions: String, maxStories: Int
     ) async {
@@ -1532,6 +1573,16 @@ public final class AppModel {
         self.cards = cards
         hasLoadedRepos = true
         selectedRepoID = nil
+    }
+
+    /// The same trick for one repository's preflight verdict.
+    ///
+    /// `repoChecks` is filled by a real preflight sweep, and the rule that needs
+    /// it — "an analysis must not start in a repository Preflight has refused" —
+    /// is exactly the one #151 broke by deleting the toolbar's `.disabled`. A
+    /// rule whose only failing case cannot be seeded is a rule with no test.
+    func testOnlySeedChecks(repo: UUID, _ checks: [CheckResult]) {
+        repoChecks[repo] = checks
     }
 
     /// The same trick for the four collections that hold runs.
