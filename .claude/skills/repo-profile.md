@@ -73,13 +73,15 @@
   **Format the lines you wrote, by hand, to match their neighbours.** `swift format lint <one-file>`
   is readable for a file you just touched; the tree-wide form is not. See `CLAUDE.md` § *Do not run
   `swift format` over the tree*.
-- **Format/lint verify (the gate):** none. There is no formatting gate and no CI to enforce one, so a
+- **Format/lint verify (the gate):** none. There is no formatting gate, and the one workflow that
+  exists (`swift-floor.yml`, the toolchain floor) does not enforce one, so a
   pull request is never failed on formatting here. Adopting the formatter wholesale is a live option
   and a one-way door (one ~1 600-line reformat commit), and it is not a decision to make inside a
   feature branch.
-- **Prerequisites / caveats:** **Swift 6.3.1+ (Xcode 26.4+)** to run `swift test`; Swift 6.2 (Xcode
-  26.0) is enough for `swift build` alone. `swiftLanguageModes: [.v6]` — strict concurrency is on, so
-  data-race errors are build failures, not warnings. `ElliotApp` is a SwiftUI GUI
+- **Prerequisites / caveats:** **Swift 6.3.1+ — Xcode 26.4 or newer. There is no lower option.**
+  `Package.swift` declares `swift-tools-version: 6.3.1`, which SwiftPM enforces at manifest parse, so
+  anything older is refused before a source file is read. `swiftLanguageModes: [.v6]` — strict
+  concurrency is on, so data-race errors are build failures, not warnings. `ElliotApp` is a SwiftUI GUI
   target: it builds headlessly but cannot be exercised from a terminal — launch the assembled bundle
   from the **Finder** (`open dist/Elliot.app`), not from a shell, because the preflight checks exist
   precisely to survive *not* inheriting your shell `PATH`.
@@ -92,7 +94,13 @@
     the **test** targets: one `#expect` at `ElliotProcessTests/StreamingProcessDrainTests.swift:138`
     exhausts the type-checker's budget. And "macOS 15+" was a *deployment* target read as a host
     requirement — a different claim, still unverified, tracked as #142. `Package.swift` declares
-    **6.3**, the test floor, and its header comment carries the full table and the argument.
+    **6.3.1**, the test floor, and its header comment carries the full table and the argument.
+  - ⛔ **"6.2 is enough if you only want `swift build`" is a true measurement and a false
+    instruction — do not put it back in this list.** It was here for one commit. The 6.2 figure is
+    real (recorded in `Package.swift`'s table), but a *Prerequisites* line is read as prescriptive,
+    and after the tools-version bump a contributor following it gets `error: package … is using
+    Swift tools version 6.3.1 but the installed version is 6.2.0`. A documented floor no machine can
+    meet is the exact defect #116 removed; it does not become harmless one file over.
   - ⚠️ **Do not restate the build floor from `swift build` alone.** That is precisely how the 6.1
     claim survived: `swift build` compiles the library and executable targets and never touches the
     eight test targets, so a green `swift build` measures about half of what a contributor needs.

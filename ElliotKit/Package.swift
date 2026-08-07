@@ -1,4 +1,4 @@
-// swift-tools-version: 6.3
+// swift-tools-version: 6.3.1
 //
 // MEASURED, not assumed (#116). This line said 6.1 until 2026-08-07, and nothing had ever built the
 // package on a 6.1 toolchain — the first CI run this repository ever had failed on one in under two
@@ -28,13 +28,25 @@
 //     `ElliotProcessTests/StreamingProcessDrainTests.swift:138`, inside a `#expect` expansion:
 //     "the compiler is unable to type-check this expression in reasonable time".
 //
-// This line declares **6.3, the test floor, deliberately over the lower build floor**, and the
+// This line declares **6.3.1, the test floor, deliberately over the lower build floor**, and the
 // reason is this issue's own purpose rather than caution. A tools-version is enforced by SwiftPM at
 // *manifest parse*, before a source file is read: its job here is to turn a mysterious failure into
 // a named one. The failure a 6.2 contributor would actually hit is the test one — `swift test` is
-// this repository's only verification gate, there is no CI to catch it for them, and CLAUDE.md tells
-// them to run it. Declaring 6.2 would let them build, then hand them a type-check timeout inside a
-// macro expansion: exactly the mystery this floor exists to prevent, one target over.
+// this repository's only verification gate, there is no build-and-test CI to catch it for them, and
+// CLAUDE.md tells them to run it. Declaring 6.2 would let them build, then hand them a type-check
+// timeout inside a macro expansion: exactly the mystery this floor exists to prevent, one target
+// over.
+//
+// **The patch component is deliberate and load-bearing — do not round this to `6.3`.** It said `6.3`
+// for one commit, and that was wrong twice over: SwiftPM resolves `6.3` as **6.3.0**, and the
+// measured floor is 6.3.1. Verified rather than assumed, because the first version of this comment
+// asserted the opposite ("a tools-version carries no patch component") and that is simply false: a
+// scratch package declaring `6.3.1` reports `6.3.1` from `swift package tools-version`, and one
+// declaring `6.3.9` is refused by a 6.3.3 toolchain with *"using Swift tools version 6.3.9 but the
+// installed version is 6.3.3"*. Rounding down to `6.3` therefore admits a 6.3.0 toolchain — which
+// swift.org's `swift-6.3-RELEASE` reports as exactly `6.3` — to parse, build, and then hit the
+// `#expect` timeout below. That is the mystery-instead-of-a-refusal this whole line exists to
+// prevent, reintroduced by three characters.
 //
 // That makes the declared floor *sufficient* rather than *minimal*, and the gap is one expression
 // wide. Break that `#expect` into sub-expressions and the two floors collapse to 6.2 — filed as its
