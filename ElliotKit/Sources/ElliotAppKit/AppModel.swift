@@ -647,11 +647,30 @@ public final class AppModel {
         switch update {
         case .queueChanged(let queue):
             self.queue = queue
-        case .runStarted(let runID, _):
+        case .runStarted(let runID, let cardID):
             // Emptied rather than seeded with a line: the tail carries events
             // now, and "started" is not one. `RunningStrip` and `RunRow` both
             // already show the run's state from the run itself.
             liveLog[runID] = []
+            // The same refresh `.runFinished` does below, for the same reason:
+            // **nothing re-reads a run row on its own.** Both `.task(id:)`
+            // callers of `refreshRuns` — `CardView` and `DetailPanelView` — are
+            // keyed on the *card's* id, which a starting run does not change,
+            // so neither fires here. Without this the panel you opened to watch
+            // the run draws "Nothing has run yet" for the whole run and offers
+            // no Cancel, while the card beside it spins from `activeRuns`: the
+            // same split `markStalled` below refuses to leave, one update
+            // earlier.
+            //
+            // The read finds the row because `RunScheduler` saves it
+            // (`RunScheduler.swift:381`) before it yields this update (`:384`).
+            // That ordering is the whole reason a refresh is the right answer
+            // here and the wrong one for `.runStalled`, which is yielded
+            // *before* its write.
+            //
+            // `cardID` is nil for an analysis run, which belongs to a
+            // repository; `analysis?.runs` is refreshed by the `Task` below.
+            if let cardID { Task { await self.refreshRuns(cardID: cardID) } }
             Task {
                 await self.refreshActiveRuns()
                 await self.refreshAnalysisRuns()
