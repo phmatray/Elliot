@@ -313,7 +313,89 @@ public struct PreflightService: Sendable {
             command: "git -C \(repo.path) status --porcelain"
         ))
 
+        // Only worth asking once GitHub has identified the repository — without
+        // a `nameWithOwner` there is nothing to ask `gh` about, and the check
+        // above already reports that.
+        if let nameWithOwner = info?.nameWithOwner {
+            results.append(await labelsCheck(repo, nameWithOwner: nameWithOwner))
+        }
+
         return results
+    }
+
+    /// Whether this repository has the labels Elliot's skills apply.
+    ///
+    /// **A warning, never a failure.** `isBlocking` treats any `.fail` as "cards
+    /// cannot be dragged in this repository", and a missing `documentation`
+    /// label must not freeze a board. What a missing label costs is an issue
+    /// filed without it: `create-issue`'s own instructions say *"if a chosen
+    /// label isn't in the live list, create without it rather than failing, and
+    /// flag the gap"* — so today the card moves, the issue is filed unlabelled,
+    /// and nothing on the board says so. This is the thing that says so.
+    ///
+    /// `required` is a parameter with a default so a test can state a small
+    /// policy instead of asserting against whatever `LabelPolicy.default` grows
+    /// into.
+    public func labelsCheck(
+        _ repo: Repo,
+        nameWithOwner: String? = nil,
+        required: [RequiredLabel] = LabelPolicy.default
+    ) async -> CheckResult {
+        let target = nameWithOwner ?? repo.nameWithOwner
+
+        guard let present = try? await gh.labels(repo: target) else {
+            // ⚠️ Not "every label is missing". A failure to *ask* is not a
+            // finding about the answer — the same duty #148 records one screen
+            // over — and offering a create button here would act on a guess
+            // about a repository nobody could reach.
+            return CheckResult(
+                id: "repo.labels", title: "Labels", status: .warn,
+                detail: "Could not be established: gh did not answer for \(target).",
+                command: "gh label list --repo \(target)",
+                fixHint: "Check `gh auth status` and that the repository is reachable."
+            )
+        }
+
+        let missing = LabelPolicy.missing(required: required, present: present)
+        guard !missing.isEmpty else {
+            return CheckResult(
+                id: "repo.labels", title: "Labels", status: .pass,
+                detail: "All \(required.count) labels Elliot's skills apply are present.",
+                command: "gh label list --repo \(target)"
+            )
+        }
+
+        // Named one by one. "Some labels are missing" sends the reader to
+        // GitHub to work out which, which is the work this check exists to do.
+        let names = missing.map(\.name).joined(separator: ", ")
+        return CheckResult(
+            id: "repo.labels", title: "Labels", status: .warn,
+            detail: "Missing: \(names). create-issue drops a label this repository "
+                + "does not have, and files the issue anyway.",
+            command: "gh label list --repo \(target)",
+            fixes: [
+                .createLabels(repoID: repo.id, labels: missing),
+                // For the case the button cannot serve: a repository that wants
+                // its *own* taxonomy. Deciding one edits `repo-profile.md`, a
+                // committed file, so it belongs in an issue and a pull request —
+                // which is the pipeline the board already drives.
+                .seedCard(
+                    repoID: repo.id,
+                    title: "Decide this repository's label taxonomy",
+                    story: UserStory(
+                        role: "maintainer of \(target)",
+                        want: "a label taxonomy recorded in .claude/skills/repo-profile.md",
+                        benefit: "create-issue labels issues the way this repository wants, "
+                            + "instead of dropping labels it cannot find",
+                        acceptanceCriteria: [
+                            "The profile's Labels section names a real taxonomy, not a TODO.",
+                            "Every label it names exists on the repository.",
+                            "Elliot's Preflight labels check passes for \(target).",
+                        ]
+                    )
+                ),
+            ]
+        )
     }
 
     /// Whether a repo's cards can be dragged at all.
