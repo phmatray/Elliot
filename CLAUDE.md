@@ -344,43 +344,135 @@ body corrected it and CLAUDE.md never caught up. The listing settles it: the sam
 launch, is showing a 900×700 window, so nothing is clamping the app's widths. Only the board is parked
 in the strip, because the app is not frontmost. Nothing to fix.
 
-⚠️ **An empty accessibility tree is not an empty window.** Reading the tree needs the automation driver
-to hold macOS Accessibility permission; without it every window of every app returns zero elements and
-a `degraded` flag, which reads exactly like "the window has nothing in it" — the same false negative,
-one layer down. Before believing a blank tree, snapshot a known-good app (Finder will do) as a control.
-If that is blank too, the finding is about your permissions, not about the change under review.
+⚠️ **An empty accessibility tree is not an empty window.** Reading the tree needs macOS Accessibility,
+held by whichever process is *responsible* for the reader (see the next section — it is not always the
+tool you typed); without it every window of every app returns zero elements and a `degraded` flag,
+which reads exactly like "the window has nothing in it" — the same false negative, one layer down.
+Before believing a blank tree, snapshot a known-good app (Finder will do) as a control. If that is
+blank too, the finding is about your permissions, not about the change under review.
 
-**Looking and touching are two different grants, and only one of them is usually on.** Check before
-planning a verification pass, because the answer decides what the pass can even ask:
+**Looking and touching are two different grants, and neither belongs to a *tool*.** macOS attributes
+Accessibility and Screen Recording to a **responsible process** — the app answerable for whatever is
+asking. So the `cua-driver` daemon, a shell you opened in your terminal, and a shell an agent run
+inherited from Elliot are three different subjects that can hold three different answers, and none of
+them is "this machine". `cua-driver` says as much in its own reply, which is the tell that this is
+the documented model rather than a quirk of one tool:
 
 ```bash
-cua-driver permissions status --json    # {"accessibility": false, "screen_recording": false} today
+cua-driver permissions status --json
+# {"accessibility": false, "screen_recording": false,
+#  "source": {"bundle_id": "com.trycua.driver", "responsible_ppid": 1,
+#             "note": "These booleans reflect the CuaDriver daemon's own TCC identity …"}}
 ```
 
-- **Screen Recording** buys *observation*: `list_windows` (titles, sizes, `is_on_screen`) and a real screenshot of any window. That alone settles "did it open", "how big", "does it render", "is there exactly one".
+- **Screen Recording** buys *observation*: window **titles**, and a real screenshot of a window or the display.
 - **Accessibility** buys *actuation* — and also the AX tree. Synthetic clicks and key presses are posted to another process's event queue, which macOS gates behind this grant.
 
-⛔ **Without Accessibility, a click or a keystroke fails silently and looks like a working no-op.**
-Measured on #48: `press_key` returns `"effect": "unverifiable"` with
-`"escalation": {"reason": "delivery_failed"}`, `click` returns `"effect": "unverifiable"` — and the
-screenshot afterwards is byte-for-byte the same board. Nothing errors. Read that as "the driver could
-not act", never as "the app ignored the input" — the third member of the same false-negative family as
-the two above. Anything needing a click or a key is **not verifiable** until someone runs
-`cua-driver permissions grant` and ticks the box.
+⛔ **So "can this machine observe the UI" is not a question with an answer.** Ask it of an identity,
+and establish *yours* before planning a verification pass, because it decides what the pass can even
+ask. Walk your own ancestry — the last entry is the app your grants are read against:
 
-⚠️ **As of today the driver holds neither grant** — `accessibility: false` *and*
-`screen_recording: false`, read against the daemon's own TCC identity `com.trycua.driver`, which is
-the identity that matters because the daemon is its own responsible process. So observation is off
-too, and the window listing above is not currently reproducible through it. `/usr/sbin/screencapture
--l` from a shell still enumerates windows and is what produced today's listings, but it is **not** a
-substitute: a non-frontmost window parks in the Stage Manager strip at ~143×160, and nothing in it
-can be read as text.
+```bash
+P=$PPID; while [ "$P" -gt 1 ]; do ps -o pid=,ppid=,comm= -p "$P"; P=$(ps -o ppid= -p "$P" | tr -d ' '); done
+```
 
-Recognise the shape rather than the tool, because it has now bitten this project four times: **a
-permission that silently changes behaviour instead of erroring.** A blank accessibility tree that
-reads as an empty window; a click that reports `unverifiable` rather than failing; a screen-recording
-grant that is simply absent while the commands still return; and `gh secret list` omitting
-organisation secrets. Not one of the four says *no*.
+Measured 2026-08-07 from a Claude Code session whose walk came back
+`zsh ← claude ← Elliot.app/Contents/MacOS/Elliot` — an agent run **Elliot itself spawned**, so
+Elliot's grants are the ones in force, and Elliot holds neither:
+
+| What you want | Command | Answer under that identity |
+|---|---|---|
+| activate an app | `set frontmost of (first process whose unix id is <pid>) to true` | **works** — exit 0, and a readback confirms it really activated |
+| name a process | `get name of first process whose unix id is <pid>` | **works** — and is **no evidence at all** about Accessibility |
+| read a UI element | `get {position, size} of window 1` | ⛔ `-1719` *not allowed assistive access* |
+| enumerate menus | `get name of every menu bar item of menu bar 1` | ⛔ `-1719` *not allowed assistive access* |
+| synthetic click | `click at {x, y}` | ⛔ `-25211` *not allowed assistive access* |
+| synthetic key press | `keystroke "a"` · `key code 53` | ⛔ `1002` *not allowed to send keystrokes* |
+| a **real** mouse click | `swift Scripts/realclick.swift <x> <y>` | **exit 0, in silence — and it did not arrive** |
+| window geometry | `CGWindowListCopyWindowInfo` | geometry **yes**; every `title` comes back **empty** |
+| capture a window | `screencapture -o -l<id>` | ⛔ `could not create image from window`, exit 1 |
+| capture the display | `screencapture -x` | ⛔ `could not create image from display`, exit 1 |
+| photograph Elliot | `board_screenshot` over MCP | **works** — 1510×925, `source: live`, no grant involved |
+
+⚠️ **Two rows of that table are the trap, and one of them nearly wrote itself into this file.**
+`get name of … process` answered `Elliot` cleanly, which reads exactly like Accessibility being on;
+process enumeration simply is not gated, and every *UI* read one line later returned `-1719`. Likewise
+`set frontmost` succeeds, so the committed recipe below **starts working and then fails**. A channel
+that answers is evidence about that channel and nothing else — probe the capability you actually need.
+
+⚠️ **A key press that does not arrive means "could not act", never "the app ignored it".** Here it at
+least says so — `1002`, its own error code, distinct from the `-1719`/`-25211` pair, so a keyboard
+failure is diagnosable rather than mysterious. That is the exception. `realclick.swift` posts a
+`CGEvent` and exits **0 having delivered nothing**, because `CGEventPost` returns no receipt; the
+blank `title` fields are the same silence one layer over, since the geometry arrives and only the
+names are withheld. When an input appears to do nothing, **establish the grant before believing the
+app** — a claim about a gesture built on a dropped event is a claim about your permissions.
+
+✅ **What still works with neither grant is `board_screenshot` (#155)**, because Elliot renders its own
+hierarchy in-process and TCC is never consulted. In the same minute that `screencapture -o -l5600`
+refused, `board_screenshot` returned that very window — id `5600`, 1510×925 both times — at full size,
+`source: live`. It is the only observation channel here that does not depend on who your parent is, so
+reach for it first and treat the shell recipes as the fallback. Read its `not_included` before
+concluding something is missing.
+
+**Window ids and geometry survive without Screen Recording too — only the names are withheld**, so
+this is how you find a window to aim at, and it is the enumeration the `is_on_screen` rule above is
+about. `CGWindowListCopyWindowInfo` is *not* the obsoleted `CGWindowListCreateImage`; it still
+compiles on our own floor:
+
+```bash
+cat > /tmp/lswin.swift <<'EOF'
+import CoreGraphics
+let pid = CommandLine.arguments.count > 1 ? Int(CommandLine.arguments[1]) : nil
+for w in (CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID)
+    as? [[String: Any]] ?? []) {
+    guard let p = w[kCGWindowOwnerPID as String] as? Int, pid == nil || p == pid else { continue }
+    let b = w[kCGWindowBounds as String] as? [String: Any] ?? [:]
+    print(p, w[kCGWindowNumber as String] as? Int ?? -1,
+          w[kCGWindowIsOnscreen as String] as? Bool ?? false,
+          b["Width"] ?? 0, b["Height"] ?? 0, b["X"] ?? 0, b["Y"] ?? 0,
+          w[kCGWindowOwnerName as String] as? String ?? "?",
+          "title='\(w[kCGWindowName as String] as? String ?? "")'")
+}
+EOF
+ps -eo pid,command | grep 'MacOS/Elliot$' | grep -v grep    # the pid you want
+swift /tmp/lswin.swift <pid>                                # omit <pid> to list every app's windows
+```
+
+⛔ **Use that `ps` line, not `pgrep -f`.** Measured 2026-08-07:
+`pgrep -f 'Elliot.app/Contents/MacOS/Elliot'` returns **nothing**, and the shorter
+`pgrep -f 'Elliot.app'` returns the six `elliot-mcp` helpers **without the app itself** — macOS does
+not expose a LaunchServices-started GUI app's argv to `pgrep`, so it answers confidently with the
+wrong pids rather than failing. Another one that does not say *no*.
+
+⛔ **Do not filter on `is_on_screen`** — that is the trap recorded above, and it is why "the window
+didn't open" got written down nine times. ⚠️ **And do not read an empty `title` as an unnamed
+window**: without Screen Recording every name in that list is blank while the geometry is perfect,
+which is the whole list looking complete and being wrong in one column. Cross-check the size against
+`board_screenshot`'s `width`/`height` — that is how id `5600` was confirmed to be the board.
+
+⚠️ **A different terminal can legitimately answer differently, and that is the mechanism rather than a
+contradiction.** #161 measured the same commands the same day and found menu enumeration, window
+capture and clicks all working — from a shell with a different responsible process. Both readings are
+true of their own identity. **Re-run the probes rather than trusting this table**; what is durable here
+is the ancestry walk and the shape of the answers, not the booleans.
+
+**To actually get a grant, grant it to the identity the walk named** — `cua-driver permissions grant`
+only ever settles the daemon, so it does nothing for an agent shell whose parent is Elliot; that one
+needs *Elliot.app* ticked under System Settings ▸ Privacy & Security ▸ Accessibility (and Screen
+Recording for capture). Until then, anything needing a click, a key or a `screencapture` is **not
+verifiable from here** — which is a reason to reach for `board_screenshot` and the structural tests,
+not a reason to assert the change works.
+
+Recognise the shape rather than the tool, because it keeps recurring in this project: **a permission
+that silently changes behaviour instead of erroring.** A blank accessibility tree that reads as an
+empty window; a `cua-driver` click reporting `unverifiable` rather than failing (#48: `press_key`
+returns `"escalation": {"reason": "delivery_failed"}` and the screenshot afterwards is byte-for-byte
+the same board); a screen-recording grant that is simply absent while the commands still return;
+`gh secret list` omitting organisation secrets; an accessibility press wearing the name `click`; and
+now `CGEventPost` exiting 0 on an event nobody received, next to window titles blanked in a list that
+otherwise looks complete. Not one of them says *no*. The count is a floor, not a tally — do not spend
+a merge reconciling it.
 
 **Seeding the scratch store: the ids are `UUID`s, and a wrong one wedges the board silently.**
 `Repo.id` and `Card.id` are `UUID`, not free text. Insert `'sandbox'` as a repo id and the app starts,
@@ -557,10 +649,18 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
 /usr/sbin/screencapture -x -R <x>,<y>,<w>,<h> /tmp/board.png
 ```
 
-The shell holds Accessibility even when the `cua-driver` daemon does not, so
-`osascript -e 'tell application "System Events" to click at {x, y}'` selects a card and
-`key code 53` is Escape. One more false negative to know: `entire contents` of the window can return
-**empty** while `count of UI elements` returns 6. An empty AX dump is not an empty window.
+⚠️ **Whether that recipe works depends on your responsible process, and its first line works either
+way** — see the grants table above. `set frontmost` is not gated, so it succeeds and the two lines
+after it may not: `get {position, size}` returns `-1719` and `screencapture` returns *could not create
+image from display* under an identity without the grants. Measured 2026-08-07 from an Elliot-spawned
+agent shell, where **both** were refused; from a terminal that holds them, all three run. Establish
+which you are before reading a failure as a fact about the app.
+
+When the grants *are* held, `osascript -e 'tell application "System Events" to click at {x, y}'`
+selects a card and `key code 53` is Escape — but read the ⛔ below first: that call is an
+accessibility **press**, not a mouse click. One more false negative to know: `entire contents` of the
+window can return **empty** while `count of UI elements` returns 6. An empty AX dump is not an empty
+window.
 
 ### Run lifecycle
 
@@ -699,12 +799,11 @@ Two invariants carry most of the weight:
   that measurement, committed**, and it refuses a click that lands outside the window rather than
   reporting it, because a column scrolled out of view still publishes an off-screen frame.
 
-  The general shape is the one this file already names four times, and this is the fifth: **a
-  mechanism that silently substitutes different behaviour instead of erroring.** A blank AX tree
-  that reads as an empty window; a `cua-driver` click reporting `unverifiable` rather than failing;
-  an absent screen-recording grant while the commands still return; `gh secret list` omitting
-  organisation secrets — and now an accessibility press wearing the name `click`. Not one of the five
-  says *no*. ⚠️ So before concluding that a **pointer** gesture is broken, check what your driver
+  The general shape is the one catalogued under *Looking and touching are two different grants*
+  above — **a mechanism that silently substitutes different behaviour instead of erroring** — and an
+  accessibility press wearing the name `click` is a member of it. (The list lives there; this one
+  used to keep a parallel tally of its own, and the two disagreed.) ⚠️ So before concluding that a
+  **pointer** gesture is broken, check what your driver
   actually posts: `.onTapGesture` is invisible to AX, and the two paths into this app genuinely
   differ (that is the whole point of `CardView`'s `.accessibilityAction`, which exists because the
   tap gesture is unreachable from assistive technology).

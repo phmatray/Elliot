@@ -33,7 +33,7 @@
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
 - **Full test:** `cd ElliotKit && swift test` (**1328 tests in 149 suites**, 5 of 5 samples on
-  `fix/147-proposal-editor-card-draft` on 2026-08-07 off `main` at `dc5c2ce`; needs no Xcode,
+  `docs/161-automation-grants-by-identity` on 2026-08-07 off `main` at `2494882`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -313,7 +313,13 @@ above within seconds.
     request. Checkpoint the WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) before and after, or a still-open
     instance will silently checkpoint your row away.
   - **Drive it with `cua-driver`**, which reads the tree and clicks by element index without bringing
-    the app to the front. Re-snapshot before every click: element indices are per-snapshot.
+    the app to the front. Re-snapshot before every click: element indices are per-snapshot. ⚠️ **Check
+    the grant first — the daemon has held neither Accessibility nor Screen Recording every time it has
+    been measured** (`cua-driver permissions status --json`, re-confirmed 2026-08-07), and without
+    Accessibility it reports `unverifiable` instead of failing. The grants belong to a *responsible
+    process*, so your own shell's answer may differ from the daemon's and from another terminal's:
+    `CLAUDE.md` § *Looking and touching are two different grants* has the ancestry walk that names your
+    identity and the probe for each channel.
   - **Or just look, since #155: `board_screenshot` over MCP.** Elliot renders its own window in
     process, so there is no TCC grant to hold and nothing has to be frontmost. ⚠️ It cannot draw
     sheets, popovers **or the toolbar's controls** — the last one is measured, not theoretical, and

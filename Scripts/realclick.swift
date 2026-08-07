@@ -21,10 +21,18 @@
 // toolchain is already a hard requirement here, so this costs a second of
 // interpretation and nothing to maintain.
 //
-// ⚠️ Posting events needs the caller to hold Accessibility. The shell does even
-// when the `cua-driver` daemon does not. Without it the events are dropped in
-// silence — the same false negative one layer down, so if every click appears
-// to do nothing, check the grant before believing the app.
+// ⚠️ Posting events needs Accessibility, held by the **responsible process** of
+// whatever shell runs this — your terminal, or Elliot itself when Elliot spawned
+// the agent session. This comment used to claim "the shell does even when the
+// `cua-driver` daemon does not"; measured 2026-08-07 from an Elliot-spawned
+// shell, it did not, and the script reported nothing about it.
+//
+// ⛔ Without the grant the events are dropped in silence and this exits **0**:
+// `CGEventPost` returns no receipt, so a failed click and a click the app
+// ignored are indistinguishable from here. That is the same false negative one
+// layer down. If every click appears to do nothing, establish the grant before
+// believing the app — see CLAUDE.md § "Looking and touching are two different
+// grants" for the probes and the ancestry walk that names your identity.
 import CoreGraphics
 import Foundation
 
