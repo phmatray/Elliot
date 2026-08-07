@@ -136,9 +136,16 @@ public func shippingLog(
             // Newest first, then by id so no two cards can tie — the same
             // reason `cardQuery` ends on `id`. Two calls against an unchanged
             // board must not disagree about what they drew.
+            //
+            // The tie-break descends, matching `doneCards`' `id DESC`. Neither
+            // direction means anything on its own, but they have to agree: the
+            // archive pages in SQL order and re-sorts each page with this
+            // function, so an ascending tie-break here would make a page of
+            // same-second cards a middle slice of its day rather than a prefix,
+            // and later pages would insert rows *above* ones already on screen.
             cards: (byDay[day] ?? []).sorted {
                 $0.columnEnteredAt == $1.columnEnteredAt
-                    ? $0.id.uuidString < $1.id.uuidString
+                    ? $0.id.uuidString > $1.id.uuidString
                     : $0.columnEnteredAt > $1.columnEnteredAt
             }
         )

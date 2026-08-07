@@ -461,8 +461,17 @@ public final class BoardStore: Sendable {
     /// `ESCAPE` clause to go with it — and the failure mode of getting that
     /// wrong is silent and generous: typing `%` returns the whole archive and
     /// looks like a successful search. `instr` has no pattern language, so
-    /// there is no escaping to get wrong. `lower` on both sides gives the same
-    /// ASCII case-insensitivity `LIKE` would have given.
+    /// there is no escaping to get wrong.
+    ///
+    /// **Both sides are folded by the same `lower`, SQLite's.** Folding the
+    /// needle in Swift instead looks equivalent and is not: `String.lowercased()`
+    /// is Unicode-aware and maps `É → é`, while SQLite's built-in `lower()` is
+    /// ASCII-only and leaves `É` alone. A card titled "ÉCRIRE la doc" was then
+    /// findable by *neither* `écrire` (needle folded, haystack not) nor
+    /// `ÉCRIRE` (needle folded away from a haystack that kept its accents) —
+    /// unfindable by any query at all. Same fold on both sides, and the
+    /// case-insensitivity is honestly ASCII-only rather than accidentally
+    /// asymmetric.
     ///
     /// A term that is entirely digits also matches an issue or pull request
     /// number, which is how you find a card whose title you have forgotten.
@@ -476,10 +485,9 @@ public final class BoardStore: Sendable {
         let term = search?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !term.isEmpty else { return request }
 
-        let needle = term.lowercased()
         var condition: SQL = """
-            (instr(lower("card"."title"), \(needle)) > 0 \
-            OR instr(lower("card"."body"), \(needle)) > 0
+            (instr(lower("card"."title"), lower(\(term))) > 0 \
+            OR instr(lower("card"."body"), lower(\(term))) > 0
             """
         if let number = Int(term) {
             condition = condition + """

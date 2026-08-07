@@ -1485,20 +1485,31 @@ public final class AppModel {
     /// answer the same filter — asking separately is how a "Load more" that
     /// loads nothing gets built.
     ///
-    /// Honours `selectedRepoID`, like every other read on this model, so the
-    /// picker means the same thing in the archive as on the board.
+    /// Honours `selectedRepoID`, like every other read on this model. The
+    /// caller has to re-ask when that changes — this reads it, it does not
+    /// watch it.
+    ///
+    /// **`nil` means "could not look", and is not the same as an empty page.**
+    /// `store` is nil until `start()` has opened it, and macOS restores an open
+    /// `Window` scene at launch — so the archive's first read can genuinely
+    /// arrive before there is a database to read. Collapsing that into
+    /// `([], 0)` let the window state "Nothing has reached Done yet." on the
+    /// strength of a question it never got to ask, permanently, because nothing
+    /// re-ran the read. Same distinction the board draws everywhere else
+    /// between an answer and an absence of one.
     public func archivePage(
         search: String,
         limit: Int,
         offset: Int
-    ) async -> (cards: [Card], total: Int) {
-        guard let store else { return ([], 0) }
+    ) async -> (cards: [Card], total: Int)? {
+        guard let store else { return nil }
         let term = search.isEmpty ? nil : search
-        let cards =
-            (try? await store.doneCards(
+        guard
+            let cards = try? await store.doneCards(
                 repoID: selectedRepoID, search: term, limit: limit, offset: offset
-            )) ?? []
-        let total = (try? await store.doneCardCount(repoID: selectedRepoID, search: term)) ?? 0
+            ),
+            let total = try? await store.doneCardCount(repoID: selectedRepoID, search: term)
+        else { return nil }
         return (cards, total)
     }
 

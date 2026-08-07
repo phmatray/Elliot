@@ -31,6 +31,16 @@ struct ArchiveState: Equatable, Sendable {
         self.total = total
     }
 
+    /// Drops every loaded row, keeping the term.
+    ///
+    /// Separate from `setSearch` because a repository change or a deletion
+    /// invalidates the rows without changing the term — and `setSearch` is
+    /// deliberately inert on an unchanged term.
+    mutating func clear() {
+        cards = []
+        total = 0
+    }
+
     /// Restarts paging under a new term.
     ///
     /// Inert when the term has not actually changed: `.task(id:)` fires on
@@ -45,6 +55,18 @@ struct ArchiveState: Equatable, Sendable {
         cards = []
         total = 0
     }
+}
+
+/// Everything the archive's answer depends on.
+///
+/// A key for `.task(id:)`, so that any of the three changing re-reads. Written
+/// out as a type rather than a tuple because `.task(id:)` needs `Equatable` and
+/// the point is that *all three* participate — a reader adding a fourth input
+/// to `archivePage` should have to come here.
+private struct ArchiveQuery: Equatable {
+    var search: String
+    var repoID: UUID?
+    var cardCount: Int
 }
 
 /// Everything that has ever reached Done.
@@ -62,6 +84,19 @@ public struct ArchiveView: View {
     @State private var state = ArchiveState()
     @State private var query = ""
     @State private var isLoading = false
+    @State private var collapsedDays: Set<Date> = []
+
+    /// Bumped by every change of filter. A page that comes back carrying a
+    /// stale generation is dropped rather than appended.
+    ///
+    /// `isLoading` alone was not enough and the difference is a real defect:
+    /// typing while a "Load more" was in flight cleared the rows, found
+    /// `isLoading` still true, returned without asking for anything — and then
+    /// the in-flight page landed in the freshly cleared state. The window then
+    /// showed page two of the *previous* filter under the new search term, with
+    /// nothing scheduled to correct it. `ArchiveState.setSearch` was right;
+    /// the sequencing around it was not.
+    @State private var generation = 0
     /// Whether a load has ever finished.
     ///
     /// Without it the window asserts "Nothing has reached Done yet." for the
@@ -93,11 +128,18 @@ public struct ArchiveView: View {
                         ShipDayHeader(
                             label: day.label,
                             count: day.cards.count,
-                            collapsed: false,
-                            onToggle: {}
-                        )
-                        ForEach(day.cards) { card in
-                            CardView(card: card)
+                            collapsed: collapsedDays.contains(day.start)
+                        ) {
+                            if collapsedDays.contains(day.start) {
+                                collapsedDays.remove(day.start)
+                            } else {
+                                collapsedDays.insert(day.start)
+                            }
+                        }
+                        if !collapsedDays.contains(day.start) {
+                            ForEach(day.cards) { card in
+                                CardView(card: card)
+                            }
                         }
                     }
                     if state.canLoadMore {
@@ -109,13 +151,25 @@ public struct ArchiveView: View {
         }
         .navigationTitle("Archive")
         .searchable(text: $query, prompt: "Search finished work")
-        .task(id: query) {
+        // Keyed on everything the answer depends on, not just the search term.
+        //
+        // - `selectedRepoID`, because `archivePage` reads it: the picker moving
+        //   while this window is open otherwise left the old repository's rows
+        //   on screen, and the next page would then be queried for the *new*
+        //   repository at the old offset — a summary reading "25 of 3 shown"
+        //   over a list of another repository's cards.
+        // - `model.cards.count`, because a card can be deleted from its context
+        //   menu — including from this window — and `state.cards` is a snapshot
+        //   that observes nothing. Without this the deleted row stayed on
+        //   screen looking like the delete had failed, and every later page was
+        //   off by one. It also self-heals the launch case: the store opens,
+        //   the count goes 0 → N, and the read that was too early runs again.
+        .task(id: ArchiveQuery(search: query, repoID: model.selectedRepoID, cardCount: model.cards.count)) {
             // A keystroke should not cost a query. Cancellation does the rest:
-            // `.task(id:)` tears the old one down when `query` changes again.
+            // `.task(id:)` tears the old one down when the key changes again.
             try? await Task.sleep(for: .milliseconds(200))
             guard !Task.isCancelled else { return }
-            state.setSearch(query)
-            if state.cards.isEmpty { await loadMore() }
+            await reload()
         }
     }
 
@@ -160,10 +214,30 @@ public struct ArchiveView: View {
             : "\(state.loaded) of \(state.total) shown"
     }
 
-    /// Guarded rather than queued: two overlapping loads would both read the
-    /// same offset and append the same page twice.
+    /// Starts the filter over: clears the rows and reads the first page.
+    ///
+    /// Bumps the generation *before* clearing, so a page still in flight for
+    /// the previous filter is discarded when it lands instead of being appended
+    /// to a result set it does not belong to.
+    private func reload() async {
+        generation += 1
+        state.setSearch(query)
+        state.clear()
+        await load(generation: generation)
+    }
+
+    /// Reads the next page under the current filter.
+    ///
+    /// `isLoading` guards a double-tap on "Load more" — two loads at the same
+    /// offset would append the same page twice. It deliberately does *not*
+    /// guard a filter change: that is the generation's job, and conflating the
+    /// two is what let a stale page land in a cleared list.
     private func loadMore() async {
         guard !isLoading else { return }
+        await load(generation: generation)
+    }
+
+    private func load(generation mine: Int) async {
         isLoading = true
         defer { isLoading = false }
 
@@ -172,6 +246,14 @@ public struct ArchiveView: View {
             limit: ArchiveState.pageSize,
             offset: state.loaded
         )
+
+        // A newer filter superseded this read while it was in flight.
+        guard mine == generation else { return }
+        // `nil` is "could not look", not "there is nothing" — leave `hasLoaded`
+        // alone so the window says nothing rather than asserting an empty
+        // archive it never confirmed.
+        guard let page else { return }
+
         state.append(page.cards, total: page.total)
         hasLoaded = true
     }

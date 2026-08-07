@@ -79,4 +79,33 @@ struct ArchiveTests {
         #expect(state.loaded == 1)
         #expect(state.total == 44)
     }
+
+    /// A repository change or a deletion invalidates the rows without changing
+    /// the term — and `setSearch` is deliberately inert on an unchanged term,
+    /// so it cannot be the thing that clears them.
+    @Test("Clearing drops the rows and the total but keeps the term")
+    func clearKeepsTheTerm() {
+        var state = ArchiveState()
+        state.setSearch("log")
+        state.append([card("a"), card("b")], total: 44)
+        state.clear()
+
+        #expect(state.cards.isEmpty)
+        #expect(state.loaded == 0)
+        #expect(state.total == 0)
+        #expect(!state.canLoadMore)
+        #expect(state.search == "log")
+    }
+
+    /// `nil` from `archivePage` means "could not look" — the store is not open
+    /// yet, or the read threw. An empty page means "there is nothing". The
+    /// window says different things about the two, so they cannot be the same
+    /// value.
+    @MainActor
+    @Test("A model with no store answers 'could not look', not 'nothing'")
+    func noStoreIsNotAnEmptyArchive() async {
+        let model = AppModel()
+        let page = await model.archivePage(search: "", limit: 25, offset: 0)
+        #expect(page == nil)
+    }
 }

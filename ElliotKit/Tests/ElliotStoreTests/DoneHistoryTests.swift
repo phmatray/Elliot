@@ -118,6 +118,49 @@ struct DoneHistoryTests {
         #expect(try await store.doneCardCount(search: "p_ain") == 0)
     }
 
+    /// Both sides have to be folded by the *same* `lower`. Folding the needle
+    /// in Swift (Unicode-aware, `É → é`) against a haystack folded by SQLite
+    /// (ASCII-only, `É` untouched) made an uppercase-accented title findable by
+    /// no query at all — not by the accented form, not by the exact string.
+    @Test("An uppercase accented title is findable, in either case")
+    func accentedTitleIsFindable() async throws {
+        let store = try BoardStore.inMemory()
+        let repo = makeRepo()
+        try await store.saveRepo(repo)
+        try await store.saveCard(doneCard("ÉCRIRE la doc", repoID: repo.id))
+        try await store.saveCard(doneCard("plain", repoID: repo.id))
+
+        #expect(try await store.doneCardCount(search: "ÉCRIRE") == 1)
+        #expect(try await store.doneCardCount(search: "la doc") == 1)
+        // ASCII case-insensitivity still holds, which is all `lower()` promises.
+        #expect(try await store.doneCardCount(search: "LA DOC") == 1)
+    }
+
+    /// The archive re-sorts each page with `shippingLog`, so the two orderings
+    /// have to agree — otherwise a page of same-second cards is a middle slice
+    /// of its day rather than a prefix, and later pages insert rows above ones
+    /// already on screen.
+    @Test("Ties page in descending id, matching the model's tie-break")
+    func tieOrderMatchesTheModel() async throws {
+        let store = try BoardStore.inMemory()
+        let repo = makeRepo()
+        try await store.saveRepo(repo)
+        let ids = [
+            UUID(uuidString: "00000000-0000-0000-0000-0000000000AA")!,
+            UUID(uuidString: "00000000-0000-0000-0000-0000000000BB")!,
+            UUID(uuidString: "00000000-0000-0000-0000-0000000000CC")!,
+        ]
+        for id in ids {
+            var card = doneCard("tied", repoID: repo.id)
+            card.id = id
+            try await store.saveCard(card)
+        }
+
+        let paged = try await store.doneCards(limit: 3)
+        let grouped = shippingLog(paged, now: epoch, calendar: .current, horizonDays: nil)
+        #expect(paged.map(\.id) == grouped.days.flatMap(\.cards).map(\.id))
+    }
+
     @Test("An all-digit query also matches the issue or pull request number")
     func searchByNumber() async throws {
         let store = try BoardStore.inMemory()

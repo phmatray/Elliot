@@ -1016,6 +1016,16 @@ struct ColumnView: View {
                 // `CardReorder.placement` is about to decline anyway.
                 guard id != card.id else { return false }
 
+                // Done is drawn in `columnEnteredAt` order, so a placement
+                // inside it cannot be honoured: `reorder` would write an
+                // `orderIndex` the column does not read and the card would
+                // redraw exactly where it was. Refused at the gesture, so the
+                // drag snaps back — the same answer #47's review demanded for
+                // every other move the board is about to decline. A drop from
+                // *another* column still passes, because that is a column
+                // change and `reorder` performs it.
+                if card.column == .done, model.card(id: id)?.column == .done { return false }
+
                 // Only a drop from *another* column can be refused; asking
                 // `refuse` about a same-column drop would answer "same column"
                 // and put a refusal note on a gesture that is allowed.
@@ -1026,6 +1036,11 @@ struct ColumnView: View {
                 Task { await model.reorder(cardID: id, in: card.column, above: card) }
                 return true
             } isTargeted: { targeted in
+                // No insertion cue in Done: it would promise a position the
+                // column cannot show. The column's own highlight still says the
+                // drop is accepted, which for a card arriving from elsewhere it
+                // is.
+                guard card.column != .done else { return }
                 insertAbove = targeted ? card.id : (insertAbove == card.id ? nil : insertAbove)
             }
             .onDrag {
