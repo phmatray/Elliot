@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1161 tests in 134 suites**, measured on
-  `fix/116-swift-floor` on 2026-08-07 off `main` at `c9b8531`, 3 of 3 samples; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1167 tests in 135 suites**, 3 of 3 samples on
+  `fix/116-swift-floor` on 2026-08-07 off `main` at `9de425e`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -51,18 +51,27 @@
     your own untouched run and compare against *that*, never against this line. Sixth in #155
     (1061 → 1098, 124 → 129), taken from a five-sample run rather than one — and then **again inside
     the same pull request** after merging `main`, which is the seventh correction and the clearest
-    demonstration yet that this line is a date-stamp, not a fact.
-  - ⚠️ **#140 and #155 both called themselves "the sixth correction", and neither was wrong —
-    which is the sharpest thing this list has to say.** They ran concurrently and each measured a
-    tree the other had not seen (1061 → 1116 and 1061 → 1098), then collided in this very line at
-    merge. Inside #140 alone the number moved three times: 1116 after its first sync, 1119 when #164
-    landed mid-review, 1161 when #155 landed during the final one. **The value is stale the moment
-    `main` moves, and it moves during your pull request.** Do not diff against this line; take your
-    own baseline from your own untouched run, and expect to re-take it after every sync.
-  - ⛔ **And do not write the number down before the run prints it.** Resolving the #155 collision
-    above, this line was first filled in with a *predicted* 1177 — arrived at by adding the branches
-    together — and the run said **1161**. Caught immediately, but it is the same act the whole bullet
-    warns against, committed while editing the warning itself.
+    demonstration yet that this line is a date-stamp, not a fact. Eighth and ninth in #159
+    (1076 → 1122 → 1125), then a **tenth** at 1167 in 135 when this branch merged #155's own landing.
+    - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
+      to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
+      authors each measured honestly, each counted from the last number they could see, and the
+      count only means anything in landing order. If a third branch is open while you read this,
+      **your number is already wrong** — take the run, not the line.
+    - There *was* a third: **#140 wrote "sixth" too**, and collided here twice more — once against
+      #155's landing and once against #159's. Inside that one pull request the number moved four
+      times (1116 → 1119 → 1161 → the value above) without the branch adding a single test. Three
+      concurrent authors, three honest "sixth"s. The ordinal is not worth maintaining; the date-stamp
+      and the commit it was taken at are.
+    - #159's split is still the useful detail: its untouched branch already ran 1116 before a line of
+      its own tests existed, so 40 of its 46 were unrecorded drift and only 6 were the branch's own.
+      A correction here is rarely evidence that the previous author miscounted; it is mostly the
+      interval since they looked.
+  - ⛔ **Do not write the number down before the run prints it.** Resolving one of these collisions in
+    #140, this line was first filled in with a *predicted* 1177 — arrived at by adding the two
+    branches together — and the run said **1161**. Caught immediately, but it is exactly the act the
+    bullet above warns against, committed while editing the warning itself. Put a placeholder in and
+    let the run overwrite it.
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.

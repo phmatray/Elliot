@@ -148,7 +148,12 @@ struct CardView: View {
         //
         // Only the selected card contributes. Every other card writes the empty
         // value, which `CaretAnchorKey.reduce` merges away.
-        .anchorPreference(key: CaretAnchorKey.self, value: .bounds) { bounds in
+        //
+        // Through `reportsCaretAnchor` rather than a bare `.anchorPreference`:
+        // this card has children, so the same ancestor-replaces-subtree rule
+        // that cost #159 applies here the moment anything below reports an
+        // anchor. The helper is the one supported way to write this key.
+        .reportsCaretAnchor { bounds in
             isSelected ? CaretAnchors(card: bounds) : CaretAnchors()
         }
     }
