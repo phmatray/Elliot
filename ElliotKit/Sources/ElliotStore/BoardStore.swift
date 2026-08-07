@@ -216,8 +216,14 @@ public final class BoardStore: Sendable {
     ///
     /// Answers the question the analysis setup screen raises and never answered:
     /// what a six-lens read actually costs, as against filing an issue.
+    ///
+    /// The decode happens *inside* the read block, like every other aggregate here.
+    /// Handing `[Row]` back out would not merely be untidy: `Row` is not `Sendable`,
+    /// so the `async` overload of `read` stops applying and the call quietly resolves
+    /// to the blocking one — `await` on an expression that never suspends, holding a
+    /// cooperative thread for the length of the query.
     public func spendByKind(since: Date) async throws -> [SkillKind: Spend] {
-        let rows = try await reader.read { db in
+        try await reader.read { db in
             try Row.fetchAll(
                 db,
                 sql: #"""
@@ -232,17 +238,15 @@ public final class BoardStore: Sendable {
                     """#,
                 arguments: [since]
             )
+            .reduce(into: [SkillKind: Spend]()) { byKind, row in
+                guard let raw: String = row["kind"], let kind = SkillKind(rawValue: raw) else { return }
+                byKind[kind] = Spend(
+                    totalUSD: row["total"] ?? 0,
+                    runs: row["runs"] ?? 0,
+                    unknownCost: row["unknown"] ?? 0
+                )
+            }
         }
-        var byKind: [SkillKind: Spend] = [:]
-        for row in rows {
-            guard let raw: String = row["kind"], let kind = SkillKind(rawValue: raw) else { continue }
-            byKind[kind] = Spend(
-                totalUSD: row["total"] ?? 0,
-                runs: row["runs"] ?? 0,
-                unknownCost: row["unknown"] ?? 0
-            )
-        }
-        return byKind
     }
 
     /// What one analysis cost, across all of its lenses.
