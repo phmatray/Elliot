@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1050 tests in 122 suites**, measured on
-  `refactor/141-offline-responder` on 2026-08-07 off `main` at `1218e12`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1061 tests in 124 suites**, measured on
+  `refactor/146-child-process` on 2026-08-07 off `main` at `39b977e`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -46,7 +46,9 @@
     line when you notice the gap** — that is three separate corrections in one pull request, so
     re-read it from your own last run rather than from this line. Corrected again in #141
     (1034 → 1050, 119 → 122 suites) — that is a fourth correction, and the drift is now
-    routine enough that the line's *value* is worth less than its date-stamp.
+    routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
+    in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
+    your own untouched run and compare against *that*, never against this line.
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
@@ -201,6 +203,15 @@ before flipping a PR ready: -->
 - **One funnel.** `BoardService` is the *only* thing that changes a card's column. A drag and an MCP
   `board_move_card` must reach the same two methods; callers supply only an origin. Never add a second
   path that mutates a column.
+- **One spawn.** `ChildProcess` is the *only* thing that starts a child, drains its pipes and
+  publishes its exit. `ProcessRunner` and `StreamingProcess` are wrappers differing only in a
+  `ChildOutputSink`, whose methods are called **while the drain lock is held** — that is the
+  invariant, not an implementation detail, and a sink invoked after the lock is released is the
+  tail-dropping bug restored. A plan that needs a third kind of child writes a sink; it does not
+  write a fourth drain. This was two copies until #146, in the same words: eight comment lines were
+  byte-identical between the two files, having already cost three defects each fixed in one file
+  (`22bb230`, `3b1c226`/#18, `36b6da6`/#105). `DrainDuplicationTests` re-derives that count on every
+  `swift test` and fails naming what is written twice.
 - **`ElliotMCPKit` imports neither `ElliotEngine` nor `ElliotProcess`** — deliberately, and it is
   asserted in `Package.swift`'s comments. The helper holds no copy of the rules, never spawns `claude`,
   and never writes the database, so it cannot diverge from the board. Adding either dependency breaks
