@@ -91,7 +91,7 @@ jobs:
     # the honest way to spend fewer minutes.
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: The runner's toolchain against the floor Package.swift declares
         run: |
