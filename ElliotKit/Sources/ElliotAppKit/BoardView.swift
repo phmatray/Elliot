@@ -795,6 +795,10 @@ struct ColumnView: View {
     /// Per column and per repository, so collapsing a repository in Backlog does
     /// not hide it in To Do — the two are different questions.
     @State private var collapsed: Set<UUID> = []
+    /// Which days in Done are folded away. A separate set from `collapsed`
+    /// rather than a widened one: a repository and a day are different things
+    /// to have folded, and one column never shows both.
+    @State private var collapsedDays: Set<Date> = []
     /// The card a drop would land above, or `nil` when the pointer is not over
     /// one. Held on the column rather than as `@State` inside each card, so
     /// exactly one insertion cue can be drawn at a time — two bars would say the
@@ -903,10 +907,19 @@ struct ColumnView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 6) {
-                    // Grouped only when the picker says "All repositories".
-                    // With one repository chosen every card belongs to it, and a
-                    // header repeating its name on every column is furniture.
-                    if let groups {
+                    // Done is grouped by *day*, and that branch is taken before
+                    // the repository one on purpose. Nesting the two would give
+                    // this column two levels of heading where every other has
+                    // one, and nothing is lost by choosing: `CardView` already
+                    // prints the repository name on the card itself whenever
+                    // the picker says "All repositories", which is exactly when
+                    // `groups` is non-nil.
+                    if column == .done {
+                        shippingLogRows
+                    } else if let groups {
+                        // Grouped only when the picker says "All repositories".
+                        // With one repository chosen every card belongs to it, and a
+                        // header repeating its name on every column is furniture.
                         ForEach(groups) { group in
                             groupHeader(group)
                             if !collapsed.contains(group.repoID) {
@@ -1044,6 +1057,41 @@ struct ColumnView: View {
     private var groups: [CardGroup]? {
         guard model.selectedRepoID == nil else { return nil }
         return groupByRepo(cards, repos: model.repos)
+    }
+
+    /// Done's cards, bucketed by the day they landed and cut to the horizon.
+    ///
+    /// Computed per access, like `groups` beside it and for the same reason:
+    /// the rule is cheap, and caching it would need something to invalidate the
+    /// cache — including at midnight, when the answer changes without any card
+    /// moving.
+    private var doneLog: ShippingLog { model.doneLog() }
+
+    /// A heading per day, newest first, each foldable.
+    ///
+    /// The rows are `draggable(_:)` exactly like every other column's, so a
+    /// finished card can still be dragged back out — Done is a horizon on what
+    /// is *drawn*, never a change to what a card is or what may be done to it.
+    @ViewBuilder
+    private var shippingLogRows: some View {
+        ForEach(doneLog.days) { day in
+            ShipDayHeader(
+                label: day.label,
+                count: day.cards.count,
+                collapsed: collapsedDays.contains(day.start)
+            ) {
+                if collapsedDays.contains(day.start) {
+                    collapsedDays.remove(day.start)
+                } else {
+                    collapsedDays.insert(day.start)
+                }
+            }
+            if !collapsedDays.contains(day.start) {
+                ForEach(day.cards) { card in
+                    draggable(card)
+                }
+            }
+        }
     }
 
     /// Deliberately carries no `dropDestination`.

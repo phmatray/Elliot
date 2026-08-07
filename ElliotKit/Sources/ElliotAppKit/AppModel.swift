@@ -711,6 +711,29 @@ public final class AppModel {
             .sorted { $0.orderIndex < $1.orderIndex }
     }
 
+    /// Done as a dated log rather than a pile.
+    ///
+    /// Built on `cards(in:)` so the repository picker is applied in exactly one
+    /// place — a second filter here is how the board and this column would come
+    /// to disagree about what "All repositories" means.
+    ///
+    /// The log re-sorts by `columnEnteredAt`, which makes Done the one column
+    /// whose on-screen order is not `orderIndex`. That is deliberate:
+    /// `orderIndex` records a position a human chose while the card was still
+    /// in play, and it says nothing once the card is finished. Noted here
+    /// because an asymmetry nobody wrote down reads as a bug to whoever finds
+    /// it next.
+    ///
+    /// `now` and `calendar` are parameters with ambient defaults: the view
+    /// wants the wall clock, and a test cannot have one.
+    public func doneLog(
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        horizonDays: Int? = ShippingLog.defaultHorizonDays
+    ) -> ShippingLog {
+        shippingLog(cards(in: .done), now: now, calendar: calendar, horizonDays: horizonDays)
+    }
+
     public func repo(for card: Card) -> Repo? {
         repos.first { $0.id == card.repoID }
     }
