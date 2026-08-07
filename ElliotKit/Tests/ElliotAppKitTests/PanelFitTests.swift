@@ -41,7 +41,7 @@ struct PanelFitTests {
     func shutBoardExactlyFillsTheViewport() {
         for boardWidth in boardWidths where boardWidth >= 1190 {
             #expect(
-                PanelLayout.contentWidth(boardWidth: boardWidth, spans: nil) == boardWidth,
+                PanelLayout.contentWidth(boardWidth: boardWidth, spans: nil, analysisSpans: nil) == boardWidth,
                 "at \(boardWidth)pt"
             )
         }
@@ -52,9 +52,9 @@ struct PanelFitTests {
     /// issue's arithmetic applies.
     @Test("Below the floor's hinge the shut board already overflows")
     func belowTheHingeTheShutBoardOverflows() {
-        #expect(PanelLayout.contentWidth(boardWidth: 1000, spans: nil) > 1000)
+        #expect(PanelLayout.contentWidth(boardWidth: 1000, spans: nil, analysisSpans: nil) > 1000)
         // 5 × 226 + 6 × 10.
-        #expect(PanelLayout.contentWidth(boardWidth: 1000, spans: nil) == 1190)
+        #expect(PanelLayout.contentWidth(boardWidth: 1000, spans: nil, analysisSpans: nil) == 1190)
     }
 
     /// Criterion 2's own window, with the numbers it asks about.
@@ -69,10 +69,10 @@ struct PanelFitTests {
         #expect(columnWidth == 290)
 
         let narrow = PanelLayout.contentWidth(
-            boardWidth: criterionWidth, spans: PanelLayout.spanChoices.narrow
+            boardWidth: criterionWidth, spans: PanelLayout.spanChoices.narrow, analysisSpans: nil
         )
         let wide = PanelLayout.contentWidth(
-            boardWidth: criterionWidth, spans: PanelLayout.spanChoices.wide
+            boardWidth: criterionWidth, spans: PanelLayout.spanChoices.wide, analysisSpans: nil
         )
         #expect(narrow == 2110)
         #expect(wide == 2410)
@@ -92,7 +92,7 @@ struct PanelFitTests {
     func noWindowWidthFitsAnOpenPanel() {
         for boardWidth in boardWidths {
             for spans in [PanelLayout.spanChoices.narrow, PanelLayout.spanChoices.wide] {
-                let content = PanelLayout.contentWidth(boardWidth: boardWidth, spans: spans)
+                let content = PanelLayout.contentWidth(boardWidth: boardWidth, spans: spans, analysisSpans: nil)
                 #expect(content > boardWidth, "\(spans) spans at \(boardWidth)pt fits, unexpectedly")
             }
         }
@@ -115,18 +115,18 @@ struct PanelFitTests {
         for (boardWidth, row) in expected {
             #expect(PanelLayout.columnWidth(boardWidth: boardWidth) == row.columns, "at \(boardWidth)")
             #expect(
-                PanelLayout.contentWidth(boardWidth: boardWidth, spans: nil) == row.shut,
+                PanelLayout.contentWidth(boardWidth: boardWidth, spans: nil, analysisSpans: nil) == row.shut,
                 "shut at \(boardWidth)"
             )
             #expect(
                 PanelLayout.contentWidth(
-                    boardWidth: boardWidth, spans: PanelLayout.spanChoices.narrow
+                    boardWidth: boardWidth, spans: PanelLayout.spanChoices.narrow, analysisSpans: nil
                 ) == row.narrow,
                 "narrow at \(boardWidth)"
             )
             #expect(
                 PanelLayout.contentWidth(
-                    boardWidth: boardWidth, spans: PanelLayout.spanChoices.wide
+                    boardWidth: boardWidth, spans: PanelLayout.spanChoices.wide, analysisSpans: nil
                 ) == row.wide,
                 "wide at \(boardWidth)"
             )
