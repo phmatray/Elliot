@@ -61,6 +61,15 @@ public final class AppModel {
     /// and the store, reconciled. The judgement is `RepoReconciler`'s — the page
     /// renders it and never decides anything itself.
     public private(set) var repoRows: [RepoRow] = []
+
+    /// The owners `gh repo list` never answered for, from the same pass that
+    /// produced `repoRows` (#148).
+    ///
+    /// Assigned beside the rows and nowhere else: the banner and the rows have
+    /// to describe one refresh. A failure surviving into a later pass would be a
+    /// second way of saying something nobody measured, which is the defect this
+    /// carries the answer to rather than a place to reintroduce it.
+    public private(set) var repoListingFailures: [OwnerListingFailure] = []
     public private(set) var layout: RepoTreeLayout = .portfolio
     public private(set) var isReconciling = false
 
@@ -1255,8 +1264,14 @@ public final class AppModel {
     /// this feature exists to disprove.
     private func reloadRepoRows() async {
         guard let registry else { return }
-        let reconciled = await registry.rows(layout: layout)
-        repoRows = await registry.probe(reconciled)
+        let page = await registry.rows(layout: layout)
+        let probed = await registry.probe(page.rows)
+        // One assignment site for both halves, and the rows assigned last: the
+        // page reads `repoRows` to decide whether to speak at all, so a banner
+        // that arrived a turn before the rows it belongs to would briefly
+        // describe the previous pass.
+        repoListingFailures = page.listingFailures
+        repoRows = probed
     }
 
     /// Fast-forwards every clone the probe found strictly behind, and keeps the
