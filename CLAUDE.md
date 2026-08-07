@@ -408,8 +408,17 @@ closure in `BoardView.board`:
 
 ```swift
 .overlayPreferenceValue(CaretAnchorKey.self) { anchors in
-    let _ = try? "card:\(anchors.card != nil) list:\(anchors.list != nil) panel:\(anchors.panel != nil)\n"
-        .appendToFile("/tmp/caret-probe.log")          // sketch; any file sink will do
+    let _ = {
+        let line = "card:\(anchors.card != nil) list:\(anchors.list != nil) panel:\(anchors.panel != nil)\n"
+        let url = URL(fileURLWithPath: "/tmp/caret-probe.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: url)
+        }
+    }()
     CaretRail(anchors: anchors, flipped: isPanelFlipped)
 }
 ```

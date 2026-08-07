@@ -63,6 +63,45 @@ enum CaretAnchorKey: PreferenceKey {
     }
 }
 
+/// Report one of the caret's three rectangles, from a subtree of one's own.
+///
+/// **The only supported way to write `CaretAnchorKey`**, and the reason is
+/// #159. A bare `.anchorPreference` is correct on a leaf and quietly wrong on a
+/// container: applied to a view that is an *ancestor* of another writer it
+/// **replaces** that writer's value rather than merging with it, and `reduce`
+/// — which is the whole defence for this key — is never called for the pair.
+/// `ColumnView.list` was that container, and the selected card's rectangle was
+/// discarded one level below the overlay for two releases while every
+/// arithmetic test stayed green.
+///
+/// Reporting from a `.background` makes the two siblings instead, which is the
+/// case that always worked. The rect is unchanged: background content is sized
+/// by the view it backs, so this measures exactly what the modifier applied
+/// directly would have measured, and `Color.clear` claims no space.
+///
+/// Written as one helper rather than three call sites because the safe form and
+/// the broken form look equally reasonable in a diff — the point is that the
+/// broken one is no longer expressible where the caret is concerned.
+/// `CaretAnchorTests` holds that: it reads this target and fails if the key is
+/// written anywhere but here.
+///
+/// ⚠️ `allowsHitTesting(false)` is not tidiness. A background lies under its
+/// view, and the columns deselect on a tap that reaches their empty space — a
+/// `Color.clear` that took hits would sit between the reader and that gesture,
+/// which is the class of defect #158 is about. It reports geometry and takes
+/// nothing.
+extension View {
+    func reportsCaretAnchor(
+        _ transform: @escaping (Anchor<CGRect>) -> CaretAnchors
+    ) -> some View {
+        background {
+            Color.clear
+                .anchorPreference(key: CaretAnchorKey.self, value: .bounds, transform: transform)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
 // MARK: - The caret's own shape
 
 /// The numbers the caret and the tether are placed from, with no view attached.
