@@ -722,6 +722,38 @@ struct AppModelTests {
         #expect(rows.contains { $0.id == fixture.run.id })
     }
 
+    @Test("One runStarted reaches both Cancel affordances")
+    func runStartedReachesBothCancelAffordances() async throws {
+        // What this pins and what it does not.
+        //
+        // It pins the two *collections* the two Cancel affordances are gated
+        // on, after a single `.runStarted`: `activeRuns[card]` — read by
+        // `CardView.activeRun` for `RunningStrip` (`CardView.swift:49`) and for
+        // the card's context-menu item (`:165`, `:188`) — and
+        // `runsByCard[card]`, read by `RunsPane.body` (`RunsPane.swift:17`) for
+        // the `RunBox` whose own Cancel button sits at `:227`. The card's half
+        // already worked before this story; it is here as a regression pin, so
+        // a change that fills `runsByCard` by emptying `activeRuns` is not a
+        // trade this suite would call a fix.
+        //
+        // It cannot see either control on screen. `swift test` has no layout,
+        // and this repository has paid three merges for pretending otherwise
+        // (#47, #50, #52, #53). That half is Task 4's look, recorded in the PR.
+        let fixture = try await startedRunFixture()
+
+        fixture.model.apply(.runStarted(runID: fixture.run.id, cardID: fixture.card.id))
+
+        let rows = try await awaitRuns(cardID: fixture.card.id, in: fixture.model)
+        let active = try await awaitActiveRun(cardID: fixture.card.id, in: fixture.model)
+        #expect(active.id == fixture.run.id)
+        #expect(rows.first?.id == fixture.run.id)
+        // Both gates read `state.isCancellable`, not merely "a run is present",
+        // so the pin is about the Cancel being *offered* rather than about a
+        // dictionary having been written to.
+        #expect(active.state.isCancellable)
+        #expect(rows.first?.state.isCancellable == true)
+    }
+
     @Test("A run with no card — an analysis — adds nothing to any card's runs")
     func runStartedWithoutACardTouchesNoCardsRuns() async throws {
         // An analysis run belongs to a repository, not to a card, and
