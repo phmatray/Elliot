@@ -75,6 +75,22 @@ public struct GHPullRequest: Codable, Sendable, Hashable {
     public var isClosedUnmerged: Bool { state.uppercased() == "CLOSED" && mergedAt == nil }
     /// The state the board calls "In Review": open and no longer a draft.
     public var isReadyForReview: Bool { isOpen && !isDraft }
+
+    /// The same three conclusions `Verifier` reaches, stated in the same
+    /// vocabulary — so `PRWatcher` joins that vocabulary instead of
+    /// paraphrasing it into a fourth copy of a switch that lives elsewhere.
+    ///
+    /// The order matters: GitHub reports a merged pull request as `CLOSED`
+    /// with `mergedAt` set, so `isMerged` — which reads both — must be asked
+    /// first, or every merge would be read as an abandonment.
+    ///
+    /// `commitSHA` is `nil` because `gh pr list` does not carry it; the merge
+    /// commit is something only `GHMergeStatus` knows.
+    public var verifiedOutcome: VerifiedOutcome {
+        if isMerged { return .merged(commitSHA: nil) }
+        if isClosedUnmerged { return .closedUnmerged }
+        return .prOpen(number: number, url: url, isDraft: isDraft, branch: headRefName)
+    }
 }
 
 public struct GHMergeStatus: Codable, Sendable, Hashable {

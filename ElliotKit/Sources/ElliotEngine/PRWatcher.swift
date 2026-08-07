@@ -85,7 +85,16 @@ public actor PRWatcher {
 
     /// Applies whatever the pull request says about this card. Returns whether
     /// anything changed.
-    private func reconcile(card: Card, against prs: [GHPullRequest]) async -> Bool {
+    ///
+    /// It used to re-derive the three conclusions — open, merged, closed
+    /// unmerged — straight from the `GHPullRequest`, which is why this was the
+    /// site that drifted without looking like a fourth copy of a switch that
+    /// lives elsewhere. It states them in the verifier's vocabulary now, and
+    /// what they do to a card is decided once, in `ElliotModel`.
+    ///
+    /// Internal rather than private so the tests can drive one sighting at a
+    /// time, the way `tick()` is.
+    func reconcile(card: Card, against prs: [GHPullRequest]) async -> Bool {
         let match: GHPullRequest? = if let number = card.prNumber {
             prs.first { $0.number == number }
         } else if let issue = card.issueNumber {
@@ -95,30 +104,14 @@ public actor PRWatcher {
         }
         guard let pr = match else { return false }
 
-        // Learn the PR the first time it is seen.
-        if card.prNumber != pr.number || card.branch != pr.headRefName {
-            var updated = card
-            updated.prNumber = pr.number
-            updated.prURL = pr.url
-            updated.branch = pr.headRefName
-            try? await store.saveCard(updated)
-        }
+        let result = pr.verifiedOutcome.applied(to: card, attribution: .live)
+        guard result.changed else { return false }
 
-        if pr.isMerged, card.column != .done {
-            await mover?.applySystemMove(cardID: card.id, to: .done, reason: .prMergedExternally)
-            return true
+        try? await store.saveCard(result.card)
+        if let move = result.move {
+            await mover?.applySystemMove(cardID: card.id, to: move.column, reason: move.reason)
         }
-        if pr.isReadyForReview, card.column == .inProgress {
-            await mover?.applySystemMove(cardID: card.id, to: .inReview, reason: .prBecameReady)
-            return true
-        }
-        if pr.isClosedUnmerged, card.lastError == nil {
-            var updated = card
-            updated.lastError = "The pull request was closed without being merged."
-            try? await store.saveCard(updated)
-            return true
-        }
-        return false
+        return true
     }
 
     /// ±20%, so several repos do not fall into lockstep.

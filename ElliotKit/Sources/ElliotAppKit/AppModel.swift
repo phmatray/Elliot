@@ -78,6 +78,14 @@ public final class AppModel {
     /// succeeds, so it names a live problem rather than a historical one.
     public private(set) var startupFailure: String?
 
+    /// How many repository rows the last read could not decode.
+    ///
+    /// One bad row costs one repository now rather than the whole list, but the
+    /// cost is still stated — `BoardPhase.skippedNote` turns this into the
+    /// sentence beside the board. Zero means every row read, which is why a
+    /// healthy board says nothing.
+    public private(set) var unreadableRepoCount = 0
+
     /// Which of the board's four screens is the true one.
     ///
     /// Asked of `ElliotModel` rather than decided here, because the defect this
@@ -86,16 +94,32 @@ public final class AppModel {
     public var boardPhase: BoardPhase {
         BoardPhase.of(
             hasLoadedRepos: hasLoadedRepos, isReady: isReady,
-            repoCount: repos.count, failure: startupFailure)
+            repoCount: repos.count, failure: startupFailure,
+            unreadableCount: unreadableRepoCount)
     }
 
     /// Sheet and inspector state, here rather than in a view, because a menu
     /// command cannot reach a view's `@State`.
-    ///
-    /// Analysis is deliberately absent: it is a `Window` scene now, so its
-    /// presentation is `openWindow`'s business and there is no flag to keep in
-    /// step with it.
     public var showingInspector = true
+
+    /// Whether the analysis panel is showing, as the board row's leading slot.
+    ///
+    /// ⚠️ **This is not ``analysis``.** Hiding the panel must leave the session,
+    /// its runs and its live proposal observation exactly where they are:
+    /// ``closeAnalysis()`` drops the `AnalysisSession`, and
+    /// ``ObservationHandle`` cancels the observation from its `deinit` — so a
+    /// toggle that called it would silently stop proposals landing while eight
+    /// lenses were still reading. Only `Finish`, in the panel's footer, ends a
+    /// session.
+    ///
+    /// Hidden at launch, unlike ``showingInspector``: the detail panel costs
+    /// nothing with no card selected, whereas this one would claim three
+    /// columns of the board for a setup form nobody asked for.
+    ///
+    /// This comment used to say the analysis had no flag at all, because it was
+    /// a `Window` scene and its presentation was `openWindow`'s business. #151
+    /// made it a panel; the scene is gone.
+    public var showingAnalysisPanel = false
 
     /// How many board columns wide the detail panel is.
     ///
@@ -109,6 +133,38 @@ public final class AppModel {
     /// merge confirmation stays in the header at both, where no switch can hide
     /// it.
     public var panelSpans = 3
+
+    /// How many board columns wide the analysis panel is.
+    ///
+    /// The same kind of reader preference ``panelSpans`` is, and deliberately a
+    /// *separate* one: they are two panels a reader sets independently, and the
+    /// board is wide enough to want them at different widths. Sharing one
+    /// number would mean widening the analysis to read a proposal also widened
+    /// the card detail nobody was looking at.
+    ///
+    /// 3 for the same reason `panelSpans` is: the setup screen's lens grid is
+    /// two columns, and a proposal row carries a title, a narrative, a
+    /// rationale and an evidence strip.
+    public var analysisSpans = 3
+
+    /// What the analysis panel's setup form holds, and which proposals are
+    /// staged for a bulk accept or reject.
+    ///
+    /// ⚠️ **On the model, not in the view, because hiding the panel destroys the
+    /// view.** `showingAnalysisPanel = false` removes `.analysis` from
+    /// `PanelLayout.boardOrder`, which tears down `AnalysisPanelView` and every
+    /// `@State` in it. As `@State` these four made the hide lossy in a way the
+    /// README, `CLAUDE.md` and the ✕'s own tooltip all say it is not: tick six
+    /// lenses, type instructions, raise the limit, glance at Backlog, and come
+    /// back to two lenses and an empty field. `AnalysisSessionTests` proved only
+    /// that `analysis` survived — the half that already lived here.
+    ///
+    /// Same argument as ``logFilter`` below, one panel over.
+    public var analysisAngles: Set<AnalysisAngle> = [.bugs, .quickWins]
+    public var analysisInstructions = ""
+    public var analysisMaxStories = 8
+    /// The proposals staged for the footer's Accept / Reject.
+    public var analysisSelection: Set<UUID> = []
 
     /// Which rows of a run log the panel is showing.
     ///
@@ -133,11 +189,11 @@ public final class AppModel {
     public var defaultRepoIDForNewCard: UUID? { selectedRepoID ?? repos.first?.id }
 
     /// The analysis the window is showing. `nil` means it is still in setup.
-    public private(set) var activeAnalysisID: UUID?
-    public private(set) var analysisRuns: [SkillRun] = []
-    public private(set) var proposals: [StoryProposal] = []
-    /// Whatever the window needs to say about the last action.
-    public private(set) var analysisNote: String?
+    ///
+    /// One value rather than four members and a task: they have one lifetime,
+    /// and holding them apart meant `openAnalysis` and `closeAnalysis` each
+    /// had to enumerate it. They had already drifted — see ``AnalysisSession``.
+    public private(set) var analysis: AnalysisSession?
 
     /// Live tail per run, for the card's strip and the panel's log. Bounded —
     /// the file on disk is the complete record.
@@ -244,7 +300,6 @@ public final class AppModel {
     /// When this launch began. The audit observation starts here so relaunching
     /// does not replay a week of history as a week of banners.
     private let launchedAt = Date()
-    private var proposalObservation: Task<Void, Never>?
 
     public init() {}
 
@@ -394,7 +449,15 @@ public final class AppModel {
     private func startIPC(board: BoardService, store: BoardStore, analysis: AnalysisService) {
         do {
             let token = try IPCServer.loadOrCreateToken(at: StoreLocation.tokenURL)
-            let handler = MCPRequestHandler(store: store, board: board, analysis: analysis)
+            // The one place the app hands the engine a way to look at itself.
+            // `MCPRequestHandler` defaults this to `nil` and refuses a
+            // screenshot without it, so every headless construction — the tests,
+            // the parity harness — is honest about having no windows rather than
+            // reporting a picture of none.
+            let handler = MCPRequestHandler(
+                store: store, board: board, analysis: analysis,
+                capture: AppKitWindowCapture()
+            )
             let server = IPCServer(
                 socketPath: StoreLocation.socketURL.path,
                 token: token
@@ -415,7 +478,8 @@ public final class AppModel {
 
     public func shutdown() async {
         observationTasks.forEach { $0.cancel() }
-        proposalObservation?.cancel()
+        // Dropping the session cancels its observation.
+        analysis = nil
         await watcher?.stop()
         ipcServer?.stop()
     }
@@ -513,9 +577,12 @@ public final class AppModel {
         let repoObservation = store.observeRepos()
         observationTasks.append(Task { [weak self] in
             do {
-                for try await repos in repoObservation {
+                for try await scan in repoObservation {
                     await MainActor.run {
-                        self?.repos = repos
+                        self?.repos = scan.repos
+                        // Carried, not dropped: the board says how many rows it
+                        // could not read beside the ones it could.
+                        self?.unreadableRepoCount = scan.unreadable
                         // Set on every delivery, including an empty one: an
                         // empty store is a loaded store, and the board's real
                         // empty state must be reachable.
@@ -524,7 +591,7 @@ public final class AppModel {
                         // failed before it. Left set, a transient error would
                         // keep accusing a store that is now being read.
                         self?.startupFailure = nil
-                        if self?.selectedRepoID == nil { self?.selectedRepoID = repos.first?.id }
+                        if self?.selectedRepoID == nil { self?.selectedRepoID = scan.repos.first?.id }
                     }
                 }
             } catch {
@@ -604,7 +671,7 @@ public final class AppModel {
             // it off `run.state`. Both halves are true and the conclusion is
             // not: **nothing re-reads a run row on its own.** The store held
             // `.stalled` and every copy the screen draws from — `activeRuns`,
-            // `recentRuns`, `runsByCard`, `analysisRuns` — went on holding
+            // `recentRuns`, `runsByCard`, `analysis?.runs` — went on holding
             // `.running`, so the card kept its spinner and "No output for a
             // while" was drawn by nobody.
             //
@@ -642,7 +709,7 @@ public final class AppModel {
     ///
     /// Four collections hold runs and any of them can be the one on screen:
     /// `activeRuns` feeds the card's `RunningStrip`, `runsByCard` the selected
-    /// card's Runs pane, `recentRuns` the overview, `analysisRuns` the analysis
+    /// card's Runs pane, `recentRuns` the overview, `analysis?.runs` the analysis
     /// window. Marking three of four is a stall that shows on some screens and
     /// not others, which is worse than one that shows nowhere — so this walks
     /// all four, through one function.
@@ -650,7 +717,7 @@ public final class AppModel {
         activeRuns = activeRuns.mapValues { Self.stalling(runID, $0) }
         recentRuns = recentRuns.map { Self.stalling(runID, $0) }
         runsByCard = runsByCard.mapValues { runs in runs.map { Self.stalling(runID, $0) } }
-        analysisRuns = analysisRuns.map { Self.stalling(runID, $0) }
+        analysis?.markStalled(runID)
     }
 
     /// The rule itself: **only a run that is still running can stall.**
@@ -660,7 +727,7 @@ public final class AppModel {
     /// spelled the same way: a run that finished between the idle watcher
     /// noticing the silence and this arriving must keep the outcome it reached,
     /// not be dragged back to a non-terminal state by a late notice.
-    static func stalling(_ runID: UUID, _ run: SkillRun) -> SkillRun {
+    nonisolated static func stalling(_ runID: UUID, _ run: SkillRun) -> SkillRun {
         guard run.id == runID, run.state == .running else { return run }
         var stalled = run
         stalled.state = .stalled
@@ -697,6 +764,29 @@ public final class AppModel {
         cards
             .filter { $0.column == column && (selectedRepoID == nil || $0.repoID == selectedRepoID) }
             .sorted { $0.orderIndex < $1.orderIndex }
+    }
+
+    /// Done as a dated log rather than a pile.
+    ///
+    /// Built on `cards(in:)` so the repository picker is applied in exactly one
+    /// place — a second filter here is how the board and this column would come
+    /// to disagree about what "All repositories" means.
+    ///
+    /// The log re-sorts by `columnEnteredAt`, which makes Done the one column
+    /// whose on-screen order is not `orderIndex`. That is deliberate:
+    /// `orderIndex` records a position a human chose while the card was still
+    /// in play, and it says nothing once the card is finished. Noted here
+    /// because an asymmetry nobody wrote down reads as a bug to whoever finds
+    /// it next.
+    ///
+    /// `now` and `calendar` are parameters with ambient defaults: the view
+    /// wants the wall clock, and a test cannot have one.
+    public func doneLog(
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        horizonDays: Int? = ShippingLog.defaultHorizonDays
+    ) -> ShippingLog {
+        shippingLog(cards(in: .done), now: now, calendar: calendar, horizonDays: horizonDays)
     }
 
     public func repo(for card: Card) -> Repo? {
@@ -1345,6 +1435,28 @@ public final class AppModel {
 
     // MARK: - Analysis
 
+    /// Why an analysis cannot start right now, or `nil` when it can.
+    ///
+    /// One answer, read by both surfaces: the toolbar button's tooltip and the
+    /// panel's own footer. It used to be a `private var` on `BoardView` feeding
+    /// a `.disabled(…)` built from a *second* expression beside it, and #151
+    /// removed that `.disabled` — correctly, because a disabled toggle is a
+    /// toggle you cannot switch off, but the same expression was the **only**
+    /// preflight gate on the analysis path. `AnalysisService.start` checks
+    /// `isEnabled` and the in-flight dedupe and nothing else, so eight
+    /// unattended runs could have started in a checkout Preflight had already
+    /// refused. The gate belongs on the act, not on the panel's visibility.
+    public var analysisRefusal: String? {
+        guard let id = selectedRepoID, let repo = repos.first(where: { $0.id == id }) else {
+            return "Pick a single repository to analyse."
+        }
+        if !repo.isEnabled { return Consequence.reason(.repoDisabled) }
+        if isBlocked(repo) {
+            return "A Preflight check is failing for this repository — fix it there first."
+        }
+        return nil
+    }
+
     public func startAnalysis(
         repoID: UUID, angles: [AnalysisAngle], instructions: String, maxStories: Int
     ) async {
@@ -1354,48 +1466,60 @@ public final class AppModel {
                 repoID: repoID, angles: angles, extraInstructions: instructions,
                 maxStoriesPerAngle: maxStories, origin: .manual
             )
-            analysisNote = nil
+            analysis = nil
             openAnalysis(id: started.analysis.id)
         } catch {
-            analysisNote = error.localizedDescription
+            // Written into the session, which in setup is `nil` — so this is
+            // discarded, exactly as it was before, when the footer's first
+            // branch made a note unreachable while no analysis was open
+            // (`AnalysisPanelView.swift`, the `footer`). Logged so the failure stops
+            // vanishing outright; showing it needs a surface the setup footer
+            // does not have, and that is its own issue.
+            analysis?.note = error.localizedDescription
+            Self.log.error("Analysis failed to start: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     public func openAnalysis(id: UUID) {
-        activeAnalysisID = id
-        proposals = []
-        analysisRuns = []
+        // One assignment. The outgoing session goes with it, and its
+        // observation is cancelled by `ObservationHandle.deinit` rather than
+        // by a line here that a sixth member could out-live.
+        analysis = AnalysisSession(id: id)
         Task { await refreshAnalysisRuns() }
 
         // Proposals arrive run by run, so the list fills in as each angle
         // lands rather than all at once when the last one does.
-        proposalObservation?.cancel()
         guard let store else { return }
         let observation = store.observeProposals(analysisID: id)
-        proposalObservation = Task { [weak self] in
+        let task = Task { [weak self] in
             do {
                 for try await proposals in observation {
-                    await MainActor.run { self?.proposals = proposals }
+                    await MainActor.run {
+                        guard let self, AnalysisSession.accepts(self.analysis, rowsFor: id) else { return }
+                        self.analysis?.proposals = proposals
+                    }
                 }
             } catch {
-                await MainActor.run { self?.analysisNote = error.localizedDescription }
+                await MainActor.run {
+                    guard let self, AnalysisSession.accepts(self.analysis, rowsFor: id) else { return }
+                    self.analysis?.note = error.localizedDescription
+                }
             }
         }
+        analysis?.observation = ObservationHandle(task)
     }
 
-    public func closeAnalysis() {
-        proposalObservation?.cancel()
-        proposalObservation = nil
-        activeAnalysisID = nil
-        analysisRuns = []
-        proposals = []
-        analysisNote = nil
-    }
+    public func closeAnalysis() { analysis = nil }
 
     public func refreshAnalysisRuns() async {
-        guard let store, let id = activeAnalysisID else { return }
-        analysisRuns = (try? await store.runs(analysisID: id)) ?? []
-        await notifyIfAnalysisFinished(id: id, store: store)
+        guard let store, let id = analysis?.id else { return }
+        let runs = (try? await store.runs(analysisID: id)) ?? []
+        // The window can close, or another analysis open, while this read is
+        // in flight. Without this the rows land in whatever is open when the
+        // read ends rather than in what asked for them.
+        guard AnalysisSession.accepts(analysis, rowsFor: id) else { return }
+        analysis?.runs = runs
+        await notifyIfAnalysisFinished(id: id, runs: runs, store: store)
     }
 
     /// Ids of analyses already announced, so six angles produce one banner.
@@ -1405,15 +1529,17 @@ public final class AppModel {
     /// act, which is the fastest way to make a channel worth muting.
     private var announcedAnalyses: Set<UUID> = []
 
-    private func notifyIfAnalysisFinished(id: UUID, store: BoardStore) async {
+    /// The runs are passed in rather than re-read, so this cannot disagree
+    /// with the read that produced them.
+    private func notifyIfAnalysisFinished(id: UUID, runs: [SkillRun], store: BoardStore) async {
         guard !announcedAnalyses.contains(id) else { return }
         // An empty list is a analysis that has not started, not one that
         // finished — `allSatisfy` on nothing is true, and would announce it.
-        guard !analysisRuns.isEmpty, analysisRuns.allSatisfy(\.state.isTerminal) else { return }
+        guard !runs.isEmpty, runs.allSatisfy(\.state.isTerminal) else { return }
         announcedAnalyses.insert(id)
 
         guard
-            let repoID = analysisRuns.first?.repoID,
+            let repoID = runs.first?.repoID,
             let repo = try? await store.repo(id: repoID)
         else { return }
         // What the harvest actually kept, counted from the store rather than
@@ -1427,6 +1553,43 @@ public final class AppModel {
         return (try? await store.analyses(repoID: selectedRepoID, limit: 20)) ?? []
     }
 
+    /// One page of the finished history, and how many rows the same filter
+    /// matches overall.
+    ///
+    /// Both halves come back together because the archive cannot use one
+    /// without the other: the page is what it draws, the total is the only
+    /// thing that can say whether to offer another. Read in one call so they
+    /// answer the same filter — asking separately is how a "Load more" that
+    /// loads nothing gets built.
+    ///
+    /// Honours `selectedRepoID`, like every other read on this model. The
+    /// caller has to re-ask when that changes — this reads it, it does not
+    /// watch it.
+    ///
+    /// **`nil` means "could not look", and is not the same as an empty page.**
+    /// `store` is nil until `start()` has opened it, and macOS restores an open
+    /// `Window` scene at launch — so the archive's first read can genuinely
+    /// arrive before there is a database to read. Collapsing that into
+    /// `([], 0)` let the window state "Nothing has reached Done yet." on the
+    /// strength of a question it never got to ask, permanently, because nothing
+    /// re-ran the read. Same distinction the board draws everywhere else
+    /// between an answer and an absence of one.
+    public func archivePage(
+        search: String,
+        limit: Int,
+        offset: Int
+    ) async -> (cards: [Card], total: Int)? {
+        guard let store else { return nil }
+        let term = search.isEmpty ? nil : search
+        guard
+            let cards = try? await store.doneCards(
+                repoID: selectedRepoID, search: term, limit: limit, offset: offset
+            ),
+            let total = try? await store.doneCardCount(repoID: selectedRepoID, search: term)
+        else { return nil }
+        return (cards, total)
+    }
+
     public func updateProposal(_ proposal: StoryProposal) async {
         try? await analysisService?.updateProposal(proposal)
     }
@@ -1435,26 +1598,26 @@ public final class AppModel {
         guard let analysisService else { return }
         // Cleared before the await, not after: replacing one sentence with
         // another in place reads as nothing having happened.
-        analysisNote = nil
+        analysis?.note = nil
         do {
             let cards = try await analysisService.accept(proposalIDs: ids)
-            analysisNote = cards.isEmpty
+            analysis?.note = cards.isEmpty
                 ? "Nothing to accept — those were already decided."
                 : "Accepted \(cards.count == 1 ? "1 story" : "\(cards.count) stories") — waiting in Backlog. Nothing was filed on GitHub."
         } catch {
-            analysisNote = error.localizedDescription
+            analysis?.note = error.localizedDescription
         }
     }
 
     public func rejectProposals(ids: [UUID]) async {
-        analysisNote = nil
+        analysis?.note = nil
         try? await analysisService?.reject(proposalIDs: ids)
-        analysisNote = ids.count == 1 ? "Rejected 1 proposal." : "Rejected \(ids.count) proposals."
+        analysis?.note = ids.count == 1 ? "Rejected 1 proposal." : "Rejected \(ids.count) proposals."
     }
 
     /// The angles still working, for the window's header.
     public var runningAngles: [AnalysisAngle] {
-        analysisRuns.filter { !$0.state.isTerminal }.compactMap(\.analysisAngle)
+        analysis?.runs.filter { !$0.state.isTerminal }.compactMap(\.analysisAngle) ?? []
     }
 
     /// The command that registers the bundled helper with Claude Code.
@@ -1480,6 +1643,16 @@ public final class AppModel {
         selectedRepoID = nil
     }
 
+    /// The same trick for one repository's preflight verdict.
+    ///
+    /// `repoChecks` is filled by a real preflight sweep, and the rule that needs
+    /// it — "an analysis must not start in a repository Preflight has refused" —
+    /// is exactly the one #151 broke by deleting the toolbar's `.disabled`. A
+    /// rule whose only failing case cannot be seeded is a rule with no test.
+    func testOnlySeedChecks(repo: UUID, _ checks: [CheckResult]) {
+        repoChecks[repo] = checks
+    }
+
     /// The same trick for the four collections that hold runs.
     ///
     /// They are `private(set)` because the store fills them, and a stall has to
@@ -1496,7 +1669,19 @@ public final class AppModel {
         activeRuns = active
         runsByCard = byCard
         recentRuns = recent
-        analysisRuns = analysis
+        if !analysis.isEmpty { self.analysis = AnalysisSession(id: UUID(), runs: analysis) }
+    }
+
+    /// Seeds the analysis window's state without a store behind it.
+    ///
+    /// `testOnlySeedRuns(analysis:)` seeded a bare array; the session needs an
+    /// id, so this takes the session's members and leaves that seam to the
+    /// three collections that are still plain.
+    func testOnlySeedAnalysis(runs: [SkillRun], note: String?) {
+        guard var session = analysis else { return }
+        session.runs = runs
+        session.note = note
+        analysis = session
     }
 
     /// Puts a real store behind the model without `start()`.

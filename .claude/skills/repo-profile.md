@@ -32,34 +32,51 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**820 tests in 95 suites**, measured on `main` at
-  `c99ebb1` on 2026-08-06; needs no Xcode, no API token, no network — the end-to-end suite drives
-  `Scripts/fake-claude.sh` instead of the real `claude`)
+- **Full test:** `cd ElliotKit && swift test` (**1167 tests in 135 suites**, 3 of 3 samples on
+  `fix/116-swift-floor` on 2026-08-07 off `main` at `9de425e`; needs no Xcode,
+  no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
+  real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
-    wrong here twice.** It said 408 while the suite ran 517, then 517 while it ran 788. It moved
-    788 → 820 *during the pull request that corrected it*, when `main` gained three suites and the
-    branch was synced. **Trust the run, and correct the line when you notice the gap.**
+    wrong here three times.** It said 408 while the suite ran 517, then 517 while it ran 788, then
+    **820 while it ran 996** — a gap of 176 tests and 21 suites, i.e. the line had gone stale faster
+    than anyone was reading it. It moved 788 → 820 *during the pull request that corrected it*, when
+    `main` gained three suites and the branch was synced, and it drifted **twice more inside #135**:
+    1026 → 1027 when the code-review pass added a test after the line was written, then 1027 → 1034
+    when the merge with `main` brought #134/#136's two suites in. **Trust the run, and correct the
+    line when you notice the gap** — that is three separate corrections in one pull request, so
+    re-read it from your own last run rather than from this line. Corrected again in #141
+    (1034 → 1050, 119 → 122 suites) — that is a fourth correction, and the drift is now
+    routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
+    in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
+    your own untouched run and compare against *that*, never against this line. Sixth in #155
+    (1061 → 1098, 124 → 129), taken from a five-sample run rather than one — and then **again inside
+    the same pull request** after merging `main`, which is the seventh correction and the clearest
+    demonstration yet that this line is a date-stamp, not a fact. Eighth and ninth in #159
+    (1076 → 1122 → 1125), then a **tenth** at 1167 in 135 when this branch merged #155's own landing.
+    - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
+      to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
+      authors each measured honestly, each counted from the last number they could see, and the
+      count only means anything in landing order. If a third branch is open while you read this,
+      **your number is already wrong** — take the run, not the line.
+    - There *was* a third: **#140 wrote "sixth" too**, and collided here twice more — once against
+      #155's landing and once against #159's. Inside that one pull request the number moved four
+      times (1116 → 1119 → 1161 → the value above) without the branch adding a single test. Three
+      concurrent authors, three honest "sixth"s. The ordinal is not worth maintaining; the date-stamp
+      and the commit it was taken at are.
+    - #159's split is still the useful detail: its untouched branch already ran 1116 before a line of
+      its own tests existed, so 40 of its 46 were unrecorded drift and only 6 were the branch's own.
+      A correction here is rarely evidence that the previous author miscounted; it is mostly the
+      interval since they looked.
+  - ⛔ **Do not write the number down before the run prints it.** Resolving one of these collisions in
+    #140, this line was first filled in with a *predicted* 1177 — arrived at by adding the two
+    branches together — and the run said **1161**. Caught immediately, but it is exactly the act the
+    bullet above warns against, committed while editing the warning itself. Put a placeholder in and
+    let the run overwrite it.
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
     A signal 10/11 abort is a suite-level crash, not an assertion — re-run before concluding anything
     about your change, and do not read it as a broken toolchain.
-  - ⛔ **Never trust a `swift test` run in a worktree that has been `git checkout`-ed across commits
-    without clearing `.build`. Sample from a clean build, or you are testing new sources against
-    stale objects.** On 2026-08-06 this produced **three entirely fictional test failures and a
-    confident bisect that convicted an innocent commit** — `rm -rf .build` at the same SHA passed
-    926/926, three times running. A `git bisect`-by-hand across six commits in one worktree is
-    exactly the shape that triggers it, and SwiftPM gives no warning.
-    - **The tell, and it is a reliable one: an assertion that cannot fail, failing.** The giveaway
-      was `#expect(run.analysisAngle == nil)` reporting `(run.analysisAngle → nil) == nil` — for a
-      single optional that is not a defect any code could produce. Instrumenting it printed
-      `raw = nil, isNil = true, type = Optional<AnalysisAngle>` and the expectation then *passed*,
-      because editing the file forced a real recompile. **When a failure is logically impossible,
-      suspect the binary before the code.**
-    - This is not one person's slip. **Two people hit it independently within four hours, in
-      opposite directions** — one inventing failures that did not exist, the other wrongly clearing
-      a real SIGBUS as a build artefact. It is a property of the tooling, so it is written here
-      rather than learned a third time.
 - **Single-suite filter (per-task, fast):** `cd ElliotKit && swift test --filter <Suite>` — e.g.
   `--filter ElliotModelTests`, or a single suite/test name (**swift-testing**, `@Test`/`@Suite`, not XCTest)
 - **App bundle:** `./Scripts/build-app.sh` — assembles `dist/Elliot.app` from the two SwiftPM
@@ -74,18 +91,37 @@
   **Format the lines you wrote, by hand, to match their neighbours.** `swift format lint <one-file>`
   is readable for a file you just touched; the tree-wide form is not. See `CLAUDE.md` § *Do not run
   `swift format` over the tree*.
-- **Format/lint verify (the gate):** none. There is no formatting gate and no CI to enforce one, so a
+- **Format/lint verify (the gate):** none. There is no formatting gate, and the one workflow that
+  exists (`swift-floor.yml`, the toolchain floor) does not enforce one, so a
   pull request is never failed on formatting here. Adopting the formatter wholesale is a live option
   and a one-way door (one ~1 600-line reformat commit), and it is not a decision to make inside a
   feature branch.
-- **Prerequisites / caveats:** macOS 15+ and a toolchain **newer than Swift 6.1**. `Package.swift`
-  says `swift-tools-version: 6.1`, but the sources do not compile under 6.1.2; see *CI gates* below
-  for the exact error. Known-good: 6.3.3 locally, 6.3 on the runner. 6.2 is untested — nobody has
-  built it there, so don't write it down as supported. `swiftLanguageModes: [.v6]` — strict
+- **Prerequisites / caveats:** **Swift 6.3.1+ — Xcode 26.4 or newer. There is no lower option.**
+  `Package.swift` declares `swift-tools-version: 6.3.1`, which SwiftPM enforces at manifest parse, so
+  anything older is refused before a source file is read. `swiftLanguageModes: [.v6]` — strict
   concurrency is on, so data-race errors are build failures, not warnings. `ElliotApp` is a SwiftUI GUI
   target: it builds headlessly but cannot be exercised from a terminal — launch the assembled bundle
   from the **Finder** (`open dist/Elliot.app`), not from a shell, because the preflight checks exist
   precisely to survive *not* inheriting your shell `PATH`.
+  - ⚠️ **This line said "macOS 15+ and Swift 6.1+" and both halves were wrong in different ways —
+    corrected in #116 from 21 builds over 8 toolchains** (runs
+    [31167517846](https://github.com/phmatray/Elliot/actions/runs/31167517846),
+    [31167931727](https://github.com/phmatray/Elliot/actions/runs/31167931727),
+    [31170356694](https://github.com/phmatray/Elliot/actions/runs/31170356694)). Swift 6.1.2 does not
+    build the package at all — two sites in `ElliotAppKit`. Every 6.2.x builds it but cannot compile
+    the **test** targets: one `#expect` at `ElliotProcessTests/StreamingProcessDrainTests.swift:138`
+    exhausts the type-checker's budget. And "macOS 15+" was a *deployment* target read as a host
+    requirement — a different claim, still unverified, tracked as #142. `Package.swift` declares
+    **6.3.1**, the test floor, and its header comment carries the full table and the argument.
+  - ⛔ **"6.2 is enough if you only want `swift build`" is a true measurement and a false
+    instruction — do not put it back in this list.** It was here for one commit. The 6.2 figure is
+    real (recorded in `Package.swift`'s table), but a *Prerequisites* line is read as prescriptive,
+    and after the tools-version bump a contributor following it gets `error: package … is using
+    Swift tools version 6.3.1 but the installed version is 6.2.0`. A documented floor no machine can
+    meet is the exact defect #116 removed; it does not become harmless one file over.
+  - ⚠️ **Do not restate the build floor from `swift build` alone.** That is precisely how the 6.1
+    claim survived: `swift build` compiles the library and executable targets and never touches the
+    eight test targets, so a green `swift build` measures about half of what a contributor needs.
 - **If `swift test` hangs, or the SwiftPM build lock looks held, look for a stale
   `swiftpm-testing-helper` — from *another worktree*.** This is the shape of #7, and its whole cost
   was that it does not present as a stale process: it presents as the toolchain being broken. The
@@ -112,30 +148,19 @@
     building.
 
 ## CI gates (the exact commands CI fails on — satisfy these locally before ready/merge)
-`.github/workflows/ci.yml`, job **`build-and-test`**, on `pull_request` → `main` and `push` → `main`.
-One `macos-26` runner, `timeout-minutes: 20`. It runs exactly the two commands below, so satisfying
-them locally is satisfying CI:
+
+There is now **exactly one** workflow, `.github/workflows/swift-floor.yml` (#116). It runs on every
+pull request and does two things: it asserts the runner's toolchain against the floor `Package.swift`
+declares, and it builds on it. It is a *floor* gate, not a build-and-test gate — it does not run the
+suite, and it is the only thing enforced remotely.
+
+Branch protection is still disabled (no required status checks), and there is still **no
+build-and-test CI** — that is #21, in flight on #102. So "wait for green CI" remains something
+`merge-pr` mostly cannot do here, and these stay the self-imposed gates, run locally before flipping
+a PR ready:
+
 - `cd ElliotKit && swift build`
 - `cd ElliotKit && swift test`
-
-⚠️ **`macos-15` does not work, and the manifest is why you would think it does.** `Package.swift`
-declares `swift-tools-version: 6.1` and `platforms: [.macOS(.v15)]`, but that is the floor the
-*manifest* is parsed at — it is not a promise about the sources. Measured on run `31118743562`: the
-`macos-15` image carries Swift 6.1.2 and `swift build` fails on
-`ElliotStore/BoardStore.swift:237` (`for-in loop requires '()' to conform to 'Sequence'` — a
-multi-statement-closure return the 6.1 type checker will not infer). `macos-26` carries Swift 6.3,
-which is what the package is actually developed against. Don't lower the runner without building on
-the lower toolchain first.
-
-<!-- TODO: branch protection on `main` is still off. Measured 2026-08-06:
-`gh api repos/phmatray/Elliot/branches/main/protection` → **404 "Branch not protected"** — there is
-no protection object at all, so `build-and-test` is advisory, not required, and a red check does not
-block a merge. Turning it on is issue #21's Task 3 and needs the workflow green on `main` first
-(i.e. after the PR that introduces it lands). Until then `merge-pr` can *read* a verdict but nothing
-enforces it. -->
-- **Format/lint in CI:** none, deliberately. See *Format/lint verify* above — the formatter question
-  is unsettled, and a lint step would have landed the first CI run red for a reason unrelated to
-  correctness, which is the fastest way to teach everyone to ignore the badge.
 
 ## Integration style
 - **Merge mode:** squash — `main` is linear and the landed subjects end in `(#N)`
@@ -218,6 +243,12 @@ enforces it. -->
     instance will silently checkpoint your row away.
   - **Drive it with `cua-driver`**, which reads the tree and clicks by element index without bringing
     the app to the front. Re-snapshot before every click: element indices are per-snapshot.
+  - **Or just look, since #155: `board_screenshot` over MCP.** Elliot renders its own window in
+    process, so there is no TCC grant to hold and nothing has to be frontmost. ⚠️ It cannot draw
+    sheets, popovers **or the toolbar's controls** — the last one is measured, not theoretical, and
+    the toolbar is a conflict hot-spot in the table above. Every reply lists what it left out in
+    `not_included`; read that before believing something is missing. Keep `ELLIOT_HOME` short or the
+    unix socket exceeds `sun_path`'s 104 bytes and the helper reports a running app as absent.
   - **What this actually caught, on #79, with 730 tests green and `swift build` clean:** the framing
     scroll was a no-op — `onChange` ran inside the update that changed the selection, so it scrolled
     the row that existed *before* the panel was inserted and clamped to zero. It was invisible in four
@@ -230,6 +261,15 @@ enforces it. -->
 - **One funnel.** `BoardService` is the *only* thing that changes a card's column. A drag and an MCP
   `board_move_card` must reach the same two methods; callers supply only an origin. Never add a second
   path that mutates a column.
+- **One spawn.** `ChildProcess` is the *only* thing that starts a child, drains its pipes and
+  publishes its exit. `ProcessRunner` and `StreamingProcess` are wrappers differing only in a
+  `ChildOutputSink`, whose methods are called **while the drain lock is held** — that is the
+  invariant, not an implementation detail, and a sink invoked after the lock is released is the
+  tail-dropping bug restored. A plan that needs a third kind of child writes a sink; it does not
+  write a fourth drain. This was two copies until #146, in the same words: eight comment lines were
+  byte-identical between the two files, having already cost three defects each fixed in one file
+  (`22bb230`, `3b1c226`/#18, `36b6da6`/#105). `DrainDuplicationTests` re-derives that count on every
+  `swift test` and fails naming what is written twice.
 - **`ElliotMCPKit` imports neither `ElliotEngine` nor `ElliotProcess`** — deliberately, and it is
   asserted in `Package.swift`'s comments. The helper holds no copy of the rules, never spawns `claude`,
   and never writes the database, so it cannot diverge from the board. Adding either dependency breaks
@@ -240,6 +280,15 @@ enforces it. -->
 - **`gh` is the fact; the agent's prose is a hint.** Nothing written back to a card may be parsed out
   of a run's closing summary. Issue/PR numbers come from `gh … --json` through `GHClient`/`Verifier`;
   for an analysis, the fact is the `stories.json` file at the `ELLIOT_OUTPUT=` path, not the closing message.
+- **What a verified outcome *does* to a card is decided once, in `ElliotModel`** —
+  `VerifiedOutcome.applied(to:attribution:)` in `CardOutcome.swift` returns the new card, the move it
+  implies and whether anything changed, all in one value. `RunScheduler.apply`, `Reconciler.apply`
+  and `PRWatcher.reconcile` save and move; they write no card field of their own (grep-enforced: no
+  `issueNumber|issueURL|prNumber|prURL|branch|lastError =` in those three files). A plan that adds a
+  fourth reader of `VerifiedOutcome` calls that function — it does not write a fourth switch. This
+  was three switches until #135 and they had drifted, which is how a reconciled card kept showing the
+  banner of the run that failed. `Attribution` (`.live` / `.launchSweep`) is the one difference that
+  is genuinely real, because `MoveAudit` persists it and the history view renders it.
 - **A run is clean only when `permission_denials` is empty too** — `is_error: false` /
   `subtype: "success"` alone is not enough.
 - **A system-originated move never triggers a skill** (`MoveContext.allowSideEffects == false` →

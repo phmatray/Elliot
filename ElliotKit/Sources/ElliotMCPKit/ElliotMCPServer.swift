@@ -32,6 +32,7 @@ public struct ElliotMCPServer: Sendable {
         ListCardsTool(),
         GetCardTool(),
         ListReposTool(),
+        ScreenshotTool(),
         CreateCardTool(),
         UpdateCardTool(),
         MoveCardTool(),
@@ -139,22 +140,20 @@ public extension ElliotMCPServer {
     /// Bounded on purpose. Cards are not listed here: `elliot://card/{id}` is a
     /// template, and enumerating the board as resources would only duplicate
     /// board_list_cards with a worse shape.
+    /// One request, one answer, whichever half of the bridge served it. The
+    /// snapshot branch used to query the store directly — a third reading of
+    /// `listRuns`, next to the tool's and the app's.
     func listResources() async throws -> ListResources.Result {
         let runs: [RunDTO]
-        switch await bridge.read(.listRuns(cardID: nil, limit: ElliotPaging.runLimitDefault)) {
-        case .live(let response):
-            switch response {
-            case .ok(.runs(let page)):
-                runs = page.runs
-            // An empty list here would read as "there are no logs", which is a
-            // different statement from "I could not find out".
-            case .failure(let code, let message, _):
-                throw MCPError.internalError("Elliot refused the run list (\(code.rawValue)): \(message)")
-            default:
-                throw MCPError.internalError("Elliot answered listRuns with an unexpected payload.")
-            }
-        case .offline(let store, _):
-            runs = try await store.runs(limit: ElliotPaging.runLimitDefault).map { RunDTO(run: $0) }
+        switch await bridge.read(.listRuns(cardID: nil, limit: ElliotPaging.runLimitDefault)).response {
+        case .ok(.runs(let page)):
+            runs = page.runs
+        // An empty list here would read as "there are no logs", which is a
+        // different statement from "I could not find out".
+        case .failure(let code, let message, _):
+            throw MCPError.internalError("Elliot refused the run list (\(code.rawValue)): \(message)")
+        default:
+            throw MCPError.internalError("Elliot answered listRuns with an unexpected payload.")
         }
         return ListResources.Result(resources: runs.map(Self.logResource))
     }
@@ -253,25 +252,17 @@ public extension ElliotMCPServer {
         )
     }
 
+    /// The same card `board_get_card` answers with, taken from the answer rather
+    /// than assembled from rows a second time.
     private func readCard(id: UUID, uri: String) async throws -> Resource.Content {
         let dto: CardDTO
-        switch await bridge.read(.getCard(id: id)) {
-        case .live(let response):
-            switch response {
-            case .ok(.card(let card)):
-                dto = card
-            case .failure(_, let message, _):
-                throw MCPError.invalidParams(message)
-            default:
-                throw MCPError.internalError("Elliot answered getCard with an unexpected payload.")
-            }
-        case .offline(let store, _):
-            guard let card = try await store.card(id: id) else {
-                throw MCPError.invalidParams("No card with id \(id).")
-            }
-            let repoName = try await store.repo(id: card.repoID)?.nameWithOwner ?? "?"
-            let activeRunID = try await store.activeRun(cardID: id)?.id
-            dto = CardDTO(card: card, repoName: repoName, activeRunID: activeRunID)
+        switch await bridge.read(.getCard(id: id)).response {
+        case .ok(.card(let card)):
+            dto = card
+        case .failure(_, let message, _):
+            throw MCPError.invalidParams(message)
+        default:
+            throw MCPError.internalError("Elliot answered getCard with an unexpected payload.")
         }
         let data = try WireCodec.encoder.encode(dto)
         return .text(String(decoding: data, as: UTF8.self), uri: uri, mimeType: "application/json")

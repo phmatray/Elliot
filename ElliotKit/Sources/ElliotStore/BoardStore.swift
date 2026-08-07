@@ -23,6 +23,10 @@ public final class BoardStore: Sendable {
         config.busyMode = .timeout(5)
         config.foreignKeysEnabled = true
         let pool = try DatabasePool(path: path, configuration: config)
+        // Before migrating, not during: a migration renamed while it sat
+        // unmerged is unapplied by name on any machine that ran the old branch,
+        // and would run a second time over the schema it already made.
+        try Migrations.adoptRenamedMigrations(in: pool)
         try Migrations.migrator.migrate(pool)
         return BoardStore(writer: pool)
     }
@@ -216,8 +220,14 @@ public final class BoardStore: Sendable {
     ///
     /// Answers the question the analysis setup screen raises and never answered:
     /// what a six-lens read actually costs, as against filing an issue.
+    ///
+    /// The decode happens *inside* the read block, like every other aggregate here.
+    /// Handing `[Row]` back out would not merely be untidy: `Row` is not `Sendable`,
+    /// so the `async` overload of `read` stops applying and the call quietly resolves
+    /// to the blocking one — `await` on an expression that never suspends, holding a
+    /// cooperative thread for the length of the query.
     public func spendByKind(since: Date) async throws -> [SkillKind: Spend] {
-        let rows = try await reader.read { db in
+        try await reader.read { db in
             try Row.fetchAll(
                 db,
                 sql: #"""
@@ -232,17 +242,15 @@ public final class BoardStore: Sendable {
                     """#,
                 arguments: [since]
             )
+            .reduce(into: [SkillKind: Spend]()) { byKind, row in
+                guard let raw: String = row["kind"], let kind = SkillKind(rawValue: raw) else { return }
+                byKind[kind] = Spend(
+                    totalUSD: row["total"] ?? 0,
+                    runs: row["runs"] ?? 0,
+                    unknownCost: row["unknown"] ?? 0
+                )
+            }
         }
-        var byKind: [SkillKind: Spend] = [:]
-        for row in rows {
-            guard let raw: String = row["kind"], let kind = SkillKind(rawValue: raw) else { continue }
-            byKind[kind] = Spend(
-                totalUSD: row["total"] ?? 0,
-                runs: row["runs"] ?? 0,
-                unknownCost: row["unknown"] ?? 0
-            )
-        }
-        return byKind
     }
 
     /// What one analysis cost, across all of its lenses.
@@ -416,6 +424,89 @@ public final class BoardStore: Sendable {
         return SQL(sql: #"CASE "card"."column" \#(whens) ELSE \#(cases.count) END"#)
     }()
 
+    // MARK: - The finished history
+
+    /// Every finished card, newest first, paged.
+    ///
+    /// The board draws a horizon over Done and counts what it hid; this is
+    /// where the hidden part is read back from. Ordered on `columnEnteredAt`
+    /// rather than `orderIndex`, because for a finished card the latter records
+    /// a position chosen while it was still in play.
+    ///
+    /// `id` is the last sort key for the reason `cardQuery` gives: two cards
+    /// finished in the same second must not be able to swap places between two
+    /// calls, or a page boundary would show one twice and the other never.
+    public func doneCards(
+        repoID: UUID? = nil,
+        search: String? = nil,
+        limit: Int,
+        offset: Int = 0
+    ) async throws -> [Card] {
+        try await reader.read { db in
+            try Self.doneFilter(repoID: repoID, search: search)
+                .order(Card.Columns.columnEnteredAt.desc, Card.Columns.id.desc)
+                .limit(limit, offset: offset)
+                .fetchAll(db)
+        }
+    }
+
+    /// How many rows the same filter matches, before the page is cut.
+    ///
+    /// Counted in SQL over the very request the page comes from — the contract
+    /// `cardCount(repoID:column:)` already states, and the thing that lets the
+    /// archive know whether another page exists. A count taken over a different
+    /// filter would offer a "Load more" that loads nothing.
+    public func doneCardCount(repoID: UUID? = nil, search: String? = nil) async throws -> Int {
+        try await reader.read { db in
+            try Self.doneFilter(repoID: repoID, search: search).fetchCount(db)
+        }
+    }
+
+    /// Finished cards, optionally one repository's, optionally matching a term.
+    ///
+    /// **`instr`, deliberately, and not `LIKE`.** `%` and `_` are wildcards to
+    /// `LIKE`, so a search box built on it needs every term escaped and an
+    /// `ESCAPE` clause to go with it — and the failure mode of getting that
+    /// wrong is silent and generous: typing `%` returns the whole archive and
+    /// looks like a successful search. `instr` has no pattern language, so
+    /// there is no escaping to get wrong.
+    ///
+    /// **Both sides are folded by the same `lower`, SQLite's.** Folding the
+    /// needle in Swift instead looks equivalent and is not: `String.lowercased()`
+    /// is Unicode-aware and maps `É → é`, while SQLite's built-in `lower()` is
+    /// ASCII-only and leaves `É` alone. A card titled "ÉCRIRE la doc" was then
+    /// findable by *neither* `écrire` (needle folded, haystack not) nor
+    /// `ÉCRIRE` (needle folded away from a haystack that kept its accents) —
+    /// unfindable by any query at all. Same fold on both sides, and the
+    /// case-insensitivity is honestly ASCII-only rather than accidentally
+    /// asymmetric.
+    ///
+    /// A term that is entirely digits also matches an issue or pull request
+    /// number, which is how you find a card whose title you have forgotten.
+    private static func doneFilter(repoID: UUID?, search: String?) -> QueryInterfaceRequest<Card> {
+        var request = Card.all()
+            .filter(Card.Columns.column == ElliotModel.Column.done.rawValue)
+        if let repoID {
+            request = request.filter(Card.Columns.repoID == repoID.databaseKey)
+        }
+
+        let term = search?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !term.isEmpty else { return request }
+
+        var condition: SQL = """
+            (instr(lower("card"."title"), lower(\(term))) > 0 \
+            OR instr(lower("card"."body"), lower(\(term))) > 0
+            """
+        if let number = Int(term) {
+            condition = condition + """
+                 OR "card"."issueNumber" = \(number) OR "card"."prNumber" = \(number)
+                """
+        }
+        condition = condition + ")"
+
+        return request.filter(literal: condition)
+    }
+
     /// Live cards for the board. Only fires on an actual change.
     public func observeCards(repoID: UUID? = nil) -> AsyncValueObservation<[Card]> {
         ValueObservation
@@ -426,9 +517,36 @@ public final class BoardStore: Sendable {
             .values(in: reader)
     }
 
-    public func observeRepos() -> AsyncValueObservation<[Repo]> {
+    /// Every repository row, decoded **one at a time**.
+    ///
+    /// `fetchAll` decodes the whole set or throws, so a single row Elliot cannot
+    /// read used to cost the entire list — and with it the board, which sat on
+    /// "Still starting" for ever (#118). Row by row, one bad row costs one
+    /// repository.
+    ///
+    /// The count of skipped rows is carried out with the good ones rather than
+    /// dropped, because dropping it silently would be the same defect with a
+    /// smaller radius: a board quietly showing fewer repositories than exist is
+    /// still a board saying "fine" when the answer is "I could not read this".
+    ///
+    /// `try?` is deliberate and narrow. It swallows nothing — the row is
+    /// counted, and the count is rendered — and there is no useful distinction
+    /// to draw between the ways a row can fail to decode, because none of them
+    /// leaves anything on the row worth reporting.
+    public func observeRepos() -> AsyncValueObservation<RepoScan> {
         ValueObservation
-            .tracking { db in try Repo.order(SQLColumn("displayName")).fetchAll(db) }
+            .tracking { db in
+                var repos: [Repo] = []
+                var unreadable = 0
+                for row in try Row.fetchAll(db, Repo.order(SQLColumn("displayName"))) {
+                    if let repo = try? Repo(row: row) {
+                        repos.append(repo)
+                    } else {
+                        unreadable += 1
+                    }
+                }
+                return RepoScan(repos: repos, unreadable: unreadable)
+            }
             .removeDuplicates()
             .values(in: reader)
     }

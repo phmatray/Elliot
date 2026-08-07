@@ -337,8 +337,13 @@ struct ToolSurfaceTests {
             #expect(try tool(name).annotations.readOnlyHint == false, "\(name)")
         }
 
+        // `board_screenshot` belongs here and not above: it draws a window Elliot
+        // already has, changes nothing, and — unlike `board_await_run` — does not
+        // travel the write path, so it never launches the app. Photographing a
+        // board that was not running would answer a question about a live board
+        // with a picture of a fresh one.
         let reads = ["board_next", "board_list_cards", "board_get_card",
-                     "board_list_repos", "board_list_runs"]
+                     "board_list_repos", "board_list_runs", "board_screenshot"]
         for name in reads {
             #expect(try tool(name).annotations.readOnlyHint == true, "\(name)")
         }
@@ -460,15 +465,9 @@ struct ToolSurfaceTests {
                 isAppRunning: false,
                 onRead: { request in
                     log.record(request)
-                    return .offline(store, .appNotRunning)
+                    return await StubBridge.snapshotOutcome(store, request)
                 },
-                onWrite: { _ in
-                    .failure(
-                        code: .appUnavailable,
-                        message: "Elliot is not running and could not be launched.",
-                        hint: "Open Elliot.app and try again."
-                    )
-                }
+                onWrite: { _ in StubBridge.snapshotRefusesWrites }
             )
 
             let answer = try await call(

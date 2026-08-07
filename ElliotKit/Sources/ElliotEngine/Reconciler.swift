@@ -80,38 +80,18 @@ public struct Reconciler: Sendable {
     }
 
     /// Writes a verified outcome onto a card, moving it if reality has moved on.
+    /// Returns whether anything actually changed — which is what
+    /// `Summary.cardsCorrected` counts.
     private func apply(_ outcome: VerifiedOutcome, to card: Card) async -> Bool {
-        var updated = card
-        var move: (ElliotModel.Column, MoveOrigin.SystemReason)?
+        // `.launchSweep`: the board is catching up after not running, so its
+        // moves are recorded as `.reconciliation` rather than as something it
+        // watched happen. That distinction is persisted in `MoveAudit`.
+        let result = outcome.applied(to: card, attribution: .launchSweep)
+        guard result.changed else { return false }
 
-        switch outcome {
-        case .issueCreated(let number, let url):
-            guard card.issueNumber != number else { return false }
-            updated.issueNumber = number
-            updated.issueURL = url
-
-        case .prOpen(let number, let url, let isDraft, let branch):
-            updated.prNumber = number
-            updated.prURL = url
-            updated.branch = branch
-            if !isDraft, card.column == .inProgress {
-                move = (.inReview, .reconciliation)
-            }
-
-        case .merged:
-            if card.column != .done { move = (.done, .reconciliation) }
-
-        case .noIssueCreated(let reason), .notMerged(let reason), .unverified(let reason):
-            guard card.lastError != reason else { return false }
-            updated.lastError = reason
-
-        case .closedUnmerged:
-            updated.lastError = "The pull request was closed without being merged."
-        }
-
-        try? await store.saveCard(updated)
-        if let (column, reason) = move {
-            await mover.applySystemMove(cardID: card.id, to: column, reason: reason)
+        try? await store.saveCard(result.card)
+        if let move = result.move {
+            await mover.applySystemMove(cardID: card.id, to: move.column, reason: move.reason)
         }
         return true
     }

@@ -2,7 +2,8 @@ import ElliotEngine
 import ElliotModel
 import SwiftUI
 
-/// One window that starts as a form and becomes a review list.
+/// The analysis, as the board's leading slot: one panel that starts as a form
+/// and becomes a review list.
 ///
 /// Deliberately not two sheets: once the runs are going, the proposals appear
 /// under them angle by angle. Splitting them would hide the thing that makes
@@ -10,53 +11,108 @@ import SwiftUI
 /// bugs angle is still reading.
 ///
 /// The lens strip is the same object in both states: the tiles you arm become
-/// the row you watch. That is what makes the single window legible rather than
+/// the row you watch. That is what makes the single surface legible rather than
 /// merely economical.
+///
+/// It was a `Window` scene until #151, and a modal sheet before that — both of
+/// which cover the board this screen exists to fill. Accepting a proposal makes
+/// a card in Backlog, which is now the column immediately to this panel's
+/// right, so the one gesture the screen is *for* has a visible effect.
 ///
 /// The board's rule carries over here. Evidence is set in the fact face because
 /// it was read off the repository, and `isGrounded` — every cited file actually
 /// present — is this feature's `verifiedOutcome`: the difference between a
 /// story that was found and one that was written.
-/// `public` only because `ElliotApp` names it in a `Scene`. Everything else in
-/// this target stays internal — the tests reach it with `@testable`, and a
-/// library that exports its whole surface has stopped being a boundary.
-public struct AnalysisWindow: View {
-    public init() {}
+///
+/// ⚠️ **There is no `@Environment(\.dismiss)` here, deliberately.** In a panel it
+/// resolves to the enclosing window — the board — so the old `Close` button
+/// would close the application's main window. Hiding is
+/// `model.showingAnalysisPanel = false`; ending the session is `Finish`, and
+/// those are two different acts (see ``AppModel/showingAnalysisPanel``).
+///
+/// ⚠️ **The container does not clip, and must not** — the same rule
+/// `DetailPanelView` carries. The shadow that says this panel floats above the
+/// columns sits outside these bounds.
+struct AnalysisPanelView: View {
+    /// The board's column width, passed in rather than measured here.
+    ///
+    /// The panel is measured in columns, so it needs the same number the columns
+    /// were laid out with. A second `GeometryReader` inside the one that already
+    /// answered that question would be a second answer to it.
+    let columnWidth: CGFloat
 
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var angles: Set<AnalysisAngle> = [.bugs, .quickWins]
-    @State private var instructions = ""
-    @State private var maxStories = 8
-    @State private var selection: Set<UUID> = []
+    // ⚠️ The setup form and the triage selection live on `AppModel`, not here:
+    // hiding the panel removes it from the row and destroys every `@State` in
+    // it, which would make the hide lossy in exactly the way this feature says
+    // it is not. See ``AppModel/analysisAngles``.
     @State private var editingID: UUID?
     @State private var past: [Analysis] = []
     /// `nil` until the reader opens or closes the strip themselves.
     @State private var lensesExpanded: Bool?
 
-    public var body: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
 
-            if model.activeAnalysisID == nil {
-                setup
+            if let session = model.analysis {
+                review(session)
             } else {
-                review
+                setup
             }
 
             Divider()
             footer
         }
-        // A window, not a modal sheet: this screen starts up to eight runs,
-        // three at a time, and then watches them for minutes. The note that used to live
-        // above the footer is now *in* it — inserting a row between the list
-        // and the buttons moved the buttons out from under the cursor that had
-        // just pressed one.
-        .frame(minWidth: 760, idealWidth: 900, minHeight: 560, idealHeight: 760)
+        // Measured in board columns, like the detail panel, so it reads as being
+        // *of* the row rather than a window that happens to be nearby. The note
+        // that used to live above the footer is now *in* it — inserting a row
+        // between the list and the buttons moved the buttons out from under the
+        // cursor that had just pressed one.
+        .frame(width: PanelLayout.panelWidth(columnWidth: columnWidth, spans: model.analysisSpans))
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Color(nsColor: .windowBackgroundColor), in: outline)
+        .overlay {
+            outline.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+        }
+        .overlay(alignment: .trailing) {
+            @Bindable var model = model
+            PanelResizeHandle(
+                spans: $model.analysisSpans,
+                columnWidth: columnWidth,
+                // Pinned at the row's leading edge, so its outer edge is always
+                // the trailing one and "drag right" is always "wider".
+                opensLeft: false,
+                help: "Drag to make the analysis two or three columns wide",
+                label: "Analysis width"
+            )
+        }
+        // The same elevation the detail panel has: this floats above the columns
+        // it is placed beside, and that is what says it is not one of them.
+        .shadow(
+            color: .black.opacity(Metric.panelElevation.opacity),
+            radius: Metric.panelElevation.radius,
+            y: Metric.panelElevation.y
+        )
+        .accessibilityElement(children: .contain)
+        // Applied here rather than from the board: `accessibilityLabel` resolves
+        // innermost-first, so an outer one would be silently inert.
+        .accessibilityLabel(
+            BoardAccessibility.analysisPanelLabel(
+                repoName: repo?.displayName,
+                proposalCount: model.analysis.map { proposed($0).count }
+            )
+        )
         .task { past = await model.recentAnalyses() }
+    }
+
+    /// The panel's silhouette, used as a background fill and as a border — never
+    /// as a clip. See the ⚠️ on the type.
+    private var outline: RoundedRectangle {
+        RoundedRectangle(cornerRadius: Metric.panelRadius)
     }
 
     // MARK: - Header
@@ -65,14 +121,14 @@ public struct AnalysisWindow: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Analyse \(repoName)").font(Type.sheetTitle)
-                Text(model.activeAnalysisID == nil
+                Text(model.analysis == nil
                     ? "Read this repository through several lenses and propose stories for the backlog."
                     : "Accept what you want on the board. Nothing here is a card until you do.")
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if !past.isEmpty, model.activeAnalysisID == nil {
+            if !past.isEmpty, model.analysis == nil {
                 Menu {
                     ForEach(past) { analysis in
                         Button(label(for: analysis)) { model.openAnalysis(id: analysis.id) }
@@ -83,6 +139,20 @@ public struct AnalysisWindow: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
             }
+
+            // Hides the panel. It does **not** end the session: the runs keep
+            // going and the observation keeps landing proposals, so re-showing
+            // finds everything that arrived meanwhile. `Finish`, in the footer,
+            // is the other act.
+            Button {
+                model.showingAnalysisPanel = false
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Hide the analysis. Runs in flight keep going and proposals keep arriving.")
+            .accessibilityLabel("Hide the analysis")
         }
         .padding(16)
     }
@@ -101,7 +171,10 @@ public struct AnalysisWindow: View {
     // MARK: - Setup
 
     private var setup: some View {
-        ScrollView {
+        // The Stepper and the TextEditor write back, and what they write to now
+        // lives on the model so it survives the panel being hidden.
+        @Bindable var model = model
+        return ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 8) {
                     ConsoleLabel(text: "Lenses")
@@ -114,8 +187,8 @@ public struct AnalysisWindow: View {
                         spacing: 10
                     ) {
                         ForEach(AnalysisAngle.allCases, id: \.self) { angle in
-                            LensTile(angle: angle, isOn: angles.contains(angle)) {
-                                if angles.contains(angle) { angles.remove(angle) } else { angles.insert(angle) }
+                            LensTile(angle: angle, isOn: model.analysisAngles.contains(angle)) {
+                                if model.analysisAngles.contains(angle) { model.analysisAngles.remove(angle) } else { model.analysisAngles.insert(angle) }
                             }
                         }
                     }
@@ -123,8 +196,8 @@ public struct AnalysisWindow: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     ConsoleLabel(text: "Limit")
-                    Stepper(value: $maxStories, in: 1...30) {
-                        Text("Keep at most \(maxStories) stories from each lens")
+                    Stepper(value: $model.analysisMaxStories, in: 1...30) {
+                        Text("Keep at most \(model.analysisMaxStories) stories from each lens")
                             .font(Type.bodyProse)
                     }
                     .fixedSize()
@@ -135,7 +208,7 @@ public struct AnalysisWindow: View {
                     Text("Folded into every lens's prompt. Leave it empty unless you want to steer them.")
                         .font(Type.prose)
                         .foregroundStyle(.secondary)
-                    TextEditor(text: $instructions)
+                    TextEditor(text: $model.analysisInstructions)
                         .font(Type.bodyProse)
                         .scrollContentBackground(.hidden)
                         .padding(4)
@@ -152,7 +225,7 @@ public struct AnalysisWindow: View {
 
     // MARK: - Review
 
-    private var review: some View {
+    private func review(_ session: AnalysisSession) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // Pinned: this is the status of the thing you are waiting on, and
             // it must not scroll away under the proposals it is producing.
@@ -163,22 +236,22 @@ public struct AnalysisWindow: View {
             // hold half the window to say so.
             VStack(alignment: .leading, spacing: 8) {
                 Button {
-                    lensesExpanded = !isLensStripOpen
+                    lensesExpanded = !isLensStripOpen(session)
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: isLensStripOpen ? "chevron.down" : "chevron.right")
+                        Image(systemName: isLensStripOpen(session) ? "chevron.down" : "chevron.right")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(.secondary)
                         ConsoleLabel(text: "Lenses")
-                        if !isLensStripOpen { lensSummary }
+                        if !isLensStripOpen(session) { lensSummary(session) }
                         Spacer()
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
-                if isLensStripOpen {
-                    ForEach(model.analysisRuns) { run in
+                if isLensStripOpen(session) {
+                    ForEach(session.runs) { run in
                         LensRunRow(run: run, repoPath: repo?.path)
                     }
                 }
@@ -186,14 +259,14 @@ public struct AnalysisWindow: View {
             .padding(16)
 
             Divider()
-            proposalList
+            proposalList(session)
         }
     }
 
     /// Open while anything is still reading, closed once it is all in — unless
     /// the reader has said otherwise, which then sticks.
-    private var isLensStripOpen: Bool {
-        lensesExpanded ?? !model.analysisRuns.allSatisfy { $0.state.isTerminal }
+    private func isLensStripOpen(_ session: AnalysisSession) -> Bool {
+        lensesExpanded ?? !session.runs.allSatisfy { $0.state.isTerminal }
     }
 
     /// What the collapsed strip still has to say.
@@ -202,15 +275,15 @@ public struct AnalysisWindow: View {
     /// exactly the thing that must not become invisible because the panel it
     /// lived in was tidied away.
     @ViewBuilder
-    private var lensSummary: some View {
-        let reports = model.analysisRuns.compactMap(\.analysisReport)
+    private func lensSummary(_ session: AnalysisSession) -> some View {
+        let reports = session.runs.compactMap(\.analysisReport)
         let kept = reports.reduce(0) { $0 + $1.kept }
         let dropped = reports.reduce(0) { $0 + $1.dropped.count }
         let edited = reports.filter { $0.workingTreeChanged == true }.count
         let recovered = reports.filter { $0.harvestSource == .resultText }.count
 
         HStack(spacing: 8) {
-            Fact(text: "\(model.analysisRuns.count) lenses", small: true)
+            Fact(text: "\(session.runs.count) lenses", small: true)
             Fact(text: "\(kept) kept", tint: Palette.verified, small: true)
             if dropped > 0 {
                 Fact(text: "\(dropped) dropped", tint: Palette.attention, small: true)
@@ -229,17 +302,18 @@ public struct AnalysisWindow: View {
         }
     }
 
-    private var proposed: [StoryProposal] {
-        model.proposals.filter { $0.status == .proposed }
+    private func proposed(_ session: AnalysisSession) -> [StoryProposal] {
+        session.proposals.filter { $0.status == .proposed }
     }
 
-    private var proposalList: some View {
-        ScrollView {
+    private func proposalList(_ session: AnalysisSession) -> some View {
+        let proposed = self.proposed(session)
+        return ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
                 if proposed.isEmpty {
                     emptyReview
                 } else {
-                    selectionBar
+                    selectionBar(proposed)
                     ForEach(AnalysisAngle.allCases, id: \.self) { angle in
                         let group = proposed.filter { $0.angle == angle }
                         if !group.isEmpty {
@@ -266,9 +340,9 @@ public struct AnalysisWindow: View {
                 Button(allSelected(group) ? "Clear" : "Select all") {
                     let ids = group.map(\.id)
                     if allSelected(group) {
-                        ids.forEach { selection.remove($0) }
+                        ids.forEach { model.analysisSelection.remove($0) }
                     } else {
-                        selection.formUnion(ids)
+                        model.analysisSelection.formUnion(ids)
                     }
                 }
                 // No accent: choosing rows starts nothing and merges nothing.
@@ -288,13 +362,13 @@ public struct AnalysisWindow: View {
                 } else {
                     ProposalRow(
                         proposal: proposal,
-                        isSelected: selection.contains(proposal.id),
+                        isSelected: model.analysisSelection.contains(proposal.id),
                         repoPath: repo?.path,
                         toggle: {
-                            if selection.contains(proposal.id) {
-                                selection.remove(proposal.id)
+                            if model.analysisSelection.contains(proposal.id) {
+                                model.analysisSelection.remove(proposal.id)
                             } else {
-                                selection.insert(proposal.id)
+                                model.analysisSelection.insert(proposal.id)
                             }
                         },
                         edit: { editingID = proposal.id },
@@ -307,27 +381,27 @@ public struct AnalysisWindow: View {
     }
 
     private func allSelected(_ group: [StoryProposal]) -> Bool {
-        !group.isEmpty && group.allSatisfy { selection.contains($0.id) }
+        !group.isEmpty && group.allSatisfy { model.analysisSelection.contains($0.id) }
     }
 
     /// Grounding is the one objective fact available about an opinion, so it is
     /// the one bulk selection worth offering.
-    private var selectionBar: some View {
+    private func selectionBar(_ proposed: [StoryProposal]) -> some View {
         HStack(spacing: 10) {
-            Fact(text: "\(selection.count) of \(proposed.count) selected", small: true)
+            Fact(text: "\(model.analysisSelection.count) of \(proposed.count) selected", small: true)
             Spacer()
             let grounded = proposed.filter(\.isGrounded).map(\.id)
             Button("Select the \(grounded.count) grounded") {
-                selection = Set(grounded)
+                model.analysisSelection = Set(grounded)
             }
             .buttonStyle(.plain)
             .font(Type.prose)
             .disabled(grounded.isEmpty)
 
-            Button("Clear") { selection = [] }
+            Button("Clear") { model.analysisSelection = [] }
                 .buttonStyle(.plain)
                 .font(Type.prose)
-                .disabled(selection.isEmpty)
+                .disabled(model.analysisSelection.isEmpty)
         }
     }
 
@@ -360,25 +434,39 @@ public struct AnalysisWindow: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if model.activeAnalysisID == nil {
+            if model.analysis == nil, let refusal = model.analysisRefusal {
+                // Why Start is disabled, said where the disabled button is.
+                //
+                // #151 dropped the toolbar button's `.disabled(…)` — a toggle
+                // you cannot switch off is worse than one that opens onto an
+                // explanation — and that trade is only honest if the
+                // explanation is actually here. It used to exist solely as the
+                // toolbar's tooltip, which a reader looking at this panel never
+                // sees.
+                Label(refusal, systemImage: "exclamationmark.octagon.fill")
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.refused)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if model.analysis == nil {
                 // The same promise the board's columns make: say what the
                 // gesture will do before it is made. Each lens is a full read
                 // of the repository, and that is what the button is spending.
                 Label(startConsequence, systemImage: "bolt.fill")
                     .font(Type.prose)
-                    .foregroundStyle(angles.isEmpty ? Palette.refused : Palette.armed)
-            } else if !selection.isEmpty {
+                    .foregroundStyle(model.analysisAngles.isEmpty ? Palette.refused : Palette.armed)
+            } else if !model.analysisSelection.isEmpty {
                 // A count of your own clicks is not a consequence, so it
                 // carries no accent.
-                Fact(text: "\(selection.count) selected")
-            } else if let note = model.analysisNote {
+                Fact(text: "\(model.analysisSelection.count) selected")
+            } else if let note = model.analysis?.note {
                 Label(note, systemImage: "info.circle")
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .id(note)
                     // Driven by the `.animation(reduceMotion ? nil : …, value:
-                    // model.analysisNote)` at the foot of this footer, which is
+                    // model.analysis?.note)` at the foot of this footer, which is
                     // keyed on the very value that makes the note appear and
                     // go. Reduce motion switches it off there, once.
                     .transition(.opacity)
@@ -386,25 +474,40 @@ public struct AnalysisWindow: View {
 
             Spacer()
 
-            Button("Close", role: .cancel) {
-                model.closeAnalysis()
-                dismiss()
+            // Only while a session exists: with nothing started there is nothing
+            // to finish, and the ✕ in the header is how you put the panel away.
+            //
+            // This is the *other* act — it drops the session and returns the
+            // panel to the lens picker. The runs themselves belong to the
+            // scheduler; cancelling one is still the per-lens Cancel button.
+            if model.analysis != nil {
+                Button("Finish") { model.closeAnalysis() }
+                    .help(
+                        "End this analysis and return to the lens picker. "
+                            + "Undecided proposals stay in the store.")
             }
 
-            if model.activeAnalysisID == nil {
-                Button("Start \(angles.count) run\(angles.count == 1 ? "" : "s")") {
+            if model.analysis == nil {
+                Button("Start \(model.analysisAngles.count) run\(model.analysisAngles.count == 1 ? "" : "s")") {
                     guard let repoID = model.selectedRepoID else { return }
                     Task {
                         await model.startAnalysis(
                             repoID: repoID,
-                            angles: AnalysisAngle.allCases.filter(angles.contains),
-                            instructions: instructions,
-                            maxStories: maxStories
+                            angles: AnalysisAngle.allCases.filter(model.analysisAngles.contains),
+                            instructions: model.analysisInstructions,
+                            maxStories: model.analysisMaxStories
                         )
                     }
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(angles.isEmpty || model.selectedRepoID == nil)
+                // ⛔ No `.keyboardShortcut(.defaultAction)`, and its absence is
+                // the point. As a `Window` scene Return was scoped to this
+                // screen; as a panel it shares the board window with
+                // `DetailPanelView`'s own default action, and Return would have
+                // two claimants with nothing in the code deciding between them.
+                // The claimant here spawns up to eight unattended runs, so it is
+                // the one that must not be reachable by a key pressed anywhere
+                // in the window.
+                .disabled(model.analysisAngles.isEmpty || model.analysisRefusal != nil)
                 // The one genuinely armed control on this screen — it starts N
                 // unattended runs — and it was the only one with no tint, while
                 // six inert triage buttons had one each.
@@ -413,37 +516,38 @@ public struct AnalysisWindow: View {
                 // Editing was reachable by hover and by context menu, neither
                 // of which a keyboard can open on macOS.
                 Button("Edit…") {
-                    editingID = proposed.first { selection.contains($0.id) }?.id
+                    editingID = (model.analysis.map(proposed) ?? []).first { model.analysisSelection.contains($0.id) }?.id
                 }
-                .disabled(selection.count != 1)
+                .disabled(model.analysisSelection.count != 1)
 
-                Button(selection.isEmpty ? "Reject" : "Reject \(selection.count)") {
-                    let ids = Array(selection)
-                    selection = []
+                Button(model.analysisSelection.isEmpty ? "Reject" : "Reject \(model.analysisSelection.count)") {
+                    let ids = Array(model.analysisSelection)
+                    model.analysisSelection = []
                     Task { await model.rejectProposals(ids: ids) }
                 }
-                .disabled(selection.isEmpty)
+                .disabled(model.analysisSelection.isEmpty)
 
                 // One verb per act. The row buttons, the context menu and this
                 // all say "Accept"; "Add to Backlog" was a third name for it.
-                Button(selection.isEmpty ? "Accept" : "Accept \(selection.count)") {
-                    let ids = Array(selection)
-                    selection = []
+                Button(model.analysisSelection.isEmpty ? "Accept" : "Accept \(model.analysisSelection.count)") {
+                    let ids = Array(model.analysisSelection)
+                    model.analysisSelection = []
                     Task { await model.acceptProposals(ids: ids) }
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(selection.isEmpty)
+                // Same reason as Start above: this panel no longer owns a window,
+                // so a window-wide default action is not what it is any more.
+                .disabled(model.analysisSelection.isEmpty)
             }
         }
         .padding(16)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: model.analysisNote)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: model.analysis?.note)
     }
 
     private var startConsequence: String {
-        switch angles.count {
+        switch model.analysisAngles.count {
         case 0: "Pick at least one lens."
         case 1: "Reads the repository once."
-        default: "Reads the repository \(angles.count) times — one run per lens."
+        default: "Reads the repository \(model.analysisAngles.count) times — one run per lens."
         }
     }
 }

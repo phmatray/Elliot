@@ -1,0 +1,187 @@
+# The floor `Package.swift` declares, held true by something other than goodwill (#116, criterion 4).
+#
+# ### What rotted, and what this catches
+#
+# `swift-tools-version` said 6.1 for months while the sources needed more. Nothing noticed, for one
+# structural reason: **no machine other than the author's had ever compiled the package.** The first
+# runner that tried failed in under two minutes. A declared floor with nothing exercising it is not a
+# weak guarantee, it is no guarantee — it is a comment that happens to sit in a manifest.
+#
+# So this job does not *read* the floor and reason about it. It builds on it.
+#
+# ### Why it also fails when the runner is NEWER than the floor
+#
+# That reads like pedantry and is the whole point. If the image moves to a toolchain above the
+# declared floor, this job goes on passing while measuring **a different toolchain than the one
+# declared** — which is exactly the state the repository was in before #116, reached by a different
+# route. The check would then be decorative, and a decorative check is worse than none, because it
+# looks like coverage.
+#
+# The failure is deliberately actionable rather than merely loud: it names both ways out (re-measure
+# and raise the floor, or pin the toolchain) and it should fire roughly once per Xcode release, not
+# once per pull request.
+#
+# ### The two comparisons are at different precisions, on purpose
+#
+# A floor is a **minimum**, and the two ways to miss it are not symmetric:
+#
+#   • **Below it is a violation, at full precision.** `swift-tools-version` does carry a patch — this
+#     package declares `6.3.1`, and SwiftPM enforces it (a `6.3.9` manifest is refused by a 6.3.3
+#     toolchain, by name). A 6.3.0 runner against a 6.3.1 floor is genuinely below it, and truncating
+#     to major.minor would wave it through — which is how the first draft of this file certified
+#     exactly that case as "at the declared floor".
+#   • **Above it is a coverage concern, and only at major.minor.** How much it matters scales with
+#     distance, and #116's own measurement is the evidence: the verdict on this package changed at
+#     6.1→6.2 and again at 6.2→6.3, and *not once* across 6.2 → 6.2.1 → 6.2.3 → 6.2.4, nor across
+#     6.3.1 → 6.3.2 → 6.3.3. Minor releases are where compilers changed what they accept. Failing on
+#     a patch bump would fire several times a year on a signal that has never once meant anything
+#     here, and a check that cries wolf gets muted — which is the same end state as no check.
+#
+# ### Why there is no second, lower leg
+#
+# #116 chose to **raise** the floor rather than repair the sources for 6.1, so there is no older
+# toolchain left to exercise. That absence is a decision, not an omission. Under the other outcome
+# this file would carry a `macos-15` build leg to keep the 6.1 claim honest on every pull request.
+#
+# ### Why this is not `ci.yml`
+#
+# There is no `.github/workflows/ci.yml` on `main`; it is #21, in flight on #102. Editing a file that
+# does not exist yet would either collide with that pull request or be unexercisable until it lands —
+# and an unexercised check is the exact thing #116 is about. A separate file runs on the pull request
+# that adds it, which is how Task 5's last step could be verified at all.
+name: swift-floor
+
+# Pull requests only, deliberately. A drift failure is a prompt to re-measure, and it must not land on
+# `main` as a red default branch — this repository's rule is that the default branch is never red.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# This repository is private and macOS runner minutes bill at 10×, while a cold `swift build` plus
+# `swift build --build-tests` here is ~6 minutes of wall clock — call it 60 billed minutes a run. And
+# `pull_request` includes `synchronize`, so the repo's own `implement-issue` flow, which pushes one
+# commit per plan task, stacks a full run per commit. Superseded runs measure a tree nobody will
+# merge, so cancel them.
+#
+# The failure this avoids is specific, not hygiene: an exhausted macOS allowance makes Actions jobs
+# fail in 3–4 seconds with zero steps — a check that is red for a reason unrelated to the floor and
+# measuring nothing at all. That is the "decorative check is worse than none" state this file's
+# header argues against, reached by a third route.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  floor:
+    # Carries Swift 6.3.x, which is the declared floor's major.minor. When this image moves to 6.4 the
+    # assertion below goes red on purpose — see "Why it also fails when the runner is NEWER".
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    # ⛔ Deliberately NOT cached, though the minutes argue for it. Caching `.build` would make this
+    # job pass on artefacts a *previous* toolchain produced, and the one claim it exists to establish
+    # is that *this* toolchain compiles this package from source. A cache-hit run proves nothing about
+    # the floor, and it would prove it silently. `CLAUDE.md` already records what stale build objects
+    # do here — wrong values, link errors, a SIGBUS charged to an innocent pull request, and a
+    # confident bisect that convicted an innocent commit — all cleared by `rm -rf .build`. Cheap
+    # coverage of the wrong thing is what this whole issue is about. The `concurrency` group above is
+    # the honest way to spend fewer minutes.
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: The runner's toolchain against the floor Package.swift declares
+        run: |
+          # ⚠️ `set +e`, and it is the whole reason the diagnostics below can ever print. GitHub
+          # invokes `run:` as `bash -e {0}`, and `set` can only turn options ON — `set -uo pipefail`
+          # does not clear `errexit`. With it left on, a missing `swift` or a moved `Package.swift`
+          # makes the assignment's pipeline non-zero and the step dies right there, so the two
+          # carefully-worded "could not read a version" errors never reach the log. The step still
+          # fails, so the safety property held; the *actionable* property this file claims did not.
+          set +e
+          set -uo pipefail
+
+          # ⚠️ And no `| head -1` anywhere, for a sibling reason. With `pipefail` on, `producer |
+          # head -1` fails the pipeline whenever `head` exits first and the producer takes SIGPIPE —
+          # a step that aborts on nothing, at a rate set by how fast two processes happen to run. It
+          # passed every time on a manifest this small and would have gone off on a bigger one. First
+          # lines are `${var%%$'\n'*}`, which starts no second process at all.
+          declared_all=$(sed -n 's|^// *swift-tools-version: *\([0-9][0-9.]*\).*|\1|p' ElliotKit/Package.swift)
+          declared=${declared_all%%$'\n'*}
+          runner_all=$(swift --version 2>&1 | sed -n 's/.*Apple Swift version \([0-9][0-9.]*\).*/\1/p')
+          runner=${runner_all%%$'\n'*}
+
+          # An unparsed version must never read as a pass. Both of these are scraped out of text that
+          # is free to change shape — a manifest comment and a compiler banner — and the failure mode
+          # of a silently empty variable is a green check that compared nothing against nothing.
+          if [ -z "$declared" ]; then
+            echo "::error::Could not read swift-tools-version from ElliotKit/Package.swift."
+            echo "The first line must match '// swift-tools-version: <x.y>'. Read it, do not assume it."
+            exit 1
+          fi
+          if [ -z "$runner" ]; then
+            echo "::error::Could not read a version out of 'swift --version' on this runner."
+            swift --version 2>&1 || true
+            exit 1
+          fi
+
+          d_mm=$(echo "$declared" | cut -d. -f1,2)
+          r_mm=$(echo "$runner"   | cut -d. -f1,2)
+
+          echo "declared floor : $declared  (major.minor $d_mm)"
+          echo "runner toolchain: $runner  (major.minor $r_mm)"
+          echo "declared floor \`$declared\`, runner \`$runner\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # BELOW the floor, at FULL precision — see "The two comparisons are at different
+          # precisions" above. `sort -V` and not string order: 6.10 sorts below 6.9 lexically, and
+          # 6.3.10 below 6.3.9, both of which are futures rather than hypotheticals.
+          sorted=$(printf '%s\n%s\n' "$declared" "$runner" | sort -V)
+          lowest=${sorted%%$'\n'*}
+          if [ "$runner" != "$declared" ] && [ "$lowest" = "$runner" ]; then
+            echo "::error::The runner's Swift is OLDER than the declared floor ($runner < $declared)."
+            echo "The runner image moved down, or the floor moved up without this job's image moving with it."
+            echo "This is a named failure on purpose: without it the same mismatch surfaces as an"
+            echo "inference error a few hundred lines into a SwiftUI target, which is #116 verbatim."
+            exit 1
+          fi
+
+          # At or above it. A patch above is still the floor's own release train — measured across
+          # 6.2→6.2.4 and 6.3.1→6.3.3, the verdict on this package never moved within a minor — so
+          # only a minor drift means the floor has stopped being exercised.
+          if [ "$d_mm" = "$r_mm" ]; then
+            echo "✓ The runner is at or within a patch of the declared floor. The build below exercises it."
+            exit 0
+          fi
+          # A whole minor above, then.
+          echo "::error::The runner's Swift is NEWER than the declared floor ($runner > $declared)."
+          echo "Nothing is exercising the declared floor any more, so this job would pass while"
+          echo "measuring a toolchain nobody declared — coverage in appearance only."
+          echo "Two ways out, and both are fine:"
+          echo "  1. Re-measure. If the package still builds AND tests on $declared, pin a $declared"
+          echo "     toolchain here. If it no longer does, raise the floor in ElliotKit/Package.swift"
+          echo "     to what you measured, and correct CLAUDE.md and .claude/skills/repo-profile.md"
+          echo "     with it — #116 exists because those three drifted apart."
+          echo "  2. Raise the floor to what you measured on $runner, which is what #116 itself did."
+          echo "Do not silence this by widening the comparison: a floor nothing builds on is the bug."
+          exit 1
+
+      # The assertion above says the toolchain IS the floor. This says the floor WORKS. Neither alone
+      # is the criterion: #116's defect was a declared floor that no build had ever met.
+      - name: Build on the declared floor
+        working-directory: ElliotKit
+        run: swift build
+
+      # `swift build` compiles the library and executable targets only, so it leaves all eight test
+      # targets unmeasured — and that is not a footnote here. Measured in #116: every Swift 6.2.x
+      # builds this package green and *cannot compile the tests*, so a floor checked by `swift build`
+      # alone would have certified 6.2 and been wrong by four releases.
+      #
+      # `--build-tests` rather than `swift test`: the claim under guard is that the floor can compile
+      # this package, not that the suite passes — that is #21's job, and running the suite twice buys
+      # nothing for the minutes.
+      - name: Compile the test targets on the declared floor
+        working-directory: ElliotKit
+        run: swift build --build-tests
