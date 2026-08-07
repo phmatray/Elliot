@@ -1236,8 +1236,8 @@ public final class AppModel {
     /// this feature exists to disprove.
     private func reloadRepoRows() async {
         guard let registry else { return }
-        let reconciled = await registry.rows(layout: layout)
-        repoRows = await registry.probe(reconciled)
+        let page = await registry.rows(layout: layout)
+        repoRows = await registry.probe(page.rows)
     }
 
     /// Fast-forwards every clone the probe found strictly behind, and keeps the

@@ -36,6 +36,23 @@ public struct SyncSummary: Sendable {
     }
 }
 
+/// One rebuild of the Repositories page: the rows, and the owners GitHub never
+/// answered for.
+///
+/// The two travel together on purpose. The banner and the rows have to describe
+/// the *same* pass — a page that named a failure from one refresh beside rows
+/// from another would be a new way of saying something nobody measured, which is
+/// the defect this type exists to end rather than relocate.
+public struct RepoPage: Sendable {
+    public var rows: [RepoRow]
+    public var listingFailures: [OwnerListingFailure]
+
+    public init(rows: [RepoRow], listingFailures: [OwnerListingFailure] = []) {
+        self.rows = rows
+        self.listingFailures = listingFailures
+    }
+}
+
 public struct RepoFixOutcome: Sendable, Hashable {
     public let succeeded: Bool
     public let detail: String
@@ -62,19 +79,55 @@ public struct RepoRegistryService: Sendable {
         self.git = GitClient(config: config)
     }
 
-    public func rows(layout: RepoTreeLayout) async -> [RepoRow] {
+    /// Rebuilds the page from GitHub, the disk and the store.
+    ///
+    /// The fan-out keeps the error rather than flattening it, and that one line
+    /// is #148: `(try? await gh.repos(owner:)) ?? []` turned "no network", "not
+    /// authenticated", "rate limited" and "no such token scope" all into the same
+    /// value an account with no repositories returns. Nothing downstream could
+    /// tell them apart, so the page rendered a non-measurement as a verdict —
+    /// including a `Register` button whose own work needs the `gh` that just
+    /// failed.
+    ///
+    /// Per owner, never per pass: one owner's rate limit costs that owner's
+    /// verdicts and nothing else. That is #131's lesson for the board, stated
+    /// again for the remote leg, and it is what a blanket failure cannot test.
+    public func rows(layout: RepoTreeLayout) async -> RepoPage {
         let gh = self.gh
-        let remotes = await withTaskGroup(of: [GHRepoSummary].self) { group in
+        let listed = await withTaskGroup(of: (String, Result<[GHRepoSummary], any Error>).self) { group in
             for owner in layout.owners {
-                group.addTask { (try? await gh.repos(owner: owner)) ?? [] }
+                group.addTask {
+                    do { return (owner, .success(try await gh.repos(owner: owner))) }
+                    catch { return (owner, .failure(error)) }
+                }
             }
-            return await group.reduce(into: [GHRepoSummary]()) { $0 += $1 }
+            return await group.reduce(into: [(String, Result<[GHRepoSummary], any Error>)]()) {
+                $0.append($1)
+            }
         }
-        return RepoReconciler.rows(
-            listing: GitHubListing(repos: remotes),
-            disk: RepoTreeScanner(layout: layout).scan(),
-            registered: (try? await store.repos()) ?? [],
-            layout: layout)
+
+        var repos: [GHRepoSummary] = []
+        var failures: [OwnerListingFailure] = []
+        for (owner, result) in listed {
+            switch result {
+            case .success(let listed): repos += listed
+            case .failure(let error):
+                failures.append(
+                    OwnerListingFailure(owner: owner, reason: error.localizedDescription))
+            }
+        }
+        // Completion order is not owner order, and the banner reads top to
+        // bottom: sorted so two refreshes of the same broken portfolio do not
+        // shuffle the lines under the reader.
+        failures.sort { $0.owner.lowercased() < $1.owner.lowercased() }
+
+        return RepoPage(
+            rows: RepoReconciler.rows(
+                listing: GitHubListing(repos: repos, failures: failures),
+                disk: RepoTreeScanner(layout: layout).scan(),
+                registered: (try? await store.repos()) ?? [],
+                layout: layout),
+            listingFailures: failures)
     }
 
     public func apply(_ fix: RepoFix, layout: RepoTreeLayout) async -> RepoFixOutcome {
