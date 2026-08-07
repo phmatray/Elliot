@@ -545,6 +545,25 @@ public final class BoardStore: Sendable {
             .values(in: reader)
     }
 
+    /// Live pull request readings, board-wide.
+    ///
+    /// This exists because nothing else could deliver them. `PRWatcher` writes
+    /// only to `prStatus` and touches no card row, so a board refreshing off the
+    /// card observation would learn about a reading exactly never: the card
+    /// reaches In Review, the refresh runs and finds nothing (the `gh pr view`
+    /// has not returned yet), the row lands a moment later and nothing fires.
+    /// Checks going from running to failed five minutes on would not arrive
+    /// either. The feature would look like it did not work.
+    ///
+    /// Not keyed by card: the reader joins on `(repoID, prNumber)`, and a
+    /// per-card observation would mean one observation per waiting card.
+    public func observePRStatuses() -> AsyncValueObservation<[PRStatus]> {
+        ValueObservation
+            .tracking { db in try PRStatus.fetchAll(db) }
+            .removeDuplicates()
+            .values(in: reader)
+    }
+
     /// Every repository row, decoded **one at a time**.
     ///
     /// `fetchAll` decodes the whole set or throws, so a single row Elliot cannot

@@ -75,6 +75,7 @@ struct PRWatcherStatusTests {
     private func makeHarness(
         column: ElliotModel.Column = .inReview,
         prNumber: Int? = 52,
+        issueNumber: Int? = 7,
         headRefOid: String = "3be5f1ee906ff61bdedef0072b635ec6ec40c632",
         prView: String = "pr-view-unstable.json"
     ) async throws -> Harness {
@@ -87,7 +88,7 @@ struct PRWatcherStatusTests {
         let now = Date()
         var card = Card(
             repoID: repo.id, title: "Something", column: column, orderIndex: 0,
-            issueNumber: 7, prNumber: prNumber, branch: "feat/7-something",
+            issueNumber: issueNumber, prNumber: prNumber, branch: "feat/7-something",
             columnEnteredAt: now, createdAt: now, updatedAt: now)
         card.prURL = "https://github.com/phmatray/Elliot/pull/52"
         try await store.saveCard(card)
@@ -190,11 +191,29 @@ struct PRWatcherStatusTests {
         #expect(try await harness.store.prStatus(repoID: harness.repo.id, prNumber: 52) == nil)
     }
 
-    @Test("A card with no pull request number costs nothing")
-    func noPullRequestNumberCostsNothing() async throws {
-        let harness = try await makeHarness(prNumber: nil)
+    @Test("A card with nothing to look up costs nothing")
+    func nothingToLookUpCostsNothing() async throws {
+        // No pull request number **and** no issue number: with an issue number
+        // `reconcile` finds the pull request by branch and fills the number in,
+        // so "no pull request number" stops being true inside the same tick.
+        let harness = try await makeHarness(prNumber: nil, issueNumber: nil)
         await harness.watcher.tick()
         #expect(harness.prViewCalls() == 0)
+    }
+
+    @Test("A pull request number reconcile discovers this tick is read this tick")
+    func numberDiscoveredThisTickIsReadThisTick() async throws {
+        // The other half of re-reading the cards after `reconcile`. On the stale
+        // snapshot this card was still "no pull request number" and its first
+        // reading waited a whole tick — up to ~6 minutes once the quiet backoff
+        // has widened.
+        let harness = try await makeHarness(prNumber: nil)
+        await harness.watcher.tick()
+
+        let card = try #require(try await harness.store.cards(repoID: harness.repo.id).first)
+        #expect(card.prNumber == 52, "reconcile did not attach the pull request")
+        #expect(harness.prViewCalls() == 1)
+        #expect(try await harness.store.prStatus(repoID: harness.repo.id, prNumber: 52) != nil)
     }
 
     // MARK: - A failure leaves what was there

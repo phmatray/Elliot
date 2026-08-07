@@ -165,6 +165,24 @@ public struct GHMergeStatus: Codable, Sendable, Hashable {
                 .contains(verdict)
         }
 
+        /// Finished without judging anything.
+        ///
+        /// A GitHub Actions job gated by an `if:` comes back `COMPLETED` with
+        /// `SKIPPED`; `NEUTRAL` and `STALE` are the same shape. Counting these
+        /// as passes is the "a lot of checks all `skipped` is not a green" trap,
+        /// which is the *same* false green `CIState.noChecks` exists to name,
+        /// reached by a different route.
+        ///
+        /// ⚠️ This is **not** the name-based inert-check discounting that was
+        /// deliberately declined for this feature. That one needs a maintained
+        /// list of check *names* — `CodeQL`, `renovate/*` — which drifts, and
+        /// whose data already lives in `repo-audit`. This reads GitHub's own
+        /// `conclusion` vocabulary: no list, nothing to keep in sync, and a
+        /// CodeQL run that genuinely succeeded still counts as a pass.
+        public var isNonVerdict: Bool {
+            ["SKIPPED", "NEUTRAL", "STALE"].contains((conclusion ?? "").uppercased())
+        }
+
         /// Still to come. A check that has not finished cannot be counted green,
         /// and a check that says *nothing at all* is counted as pending too —
         /// erring toward "not yet" rather than toward a pass nobody established.

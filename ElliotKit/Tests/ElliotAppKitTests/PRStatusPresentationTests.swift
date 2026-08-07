@@ -125,6 +125,57 @@ struct PRStatusPresentationTests {
         #expect(resolved.sign == .unknown)
     }
 
+    // MARK: - A reading that lands after the card did
+
+    @Test("A reading stored after the card settled still reaches the board")
+    func readingThatLandsLaterIsPickedUp() async throws {
+        // The defect this guards: `PRWatcher` writes to `prStatus` and touches
+        // no card row. A board refreshing only off the card observation learns
+        // about the reading never — the card reaches In Review, the refresh runs
+        // and finds nothing because the `gh pr view` has not returned yet, the
+        // row lands a moment later and nothing fires. The badge would simply
+        // never appear, and every test that seeded the row *first* would pass.
+        let store = try BoardStore.inMemory()
+        let repo = Repo(
+            path: "/tmp/elliot-\(UUID().uuidString)",
+            nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        try await store.saveRepo(repo)
+        let now = Date()
+        let card = Card(
+            repoID: repo.id, title: "Merge me", column: .inReview, orderIndex: 0,
+            issueNumber: 7, prNumber: 52,
+            columnEnteredAt: now, createdAt: now, updatedAt: now)
+        try await store.saveCard(card)
+
+        let model = AppModel()
+        model.testOnlySeed(repos: [repo], cards: [card])
+        model.testOnlySeedStore(store)
+        await model.refreshPRStatuses()
+        #expect(model.prStatus(for: card) == nil)
+
+        // The reading lands *after* the card has settled — the watcher's order.
+        try await store.savePRStatus(PRStatus(
+            repoID: repo.id, prNumber: 52, headRefOid: "a1b2c3d4e5f6",
+            checkedAt: Date(), rawMergeStateStatus: "DIRTY", rawMergeable: "CONFLICTING",
+            rawReviewDecision: "",
+            checks: [GHMergeStatus.StatusCheck(name: "build", conclusion: "SUCCESS", status: "COMPLETED")]))
+
+        // What the observation delivers, applied through the same join.
+        model.applyPRStatuses(try await store.prStatuses(repoID: repo.id))
+        #expect(model.prStatus(for: card)?.sign == PRSign.conflict)
+    }
+
+    @Test("The join is by repository and pull request, not by number alone")
+    func joinIsKeyedByBothHalves() async throws {
+        let (model, card) = try await seeded(storeTheStatus: false)
+        // A reading for PR 52 in a *different* repository must not attach.
+        model.applyPRStatuses([PRStatus(
+            repoID: UUID(), prNumber: 52, headRefOid: "zzz", checkedAt: Date(),
+            rawMergeStateStatus: "DIRTY", rawMergeable: "CONFLICTING",
+            rawReviewDecision: "", checks: [])])
+        #expect(model.prStatus(for: card) == nil)
+    }
+
     // MARK: - The view layer decides only tint and glyph
 
     @Test("Every sign has a glyph and a tint, and the sentence comes from the model")

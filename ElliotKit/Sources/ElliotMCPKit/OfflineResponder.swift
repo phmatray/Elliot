@@ -277,8 +277,21 @@ struct OfflineResponder: Sendable {
     /// may have been closed for days when the helper is asked, and the age rule
     /// is what stops the snapshot reporting a week-old green.
     private func prStatusDTO(for card: Card) async throws -> PRStatusDTO? {
-        guard let number = card.prNumber,
-              let status = try await store.prStatus(repoID: card.repoID, prNumber: number)
+        // In Review only, matching what `PRWatcher` bothers to read and what the
+        // app renders. Without it a card `merge-pr` has just moved to Done keeps
+        // serving its **pre-merge** reading as fresh for the whole `maximumAge`
+        // window — "a review is required", about a pull request already merged.
+        guard card.column == .inReview, let number = card.prNumber else { return nil }
+
+        // `try?`, and this is the one place it is right. `openReadOnly`
+        // deliberately accepts a database **older** than this helper, so the
+        // board is not blanked between upgrading the bundle and the next launch
+        // of the app. That tolerance was written for added *columns*, which read
+        // as absent; `v8_prStatus` adds a *table*, and querying a missing table
+        // throws. Letting it propagate would answer `app_unavailable` to every
+        // offline `board_get_card` in exactly the window `openReadOnly` exists
+        // to keep working. No reading is the honest answer there.
+        guard let status = try? await store.prStatus(repoID: card.repoID, prNumber: number)
         else { return nil }
         return PRStatusDTO(status, resolved: status.resolved(now: Date(), currentHeadOid: nil))
     }

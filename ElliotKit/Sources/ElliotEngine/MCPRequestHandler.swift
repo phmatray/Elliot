@@ -574,8 +574,12 @@ public struct MCPRequestHandler: Sendable {
     /// helper cannot hold a copy of the rules. `OfflineParityTests` is what keeps
     /// them equal.
     private func prStatusDTO(for card: Card) async throws -> PRStatusDTO? {
-        guard let number = card.prNumber,
-              let status = try await store.prStatus(repoID: card.repoID, prNumber: number)
+        // In Review only — the same gate the watcher and the board apply. A card
+        // `merge-pr` has just moved to Done would otherwise serve its pre-merge
+        // reading as fresh for the whole `maximumAge` window, and the app and
+        // this surface would disagree about the same card.
+        guard card.column == .inReview, let number = card.prNumber else { return nil }
+        guard let status = try await store.prStatus(repoID: card.repoID, prNumber: number)
         else { return nil }
         return PRStatusDTO(status, resolved: status.resolved(now: Date(), currentHeadOid: nil))
     }

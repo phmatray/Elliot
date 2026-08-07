@@ -20,11 +20,12 @@ struct GetCardTool: BoardTool {
             description: """
                 Fetch one Elliot card by id, with its story, issue, pull request, last error \
                 and the id of the run holding it, if any. For a card waiting in In Review, \
-                `pr_status` carries what GitHub last said about its pull request — CI, \
+                `prStatus` carries what GitHub last said about its pull request — CI, \
                 mergeability and review as three separate facets, the names of the checks that \
                 actually ran, and when and on which commit it was read. `ci: "no_checks"` means \
                 nothing has judged the pull request, which is not the same as passing; \
-                `is_stale: true` means the reading is too old to rely on.
+                `isStale: true` means the reading is too old to rely on. An absent `prStatus` \
+                means no reading exists, which is not an all-clear either.
                 """,
             inputSchema: .object([
                 "type": .string("object"),

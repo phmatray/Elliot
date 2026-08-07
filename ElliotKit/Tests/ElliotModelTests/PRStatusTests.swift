@@ -106,6 +106,35 @@ struct PRStatusTests {
         #expect(status(checks: [GHMergeStatus.StatusCheck(name: "mystery")]).fresh.ci == .running)
     }
 
+    @Test("A conclusion that is not a verdict does not count as a pass", arguments: [
+        "SKIPPED", "NEUTRAL", "STALE",
+    ])
+    func nonVerdictConclusionsAreNotPasses(conclusion: String) {
+        // GitHub Actions jobs gated by `if:` come back COMPLETED with one of
+        // these. Counting them as passes is the "a lot of checks all skipped is
+        // not a green" trap — the exact false green `noChecks` exists to name,
+        // arriving by a different route.
+        let resolved = status(checks: [run("build", "SUCCESS"), run("deploy", conclusion)]).fresh
+        #expect(resolved.ci == .passing(1))
+    }
+
+    @Test("A rollup where NOTHING reached a verdict is no build at all")
+    func allSkippedIsNoBuild() {
+        let resolved = status(checks: [run("a", "SKIPPED"), run("b", "SKIPPED")]).fresh
+        #expect(resolved.ci == .noChecks)
+        #expect(resolved.sign == .noBuild)
+    }
+
+    @Test("Discounting a non-verdict is NOT the inert-check judgement that was declined")
+    func nonVerdictIsNotNameBasedDiscounting() {
+        // The declined judgement was a **list of check names** — CodeQL,
+        // renovate/* — which needs maintaining and drifts. This reads GitHub's
+        // own `conclusion` vocabulary: no list, nothing to keep in sync. A
+        // CodeQL run that genuinely succeeded still counts.
+        #expect(status(checks: [run("CodeQL", "SUCCESS")]).fresh.ci == .passing(1))
+        #expect(status(checks: [run("CodeQL", "SKIPPED")]).fresh.ci == .noChecks)
+    }
+
     @Test("Inert checks are NOT discounted — that judgement is deliberately not made here")
     func inertChecksStillCountAsPassing() {
         // Arbitrated on #174: encoding a non-build list in Swift would be a third

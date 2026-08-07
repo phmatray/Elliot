@@ -576,6 +576,22 @@ public final class AppModel {
             }
         })
 
+        // Its own observation, because `PRWatcher` writes the reading without
+        // touching any card row: refreshing off the card observation alone would
+        // land the badge exactly never. Same reason `observePRStatuses` exists.
+        let statusObservation = store.observePRStatuses()
+        observationTasks.append(Task { [weak self] in
+            do {
+                for try await rows in statusObservation {
+                    await MainActor.run { self?.applyPRStatuses(rows) }
+                }
+            } catch {
+                // Deliberately quiet, unlike the card observation above: a lost
+                // status stream costs a badge, not the board, and a banner
+                // saying so would be louder than the fact it reports.
+            }
+        })
+
         let repoObservation = store.observeRepos()
         observationTasks.append(Task { [weak self] in
             do {
@@ -1199,19 +1215,36 @@ public final class AppModel {
     /// board-wide answer it is not.
     func refreshPRStatuses() async {
         guard let store else { return }
-        var next: [UUID: PRStatus] = [:]
-        // One query per repository holding a waiting card, not one per card.
+        var rows: [PRStatus] = []
         for repoID in Set(cards.filter { $0.column == .inReview }.map(\.repoID)) {
-            guard let rows = try? await store.prStatuses(repoID: repoID) else { continue }
-            let byNumber = Dictionary(rows.map { ($0.prNumber, $0) }, uniquingKeysWith: { a, _ in a })
-            for card in cards
-            where card.column == .inReview && card.repoID == repoID {
-                if let number = card.prNumber, let row = byNumber[number] {
-                    next[card.id] = row
-                }
+            rows += (try? await store.prStatuses(repoID: repoID)) ?? []
+        }
+        applyPRStatuses(rows)
+    }
+
+    /// Joins readings to cards on `(repoID, prNumber)`.
+    ///
+    /// Shared by the pull and the observation on purpose. The two arrive from
+    /// different directions — a card changed, or a reading landed — and each
+    /// used to need the whole answer; two copies of this join would drift on
+    /// which columns count, which is the one rule it holds.
+    func applyPRStatuses(_ rows: [PRStatus]) {
+        let byKey = Dictionary(
+            rows.map { (Key(repoID: $0.repoID, prNumber: $0.prNumber), $0) },
+            uniquingKeysWith: { first, _ in first })
+        var next: [UUID: PRStatus] = [:]
+        for card in cards where card.column == .inReview {
+            if let number = card.prNumber,
+               let row = byKey[Key(repoID: card.repoID, prNumber: number)] {
+                next[card.id] = row
             }
         }
         prStatuses = next
+    }
+
+    private struct Key: Hashable {
+        var repoID: UUID
+        var prNumber: Int
     }
 
     /// What the card and the panel render. `nil` for a card nothing has read —

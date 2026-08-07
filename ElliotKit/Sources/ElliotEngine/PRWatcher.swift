@@ -65,10 +65,23 @@ public actor PRWatcher {
             guard let prs = try? await gh.pullRequests(repo: repo.nameWithOwner, limit: 100) else {
                 continue
             }
+            var movedHere = false
             for card in cards where await reconcile(card: card, against: prs) {
                 sawChange = true
+                movedHere = true
             }
-            await refreshStatuses(repo: repo, cards: cards, prs: prs)
+            // Re-read rather than reuse `cards` when this repository's cards
+            // moved: `reconcile` above may have just promoted one. With the
+            // stale snapshot a card that reached In Review this very tick was
+            // skipped until the next one — up to ~6 minutes once the quiet
+            // backoff has widened — and a card promoted *out* of it still spent
+            // a call and wrote a row for a pull request already merged.
+            //
+            // Local rather than the accumulating `sawChange`: that one is true
+            // as soon as *any* repository moved, and would re-read every
+            // repository after it for nothing.
+            let settled = movedHere ? (try? await store.cards(repoID: repo.id)) ?? cards : cards
+            await refreshStatuses(repo: repo, cards: settled, prs: prs)
         }
 
         if sawChange || anyRunning {

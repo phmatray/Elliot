@@ -316,7 +316,12 @@ public extension PRStatus {
         // A failure is already decided; a sibling still running cannot undo it.
         if !failing.isEmpty { return .failing(failing) }
         if checks.contains(where: \.isPending) { return .running }
-        return .passing(checks.count)
+        // Only checks that actually reached a verdict are counted. A rollup of
+        // nothing but skipped jobs has judged this pull request exactly as much
+        // as an empty one has, and must say the same thing — see
+        // `StatusCheck.isNonVerdict`.
+        let passed = checks.count { !$0.isNonVerdict }
+        return passed == 0 ? .noChecks : .passing(passed)
     }
 
     private var mergeState: MergeState {

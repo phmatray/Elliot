@@ -407,11 +407,24 @@ public struct PRStatusDTO: Codable, Sendable, Hashable {
         public var name: String
         public var conclusion: String?
         public var isPending: Bool
+        /// Stated outright rather than left to be derived from `conclusion`.
+        ///
+        /// `gh` reports a **legacy StatusContext**'s verdict in `state`, not in
+        /// `conclusion`, so a failing legacy status arrives here with
+        /// `conclusion: null` — indistinguishable from a pass by any reader
+        /// inspecting that field alone. `CIState.failing` names the failures but
+        /// `code` flattens to `"failing"`, so without this the agent is told
+        /// something failed and cannot tell which.
+        public var hasFailed: Bool
 
-        public init(name: String, conclusion: String? = nil, isPending: Bool = false) {
+        public init(
+            name: String, conclusion: String? = nil, isPending: Bool = false,
+            hasFailed: Bool = false
+        ) {
             self.name = name
             self.conclusion = conclusion
             self.isPending = isPending
+            self.hasFailed = hasFailed
         }
     }
 
@@ -449,7 +462,9 @@ public struct PRStatusDTO: Codable, Sendable, Hashable {
         checks = resolved.isStale
             ? []
             : status.checks.map {
-                CheckDTO(name: $0.label, conclusion: $0.conclusion, isPending: $0.isPending)
+                CheckDTO(
+                    name: $0.label, conclusion: $0.conclusion,
+                    isPending: $0.isPending, hasFailed: $0.hasFailed)
             }
         checkedAt = resolved.checkedAt
         headRefOid = resolved.headRefOid

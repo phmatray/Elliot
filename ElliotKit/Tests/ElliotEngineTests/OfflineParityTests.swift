@@ -79,6 +79,42 @@ struct OfflineParityTests {
         }
     }
 
+    /// A merged card must not keep answering with the reading that was true
+    /// before it merged.
+    ///
+    /// The rows are not deleted when a card leaves In Review — nothing needs
+    /// them to be — so without the column gate a card `merge-pr` has just moved
+    /// to Done would serve its pre-merge verdict as *fresh* for the whole
+    /// `maximumAge` window: "a review is required", about a pull request already
+    /// on `main`. The app filtered to In Review from the start; this is the MCP
+    /// surface agreeing with it rather than quietly disagreeing.
+    @Test("A card that has left In Review stops carrying its reading, on both sides")
+    func readingIsDroppedOnceTheCardMovesOn() async throws {
+        let board = try await ParityBoard.seeded()
+
+        var card = try #require(try await board.store.card(id: board.reviewCardID))
+        #expect(try await board.store.prStatus(repoID: card.repoID, prNumber: 7) != nil)
+
+        card.column = .done
+        try await board.store.saveCard(card)
+
+        let request = ElliotRequest.getCard(id: board.reviewCardID)
+        for (side, response) in [
+            ("live", await board.handler.handle(request)),
+            ("snapshot", await board.responder.respond(to: request)),
+        ] {
+            guard case .ok(let payload) = response, case .card(let dto) = payload else {
+                Issue.record("\(side) did not answer with a card")
+                continue
+            }
+            #expect(dto.column == "done", "\(side)")
+            #expect(dto.prStatus == nil, "\(side) still served a pre-merge reading")
+        }
+        // The row itself is left alone — this is a gate on the answer, not a
+        // deletion, so nothing is lost if the card comes back.
+        #expect(try await board.store.prStatus(repoID: card.repoID, prNumber: 7) != nil)
+    }
+
     @Test("A card with no reading says so with an absent object, on both sides")
     func cardWithoutAReadingCarriesNothing() async throws {
         let board = try await ParityBoard.seeded()
