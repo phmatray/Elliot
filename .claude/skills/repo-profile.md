@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1122 tests in 130 suites**, measured on
-  `fix/159-caret-tether-not-drawn` on 2026-08-07 off `main` at `5c92dfb`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1125 tests in 130 suites**, measured on
+  `fix/159-caret-tether-not-drawn` on 2026-08-07 off `main` at `533158b`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -53,7 +53,10 @@
     untouched branch already ran **1116 in 129** before a line of this fix's tests existed, so 40 of
     the 46 were drift that had accumulated unrecorded and only 6 were the branch's own. A correction
     here is therefore not evidence that the previous author miscounted; it is mostly the interval
-    since they looked.
+    since they looked. Then it moved **again inside the same pull request**, 1122 → 1125, when the
+    sync with `main` brought #164's `SchemaUpgradeTests` in — the fourth time that has happened, so
+    read the pattern rather than the number: **re-read this line after the merge, not only before
+    it.**
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
