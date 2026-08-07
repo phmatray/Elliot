@@ -449,7 +449,15 @@ public final class AppModel {
     private func startIPC(board: BoardService, store: BoardStore, analysis: AnalysisService) {
         do {
             let token = try IPCServer.loadOrCreateToken(at: StoreLocation.tokenURL)
-            let handler = MCPRequestHandler(store: store, board: board, analysis: analysis)
+            // The one place the app hands the engine a way to look at itself.
+            // `MCPRequestHandler` defaults this to `nil` and refuses a
+            // screenshot without it, so every headless construction — the tests,
+            // the parity harness — is honest about having no windows rather than
+            // reporting a picture of none.
+            let handler = MCPRequestHandler(
+                store: store, board: board, analysis: analysis,
+                capture: AppKitWindowCapture()
+            )
             let server = IPCServer(
                 socketPath: StoreLocation.socketURL.path,
                 token: token

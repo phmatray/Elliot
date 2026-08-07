@@ -93,6 +93,51 @@ struct OfflineParityTests {
         #expect(try encoded(live) == encoded(snapshot))
     }
 
+    // MARK: - The read that is allowed to disagree
+
+    /// `screenshot` is a read, and it is the one read whose two sides **must**
+    /// differ. Everything above compares because both sides can answer off the
+    /// same rows; a window is not a row. The running app has one and can
+    /// photograph it; a file on disk does not and never will.
+    ///
+    /// Written down as a test rather than left as an omission from
+    /// `readRequests`, because an omission is indistinguishable from an
+    /// oversight — and the obvious "fix" for the next person who notices is to
+    /// add the case to that list, where it fails, and then to make the two sides
+    /// equal, which would mean the app refusing a screenshot it could perfectly
+    /// well take.
+    @Test("A screenshot is the one read the snapshot cannot answer")
+    func screenshotDivergesOnPurpose() async throws {
+        let board = try await ParityBoard.seeded()
+        let request = ElliotRequest.screenshot(window: "board", maxInlineBytes: 0)
+
+        let live = await board.handler.handle(request)
+        let snapshot = await board.responder.respond(to: request)
+
+        guard
+            case .failure(let liveCode, _, _) = live,
+            case .failure(let snapshotCode, let message, let hint) = snapshot
+        else {
+            Issue.record("both sides should refuse in this harness")
+            return
+        }
+
+        // The snapshot's refusal is `app_unavailable`, never `read_only`.
+        // Nothing is being written — there is simply no window — and `read_only`
+        // is the code that tells an agent to stop trying to mutate, which is
+        // advice about a mistake it did not make.
+        #expect(snapshotCode == .appUnavailable)
+        #expect(message.contains("window"))
+        #expect(hint?.contains("Elliot.app") == true)
+
+        // The live side refuses here only because this harness builds a handler
+        // with no capturer. That is a *different* refusal from the snapshot's,
+        // and the difference is the point: in the app, this call returns a
+        // picture.
+        #expect(liveCode == .internalError)
+        #expect(liveCode != snapshotCode)
+    }
+
     // MARK: - The control
 
     /// Without this the suite above could pass on two implementations that both

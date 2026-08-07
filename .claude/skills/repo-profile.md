@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1125 tests in 130 suites**, measured on
-  `fix/159-caret-tether-not-drawn` on 2026-08-07 off `main` at `533158b`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1167 tests in 135 suites**, five-sample run on
+  `fix/159-caret-tether-not-drawn` on 2026-08-07 after merging `main` at `c9b8531`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -48,15 +48,20 @@
     (1034 → 1050, 119 → 122 suites) — that is a fourth correction, and the drift is now
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
-    your own untouched run and compare against *that*, never against this line. Corrected a **sixth**
-    time in #159 (1076 → 1122, 124 → 130) — and that one splits, which is the useful detail: the
-    untouched branch already ran **1116 in 129** before a line of this fix's tests existed, so 40 of
-    the 46 were drift that had accumulated unrecorded and only 6 were the branch's own. A correction
-    here is therefore not evidence that the previous author miscounted; it is mostly the interval
-    since they looked. Then it moved **again inside the same pull request**, 1122 → 1125, when the
-    sync with `main` brought #164's `SchemaUpgradeTests` in — the fourth time that has happened, so
-    read the pattern rather than the number: **re-read this line after the merge, not only before
-    it.**
+    your own untouched run and compare against *that*, never against this line. Sixth in #155
+    (1061 → 1098, 124 → 129), taken from a five-sample run rather than one — and then **again inside
+    the same pull request** after merging `main`, which is the seventh correction and the clearest
+    demonstration yet that this line is a date-stamp, not a fact. Eighth and ninth in #159
+    (1076 → 1122 → 1125), then a **tenth** at 1167 in 135 when this branch merged #155's own landing.
+    - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
+      to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
+      authors each measured honestly, each counted from the last number they could see, and the
+      count only means anything in landing order. If a third branch is open while you read this,
+      **your number is already wrong** — take the run, not the line.
+    - #159's split is still the useful detail: its untouched branch already ran 1116 before a line of
+      its own tests existed, so 40 of its 46 were unrecorded drift and only 6 were the branch's own.
+      A correction here is rarely evidence that the previous author miscounted; it is mostly the
+      interval since they looked.
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
@@ -199,6 +204,12 @@ before flipping a PR ready: -->
     instance will silently checkpoint your row away.
   - **Drive it with `cua-driver`**, which reads the tree and clicks by element index without bringing
     the app to the front. Re-snapshot before every click: element indices are per-snapshot.
+  - **Or just look, since #155: `board_screenshot` over MCP.** Elliot renders its own window in
+    process, so there is no TCC grant to hold and nothing has to be frontmost. ⚠️ It cannot draw
+    sheets, popovers **or the toolbar's controls** — the last one is measured, not theoretical, and
+    the toolbar is a conflict hot-spot in the table above. Every reply lists what it left out in
+    `not_included`; read that before believing something is missing. Keep `ELLIOT_HOME` short or the
+    unix socket exceeds `sun_path`'s 104 bytes and the helper reports a running app as absent.
   - **What this actually caught, on #79, with 730 tests green and `swift build` clean:** the framing
     scroll was a no-op — `onChange` ran inside the update that changed the selection, so it scrolled
     the row that existed *before* the panel was inserted and clamped to zero. It was invisible in four

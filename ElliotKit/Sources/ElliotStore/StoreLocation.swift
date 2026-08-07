@@ -52,13 +52,46 @@ public enum StoreLocation {
             .appendingPathComponent("stories.json")
     }
 
+    /// One PNG per `board_screenshot` call, at full resolution.
+    ///
+    /// The same bargain the runs directory strikes: what travels back to an
+    /// agent is bounded and may be resampled, and this is the copy that is not.
+    /// A picture small enough to read in a reply is often too small to read a
+    /// column caption in.
+    public static var screenshotsDirectory: URL {
+        home.appendingPathComponent("screenshots", isDirectory: true)
+    }
+
+    /// Named by window and instant rather than by a UUID, because these are read
+    /// by a human looking for "the board, just now" far more often than they are
+    /// looked up by key.
+    public static func screenshotURL(window: String, at moment: Date) -> URL {
+        // Built per call rather than cached in a static: `ISO8601DateFormatter`
+        // is a class with mutable state and is not `Sendable`, so a shared one is
+        // a data race the compiler correctly refuses. A screenshot costs a
+        // window render and a file write; a formatter allocation is not the part
+        // worth optimising.
+        let formatter = ISO8601DateFormatter()
+        // Fractional seconds, because whole ones collide. Two captures of the
+        // same window inside one second resolved to one path, and the second
+        // `write(options: .atomic)` replaced the first — leaving the first
+        // call's already-returned `pngPath` pointing at different pixels. A
+        // before/after pair taken in quick succession is exactly how this tool
+        // gets used.
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        // Colons are legal on APFS but make the path miserable to quote in a
+        // shell, which is exactly what someone does with a screenshot path.
+        let stamp = formatter.string(from: moment).replacingOccurrences(of: ":", with: "-")
+        return screenshotsDirectory.appendingPathComponent("\(window)-\(stamp).png")
+    }
+
     public static var socketURL: URL { home.appendingPathComponent("ipc.sock") }
     public static var tokenURL: URL { home.appendingPathComponent("ipc.token") }
 
     /// Creates the directory tree with owner-only permissions. The socket and
     /// token live here, so the parent must not be group- or world-readable.
     public static func ensureDirectories() throws {
-        for url in [home, runsDirectory, analysesDirectory] {
+        for url in [home, runsDirectory, analysesDirectory, screenshotsDirectory] {
             try FileManager.default.createDirectory(
                 at: url,
                 withIntermediateDirectories: true,
