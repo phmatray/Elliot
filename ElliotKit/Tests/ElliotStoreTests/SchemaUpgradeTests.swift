@@ -113,6 +113,41 @@ private func stampMigration(_ identifier: String, at url: URL) throws {
     }
 }
 
+/// Puts the ledger back to a name this build no longer registers, leaving the
+/// schema exactly where the migration left it — a board built by a branch whose
+/// migration was renamed before it landed.
+private func renameAppliedMigration(_ identifier: String, to legacy: String, at url: URL) throws {
+    let queue = try DatabaseQueue(path: url.path)
+    try queue.write { db in
+        try db.execute(
+            sql: #"DELETE FROM "grdb_migrations" WHERE "identifier" = ?"#,
+            arguments: [identifier]
+        )
+        // Asserted, not assumed: a `DELETE` matching nothing succeeds, so a
+        // stale identifier here would leave this testing an upgrade that the
+        // reopen below performs for entirely ordinary reasons.
+        precondition(db.changesCount == 1, "no applied migration named \(identifier)")
+        try db.execute(
+            sql: #"INSERT INTO "grdb_migrations" ("identifier") VALUES (?)"#,
+            arguments: [legacy]
+        )
+    }
+}
+
+private func appliedIdentifiers(at url: URL) throws -> Set<String> {
+    let queue = try DatabaseQueue(path: url.path)
+    return try queue.read { db in
+        Set(try String.fetchAll(db, sql: #"SELECT "identifier" FROM "grdb_migrations""#))
+    }
+}
+
+private func tableNames(at url: URL) throws -> Set<String> {
+    let queue = try DatabaseQueue(path: url.path)
+    return try queue.read { db in
+        Set(try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'table'"))
+    }
+}
+
 private func columnNames(of table: String, at url: URL) throws -> Set<String> {
     let queue = try DatabaseQueue(path: url.path)
     return try queue.read { db in
@@ -392,6 +427,90 @@ struct SchemaUpgradeTests {
 
         let back = try await store.cards(repoID: repository.id)
         #expect(back.first { $0.id == accepted.id }?.angle == .bugs)
+    }
+
+    // MARK: - A migration that ran under a name this build no longer registers
+
+    /// The board that ran `v2_analysis` before it was renamed to `v4_analysis`.
+    ///
+    /// Not hypothetical: measured on the developer's own store, whose ledger
+    /// read `v1_initial, v2_analysis, v2_repositoryLayout, v3_cardIdempotencyKey`
+    /// against a schema that was already v4's in every column, index and check.
+    /// The app refused to start with `SQLite error 1: table "analysis" already
+    /// exists`, because GRDB identifies a migration by its **name** and so ran
+    /// the one it had never seen over the tables it had already made.
+    @Test("A board that ran the analysis migration under its pre-merge name still opens")
+    func legacyAnalysisMigrationNameIsAdopted() async throws {
+        let scratch = try Scratch()
+        let repository = repo()
+        let kept = card(repoID: repository.id, title: "Written before the rename")
+
+        do {
+            let old = try BoardStore.open(at: scratch.database)
+            try await old.saveRepo(repository)
+            try await old.saveCard(kept)
+            try await old.saveRun(run(cardID: kept.id, repoID: repository.id))
+        }
+        try renameAppliedMigration("v4_analysis", to: "v2_analysis", at: scratch.database)
+
+        // Reopening is the whole test: this threw before the adoption existed.
+        let upgraded = try BoardStore.open(at: scratch.database)
+
+        #expect(try await upgraded.card(id: kept.id)?.title == "Written before the rename")
+        #expect(try await upgraded.runCount() == 1)
+
+        // And the ledger is left saying the truth, so nothing downstream has to
+        // know the old name — `openReadOnly` refuses any identifier it does not
+        // register, and would otherwise call this file schemaTooNew for ever.
+        let applied = try appliedIdentifiers(at: scratch.database)
+        #expect(applied.contains("v4_analysis"))
+        #expect(!applied.contains("v2_analysis"))
+        _ = try BoardStore.openReadOnly(at: scratch.database)
+    }
+
+    /// The guard, which is what separates adopting a rename from trusting a name.
+    ///
+    /// A ledger can claim `v2_analysis` over a schema where the migration never
+    /// actually ran — a hand-edited file, a restored backup. Marking it applied
+    /// there would skip the migration for good and leave the board without the
+    /// tables, which fails much later and much further away. So the adoption
+    /// reads the schema, finds no `analysis` table, declines, and lets the
+    /// migration run normally.
+    @Test("A ledger claiming the old name over a schema that never ran it still migrates")
+    func legacyNameWithoutTheSchemaIsNotAdopted() async throws {
+        let scratch = try Scratch()
+        do {
+            let queue = try DatabaseQueue(path: scratch.database.path)
+            try Migrations.migrator.migrate(queue, upTo: "v3_cardIdempotencyKey")
+        }
+        try stampMigration("v2_analysis", at: scratch.database)
+        #expect(!(try tableNames(at: scratch.database).contains("analysis")))
+
+        let store = try BoardStore.open(at: scratch.database)
+
+        // The migration ran rather than being marked off: the tables are there.
+        #expect(try tableNames(at: scratch.database).contains("analysis"))
+        let repository = repo()
+        try await store.saveRepo(repository)
+        try await store.saveAnalysis(
+            Analysis(repoID: repository.id, angles: [.techDebt], createdAt: then)
+        )
+        #expect(try await store.analyses(repoID: repository.id).count == 1)
+    }
+
+    /// Every rename in the table is one this build can actually honour.
+    ///
+    /// `Migrations.swift` has renamed an unshipped migration five times, and the
+    /// next one will be written the same way. A table entry naming a `current`
+    /// identifier that is not registered would adopt a migration into a ledger
+    /// that then never runs it — silent, and indistinguishable from success.
+    @Test("Each renamed migration names one this build registers")
+    func renamesPointAtRegisteredMigrations() {
+        let registered = Set(Migrations.migrator.migrations)
+        for rename in Migrations.renamedMigrations {
+            #expect(registered.contains(rename.current), "unregistered: \(rename.current as String)")
+            #expect(!registered.contains(rename.legacy), "still registered: \(rename.legacy as String)")
+        }
     }
 }
 

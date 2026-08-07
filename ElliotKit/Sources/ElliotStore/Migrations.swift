@@ -118,6 +118,89 @@ enum Migrations {
         return migrator
     }
 
+    // MARK: - Migrations that ran under a name this build no longer registers
+
+    /// A migration that reached a database under one name and this build under
+    /// another, together with the schema that proves it actually ran.
+    struct RenamedMigration {
+        let legacy: String
+        let current: String
+        /// Read against the live schema rather than trusted from the ledger.
+        let ranAlready: @Sendable (Database) throws -> Bool
+    }
+
+    /// Renames of unshipped migrations, and the reason this list exists.
+    ///
+    /// Every comment above marked "vN rather than vN-1" describes the same
+    /// trade: two branches claimed a number, the one that reached `main` first
+    /// kept it, and the other was renamed. That trade is right for databases in
+    /// the field — they only ever saw the shipped name — but it is wrong for
+    /// every machine that ran the losing branch before it landed, because GRDB
+    /// identifies a migration by its **name**. Those databases hold the new
+    /// schema under the old name, so the renamed migration looks unapplied and
+    /// runs a second time over tables it already made.
+    ///
+    /// Measured, not hypothesised: a store whose ledger read `v1_initial,
+    /// v2_analysis, v2_repositoryLayout, v3_cardIdempotencyKey` over a schema
+    /// that was already v4's in every column, index and check — the app refused
+    /// to start with `SQLite error 1: table "analysis" already exists`, and
+    /// `openReadOnly` called the same file `schemaTooNew`.
+    ///
+    /// Adopting the rename means recording the current name and dropping the
+    /// old one, which leaves a file indistinguishable from one that had run the
+    /// shipped name all along. Nothing downstream then has to know either name.
+    ///
+    /// The list has one entry because one rename is known to have escaped onto a
+    /// machine. The four others — v3, v5, v6 and v7 — were renamed the same way,
+    /// so if one of those old names ever turns up in a ledger, it belongs here
+    /// with the schema check that proves it: **the name is the symptom, the
+    /// schema is the evidence.**
+    static let renamedMigrations: [RenamedMigration] = [
+        RenamedMigration(legacy: "v2_analysis", current: "v4_analysis") { db in
+            // Both halves of `v4Analysis`, not just the table it fails on: it
+            // creates `analysis` and then rebuilds `skillRun` to reference it.
+            try db.tableExists("analysis")
+                && db.columns(in: "skillRun").contains { $0.name == "analysisID" }
+        }
+    ]
+
+    /// Records a renamed migration under the name this build registers, so the
+    /// migrator does not run it a second time.
+    ///
+    /// Deliberately not a migration itself. A migration would have to be
+    /// registered ahead of the one it protects, where it would run on every
+    /// fresh database as a no-op and read as schema work — and it edits the
+    /// ledger, which is the one table migrations are not about. It runs before
+    /// `migrate` instead, from the app, which is the sole writer.
+    static func adoptRenamedMigrations(in writer: any DatabaseWriter) throws {
+        try writer.write { db in
+            // A database that has never been migrated has no ledger to read, and
+            // nothing to adopt. Creating one here would be inventing history.
+            guard try db.tableExists("grdb_migrations") else { return }
+            let applied = Set(
+                try String.fetchAll(db, sql: #"SELECT "identifier" FROM "grdb_migrations""#)
+            )
+            for rename in renamedMigrations {
+                guard applied.contains(rename.legacy),
+                    !applied.contains(rename.current)
+                else { continue }
+                // A ledger can name a migration whose work is not in the schema —
+                // a hand-edited file, a partial restore. Marking that applied
+                // would skip the migration for good and fail much later, much
+                // further from the cause, so it declines and lets it run.
+                guard try rename.ranAlready(db) else { continue }
+                try db.execute(
+                    sql: #"INSERT INTO "grdb_migrations" ("identifier") VALUES (?)"#,
+                    arguments: [rename.current]
+                )
+                try db.execute(
+                    sql: #"DELETE FROM "grdb_migrations" WHERE "identifier" = ?"#,
+                    arguments: [rename.legacy]
+                )
+            }
+        }
+    }
+
     /// The backfill, named so the migration and the test that proves what it
     /// does run the identical statement. Both id columns use GRDB's
     /// uppercase-string UUID strategy — verified in `Records.swift`, where
