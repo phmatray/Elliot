@@ -473,9 +473,9 @@ struct AnalysisPanelView: View {
                     .lineLimit(2)
                     .id(note)
                     // Driven by the `.animation(reduceMotion ? nil : …, value:
-                    // model.analysis?.note)` at the foot of this footer, which is
-                    // keyed on the very value that makes the note appear and
-                    // go. Reduce motion switches it off there, once.
+                    // fadingMessages)` at the foot of this footer, which carries
+                    // the very value that makes the note appear and go. Reduce
+                    // motion switches it off there, once.
                     .transition(.opacity)
             }
 

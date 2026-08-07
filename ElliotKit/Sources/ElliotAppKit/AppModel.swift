@@ -224,7 +224,34 @@ public final class AppModel {
     /// and ``openAnalysis(id:)`` — and set at exactly one. ``closeAnalysis()``
     /// deliberately leaves it alone: returning to setup after an analysis that
     /// ran is not a failure.
-    public private(set) var startFailure: String?
+    ///
+    /// ⚠️ **Scoped to the repository it was thrown for**, which is why it is
+    /// computed rather than plain storage. Stored flat, a failure against a
+    /// disabled repository A went on being rendered — in the refusal accent,
+    /// beside a *live* Start button — after the picker moved to a healthy
+    /// repository B. That is #134's defect on a second axis: a sentence shown
+    /// under a subject it does not belong to. The panel is about one repository
+    /// at a time, so the message is too.
+    ///
+    /// Switching away and back brings it back, deliberately. Nothing has been
+    /// attempted for that repository in between, so the sentence is exactly as
+    /// true as it was — no staler than the spec already accepts when the reader
+    /// stays put and toggles lenses.
+    public var startFailure: String? {
+        guard startFailureRepoID == selectedRepoID else { return nil }
+        return startFailureMessage
+    }
+
+    /// The failure's text and the repository it belongs to, which only ever move
+    /// together — hence ``clearStartFailure()`` rather than two assignments at
+    /// each of the two clearing points.
+    private var startFailureMessage: String?
+    private var startFailureRepoID: UUID?
+
+    private func clearStartFailure() {
+        startFailureMessage = nil
+        startFailureRepoID = nil
+    }
 
     /// Live tail per run, for the card's strip and the panel's log. Bounded —
     /// the file on disk is the complete record.
@@ -1662,7 +1689,7 @@ public final class AppModel {
         // Below it, the clear would be conditional on a member the reader
         // cannot see, and a stale sentence would sit there reading as the
         // verdict on the attempt they just made.
-        startFailure = nil
+        clearStartFailure()
         guard let analysisService else { return }
         do {
             let started = try await analysisService.start(
@@ -1675,8 +1702,9 @@ public final class AppModel {
             // Not `analysis?.note`: this is a *failed* start, so there is no
             // session and that assignment was a no-op that compiled and read as
             // if it did something. See ``startFailure`` for why the two are not
-            // one member.
-            startFailure = error.localizedDescription
+            // one member, and why the repository travels with the message.
+            startFailureMessage = error.localizedDescription
+            startFailureRepoID = repoID
             // Kept. A visible message and a logged one are not alternatives —
             // the log is what a bug report can be reconstructed from.
             Self.log.error("Analysis failed to start: \(error.localizedDescription, privacy: .public)")
@@ -1688,7 +1716,7 @@ public final class AppModel {
         // analysis about to be on screen — including the one picked from the
         // header's *Earlier analyses* menu, which is the path that does not go
         // through `startAnalysis` at all.
-        startFailure = nil
+        clearStartFailure()
         // One assignment. The outgoing session goes with it, and its
         // observation is cancelled by `ObservationHandle.deinit` rather than
         // by a line here that a sixth member could out-live.
