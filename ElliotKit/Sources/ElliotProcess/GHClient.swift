@@ -137,6 +137,66 @@ public struct GHClient: Sendable {
                         "--json", "state,mergedAt,mergeCommit,url,statusCheckRollup"]
         )
     }
+
+    // MARK: - Labels
+
+    /// One row of `gh label list --json name`. Only the name: colour and
+    /// description belong to whoever *creates* a label, and `LabelPolicy`
+    /// carries those. Decoding fields nobody reads would just be two more ways
+    /// for the decode to fail.
+    private struct GHLabelName: Decodable { let name: String }
+
+    /// Every label a repository has, by name.
+    ///
+    /// **Throws rather than answering `[]` when `gh` fails**, and the difference
+    /// is the whole point of the check that calls this: `[]` is a *finding* —
+    /// "this repository has no labels" — so returning it for an unreachable
+    /// repository would report every required label as missing and offer a
+    /// button to create them, against a repository nobody could reach.
+    public func labels(repo: String, limit: Int = 200) async throws -> [String] {
+        try await json(
+            [GHLabelName].self,
+            arguments: ["label", "list", "--repo", repo,
+                        "--limit", String(limit), "--json", "name"]
+        ).map(\.name)
+    }
+
+    /// Creates one label.
+    ///
+    /// A name that already exists is **success**. `gh label create` exits
+    /// non-zero for it, but the caller asked for a repository that has this
+    /// label and that is the repository they have — and between the check and
+    /// the button a second Elliot window, or a hand-created label, can make it
+    /// true. Turning that into a red banner would report a failure that is not
+    /// one.
+    ///
+    /// The tolerance is deliberately narrow: it keys on `gh`'s own words, so a
+    /// refusal for permissions or a repository that does not exist still
+    /// throws. Swallowing those would report labels as created that are not.
+    public func createLabel(_ label: RequiredLabel, repo: String) async throws {
+        do {
+            _ = try await ProcessRunner.check(
+                executable: config.ghPath,
+                arguments: ["label", "create", label.name,
+                            "--repo", repo,
+                            "--color", label.color,
+                            "--description", label.description],
+                environment: config.environment,
+                timeout: .seconds(30)
+            )
+        } catch let error as ProcessError {
+            guard Self.isAlreadyExists(error) else { throw error }
+        }
+    }
+
+    /// Whether a failed `label create` failed only because the label is there.
+    ///
+    /// Matched on the message rather than the exit code, because `gh` uses the
+    /// same non-zero code for every failure. Internal so a test can state the
+    /// wording it depends on instead of discovering it through two layers.
+    static func isAlreadyExists(_ error: ProcessError) -> Bool {
+        "\(error)".lowercased().contains("already exists")
+    }
 }
 
 /// The few `git` questions Elliot needs answered.
