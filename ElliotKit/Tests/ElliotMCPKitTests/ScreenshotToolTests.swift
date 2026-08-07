@@ -181,6 +181,62 @@ struct ScreenshotToolTests {
         }
     }
 
+    @Test("A budget past the ceiling is clamped, and the reply says by how much")
+    func hugeBudgetIsClamped() async throws {
+        let asked = Recorder()
+        let bridge = StubBridge(onRead: { request in
+            if case .screenshot(let window, let budget) = request {
+                asked.record(window: window, budget: budget)
+            }
+            return .live(.ok(.screenshot(Self.dto())))
+        })
+
+        let result = try await ScreenshotTool().call(
+            ["window": .string("board"), "max_inline_bytes": .int(64_000_000)], bridge: bridge
+        )
+
+        // Clamped before it reaches the app. Unclamped, the reply is one IPC
+        // line past `UnixSocket`'s 8 MB cap: the reader truncates, the decode
+        // throws, and the whole call degrades into "Elliot is not running" for a
+        // request that was merely too big.
+        #expect(asked.budget == ScreenshotBudget.maxInlineBytes)
+        // And said out loud, as `ElliotPaging` already insists for every other
+        // size argument here — a silently substituted number is an answer to a
+        // question nobody asked.
+        let json = try Self.text(result)
+        #expect(json.contains("max_inline_bytes_capped_from"))
+        #expect(json.contains("64000000"))
+    }
+
+    @Test("An unreachable app is not an absent one, and the hint must not say relaunch")
+    func unreachableIsNotAbsent() async throws {
+        // `AppBridge.read` lands on the snapshot for two different reasons, and
+        // a screenshot is the one read that always reaches it as a *failure* —
+        // so `render(_ outcome:)` never gets to prepend the offline note that
+        // keeps the two stories apart. Told the wrong one, an agent goes off to
+        // launch an app that is already on screen and buries a failing socket.
+        let bridge = StubBridge(onRead: { _ in
+            .offline(
+                .failure(
+                    code: .appUnavailable,
+                    message: "Elliot is not running; a snapshot of its database has no window "
+                        + "to photograph.",
+                    hint: "Open Elliot.app."
+                ),
+                .appUnreachable
+            )
+        })
+
+        let result = try await ScreenshotTool().call(["window": .string("board")], bridge: bridge)
+        let json = try Self.text(result)
+
+        #expect(result.isError == true)
+        #expect(json.contains("IS running"))
+        #expect(json.contains("Do not relaunch"))
+        // The stale advice must be gone, not merely accompanied.
+        #expect(!json.contains("Open Elliot.app."))
+    }
+
     @Test("A snapshot cannot answer, and says which app to open")
     func offlineIsRefused() async throws {
         let result = try await ScreenshotTool().call(

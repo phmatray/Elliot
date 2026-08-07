@@ -3,6 +3,7 @@ import ElliotEngine
 import ElliotIPC
 import Foundation
 import SwiftUI
+import TestSupport
 import Testing
 
 @testable import ElliotAppKit
@@ -19,16 +20,42 @@ import Testing
 @MainActor
 struct WindowCaptureTests {
 
+    /// ⛔ **Touch `TestHome.root` before anything that resolves a `StoreLocation`
+    /// path.** SwiftPM links every test target into one process and `ELLIOT_HOME`
+    /// is only set by that lazy static, so a capture taken without it writes its
+    /// PNG into the developer's *real* `~/Library/Application Support/Elliot`.
+    ///
+    /// Not hypothetical: the first version of this suite left four files there,
+    /// 640×544 — this suite's own 320×240 window at 2×, in Philippe's live board
+    /// directory. `TestHome`'s doc comment already stated the rule and this suite
+    /// was the one place that skipped it.
+    private init() { _ = TestHome.root }
+
+    /// Reports itself open without a window server having to put it on screen.
+    ///
+    /// A test must not order real windows front — that flashes them at whoever
+    /// is running the suite and depends on a display. Overriding the one
+    /// property the liveness check reads keeps the assertion about *our* rule
+    /// rather than about AppKit's ordering.
+    private final class OpenWindow: NSWindow {
+        override var isVisible: Bool { true }
+    }
+
     /// A window with something recognisable in it, never ordered front.
-    private func makeWindow(id: String, title: String, size: NSSize = NSSize(width: 320, height: 240))
-        -> NSWindow
-    {
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.titled, .closable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
+    ///
+    /// `open` defaults to true because that is the interesting case; pass false
+    /// for a window that is closed or has never been shown.
+    private func makeWindow(
+        id: String,
+        title: String,
+        size: NSSize = NSSize(width: 320, height: 240),
+        open: Bool = true
+    ) -> NSWindow {
+        let rect = NSRect(origin: .zero, size: size)
+        let mask: NSWindow.StyleMask = [.titled, .closable, .resizable]
+        let window: NSWindow = open
+            ? OpenWindow(contentRect: rect, styleMask: mask, backing: .buffered, defer: false)
+            : NSWindow(contentRect: rect, styleMask: mask, backing: .buffered, defer: false)
         window.identifier = NSUserInterfaceItemIdentifier(id)
         window.title = title
         window.contentView = NSHostingView(
@@ -60,6 +87,40 @@ struct WindowCaptureTests {
         let found = AppKitWindowCapture.window(id: "board", among: [window])
         #expect(found === window)
         #expect(AppKitWindowCapture.window(id: "Elliot", among: [window]) == nil)
+    }
+
+    @Test("A closed window is not an open one, even though AppKit still lists it")
+    func closedWindowIsNotOpen() {
+        // Measured with a probe on a real SwiftUI scene: after `performClose`
+        // the NSWindow stays in `NSApp.windows` with `isVisible == false`. The
+        // first version of this file matched on `identifier` alone, so once a
+        // window had been opened `notOpen` became unreachable and a *closed*
+        // window was photographed from its stale hierarchy — then reported as
+        // `isVisible: false`, which the reply called "not a failed capture".
+        let closed = makeWindow(id: "board", title: "Elliot", open: false)
+        #expect(closed.isVisible == false)
+        #expect(AppKitWindowCapture.isOpen(closed) == false)
+        #expect(AppKitWindowCapture.window(id: "board", among: [closed]) == nil)
+        #expect(AppKitWindowCapture.openWindowIDs(among: [closed]).isEmpty)
+        #expect(AppKitWindowCapture.failure(for: "board", among: [closed]) == .notOpen(open: []))
+    }
+
+    @Test("A miniaturised window is still open, because it still has a hierarchy")
+    func miniaturisedCountsAsOpen() {
+        // The one case where `isVisible == false` must NOT mean closed: a window
+        // in the Dock is open and perfectly drawable. Asserted on the predicate
+        // rather than by miniaturising for real, which needs a window server.
+        final class Miniaturised: NSWindow {
+            override var isMiniaturized: Bool { true }
+        }
+        let docked = Miniaturised(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        docked.identifier = NSUserInterfaceItemIdentifier("board")
+        #expect(docked.isVisible == false)
+        #expect(AppKitWindowCapture.isOpen(docked))
+        #expect(AppKitWindowCapture.openWindowIDs(among: [docked]) == ["board"])
     }
 
     @Test("An id nobody declared and an id nobody opened are different answers")
@@ -200,9 +261,12 @@ struct WindowCaptureTests {
         #expect(dto.width > 0)
         #expect(dto.height > 0)
         #expect(dto.scale >= 1)
-        // Never ordered front, so this is the honest reading — and it is not a
-        // failure.
-        #expect(dto.isVisible == false)
+        // Open, therefore visible. Since the liveness rule landed, `isVisible` is
+        // `false` on a capture only for a *miniaturised* window — a closed one is
+        // refused before it can be photographed, which is the whole point of that
+        // rule. Being in the background does not make it false: measured on the
+        // real board, captured with Finder frontmost.
+        #expect(dto.isVisible == true)
         #expect(dto.pngBase64 != nil)
     }
 }

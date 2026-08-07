@@ -65,16 +65,47 @@ struct ScreenshotTool: BoardTool {
 
     func call(_ args: [String: Value], bridge: any BridgeProviding) async throws -> CallTool.Result {
         let window = args["window"]?.stringValue ?? "board"
-        let budget = try args.inlineBudget()
+        let (budget, cappedFrom) = try args.inlineBudget()
 
         let outcome = await bridge.read(.screenshot(window: window, maxInlineBytes: budget))
         guard case .ok(.screenshot(let shot)) = outcome.response else {
-            // Not `render`: a screenshot has no snapshot branch to label, and
-            // attaching `source: offline-db` to a refusal would suggest a
-            // frozen answer where there is simply none.
-            return try .render(outcome.response) { _ in nil }
+            return .refusal(outcome)
         }
-        return try .screenshot(shot)
+        return try .screenshot(shot, source: outcome.source, budgetCappedFrom: cappedFrom)
+    }
+}
+
+extension CallTool.Result {
+    /// A refused capture, with the snapshot's reason kept.
+    ///
+    /// ⚠️ The reason matters here more than anywhere else on this surface,
+    /// because a screenshot is the one read the snapshot can *never* answer — so
+    /// unlike every other tool, it reaches the offline branch as a `failure`,
+    /// where `render(_ outcome:)` never gets to prepend `ToolOutput.offlineNote`.
+    /// `OfflineResponder` phrases its refusal as "Elliot is not running", and
+    /// `AppBridge.read` also lands there when the app **is** running and the
+    /// socket call failed — a timeout, or a reply past the 8 MB line cap. Told
+    /// the first story for the second cause, an agent goes off to launch an app
+    /// that is already on screen, and the failing socket is buried. That is
+    /// precisely the defect `SnapshotReason` was introduced to prevent.
+    static func refusal(_ outcome: BridgeOutcome) -> CallTool.Result {
+        guard case .failure(let code, let message, let hint) = outcome.response else {
+            return .failure(
+                code: "internal_error",
+                message: "Elliot answered a screenshot with a payload this tool cannot read.",
+                hint: "The app and this helper are probably different builds."
+            )
+        }
+        guard outcome.snapshotReason == .appUnreachable else {
+            return .failure(code: code.rawValue, message: message, hint: hint)
+        }
+        return .failure(
+            code: code.rawValue,
+            message: message,
+            hint: "Elliot IS running but did not answer this request, so this refusal came from a "
+                + "snapshot of its database rather than from the app. Do not relaunch it — the "
+                + "socket call failed or timed out. A very large max_inline_bytes can do this."
+        )
     }
 }
 
@@ -86,9 +117,9 @@ extension [String: Value] {
     /// back as a full-size picture — the opposite of what someone typing a zero
     /// meant, delivered under `isError: false`. The same reading `limit()`
     /// already refuses to give a zero page size.
-    func inlineBudget() throws -> Int {
+    func inlineBudget() throws -> (budget: Int, cappedFrom: Int?) {
         guard let value = try integer("max_inline_bytes") else {
-            return ScreenshotBudget.defaultInlineBytes
+            return (ScreenshotBudget.defaultInlineBytes, nil)
         }
         guard value > 0 else {
             throw ToolFailure(
@@ -97,7 +128,19 @@ extension [String: Value] {
                     + "Omit it for this server's default budget."
             )
         }
-        return value
+        // Clamped, and the cap reported — the bargain `ElliotPaging.clamp`
+        // already strikes for every other size argument here.
+        //
+        // Not politeness: an unclamped budget makes the app base64 a
+        // full-resolution PNG into one IPC line, and past `UnixSocket`'s 8 MB
+        // line cap the reader returns a truncated buffer, the decode throws, and
+        // `try? client.send` yields nil. The call then degrades into the offline
+        // branch and comes back as "Elliot is not running" — for a request that
+        // was simply too big.
+        guard value <= ScreenshotBudget.maxInlineBytes else {
+            return (ScreenshotBudget.maxInlineBytes, value)
+        }
+        return (value, nil)
     }
 }
 
@@ -111,7 +154,9 @@ extension CallTool.Result {
     /// The base64 is deliberately **not** repeated in the JSON. It is already the
     /// image block, and sending it twice would double the cost of the one reply
     /// on this surface whose entire design is about cost.
-    static func screenshot(_ shot: ScreenshotDTO) throws -> CallTool.Result {
+    static func screenshot(
+        _ shot: ScreenshotDTO, source: String, budgetCappedFrom: Int? = nil
+    ) throws -> CallTool.Result {
         var fields: [String: Value] = [
             "window": .string(shot.window),
             "title": .string(shot.title),
@@ -124,8 +169,15 @@ extension CallTool.Result {
             "png_path": .string(shot.pngPath),
             "is_visible": .bool(shot.isVisible),
             "is_key_window": .bool(shot.isKeyWindow),
-            "source": .string("live"),
+            // From the outcome, never the literal `"live"`. It is the one field
+            // an agent has to tell a live board from a frozen one, and hard-coding
+            // it is correct only for exactly as long as no capture can ever be
+            // served from anywhere but the running app.
+            "source": .string(source),
         ]
+        if let budgetCappedFrom {
+            fields["max_inline_bytes_capped_from"] = .int(budgetCappedFrom)
+        }
         if !shot.notIncluded.isEmpty {
             fields["not_included"] = .array(shot.notIncluded.map { .string($0) })
         }
@@ -152,8 +204,13 @@ extension CallTool.Result {
                     + "capture — that is not evidence it failed to open.",
             shot.isVisible
                 ? nil
-                : "This window is not on screen. It still photographs at its designed size, so "
-                    + "that is a fact about the window and not a failed capture."
+                : "This window is miniaturised in the Dock. It still photographs at its designed "
+                    + "size, so that is a fact about the window and not a failed capture — a "
+                    + "*closed* window is refused with window_not_open instead.",
+            budgetCappedFrom.map {
+                "You asked for \($0) inline bytes; this server sends at most "
+                    + "\(ScreenshotBudget.maxInlineBytes)."
+            }
         )
 
         var content: [Tool.Content] = []

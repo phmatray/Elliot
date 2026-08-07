@@ -37,6 +37,11 @@ public struct AppKitWindowCapture: WindowCapturing {
         "board", "repositories", "operations", "nextSteps", "preflight", "newStory", "analysis",
     ]
 
+    /// How many times a resample may give up another 20 % before the inline copy
+    /// is abandoned. Bounded so a pathological window cannot spin on the main
+    /// actor; `minimumScale` stops it earlier in practice.
+    static let maxResampleAttempts = 6
+
     /// Where the windows come from. Injected so the capture can be tested
     /// against windows a test built, rather than only against a running app.
     private let windows: @MainActor @Sendable () -> [NSWindow]
@@ -47,10 +52,25 @@ public struct AppKitWindowCapture: WindowCapturing {
         self.windows = windows
     }
 
+    /// Everything the main actor had to be held for, and nothing more.
+    ///
+    /// Split out so the file write does not run on the main actor: a
+    /// multi-megabyte `Data.write` to a slow or full disk would freeze the UI for
+    /// its duration, and only the *render* genuinely needs to be where the views
+    /// are. Every field here is a value type, so it crosses the boundary by
+    /// construction rather than by permission.
+    struct Captured: Sendable {
+        var rendered: Rendered
+        var title: String
+        var isVisible: Bool
+        var isKeyWindow: Bool
+        var notIncluded: [String]
+    }
+
     public func capture(
         window id: String, maxInlineBytes: Int
     ) async -> Result<ScreenshotDTO, CaptureFailure> {
-        await MainActor.run {
+        let drawn: Result<Captured, CaptureFailure> = await MainActor.run {
             let all = windows()
             if let failure = Self.failure(for: id, among: all) { return .failure(failure) }
             guard let target = Self.window(id: id, among: all) else {
@@ -60,7 +80,28 @@ public struct AppKitWindowCapture: WindowCapturing {
                 return .failure(.notOpen(open: Self.openWindowIDs(among: all)))
             }
             do {
-                return .success(try Self.photograph(id: id, window: target, budget: maxInlineBytes))
+                return .success(Captured(
+                    rendered: try Self.render(window: target, maxInlineBytes: maxInlineBytes),
+                    title: target.title,
+                    // Reported, never judged — and now only ever `false` for a
+                    // miniaturised window, since a closed one is refused above.
+                    isVisible: target.isVisible,
+                    isKeyWindow: target.isKeyWindow,
+                    notIncluded: Self.disclosures(for: target)
+                ))
+            } catch let failure as CaptureFailure {
+                return .failure(failure)
+            } catch {
+                return .failure(.encodingFailed(error.localizedDescription))
+            }
+        }
+
+        switch drawn {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let captured):
+            do {
+                return .success(try Self.assemble(id: id, captured: captured))
             } catch let failure as CaptureFailure {
                 return .failure(failure)
             } catch {
@@ -78,7 +119,29 @@ public struct AppKitWindowCapture: WindowCapturing {
     /// board it changes with the selection. Matching on it would fail as "that
     /// window is not open", which is the quiet kind of wrong.
     static func window(id: String, among windows: [NSWindow]) -> NSWindow? {
-        windows.first { $0.identifier?.rawValue == id }
+        windows.first { $0.identifier?.rawValue == id && isOpen($0) }
+    }
+
+    /// Whether this window is actually open, as opposed to merely remembered.
+    ///
+    /// ⚠️ **Measured, and it corrected this file's first design.** AppKit keeps a
+    /// SwiftUI scene's `NSWindow` in `NSApp.windows` *after the user closes it*:
+    /// probed with `performClose`, the window stayed listed with
+    /// `isVisible == false`, `isMiniaturized == false`. Matching on `identifier`
+    /// alone therefore made `notOpen` unreachable the moment a window had ever
+    /// been opened, and photographed a **closed** window from its stale
+    /// hierarchy — reported as `isVisible: false`, which an earlier version of
+    /// the reply then told the agent was "a fact about the window and not a
+    /// failed capture". Asked "did Preflight open?", an agent would have been
+    /// handed the window as it looked before it was shut, and believed it.
+    ///
+    /// `isVisible` is the right discriminator and does **not** cost the feature
+    /// its point: a window that is merely in the background is `isVisible: true`
+    /// — measured on the real board, captured while Finder was frontmost.
+    /// `isMiniaturized` is admitted because a window in the Dock is still open
+    /// and still has a hierarchy worth drawing.
+    static func isOpen(_ window: NSWindow) -> Bool {
+        window.isVisible || window.isMiniaturized
     }
 
     /// The declared scenes that are open right now.
@@ -87,7 +150,9 @@ public struct AppKitWindowCapture: WindowCapturing {
     /// and hosting windows nobody declared; offering those back as things an
     /// agent could photograph invites a request that can never work.
     static func openWindowIDs(among windows: [NSWindow]) -> [String] {
-        knownWindows.filter { id in windows.contains { $0.identifier?.rawValue == id } }
+        knownWindows.filter { id in
+            windows.contains { $0.identifier?.rawValue == id && isOpen($0) }
+        }
     }
 
     /// Why this id cannot be photographed, or `nil` if it can.
@@ -152,7 +217,7 @@ public struct AppKitWindowCapture: WindowCapturing {
     // MARK: - Drawing
 
     /// One rendered bitmap and what it cost.
-    struct Rendered {
+    struct Rendered: Sendable {
         var data: Data
         var pixelWidth: Int
         var pixelHeight: Int
@@ -193,16 +258,28 @@ public struct AppKitWindowCapture: WindowCapturing {
         var inline: Data? = full
         var factor = 1.0
         if ScreenshotBudget.base64Size(ofRawBytes: full.count) > budget {
+            // Re-measured after every resample rather than trusted once. The
+            // budget maths assumes bytes follow area, and PNG compression does
+            // not owe anyone that — for UI screenshots it errs the unhelpful
+            // way, because downscaling antialiases text into *more* distinct
+            // colours, so bytes fall more slowly than area does.
+            //
+            // One shot at it therefore risked coming back with no picture at all
+            // for the commonest call this tool exists to serve. Each retry gives
+            // up another 20 %, bounded by `minimumScale` and by a fixed attempt
+            // count so a pathological window cannot spin here.
             factor = ScreenshotBudget.scale(
                 toFit: ScreenshotBudget.base64Size(ofRawBytes: full.count), budget: budget
             )
-            let resampled = downscale(rep, by: factor)
-            // Checked again after resampling rather than trusted: the budget
-            // maths assumes bytes follow area, and PNG compression does not owe
-            // anyone that. A copy that is still over budget is dropped, and the
-            // reply says the picture is missing instead of shipping it anyway.
-            inline = resampled.flatMap {
-                ScreenshotBudget.base64Size(ofRawBytes: $0.count) <= budget ? $0 : nil
+            inline = nil
+            for _ in 0..<maxResampleAttempts {
+                guard let candidate = downscale(rep, by: factor) else { break }
+                if ScreenshotBudget.base64Size(ofRawBytes: candidate.count) <= budget {
+                    inline = candidate
+                    break
+                }
+                guard factor > ScreenshotBudget.minimumScale else { break }
+                factor = max(ScreenshotBudget.minimumScale, factor * 0.8)
             }
         }
 
@@ -245,14 +322,15 @@ public struct AppKitWindowCapture: WindowCapturing {
 
     // MARK: - Assembling
 
-    @MainActor
-    static func photograph(id: String, window: NSWindow, budget: Int) throws -> ScreenshotDTO {
-        let rendered = try render(window: window, maxInlineBytes: budget)
+    /// Off the main actor: the PNG write and the base64 encode, neither of which
+    /// needs to be where the views are.
+    static func assemble(id: String, captured: Captured) throws -> ScreenshotDTO {
+        let rendered = captured.rendered
         let path = try write(rendered.data, for: id)
 
         return ScreenshotDTO(
             window: id,
-            title: window.title,
+            title: captured.title,
             width: Int(rendered.pointWidth.rounded()),
             height: Int(rendered.pointHeight.rounded()),
             // The effective scale of the picture that travelled, so a reader can
@@ -262,11 +340,9 @@ public struct AppKitWindowCapture: WindowCapturing {
             pngBase64: rendered.inline?.base64EncodedString(),
             byteCount: rendered.inline.map { ScreenshotBudget.base64Size(ofRawBytes: $0.count) } ?? 0,
             downscaledFrom: rendered.inlineFactor < 1 ? rendered.backingScale : nil,
-            // Reported, never judged. A background window is `false` here and is
-            // a perfectly good capture — that is the entire point of the design.
-            isVisible: window.isVisible,
-            isKeyWindow: window.isKeyWindow,
-            notIncluded: disclosures(for: window)
+            isVisible: captured.isVisible,
+            isKeyWindow: captured.isKeyWindow,
+            notIncluded: captured.notIncluded
         )
     }
 

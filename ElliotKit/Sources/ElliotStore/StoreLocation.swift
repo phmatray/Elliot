@@ -72,7 +72,13 @@ public enum StoreLocation {
         // window render and a file write; a formatter allocation is not the part
         // worth optimising.
         let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
+        // Fractional seconds, because whole ones collide. Two captures of the
+        // same window inside one second resolved to one path, and the second
+        // `write(options: .atomic)` replaced the first — leaving the first
+        // call's already-returned `pngPath` pointing at different pixels. A
+        // before/after pair taken in quick succession is exactly how this tool
+        // gets used.
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         // Colons are legal on APFS but make the path miserable to quote in a
         // shell, which is exactly what someone does with a screenshot path.
         let stamp = formatter.string(from: moment).replacingOccurrences(of: ":", with: "-")

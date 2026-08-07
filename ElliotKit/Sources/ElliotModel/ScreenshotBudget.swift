@@ -15,6 +15,15 @@ public enum ScreenshotBudget {
     /// Enough for a downscaled board window, small enough not to bury a context.
     public static let defaultInlineBytes = 768 * 1024
 
+    /// The most a caller may ask for, whatever they type.
+    ///
+    /// Chosen against the transport rather than against taste: the reply travels
+    /// as one line on the unix socket, and `UnixSocket.LineReader` caps a line at
+    /// 8 MB — past which it returns a *truncated* buffer, the decode throws, and
+    /// the whole call degrades into "Elliot is not running". Four megabytes of
+    /// base64 leaves room for the JSON around it and keeps the failure legible.
+    public static let maxInlineBytes = 4 * 1024 * 1024
+
     /// The floor on the linear scale.
     ///
     /// Not a tuning knob — a guard. Without it a pathologically large capture
