@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1170 tests in 135 suites**, 5 of 5 samples on
-  `fix/178-runstarted-refreshes-runsbycard` on 2026-08-07 off `main` at `0902c10`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1188 tests in 136 suites**, 5 of 5 samples on
+  `fix/178-runstarted-refreshes-runsbycard` on 2026-08-07 off `main` at `5b12add`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -53,6 +53,9 @@
     the same pull request** after merging `main`, which is the seventh correction and the clearest
     demonstration yet that this line is a date-stamp, not a fact. Eighth and ninth in #159
     (1076 → 1122 → 1125), then a **tenth** at 1167 in 135 when this branch merged #155's own landing.
+    Corrected again landing #180 — the branch measured 1170 in 135 off `0902c10`, and the merge
+    that landed it measured **1188 in 136** off `5b12add`, both from five samples. No ordinal,
+    deliberately, and no attribution of the difference: see the two bullets below.
     - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
       to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
       authors each measured honestly, each counted from the last number they could see, and the
