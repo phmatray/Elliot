@@ -39,7 +39,7 @@ swift-testing (`import Testing`, `@Suite`, `@Test`, `#expect`). `ElliotModel` ha
 
 | File | Responsibility |
 |---|---|
-| `Sources/ElliotModel/Observation.swift` | `Provenance`, `Unmeasured`, `Observation`, `FreshnessPolicy` — a fact, or the named reason there isn't one |
+| `Sources/ElliotModel/Reading.swift` | `Provenance`, `Unmeasured`, `Reading`, `FreshnessPolicy` — a fact, or the named reason there isn't one |
 | `Sources/ElliotModel/GHPayloads.swift` *(modify)* | `GHRepoSummary` gains `primaryLanguage`, `isEmpty`, `isCode` |
 | `Sources/ElliotModel/RepoReconciliation.swift` *(modify)* | `RepoIssue.OutOfScope.of(_:)` — the shared fork/archived judgement |
 | `Sources/ElliotModel/Standard.swift` | the axes as data, and applicability |
@@ -60,23 +60,32 @@ harness.
 
 ### Task 1: The freshness apparatus
 
-Nothing else can be written first: every later type holds an `Observation`.
+Nothing else can be written first: every later type holds a `Reading`.
+
+⛔ **The type is `Reading`, not `Observation`, and renaming it back breaks the
+app.** `Observation` is the name of Apple's framework module, which
+`ElliotAppKit/AppModel.swift:9` imports for the `@Observable` macro. A type of
+that name in `ElliotModel` shadows the module wherever both are visible, so the
+macro expansion fails to resolve `Observation.Observable` and the app target
+stops compiling — `ElliotModel` itself still builds, which is what makes the
+mistake easy to repeat. Measured on this branch: the package builds with the file
+removed and fails with it present.
 
 **Files:**
-- Create: `ElliotKit/Sources/ElliotModel/Observation.swift`
-- Test: `ElliotKit/Tests/ElliotModelTests/ObservationTests.swift`
+- Create: `ElliotKit/Sources/ElliotModel/Reading.swift`
+- Test: `ElliotKit/Tests/ElliotModelTests/ReadingTests.swift`
 
 **Interfaces:**
 - Consumes: nothing.
 - Produces: `Provenance(command:observedAt:)`, `Unmeasured` (9 cases),
-  `Observation<Value>.observed(Value, Provenance)` /
+  `Reading<Value>.observed(Value, Provenance)` /
   `.unavailable(Unmeasured, Provenance)`,
-  `Observation.value(freshAt:policy:) -> Result<Value, Unmeasured>`,
-  `Observation.provenance`, `FreshnessPolicy(maxAge:)` / `.default`.
+  `Reading.value(freshAt:policy:) -> Result<Value, Unmeasured>`,
+  `Reading.provenance`, `FreshnessPolicy(maxAge:)` / `.default`.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `ElliotKit/Tests/ElliotModelTests/ObservationTests.swift`:
+Create `ElliotKit/Tests/ElliotModelTests/ReadingTests.swift`:
 
 ```swift
 import Foundation
@@ -88,11 +97,11 @@ private let then = Date(timeIntervalSince1970: 1_700_000_000)
 private let probe = Provenance(command: "gh repo list phmatray", observedAt: then)
 
 @Suite("An observation carries why it is missing")
-struct ObservationTests {
+struct ReadingTests {
 
     @Test("A fresh observation yields its value")
     func freshYieldsValue() {
-        let o = Observation<Int>.observed(7, probe)
+        let o = Reading<Int>.observed(7, probe)
         #expect(try? o.value(freshAt: then.addingTimeInterval(60), policy: .default).get() == 7)
     }
 
@@ -100,7 +109,7 @@ struct ObservationTests {
     /// "0 missing" instead.
     @Test("An unavailable observation yields its reason, never a default")
     func unavailableYieldsReason() {
-        let o = Observation<Int>.unavailable(.rateLimited, probe)
+        let o = Reading<Int>.unavailable(.rateLimited, probe)
         guard case .failure(.rateLimited) = o.value(freshAt: then, policy: .default) else {
             Issue.record("expected .rateLimited"); return
         }
@@ -108,7 +117,7 @@ struct ObservationTests {
 
     @Test("An observation older than the policy is stale, not fresh")
     func staleBeyondPolicy() {
-        let o = Observation<Int>.observed(7, probe)
+        let o = Reading<Int>.observed(7, probe)
         let now = then.addingTimeInterval(25 * 3600)
         guard case .failure(.stale(let age)) = o.value(freshAt: now, policy: .default) else {
             Issue.record("expected .stale"); return
@@ -118,7 +127,7 @@ struct ObservationTests {
 
     @Test("Exactly at the boundary is still fresh")
     func boundaryIsFresh() {
-        let o = Observation<Int>.observed(7, probe)
+        let o = Reading<Int>.observed(7, probe)
         let now = then.addingTimeInterval(24 * 3600)
         #expect(try? o.value(freshAt: now, policy: .default).get() == 7)
     }
@@ -127,7 +136,7 @@ struct ObservationTests {
     /// caller tell "the token expired an hour ago" from "it expired in July".
     @Test("Provenance survives on the failure branch too")
     func failureKeepsProvenance() {
-        let o = Observation<Int>.unavailable(.notPermitted, probe)
+        let o = Reading<Int>.unavailable(.notPermitted, probe)
         #expect(o.provenance.command == "gh repo list phmatray")
         #expect(o.provenance.observedAt == then)
     }
@@ -136,12 +145,12 @@ struct ObservationTests {
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `cd ElliotKit && swift test --filter ObservationTests`
+Run: `cd ElliotKit && swift test --filter ReadingTests`
 Expected: FAIL — `cannot find 'Provenance' in scope`.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `ElliotKit/Sources/ElliotModel/Observation.swift`:
+Create `ElliotKit/Sources/ElliotModel/Reading.swift`:
 
 ```swift
 import Foundation
@@ -194,7 +203,7 @@ public struct FreshnessPolicy: Sendable, Hashable {
 /// There is deliberately no `valueOrDefault`, no `?? []` convenience and no
 /// `Bool` accessor. `(try? …) ?? []` is the one line that turns a rate limit
 /// into "no files found", which reads as non-compliant on every axis at once.
-public enum Observation<Value: Codable & Sendable & Hashable>: Codable, Sendable, Hashable {
+public enum Reading<Value: Codable & Sendable & Hashable>: Codable, Sendable, Hashable {
     case observed(Value, Provenance)
     case unavailable(Unmeasured, Provenance)
 
@@ -218,13 +227,13 @@ public enum Observation<Value: Codable & Sendable & Hashable>: Codable, Sendable
 
 - [ ] **Step 4: Run it to verify it passes**
 
-Run: `cd ElliotKit && swift test --filter ObservationTests`
+Run: `cd ElliotKit && swift test --filter ReadingTests`
 Expected: PASS, 5 tests.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add ElliotKit/Sources/ElliotModel/Observation.swift ElliotKit/Tests/ElliotModelTests/ObservationTests.swift
+git add ElliotKit/Sources/ElliotModel/Reading.swift ElliotKit/Tests/ElliotModelTests/ReadingTests.swift
 git commit -m "feat(model): carry why a fact is missing, and how old it is"
 ```
 
@@ -822,7 +831,7 @@ git commit -m "feat(model): declare the five portfolio axes and their scope"
 - Test: `ElliotKit/Tests/ElliotModelTests/RepoTreeTests.swift`
 
 **Interfaces:**
-- Consumes: `Observation` (task 1).
+- Consumes: `Reading` (task 1).
 - Produces: `RepoTree(paths:truncated:)`, `RepoTree.contains(_:) -> Bool?`,
   `RepoTree.paths(withPrefix:) -> Set<String>?`, `RepoTree.isTruncated`,
   `RepoMeasurement(tree:workflows:dependencyConfig:topics:licenceSPDX:)`.
@@ -932,23 +941,23 @@ public struct RepoTree: Codable, Sendable, Hashable {
 /// own age — the tree, the workflows and the topics are separate calls, and one
 /// can fail while the others succeed.
 public struct RepoMeasurement: Sendable, Hashable {
-    public var tree: Observation<RepoTree>
+    public var tree: Reading<RepoTree>
     /// Workflow path → its YAML text.
-    public var workflows: Observation<[String: String]>
+    public var workflows: Reading<[String: String]>
     /// The dependency-automation config found, and its path. `nil` value means
     /// read successfully and absent — distinct from unavailable.
-    public var dependencyConfig: Observation<String?>
-    public var topics: Observation<[String]>
+    public var dependencyConfig: Reading<String?>
+    public var topics: Reading<[String]>
     /// SPDX id, read from `.license.spdx_id`. ⚠️ `gh repo view --json licenseInfo`
     /// omits `spdxId`; the REST payload is the source.
-    public var licenceSPDX: Observation<String?>
+    public var licenceSPDX: Reading<String?>
 
     public init(
-        tree: Observation<RepoTree>,
-        workflows: Observation<[String: String]>,
-        dependencyConfig: Observation<String?>,
-        topics: Observation<[String]>,
-        licenceSPDX: Observation<String?>
+        tree: Reading<RepoTree>,
+        workflows: Reading<[String: String]>,
+        dependencyConfig: Reading<String?>,
+        topics: Reading<[String]>,
+        licenceSPDX: Reading<String?>
     ) {
         self.tree = tree
         self.workflows = workflows
@@ -1321,7 +1330,7 @@ because the order is the rule.
 - Produces:
   `StandardsEngine.verdict(for:repo:measurement:exemptions:now:freshness:) -> StandardVerdict`
   and `StandardsEngine.assess(repo:measurement:exemptions:now:freshness:) -> RepoStandardsAssessment`,
-  where `repo` is `Observation<GHRepoSummary>`.
+  where `repo` is `Reading<GHRepoSummary>`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1355,7 +1364,7 @@ struct StandardsEngineOrderTests {
             licenceSPDX: .observed(nil, probe))
     }
 
-    private func exemptions(_ list: [Exemption]) -> Observation<StandardsFile> {
+    private func exemptions(_ list: [Exemption]) -> Reading<StandardsFile> {
         .observed(StandardsFile(version: 1, repo: nil, exemptions: list), probe)
     }
 
@@ -1463,9 +1472,9 @@ public enum StandardsEngine {
 
     public static func verdict(
         for standard: Standard,
-        repo: Observation<GHRepoSummary>,
+        repo: Reading<GHRepoSummary>,
         measurement: RepoMeasurement,
-        exemptions: Observation<StandardsFile>,
+        exemptions: Reading<StandardsFile>,
         now: Date,
         freshness: FreshnessPolicy
     ) -> StandardVerdict {
@@ -1502,9 +1511,9 @@ public enum StandardsEngine {
     }
 
     public static func assess(
-        repo: Observation<GHRepoSummary>,
+        repo: Reading<GHRepoSummary>,
         measurement: RepoMeasurement,
-        exemptions: Observation<StandardsFile>,
+        exemptions: Reading<StandardsFile>,
         now: Date,
         freshness: FreshnessPolicy = .default
     ) -> RepoStandardsAssessment
@@ -1581,10 +1590,10 @@ struct StandardPredicatesTests {
     }
 
     private func measurement(
-        tree: Observation<RepoTree> = .observed(RepoTree(paths: [], truncated: false), probe),
-        workflows: Observation<[String: String]> = .observed([:], probe),
-        topics: Observation<[String]> = .observed([], probe),
-        licence: Observation<String?> = .observed(nil, probe)
+        tree: Reading<RepoTree> = .observed(RepoTree(paths: [], truncated: false), probe),
+        workflows: Reading<[String: String]> = .observed([:], probe),
+        topics: Reading<[String]> = .observed([], probe),
+        licence: Reading<String?> = .observed(nil, probe)
     ) -> RepoMeasurement {
         RepoMeasurement(
             tree: tree, workflows: workflows, dependencyConfig: .observed(nil, probe),
@@ -1763,7 +1772,7 @@ Expected: FAIL — every case, because the task-8 stub violates unconditionally.
 **The 16 tests in step 1 are the specification** — implement against them. Create
 `ElliotKit/Sources/ElliotModel/StandardPredicates.swift` with one private
 function per axis and a single `evaluate` that dispatches. Every read of an
-`Observation` goes through `value(freshAt:policy:)` and exits `.unmeasured` on
+`Reading` goes through `value(freshAt:policy:)` and exits `.unmeasured` on
 failure — there is no `?? []` anywhere in this file.
 
 The `on:` block reader is a small line scanner, not a YAML parser, and must
@@ -1948,7 +1957,7 @@ git commit -m "feat(model): describe the card a standards violation deserves"
 - No `?? []`, no `try?`-with-default and no `Date()` anywhere under
   `Sources/ElliotModel/Standard*.swift`. Check with:
   ```bash
-  grep -nE '\?\? \[\]|try\?|Date\(\)' ElliotKit/Sources/ElliotModel/Standard*.swift ElliotKit/Sources/ElliotModel/Observation.swift ElliotKit/Sources/ElliotModel/RepoMeasurement.swift
+  grep -nE '\?\? \[\]|try\?|Date\(\)' ElliotKit/Sources/ElliotModel/Standard*.swift ElliotKit/Sources/ElliotModel/Reading.swift ElliotKit/Sources/ElliotModel/RepoMeasurement.swift
   ```
   Expected: no output.
 - Nothing outside `RepoMeasurement.swift` reaches a tree's raw path set:
