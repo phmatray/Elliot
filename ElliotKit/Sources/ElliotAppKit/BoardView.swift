@@ -439,7 +439,10 @@ public struct BoardView: View {
             selectedCardID: model.selectedCardID,
             selectedColumn: model.selectedCard?.column,
             panelOrigin: panelOrigin,
-            spans: model.panelSpans
+            spans: model.panelSpans,
+            // Placeholders — wired in #151, Task 6.
+            analysisOpen: false,
+            analysisSpans: PanelLayout.spanChoices.wide
         )
     }
 
@@ -660,6 +663,17 @@ struct BoardFraming: Equatable, Sendable {
     var panelOrigin: ElliotModel.Column?
     /// How many columns wide the panel is.
     var spans: Int
+    /// Whether the analysis panel is showing, as the row's leading slot.
+    ///
+    /// Part of the row's shape, so a change to it must re-frame — the same
+    /// argument the three paths above make. This one is stronger than any of
+    /// them: the analysis panel sits *ahead* of all five columns, so opening it
+    /// moves every column's leading edge, and a board that did not re-frame
+    /// would be looking at the wrong column rather than at the right one from
+    /// the wrong distance.
+    var analysisOpen: Bool
+    /// How many columns wide the analysis panel is.
+    var analysisSpans: Int
 
     /// Where the board must scroll so the selected column and its panel are
     /// framed together, or `nil` when there is nothing to frame.
@@ -671,22 +685,25 @@ struct BoardFraming: Equatable, Sendable {
     /// answers before the layout that inserts the panel has run.
     func offsetX(boardWidth: CGFloat) -> CGFloat? {
         guard let selectedColumn else { return nil }
-        // `analysisOpen: false` / `analysisWidth: 0` are placeholders — wired in
-        // #151, Task 2.
-        let slots = PanelLayout.boardOrder(selected: panelOrigin, analysisOpen: false)
+        let slots = PanelLayout.boardOrder(selected: panelOrigin, analysisOpen: analysisOpen)
         let columnWidth = PanelLayout.columnWidth(boardWidth: boardWidth)
         let panelWidth = PanelLayout.panelWidth(columnWidth: columnWidth, spans: spans)
+        // Zero when it is shut, which is what makes it contribute nothing to the
+        // sum rather than a width for a slot that is not in the row.
+        let analysisWidth = analysisOpen
+            ? PanelLayout.panelWidth(columnWidth: columnWidth, spans: analysisSpans)
+            : 0
 
         guard let originMinX = PanelLayout.minX(
             of: .column(selectedColumn), in: slots,
-            columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: 0
+            columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: analysisWidth
         ) else { return nil }
         // `nil` when the panel is shut, and passed through as `nil`: the pair is
         // then the column by itself, which is what `frameOffsetX` measures the
         // lead against.
         let panelMinX = PanelLayout.minX(
             of: .panel, in: slots,
-            columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: 0
+            columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: analysisWidth
         )
         return PanelLayout.frameOffsetX(
             originMinX: originMinX,
@@ -698,6 +715,24 @@ struct BoardFraming: Equatable, Sendable {
             // parameter this method is asked in terms of.
             viewportWidth: boardWidth
         )
+    }
+
+    /// The offset to apply given what the row just *became*.
+    ///
+    /// Opening the analysis panel frames the analysis panel — it is the leading
+    /// slot, so that is 0 — because a panel the reader has just asked for that
+    /// lands off-screen to the left reads as a panel that did not open. That
+    /// false negative is written down in `CLAUDE.md`: it cost nine written
+    /// claims and two merges on the window scenes, and the only reason a
+    /// board-inline panel escapes it is that the board scrolls to it.
+    ///
+    /// Every other transition — closing it included — frames the selected card
+    /// and its panel exactly as it does today. Closing is deliberately not a
+    /// special case: the reader's attention after a close is wherever their card
+    /// is, not at the leading edge of a row that no longer has a panel in it.
+    func offsetX(from previous: BoardFraming, boardWidth: CGFloat) -> CGFloat? {
+        if analysisOpen && !previous.analysisOpen { return 0 }
+        return offsetX(boardWidth: boardWidth)
     }
 }
 
