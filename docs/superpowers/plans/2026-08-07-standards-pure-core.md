@@ -102,7 +102,7 @@ struct ReadingTests {
     @Test("A fresh observation yields its value")
     func freshYieldsValue() {
         let o = Reading<Int>.observed(7, probe)
-        #expect(try? o.value(freshAt: then.addingTimeInterval(60), policy: .default).get() == 7)
+        #expect((try? o.value(freshAt: then.addingTimeInterval(60), policy: .default).get()) == Optional(7))
     }
 
     /// The whole point of the type. A tool that cannot say "I do not know" says
@@ -129,7 +129,7 @@ struct ReadingTests {
     func boundaryIsFresh() {
         let o = Reading<Int>.observed(7, probe)
         let now = then.addingTimeInterval(24 * 3600)
-        #expect(try? o.value(freshAt: now, policy: .default).get() == 7)
+        #expect((try? o.value(freshAt: now, policy: .default).get()) == Optional(7))
     }
 
     /// Both branches carry it: knowing *when* a failure happened is what lets a
