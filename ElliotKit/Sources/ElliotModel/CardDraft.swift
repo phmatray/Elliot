@@ -53,6 +53,51 @@ public struct CardDraft: Sendable, Hashable {
         )
     }
 
+    /// Seeds a draft from a proposal awaiting correction.
+    ///
+    /// `isStory` is pinned true rather than derived: a `StoryProposal` carries
+    /// a `UserStory` and has nowhere to put a note, so a proposal editor that
+    /// could reach note mode would present fields whose contents are discarded
+    /// on save — and `isValid` would quietly weaken to "the label is
+    /// non-blank", accepting the half-written story it exists to refuse. The
+    /// pin lives here rather than in the view because this is the layer
+    /// `swift test` can see.
+    ///
+    /// Only `title` and the story are taken. A proposal's rationale, evidence,
+    /// effort and angle are its provenance, not its editable shape.
+    public init(proposal: StoryProposal) {
+        let story = proposal.story
+        self.init(
+            title: proposal.title,
+            isStory: true,
+            role: story.role,
+            want: story.want,
+            benefit: story.benefit,
+            // The designated init re-seeds `[""]` when this is empty, so the
+            // editor always has a row; that rule is not written twice.
+            criteria: story.acceptanceCriteria
+        )
+    }
+
+    /// The proposal this draft produces: the same proposal with its label and
+    /// story replaced, blank criteria dropped by `story`.
+    ///
+    /// The counterpart to `init(proposal:)`, and the same move as
+    /// `VerifiedOutcome.applied(to:attribution:)` — what an edit *means* is
+    /// decided here, once, rather than reconciled inside a Save closure.
+    ///
+    /// `story` is non-nil for any draft that came from `init(proposal:)`. A
+    /// draft forced into note mode by hand falls back to the proposal's
+    /// existing story rather than trapping or writing an empty one over it:
+    /// a note has no story to contribute, and losing one to a mode that
+    /// cannot be reached through the editor would be an absurd way to fail.
+    public func applied(to proposal: StoryProposal) -> StoryProposal {
+        var edited = proposal
+        edited.title = title
+        edited.story = story ?? proposal.story
+        return edited
+    }
+
     /// Drops a criterion row, re-seeding an empty row so the editor always has
     /// something to render.
     ///

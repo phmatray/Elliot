@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1314 tests in 148 suites**, 5 of 5 samples on
-  `feat/170-preflight-labels` on 2026-08-07 off `main` at `50feecc`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1328 tests in 149 suites**, 5 of 5 samples on
+  `fix/147-proposal-editor-card-draft` on 2026-08-07 off `main` at `dc5c2ce`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -81,6 +81,13 @@
       own, and five *consecutive* greens were taken afterwards rather than counting the three
       before it. **Five green samples cannot disprove a 1-in-50; keeping the output is what turns
       the one you do catch into evidence.**
+    - **Landing #149 the branch's number was the stalest yet, and none of it was the branch's
+      fault.** It wrote 1064 in 123 off `39b977e` and argued — correctly, at the time — that the
+      line was *not* stale and the whole delta was its own new tests. Then it sat open for a day
+      while **sixteen** squashes landed. The merged tree measures the value above off `dc5c2ce`.
+      Nothing about the branch changed between the two runs. That is this entry's thesis with the
+      interval stretched far enough to be unmistakable: the number measures **when you looked**,
+      not what you wrote.
     - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
       to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
       authors each measured honestly, each counted from the last number they could see, and the

@@ -1,11 +1,37 @@
 import ElliotModel
 import SwiftUI
 
-/// The fields of a backlog item, shared by the sheet that creates one and the
-/// inspector that corrects one. One field set, one validation rule —
-/// `CardDraft` holds both.
+/// The fields of a backlog item, shared by the sheet that creates one, the
+/// inspector that corrects one, and the row that corrects a proposal. One field
+/// set, one validation rule — `CardDraft` holds both.
 struct CardFieldsEditor: View {
+    /// What is being edited, which decides whether a note is even an option.
+    ///
+    /// Not a boolean trap: the distinction is real. A *card* may be a plain
+    /// note, so it gets the picker and both branches. A *proposal* is always a
+    /// story — `StoryProposal` carries a `UserStory` and has nowhere to put a
+    /// note — so offering the picker there would offer a mode that silently
+    /// discards what was typed. The pin that makes `.story` safe is not here
+    /// but in `CardDraft(proposal:)`, where `swift test` can hold it.
+    enum Kind {
+        /// Board label, story/note picker, whichever branch is selected, preview.
+        case card
+        /// Board label, story fields, preview. No picker, no note.
+        case story
+    }
+
     @Binding var draft: CardDraft
+    /// Defaulted, so the card sheet and the detail inspector are unchanged.
+    var kind: Kind = .card
+
+    /// One answer to "is this a story", read by every site that asks.
+    ///
+    /// It was briefly three — the fields keyed on `kind`, the preview on
+    /// `draft.isStory`, and `isValid` on `draft.isStory` again — which is the
+    /// defect this whole view exists to remove, reintroduced one level up. A
+    /// `.story` editor whose draft said otherwise would render the story
+    /// fields, hide the preview, and weaken Save to "the label is non-blank".
+    private var isStory: Bool { kind == .story || draft.isStory }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -15,14 +41,19 @@ struct CardFieldsEditor: View {
                     .textFieldStyle(.roundedBorder)
             }
 
-            Picker("", selection: $draft.isStory) {
-                Text("User story").tag(true)
-                Text("Plain note").tag(false)
+            if kind == .card {
+                Picker("", selection: $draft.isStory) {
+                    Text("User story").tag(true)
+                    Text("Plain note").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
 
-            if draft.isStory {
+            // In `.story` the note branch is unreachable by construction rather
+            // than merely unselected: there is no picker to reach it with, and
+            // the draft was seeded with `isStory` pinned.
+            if isStory {
                 storyFields
             } else {
                 VStack(alignment: .leading, spacing: 4) {
@@ -43,7 +74,7 @@ struct CardFieldsEditor: View {
             // "developer", so a narrative exists from the first keystroke and
             // this box used to open on "As a developer, I want ." — a broken
             // sentence presented as what the skill would be sent.
-            if draft.isStory, let story = draft.story, story.isComplete {
+            if isStory, let story = draft.story, story.isComplete {
                 VStack(alignment: .leading, spacing: 4) {
                     ConsoleLabel(text: "What create-issue will receive")
                     Text(story.issueBody)
@@ -56,6 +87,15 @@ struct CardFieldsEditor: View {
                 }
             }
         }
+        // The third site that asks "is this a story" is `CardDraft.isValid`,
+        // and it is in another module — a view cannot make it kind-aware. So
+        // `.story` makes the *draft* agree instead of answering around it:
+        // without this, a caller handing `.story` a note-mode draft would get
+        // an editable story whose Save gate had silently weakened to "the
+        // label is non-blank". `ProposalEditor` already seeds through
+        // `CardDraft(proposal:)`, which pins it; this is what keeps the next
+        // caller from having to know that.
+        .onAppear { if kind == .story { draft.isStory = true } }
     }
 
     private var storyFields: some View {
