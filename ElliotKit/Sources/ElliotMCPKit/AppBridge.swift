@@ -101,7 +101,7 @@ public struct AppBridge: Sendable, BridgeProviding {
     /// One function, two callers, on purpose: `read` and `write` telling
     /// different stories about the same path is the shape of the defect being
     /// fixed, one layer along.
-    static func unusableSocketPath(_ path: String) -> ElliotResponse? {
+    private static func unusableSocketPath(_ path: String) -> ElliotResponse? {
         guard !UnixSocket.pathFits(path) else { return nil }
         return .failure(
             code: .appUnavailable,

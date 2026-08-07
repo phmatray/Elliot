@@ -46,7 +46,11 @@ public enum UnixSocket {
     static func makeAddress(path: String) throws -> sockaddr_un {
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        let maxLength = MemoryLayout.size(ofValue: address.sun_path)
+        // Through `maxPathBytes` as well, so the size the bytes are copied into
+        // and the size they were measured against are one expression. They were
+        // two identical `MemoryLayout.size(ofValue:)` calls for one commit,
+        // which is the drift this pair exists to prevent, inside the pair.
+        let maxLength = maxPathBytes
         guard pathFits(path) else { throw SocketError.pathTooLong(path) }
         withUnsafeMutablePointer(to: &address.sun_path) { pointer in
             pointer.withMemoryRebound(to: CChar.self, capacity: maxLength) { destination in
