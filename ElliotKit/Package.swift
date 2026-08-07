@@ -1,4 +1,52 @@
-// swift-tools-version: 6.1
+// swift-tools-version: 6.3
+//
+// MEASURED, not assumed (#116). This line said 6.1 until 2026-08-07, and nothing had ever built the
+// package on a 6.1 toolchain — the first CI run this repository ever had failed on one in under two
+// minutes. What follows is what a build said, on real toolchains, and the runs are cited so the next
+// person can re-take the measurement rather than trust this comment.
+//
+// Twenty-one builds across eight Apple toolchains, on the `macos-15` and `macos-26` runner images
+// (runs 31167517846, 31167931727, 31170356694):
+//
+//   toolchain            SDK          swift build   swift build --build-tests
+//   6.1.2  (Xcode 16.4)  macosx15.5   RED           RED
+//   6.2    (Xcode 26.0)  macosx26.0   green         RED
+//   6.2.1  (Xcode 26.1)  macosx26.1   green         RED
+//   6.2.3  (Xcode 26.2)  macosx26.2   green         RED
+//   6.2.4  (Xcode 26.3)  macosx26.2   green         RED
+//   6.3.1  (Xcode 26.4)  macosx26.4   green         green
+//   6.3.2  (Xcode 26.5)  macosx26.5   green         green
+//   6.3.3  (Xcode 26.6)  macosx26.5   green         green
+//
+// So this package has TWO floors and they are four releases apart:
+//
+//   • The **build** floor is 6.2. On 6.1.2 two sites in `ElliotAppKit` fail — a `switch` over a
+//     `Bool?` that 6.2 accepts as exhaustive and 6.1 does not (`AnalysisPanelView.swift:698`), and
+//     `await center.notificationSettings()` returning a non-`Sendable` `UNNotificationSettings` into
+//     a `@MainActor` class (`NotificationDelivery.swift:124`).
+//   • The **test** floor is 6.3.1. Every 6.2.x compiler gives up on one expression —
+//     `ElliotProcessTests/StreamingProcessDrainTests.swift:138`, inside a `#expect` expansion:
+//     "the compiler is unable to type-check this expression in reasonable time".
+//
+// This line declares **6.3, the test floor, deliberately over the lower build floor**, and the
+// reason is this issue's own purpose rather than caution. A tools-version is enforced by SwiftPM at
+// *manifest parse*, before a source file is read: its job here is to turn a mysterious failure into
+// a named one. The failure a 6.2 contributor would actually hit is the test one — `swift test` is
+// this repository's only verification gate, there is no CI to catch it for them, and CLAUDE.md tells
+// them to run it. Declaring 6.2 would let them build, then hand them a type-check timeout inside a
+// macro expansion: exactly the mystery this floor exists to prevent, one target over.
+//
+// That makes the declared floor *sufficient* rather than *minimal*, and the gap is one expression
+// wide. Break that `#expect` into sub-expressions and the two floors collapse to 6.2 — filed as its
+// own change rather than smuggled in here, because it alters what the floor may be and that should
+// be visible. Until then, 6.2 is recorded above as measured-green-for-`swift build`, so lowering
+// this line later needs no new argument, only the follow-up landing.
+//
+// ⚠️ One thing these numbers do NOT separate: every toolchain moved its SDK with it, so the two
+// `ElliotAppKit` diagnostics at 6.1.2 are attributable to the 6.1→6.2 compiler step, the
+// macosx15→macosx26 SDK step, or both. No image pairs an old compiler with a new SDK, so it was not
+// measurable here. It does not change the floor — a toolchain arrives as an Xcode, and Xcode 16.4
+// does not build this package — but do not restate it as "the 6.1 *compiler* cannot".
 import PackageDescription
 
 let package = Package(

@@ -60,6 +60,10 @@ cat >"$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleShortVersionString</key> <string>$VERSION</string>
   <key>CFBundleVersion</key>         <string>1</string>
+  <!-- Mirrors platforms: [.macOS(.v15)] in Package.swift, and is UNVERIFIED for the same reason:
+       nobody has launched this bundle on macOS 15. That is a deployment claim, separate from the
+       swift-tools-version floor #116 corrected, and it is tracked as #142. Read the comment above
+       platforms: before changing this number — the two must move together or not at all. -->
   <key>LSMinimumSystemVersion</key>  <string>15.0</string>
   <key>NSHighResolutionCapable</key> <true/>
   <key>NSPrincipalClass</key>        <string>NSApplication</string>

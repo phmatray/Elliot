@@ -29,10 +29,40 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
 - `swift test --filter` matches the **type** name, not the `@Suite` display name: `ClaudeRunnerTests`,
   not `"Claude runner"`. A filter matching nothing prints `warning: No matching test cases were run`
   and **exits 0** — indistinguishable from success.
-- Swift 6.1 tools-version, `swiftLanguageModes: [.v6]`, macOS 15+. Strict concurrency is on: every new
-  type crossing an isolation boundary must be `Sendable`.
-- **There is no CI.** No `.github/workflows/`, no branch protection. A pull request here is judged by a
-  local `swift test` only — "wait for green CI" is not a thing that can happen in this repo.
+- **Swift 6.3 tools-version**, `swiftLanguageModes: [.v6]`, deployment target macOS 15. Strict
+  concurrency is on: every new type crossing an isolation boundary must be `Sendable`.
+  - This line said **6.1** until #116, and no machine had ever built the package on a 6.1 toolchain —
+    the first CI run this repository ever had failed on one
+    ([31118743562](https://github.com/phmatray/Elliot/actions/runs/31118743562)) in under two
+    minutes. The floor did not start wrong; it **rotted**, silently, because nothing exercised it.
+  - The replacement is measured — 21 builds over 8 Apple toolchains, runs
+    [31167517846](https://github.com/phmatray/Elliot/actions/runs/31167517846),
+    [31167931727](https://github.com/phmatray/Elliot/actions/runs/31167931727) and
+    [31170356694](https://github.com/phmatray/Elliot/actions/runs/31170356694) — and it found **two
+    floors, four releases apart**:
+
+    | | lowest toolchain measured green |
+    |---|---|
+    | `swift build` (library + executables) | **6.2** — Xcode 26.0 |
+    | `swift build --build-tests` / `swift test` | **6.3.1** — Xcode 26.4 |
+
+    6.1.2 fails two sites in `ElliotAppKit`; every 6.2.x fails one expression in
+    `ElliotProcessTests/StreamingProcessDrainTests.swift:138`, where the compiler gives up
+    type-checking a `#expect` in reasonable time. `Package.swift` declares **6.3**, the higher one,
+    and says at length why: `swift test` is this repo's only gate, so the failure a 6.2 contributor
+    would actually meet is the test one, and a tools-version refusal at manifest parse is the whole
+    point — a named refusal instead of a mystery. Read that comment before changing this.
+  - ⚠️ **`swift build` being green is not the floor being green** — that is how the 6.1 claim survived.
+    The test targets are substantial and `swift build` never compiles them.
+  - Measured while establishing this: the `macos-15` runner image tops out at Xcode 26.3 (Swift
+    6.2.4), so **the test targets cannot be compiled on that image at all**. Whether macOS 15 can
+    *host* Xcode 26.4 is unmeasured — an image's contents are not Apple's requirements, and inferring
+    one from the other is the mistake #116 is about.
+- **CI here is one workflow, and it is not a build.** `.github/workflows/swift-floor.yml` asserts the
+  runner's toolchain against the floor `Package.swift` declares, and builds on it. There is still **no
+  build-and-test CI and no branch protection** — that is #21, in flight on #102 — so a pull request is
+  otherwise judged by a local `swift test` only, and "wait for green CI" is still not a thing that can
+  happen here.
 - Re-run `claude mcp add` after moving the app: the registration records an absolute path.
 
 ### ⛔ Do not run `swift format` over the tree
