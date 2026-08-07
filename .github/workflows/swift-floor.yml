@@ -62,8 +62,16 @@ jobs:
         run: |
           set -uo pipefail
 
-          declared=$(sed -n 's|^// *swift-tools-version: *\([0-9][0-9.]*\).*|\1|p' ElliotKit/Package.swift | head -1)
-          runner=$(swift --version 2>&1 | sed -n 's/.*Apple Swift version \([0-9][0-9.]*\).*/\1/p' | head -1)
+          # ⚠️ No `| head -1` anywhere in this step, deliberately. GitHub runs `run:` under `bash -e`,
+          # and with `pipefail` on, `producer | head -1` fails the whole pipeline whenever `head`
+          # exits first and the producer takes SIGPIPE — a step that aborts on nothing, at a rate set
+          # by how fast two processes happen to run. It would have passed every time on a manifest
+          # this small and gone off on a bigger one. First lines are taken with `${var%%$'\n'*}`,
+          # which involves no second process at all.
+          declared_all=$(sed -n 's|^// *swift-tools-version: *\([0-9][0-9.]*\).*|\1|p' ElliotKit/Package.swift)
+          declared=${declared_all%%$'\n'*}
+          runner_all=$(swift --version 2>&1 | sed -n 's/.*Apple Swift version \([0-9][0-9.]*\).*/\1/p')
+          runner=${runner_all%%$'\n'*}
 
           # An unparsed version must never read as a pass. Both of these are scraped out of text that
           # is free to change shape — a manifest comment and a compiler banner — and the failure mode
@@ -93,8 +101,10 @@ jobs:
           fi
 
           # `sort -V` decides which side of the floor the runner fell on, so the two failures can say
-          # different things — they have genuinely different remedies.
-          lower=$(printf '%s\n%s\n' "$d_mm" "$r_mm" | sort -V | head -1)
+          # different things — they have genuinely different remedies. Version order, not string
+          # order: 6.10 sorts *below* 6.9 lexically, and that is a real future, not a hypothetical.
+          sorted=$(printf '%s\n%s\n' "$d_mm" "$r_mm" | sort -V)
+          lower=${sorted%%$'\n'*}
           if [ "$lower" = "$r_mm" ]; then
             echo "::error::The runner's Swift is OLDER than the declared floor ($runner < $declared)."
             echo "The runner image moved down, or the floor moved up without this job's image moving with it."
