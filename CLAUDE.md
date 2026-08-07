@@ -371,10 +371,13 @@ the two above. Anything needing a click or a key is **not verifiable** until som
 ⚠️ **As of today the driver holds neither grant** — `accessibility: false` *and*
 `screen_recording: false`, read against the daemon's own TCC identity `com.trycua.driver`, which is
 the identity that matters because the daemon is its own responsible process. So observation is off
-too, and the window listing above is not currently reproducible through it. `/usr/sbin/screencapture
--l` from a shell still enumerates windows and is what produced today's listings, but it is **not** a
-substitute: a non-frontmost window parks in the Stage Manager strip at ~143×160, and nothing in it
-can be read as text.
+too, and the window listing above is not currently reproducible through it. ⛔ **This paragraph used to
+offer `/usr/sbin/screencapture -l` as a shell fallback that "still enumerates windows"; it does
+neither.** `-l<windowid>` *captures* one window rather than listing any, and from an agent's shell it
+answers `could not create image from window` — the same missing grant, measured 2026-08-08 (#132). The
+caveat it carried was true and beside the point: a non-frontmost window parks in the Stage Manager
+strip at ~143×160 with nothing in it readable as text. See the probe table further down for what an
+agent can and cannot do, and reach for `board_screenshot` instead.
 
 Recognise the shape rather than the tool, because it has now bitten this project four times: **a
 permission that silently changes behaviour instead of erroring.** A blank accessibility tree that
@@ -585,9 +588,17 @@ speak JSON-RPC at its stdin (`initialize` → `notifications/initialized` → `t
 `png_path` at full resolution, inside that home's `screenshots/`. What it cannot do is *act*, so a
 check that needs a card selected still needs a person or a grant.
 
-⚠️ `screencapture -x` **erroring** rather than handing back a black frame is worth noting on its own:
-it is the one member of this file's false-negative family that actually says no. `-l<windowid>` is not
-an option on this macOS at all (`illegal option -- l`), so capture-by-window-id is not a fallback.
+⚠️ `screencapture` **erroring** rather than handing back a black frame is worth noting on its own: it
+is the one member of this file's false-negative family that actually says no — `-x` gives
+`could not create image from display` and `-l<windowid>` gives `could not create image from window`.
+Both are the missing grant, so capture-by-window-id is **not** a fallback either.
+
+⛔ **Do not read `screencapture`'s short usage line as its option list.** `usage: screencapture
+[-icMPmwsWxSCUtoa] [files]` omits `-l`, and a bare `-l` answers `illegal option -- l` because it wants
+an argument — between them those two outputs read exactly like "this macOS has no such flag", which is
+what got written here for one commit and what code review caught. `screencapture --help` lists
+`-l<windowid> capture this windowsid` plainly. **An option that needs an argument reports its absence
+the same way an unknown option does**; check `--help` before concluding a flag does not exist.
 
 One more false negative to know: `entire contents` of the window can return **empty** while
 `count of UI elements` returns 6. An empty AX dump is not an empty window.

@@ -834,11 +834,19 @@ struct AppModelTests {
     /// remember to isolate themselves — it is that the writer they get by
     /// default has nowhere to write. This is that claim, pointed at the path a
     /// default-constructed model would use if it used one at all.
+    /// ⚠️ Pointed at a **scratch** path, not `StoreLocation.preferencesURL`.
+    /// `TestHome` adopts an `ELLIOT_HOME` the operator already exported, so
+    /// asserting on the resolved store path meant `swift test` from a shell
+    /// carrying `ELLIOT_HOME=/tmp/elliot-check` deleted that instance's real
+    /// preference — and a running app on that home could fail this assertion for
+    /// reasons that are nothing to do with the code. A test that destroys state
+    /// outside its own scratch directory is a bad test even when it passes.
+    /// Nothing is lost by moving: the default writer holds no URL at all, so any
+    /// path it could conceivably have written to is an equally good witness.
     @Test("A model nobody handed a file writes no preference anywhere")
     func theDefaultModelWritesNothing() {
-        _ = TestHome.root
-        let wouldBe = StoreLocation.preferencesURL
-        try? FileManager.default.removeItem(at: wouldBe)
+        let wouldBe = TestHome.scratch("appmodel-prefs-default-writer")
+            .appendingPathComponent("preferences.json")
 
         let model = AppModel()
         model.panelSpans = Preferences.spanChoices.narrow
@@ -882,6 +890,34 @@ struct AppModelTests {
             fired.isRaised,
             "reading panelSpans must register a dependency on what the setter mutates"
         )
+    }
+
+    @Test("The width toggle lands on a designed span from either side, and says which")
+    func toggleMovesBetweenTheTwoDesignedSpans() {
+        let model = AppModel()
+        #expect(model.panelSpans == Preferences.spanChoices.wide)
+        #expect(model.panelWidthToggleTitle == "Narrow Details")
+
+        model.togglePanelWidth()
+        #expect(model.panelSpans == Preferences.spanChoices.narrow)
+        #expect(model.panelWidthToggleTitle == "Widen Details")
+
+        model.togglePanelWidth()
+        #expect(model.panelSpans == Preferences.spanChoices.wide)
+    }
+
+    @Test("The toggle saves through the same path a drag does")
+    func toggleWritesThePreference() {
+        let url = TestHome.scratch("appmodel-prefs-toggle")
+            .appendingPathComponent("preferences.json")
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+
+        let model = AppModel(preferences: PreferencesFile(url: url))
+        model.togglePanelWidth()
+
+        #expect(PreferencesFile.load(from: url).panelSpans == Preferences.spanChoices.narrow)
     }
 
     @Test("A model restored from a stored width opens at it")

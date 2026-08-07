@@ -161,23 +161,60 @@ public final class AppModel {
     /// `AppModelTests.restoringDoesNotWrite` go red on it, and only that test.
     ///
     /// (The tracking itself survives a `didSet` — that was measured too, and it
-    /// is not the reason for this shape.) The stored half is what `@Observable`
-    /// observes; this is where the save hangs, and `init` assigns the storage.
+    /// is not the reason for this shape.) ``readerPreferences`` is what
+    /// `@Observable` observes; this is where the save hangs, and `init` assigns
+    /// the storage.
     public var panelSpans: Int {
-        get { storedPanelSpans }
+        get { readerPreferences.panelSpans }
         set {
-            storedPanelSpans = newValue
+            // One field of the held value, never a freshly built `Preferences`.
+            // Rebuilding it would make each setter save a struct whose *other*
+            // fields are back at their defaults, so the second preference to be
+            // added here would silently reset the first every time either one
+            // changed — a data-loss bug that cannot exist while there is only one
+            // field, and would arrive fully grown with the second.
+            readerPreferences.panelSpans = newValue
             // Unclamped on purpose: the two affordances that reach here — the
             // drag handle and View ▸ Narrow/Widen — can only produce the two
             // designed spans (`PanelLayout.snappedSpans`), so a clamp on the way
             // *out* would only hide a caller that had invented a third. The
             // clamp belongs where the value cannot be trusted, which is the way
             // *in*, from a file (`PreferencesFile.load`).
-            preferences.save(Preferences(panelSpans: newValue))
+            preferences.save(readerPreferences)
         }
     }
 
-    private var storedPanelSpans: Int
+    /// What View ▸ Narrow/Widen Details should read right now.
+    ///
+    /// Here rather than in the menu because it is a judgement about which of the
+    /// two designed widths is the *other* one, and a view that judged it would be
+    /// a second place holding the pair — which is what `Preferences.spanChoices`
+    /// exists to prevent.
+    public var panelWidthToggleTitle: String {
+        panelSpans >= Preferences.spanChoices.wide ? "Narrow Details" : "Widen Details"
+    }
+
+    /// Moves the panel to the width it is not currently at, and remembers it.
+    ///
+    /// Goes through ``panelSpans``, so it saves exactly like a drag does — the
+    /// same funnel, not a second write path.
+    public func togglePanelWidth() {
+        panelSpans =
+            panelSpans >= Preferences.spanChoices.wide
+            ? Preferences.spanChoices.narrow : Preferences.spanChoices.wide
+    }
+
+    /// Every reader preference this launch holds, and the single source of the
+    /// values the setters above expose one field at a time.
+    ///
+    /// Held rather than reassembled per save, for the reason in `panelSpans`'s
+    /// setter. ⚠️ It does **not** preserve keys this version has never heard of:
+    /// `Preferences` decodes leniently but stores only what it declares, so a
+    /// field written by a newer build survives a *launch* and not a *write*.
+    /// That is the documented bargain (the spec says unknown fields are
+    /// "ignored"), and it is worth knowing before someone reads the round-trip as
+    /// lossless.
+    private var readerPreferences: Preferences
 
     /// How many board columns wide the analysis panel is.
     ///
@@ -370,10 +407,10 @@ public final class AppModel {
         initialPreferences: Preferences = .default
     ) {
         self.preferences = preferences
-        // The stored half directly, never through `panelSpans` — going through
-        // the setter would save the value on the way in, so the first launch
-        // after this ships would rewrite the file it had just read.
-        self.storedPanelSpans = initialPreferences.clamped().panelSpans
+        // The storage directly, never through `panelSpans` — going through the
+        // setter would save the value on the way in, so the first launch after
+        // this ships would rewrite the file it had just read.
+        self.readerPreferences = initialPreferences.clamped()
     }
 
     // MARK: - Startup

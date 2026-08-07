@@ -1,5 +1,4 @@
 import ElliotAppKit
-import ElliotStore
 import SwiftUI
 import UserNotifications
 
@@ -29,7 +28,7 @@ struct ElliotApp: App {
     /// One `PreferencesFile`, read from and written to, so the value restored and
     /// the value saved cannot end up being two different files.
     private static func liveModel() -> AppModel {
-        let file = PreferencesFile(url: StoreLocation.preferencesURL)
+        let file = PreferencesFile.atDefaultLocation()
         return AppModel(preferences: file, initialPreferences: file.load())
     }
 
@@ -201,10 +200,17 @@ struct ElliotApp: App {
             // the panel is measured in board columns, so widening it is spending
             // columns. There is no toolbar button for it: this is a preference
             // set once, not a control worth a permanent seat.
-            Button(model.panelSpans >= 3 ? "Narrow Details" : "Widen Details") {
-                model.panelSpans = model.panelSpans >= 3 ? 2 : 3
-            }
-            .disabled(model.selectedCard == nil)
+            // Which width is "the other one" is a rule, so it is the model's and
+            // not this menu's (#132). It used to be two literal `3`s and a `2`
+            // spelt out here, beside the single definition `Preferences.spanChoices`
+            // had just become: a menu that set a span the panel is not designed at
+            // would be persisted unclamped and then silently repaired to the
+            // default on the next launch — a preference that quietly forgets
+            // itself. Reaching `Preferences` from here would also mean importing
+            // `ElliotModel`, and this target depends on `ElliotAppKit` and nothing
+            // else.
+            Button(model.panelWidthToggleTitle) { model.togglePanelWidth() }
+                .disabled(model.selectedCard == nil)
 
             // The analysis panel's pair of the two above. Not gated on a
             // repository being selected: the panel states that refusal itself,

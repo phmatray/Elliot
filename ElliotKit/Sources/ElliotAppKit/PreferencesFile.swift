@@ -1,4 +1,5 @@
 import ElliotModel
+import ElliotStore
 import Foundation
 import OSLog
 
@@ -33,6 +34,18 @@ public struct PreferencesFile: PreferencesWriting {
 
     public init(url: URL) {
         self.url = url
+    }
+
+    /// The file inside the `ELLIOT_HOME` this process resolved.
+    ///
+    /// The **only** resolution of `StoreLocation` in this file, and it is a
+    /// separate entry point rather than a default argument on purpose: `init(url:)`
+    /// stays environment-free, so a test cannot reach the operator's real
+    /// preferences by leaving an argument off. It exists at all because
+    /// `ElliotApp` depends on `ElliotAppKit` and nothing else, so the one
+    /// production site cannot name `StoreLocation` itself.
+    public static func atDefaultLocation() -> PreferencesFile {
+        PreferencesFile(url: StoreLocation.preferencesURL)
     }
 
     /// What the file holds, or the default when it holds nothing usable.
