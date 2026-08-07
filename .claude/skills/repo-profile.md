@@ -32,7 +32,7 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1062 tests in 123 suites**, measured on
+- **Full test:** `cd ElliotKit && swift test` (**1064 tests in 123 suites**, measured on
   `fix/147-proposal-editor-card-draft` on 2026-08-07 off `main` at `39b977e`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
@@ -47,8 +47,10 @@
     re-read it from your own last run rather than from this line. Corrected again in #141
     (1034 → 1050, 119 → 122 suites) — that is a fourth correction, and the drift is now
     routine enough that the line's *value* is worth less than its date-stamp. Fifth correction
-    in #149 (1050 → 1062, 122 → 123 suites), and it is the one case where the line was **not**
+    in #149 (1050 → 1064, 122 → 123 suites), and it is the one case where the line was **not**
     stale: 1050 was exactly what `main` ran, and the whole delta was the branch's own new tests.
+    It then moved again *inside* #149, 1062 → 1064, when the code-review pass added two tests
+    after the line was written — the same way it moved inside #135, so **write this line last**.
     So a gap between this line and your run is not evidence the line rotted — check whether you
     are the one who moved it before rewriting the history above.
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of

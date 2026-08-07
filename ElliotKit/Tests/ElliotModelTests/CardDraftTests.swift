@@ -157,11 +157,32 @@ struct CardDraftTests {
         #expect(draft.criteria == [""], "the editor must always have a row to render")
     }
 
-    @Test("Applying an unedited draft returns an equal proposal")
-    func applyRoundTrips() {
+    /// Not a round-trip in general — seed-then-apply *normalises*, and only
+    /// looks like identity because this fixture's criteria are already clean.
+    /// The case that shows the difference is below.
+    @Test("Applying an untouched draft to an already-normalised proposal changes nothing")
+    func applyIsIdentityOnNormalisedInput() {
         let proposal = Self.proposal()
         let draft = CardDraft(proposal: proposal)
         #expect(draft.applied(to: proposal) == proposal)
+    }
+
+    /// What a harvested proposal actually looks like: an analysis emits padded
+    /// and empty criteria, and `ProposedStory.story` does not clean them on the
+    /// way in. So opening the editor and pressing Save *without typing* is a
+    /// normalising write, not a no-op — worth knowing before someone reads
+    /// "round-trips" as a promise that the stored proposal is untouched.
+    @Test("Seed-then-apply normalises a proposal that arrived untidy")
+    func applyNormalisesUntidyInput() {
+        let untidy = Self.proposal(
+            story: UserStory(
+                role: "reviewer", want: "to correct one", benefit: "it lands right",
+                acceptanceCriteria: ["  padded  ", "", "   "]
+            )
+        )
+        let unedited = CardDraft(proposal: untidy).applied(to: untidy)
+        #expect(unedited.story.acceptanceCriteria == ["padded"])
+        #expect(unedited != untidy, "saving without typing still tidies the criteria")
     }
 
     @Test("Applying an edited draft carries the label and the story back")
@@ -208,9 +229,16 @@ struct CardDraftTests {
         #expect(edited.createdAt == proposal.createdAt)
     }
 
-    /// The `nil` branch of `applied(to:)` is unreachable through
-    /// `init(proposal:)`, which pins `isStory`. It is reachable by hand, and
-    /// what it must not do is trap or write an empty story over a real one.
+    /// A **defensive** branch, not a supported path — this pins what it does,
+    /// not that anyone may rely on it.
+    ///
+    /// Two things close it: `init(proposal:)` pins `isStory`, and
+    /// `CardFieldsEditor` re-pins it on appear in `.story` kind. So no editor
+    /// can reach `applied(to:)` with a note-mode draft. Held here because the
+    /// alternatives if it ever were reached are worse than a no-op: trapping
+    /// would crash the window, and writing an empty story would erase a real
+    /// one silently. If a future caller finds this branch doing something
+    /// useful, that caller is the bug.
     @Test("A draft forced into note mode leaves the proposal's story alone")
     func applyFromNoteModeKeepsTheStory() {
         let proposal = Self.proposal()

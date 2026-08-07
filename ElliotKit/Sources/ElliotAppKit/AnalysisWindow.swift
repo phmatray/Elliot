@@ -889,23 +889,23 @@ struct ProposalEditor: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 14) {
-                    // The card editor's fields, not a second copy of them. The
-                    // guarded criterion removal, the one validity rule and the
-                    // single `field()` helper all live over there; this row
-                    // renders the same controls the board's own editor does.
-                    CardFieldsEditor(draft: $draft, kind: .story)
+                // The card editor's fields, not a second copy of them. The
+                // guarded criterion removal, the one validity rule and the
+                // single `field()` helper all live over there; this row
+                // renders the same controls the board's own editor does.
+                CardFieldsEditor(draft: $draft, kind: .story)
 
-                    // The provenance stays here: it is the proposal's, not the
-                    // draft's, and it is displayed rather than edited.
-                    if !proposal.evidence.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            ConsoleLabel(text: "Evidence")
-                            Text(proposal.evidence.map(\.display).joined(separator: "   "))
-                                .font(Type.factSmall)
-                                .foregroundStyle(.tertiary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                // The provenance stays here: it is the proposal's, not the
+                // draft's, and it is displayed rather than edited.
+                if !proposal.evidence.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ConsoleLabel(text: "Evidence")
+                        Text(proposal.evidence.map(\.display).joined(separator: "   "))
+                            .font(Type.factSmall)
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
+                }
             }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
