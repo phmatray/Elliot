@@ -49,6 +49,10 @@ public struct BoardView: View {
             StatusBar()
         }
         .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.selectedCardID)
+        // The columns slide aside for the analysis panel the way they do for the
+        // detail panel. Keyed on its own value: the one above is keyed on the
+        // selection, which does not move when this panel opens.
+        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.showingAnalysisPanel)
         .toolbar { toolbarContent }
         .navigationTitle("Elliot")
         .task(id: model.selectedRepoID) {
@@ -175,13 +179,22 @@ public struct BoardView: View {
 
         ToolbarItem {
             Button {
-                openWindow(id: "analysis")
+                model.showingAnalysisPanel.toggle()
             } label: {
                 Label("Analyse", systemImage: "sparkle.magnifyingglass")
             }
             .labelStyle(.titleAndIcon)
-            .disabled(model.selectedRepoID == nil || isSelectedRepoBlocked)
-            .help(analyseHelp)
+            // Tinted while open, like Details: the panel opens between columns
+            // and the board scrolls, so "is it showing" stopped being answerable
+            // at a glance the moment it stopped being a window.
+            .tint(model.showingAnalysisPanel ? Palette.armed : nil)
+            .foregroundStyle(model.showingAnalysisPanel ? Palette.armed : Color.primary)
+            // ⚠️ No `.disabled`, and that is a change from the window it
+            // replaces. Hiding a panel must never be blocked by the reason its
+            // *contents* are unavailable — a disabled toggle is a toggle you
+            // cannot switch off. The refusal is stated inside the panel by
+            // `analyseHelp`, and the Start button in it is what stays disabled.
+            .help(model.showingAnalysisPanel ? "Hide the analysis" : analyseHelp)
         }
 
         ToolbarItem {
@@ -286,14 +299,14 @@ public struct BoardView: View {
 
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: Metric.gutter) {
-                    // `analysisOpen: false` is a placeholder — wired in #151, Task 6.
                     ForEach(
-                        PanelLayout.boardOrder(selected: panelOrigin, analysisOpen: false),
+                        PanelLayout.boardOrder(
+                            selected: panelOrigin, analysisOpen: model.showingAnalysisPanel),
                         id: \.self
                     ) { slot in
                         switch slot {
                         case .analysis:
-                            EmptyView()  // wired in #151, Task 6
+                            analysisPanel(width: width)
                         case .column(let column):
                             ColumnView(column: column, width: width)
                         case .panel:
@@ -323,9 +336,9 @@ public struct BoardView: View {
             // the panel or Done silently unreachable with no scrollbar, green
             // on both `swift build` and `swift test`.
             .scrollDisabled(
-                // `analysisSpans: nil` is a placeholder — wired in #151, Task 6.
                 PanelLayout.contentWidth(
-                    boardWidth: boardWidth, spans: openSpans, analysisSpans: nil) <= boardWidth
+                    boardWidth: boardWidth, spans: openSpans, analysisSpans: openAnalysisSpans)
+                    <= boardWidth
             )
             // In a window too narrow for what the row holds the board scrolls,
             // and the card you just selected could be the one off-screen.
@@ -343,7 +356,9 @@ public struct BoardView: View {
             // path — and the third is the one that arms the merge, so the
             // confirmation for the single irreversible act in the product was
             // the one that could open off-screen.
-            .onChange(of: framing) { _, framing in frame(framing, boardWidth: boardWidth) }
+            .onChange(of: framing) { old, new in
+                frame(new, from: old, boardWidth: boardWidth)
+            }
         }
         .frame(maxWidth: .infinity)
         .background(Color(nsColor: .underPageBackgroundColor))
@@ -379,12 +394,39 @@ public struct BoardView: View {
         panelOrigin == nil ? nil : model.panelSpans
     }
 
+    /// The reader's analysis-span preference while that panel is showing, `nil`
+    /// while it is hidden — the same shape `PanelLayout.contentWidth` takes for
+    /// "no panel", so a hidden analysis costs the row exactly nothing.
+    private var openAnalysisSpans: Int? {
+        model.showingAnalysisPanel ? model.analysisSpans : nil
+    }
+
     /// Which edge of the panel the caret hangs off, decided by the same function
     /// that put the panel on that side of its column. Reading it off
     /// `panelOrigin` rather than off the card is deliberate: the panel and its
     /// caret cannot then disagree about which column they belong to.
     private var isPanelFlipped: Bool {
         panelOrigin.map(PanelLayout.opensLeft(of:)) ?? false
+    }
+
+    /// The analysis, as one slot of the row — the leading one.
+    ///
+    /// Both modifiers below are load-bearing and neither looks it.
+    private func analysisPanel(width: CGFloat) -> some View {
+        AnalysisPanelView(columnWidth: width)
+            // Later siblings paint over earlier ones, and this one is *first* —
+            // so Backlog's background, clip and border would paint over the
+            // shadow that says this panel floats above the columns. Same
+            // reasoning as the detail panel's `zIndex`, arrived at from the
+            // other end of the row.
+            .zIndex(1)
+            // The columns clear the selection on a tap that reaches their empty
+            // space, and an ancestor's tap fires for taps on its descendants.
+            // Without absorbing its own strays, clicking this panel's padding, a
+            // section label or its header would deselect the card being read in
+            // the column next door.
+            .contentShape(Rectangle())
+            .onTapGesture {}
     }
 
     /// The detail panel, as one slot of the row.
@@ -440,9 +482,8 @@ public struct BoardView: View {
             selectedColumn: model.selectedCard?.column,
             panelOrigin: panelOrigin,
             spans: model.panelSpans,
-            // Placeholders — wired in #151, Task 6.
-            analysisOpen: false,
-            analysisSpans: PanelLayout.spanChoices.wide
+            analysisOpen: model.showingAnalysisPanel,
+            analysisSpans: model.analysisSpans
         )
     }
 
@@ -452,8 +493,8 @@ public struct BoardView: View {
     /// The arithmetic is `BoardFraming.offsetX(boardWidth:)`, which is pure and
     /// pinned by `swift test`. All that is left here is the deferral, which is
     /// the one part of this no test can see.
-    private func frame(_ framing: BoardFraming, boardWidth: CGFloat) {
-        guard let offset = framing.offsetX(boardWidth: boardWidth) else { return }
+    private func frame(_ framing: BoardFraming, from previous: BoardFraming, boardWidth: CGFloat) {
+        guard let offset = framing.offsetX(from: previous, boardWidth: boardWidth) else { return }
 
         // Deferred by one turn of the main actor, and this is the whole reason
         // the first attempt did nothing on screen. `onChange` runs *inside* the

@@ -716,6 +716,32 @@ struct PanelLayoutTests {
                 > PanelLayout.contentWidth(boardWidth: 1640, spans: nil, analysisSpans: 3))
     }
 
+    /// A **regression guard**, not a red-to-green step: it was already true the
+    /// moment `contentWidth` learned to count the analysis panel. It is pinned
+    /// because the board's `.scrollDisabled` predicate depends on it, and the
+    /// old predicate shipped exactly this bug once — reporting "everything fits"
+    /// over content 1.6× the viewport, leaving the panel silently unreachable
+    /// with no scrollbar, green on both `swift build` and `swift test`.
+    @Test("With the analysis panel open the board always scrolls")
+    func theAnalysisPanelAlwaysMakesTheRowOverflow() {
+        // 1000pt is the app's own `minWidth`; 2560 is a large display.
+        for boardWidth in [CGFloat(1000), 1640, 2560] {
+            for spans in [PanelLayout.spanChoices.narrow, PanelLayout.spanChoices.wide] {
+                #expect(
+                    PanelLayout.contentWidth(
+                        boardWidth: boardWidth, spans: nil, analysisSpans: spans) > boardWidth,
+                    "\(spans) analysis spans at \(boardWidth)pt fits, unexpectedly")
+                // And with both panels out, which is the widest the row gets.
+                #expect(
+                    PanelLayout.contentWidth(
+                        boardWidth: boardWidth, spans: spans, analysisSpans: spans) > boardWidth)
+            }
+        }
+        // Both shut, it is exactly the viewport — the predicate is a no-op and
+        // the board looks identical to the one that shipped before #151.
+        #expect(PanelLayout.contentWidth(boardWidth: 1640, spans: nil, analysisSpans: nil) == 1640)
+    }
+
     @Test("The row `minX` walks is the row `contentWidth` measures, analysis included")
     func minXAndContentWidthAgreeWithTheAnalysisPanel() {
         // The same guard the detail panel already has one section up: two
