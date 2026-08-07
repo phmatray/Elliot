@@ -29,10 +29,56 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
 - `swift test --filter` matches the **type** name, not the `@Suite` display name: `ClaudeRunnerTests`,
   not `"Claude runner"`. A filter matching nothing prints `warning: No matching test cases were run`
   and **exits 0** — indistinguishable from success.
-- Swift 6.1 tools-version, `swiftLanguageModes: [.v6]`, macOS 15+. Strict concurrency is on: every new
-  type crossing an isolation boundary must be `Sendable`.
-- **There is no CI.** No `.github/workflows/`, no branch protection. A pull request here is judged by a
-  local `swift test` only — "wait for green CI" is not a thing that can happen in this repo.
+- **Swift 6.3.1 tools-version** — Xcode 26.4 or newer, no lower option — `swiftLanguageModes: [.v6]`,
+  deployment target macOS 15. Strict concurrency is on: every new type crossing an isolation boundary
+  must be `Sendable`.
+  - This line said **6.1** until #116, and no machine had ever built the package on a 6.1 toolchain —
+    the first CI run this repository ever had failed on one
+    ([31118743562](https://github.com/phmatray/Elliot/actions/runs/31118743562)) in under two
+    minutes. The floor did not start wrong; it **rotted**, silently, because nothing exercised it.
+  - The replacement is measured — 21 builds over 8 Apple toolchains, runs
+    [31167517846](https://github.com/phmatray/Elliot/actions/runs/31167517846),
+    [31167931727](https://github.com/phmatray/Elliot/actions/runs/31167931727) and
+    [31170356694](https://github.com/phmatray/Elliot/actions/runs/31170356694) — and it found **two
+    floors, four releases apart**:
+
+    | | lowest toolchain measured green |
+    |---|---|
+    | `swift build` (library + executables) | **6.2** — Xcode 26.0 |
+    | `swift build --build-tests` / `swift test` | **6.3.1** — Xcode 26.4 |
+
+    6.1.2 fails two sites in `ElliotAppKit`; every 6.2.x fails one expression in
+    `ElliotProcessTests/StreamingProcessDrainTests.swift:138`, where the compiler gives up
+    type-checking a `#expect` in reasonable time. `Package.swift` declares **6.3.1**, the higher one,
+    and says at length why: `swift test` is this repo's only gate, so the failure a 6.2 contributor
+    would actually meet is the test one, and a tools-version refusal at manifest parse is the whole
+    point — a named refusal instead of a mystery. Read that comment before changing this.
+  - ⛔ **The patch is load-bearing: `6.3.1`, never `6.3`.** SwiftPM resolves a bare `6.3` as **6.3.0**
+    and *does* enforce a declared patch (verified: a `6.3.9` manifest is refused by a 6.3.3 toolchain,
+    by name). swift.org's `swift-6.3-RELEASE` reports exactly `6.3`, so rounding this down readmits a
+    toolchain that parses, builds, and then hits the `#expect` timeout — the mystery this floor exists
+    to prevent, restored by three characters. It shipped as `6.3` for one commit; code review caught it.
+  - ⚠️ **`swift build` being green is not the floor being green** — that is how the 6.1 claim survived.
+    The test targets are substantial and `swift build` never compiles them.
+  - Measured while establishing this: the `macos-15` runner image tops out at Xcode 26.3 (Swift
+    6.2.4), so **the test targets cannot be compiled on that image at all**. Whether macOS 15 can
+    *host* Xcode 26.4 is unmeasured — an image's contents are not Apple's requirements, and inferring
+    one from the other is the mistake #116 is about.
+- **CI here is one workflow, and it is not a build.** `.github/workflows/swift-floor.yml` asserts the
+  runner's toolchain against the floor `Package.swift` declares, and builds on it. There is still **no
+  build-and-test CI and no branch protection** — that is #21, in flight on #102 — so a pull request is
+  otherwise judged by a local `swift test` only, and "wait for green CI" is still not a thing that can
+  happen here.
+  - ⚠️ **A conflicted pull request fires no `pull_request` workflow at all — and it fails by silence,
+    not by saying so.** Measured in #140: after `main` moved, GitHub created **zero** runs for the
+    head SHA for 25 minutes, `check-runs` returned `total_count: 0`, a close/reopen produced nothing,
+    and the Actions status page read *All Systems Operational*. The workflow file GitHub held at that
+    SHA was byte-identical to the local one and parsed. I diagnosed it as the trigger throttle that
+    had genuinely blocked this issue for 33 hours the day before — **and wrote that wrong diagnosis
+    into the PR body as a fact.** The actual cause was `mergeStateStatus: DIRTY`; merging `main`
+    produced a run within seconds. **Read `gh pr view --json mergeable,mergeStateStatus` before
+    concluding anything about a missing run** — an absent run and a throttled run are indistinguishable
+    from the outside, and only one of them is yours to fix.
 - Re-run `claude mcp add` after moving the app: the registration records an absolute path.
 
 ### ⛔ Do not run `swift format` over the tree
@@ -117,8 +163,10 @@ been copied too. It had already cost three defects, each fixed in one file — `
 tails), `3b1c226`/#18 (`waitUntilExit` parking a cooperative thread), `36b6da6`/#105 (SIGKILL
 escalation `ProcessRunner` never got) — and #26 opened a fourth investigation aimed at one file.
 `DrainDuplicationTests` keeps the measurement runnable: it re-derives that comment count and fails
-naming the invariant that is written twice, because this repository has no CI and a gate that is not
-a test is a gate nobody re-runs.
+naming the invariant that is written twice, because this repository has **no build-and-test CI** and a
+gate that is not a test is a gate nobody re-runs. (The one workflow that does exist, `swift-floor.yml`,
+guards the toolchain floor and runs no tests, so the argument stands unchanged — but "no CI" flatly
+was the wording until #116 added it, and a stale claim in this file is what #116 was about.)
 
 The single behavioural delta is recorded at both ends: `ProcessRunner` gave up its
 `state.withLock { !$0.exited } &&` conjunct in the SIGKILL backstop, since a sink may hold that lock
