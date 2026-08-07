@@ -1524,14 +1524,6 @@ public final class AppModel {
         try? await store?.saveRepo(repo)
     }
 
-    /// Deletes without asking, and has exactly one caller left: Preflight's
-    /// trash button, which Task 4 of #210 routes through `requestForget`.
-    /// It goes with that rewire — an ungated deleter on the model is the second
-    /// write path this issue exists to close.
-    public func removeRepo(id: UUID) async {
-        try? await store?.deleteRepo(id: id)
-    }
-
     /// A forget waiting for an answer.
     ///
     /// One optional rather than a per-screen flag: both screens present the same

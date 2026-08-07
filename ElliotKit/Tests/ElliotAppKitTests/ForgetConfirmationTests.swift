@@ -93,4 +93,64 @@ struct ForgetConfirmationTests {
         #expect(model.forgetRequest == nil)
         #expect(try await store.repo(id: repo.id) != nil)
     }
+
+    @Test("Both screens hover the same sentence, and it names the board")
+    func bothTooltipsNameTheBoard() {
+        // Criterion 4. Preflight shipped "Remove Elliot from Elliot. The
+        // checkout on disk is untouched." — naming only what survives.
+        let preflight = PreflightView.forgetHelp(displayName: "Elliot")
+        let repositories = RepositoriesView.explainForget(displayName: "Elliot")
+        #expect(preflight == repositories)
+        #expect(preflight == ForgetPrompt.tooltip(displayName: "Elliot"))
+        for kind in ["cards", "runs", "analyses", "proposals"] {
+            #expect(preflight.contains(kind))
+        }
+        // And it still says the safe part, which was the only true thing the
+        // old text said.
+        #expect(preflight.contains("clone on disk is untouched"))
+    }
+
+    /// Both screens must *present* the dialog, not merely ask for it.
+    ///
+    /// This reads the source, the way `CaretAnchorTests` and
+    /// `DrainDuplicationTests` do, because the thing at risk is a **shape** and
+    /// `swift test` cannot see a sheet. Every other test here would stay green
+    /// with `.forgetConfirmation(model:)` deleted from a screen: `requestForget`
+    /// would still count, still build the prompt, still refuse to delete — and
+    /// the reader would press the button and watch nothing happen, with the
+    /// registration silently spared. That is a worse failure than the one this
+    /// issue fixes, because it looks like a gate that works.
+    ///
+    /// Asserted per screen rather than as a count, so the message can name the
+    /// file that dropped it.
+    @Test("Every screen that can forget also presents the confirmation")
+    func bothScreensPresentTheDialog() throws {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // ElliotAppKitTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // ElliotKit
+            .appendingPathComponent("Sources/ElliotAppKit")
+
+        for screen in ["PreflightView.swift", "RepositoriesView.swift"] {
+            let text = try String(
+                contentsOf: sources.appendingPathComponent(screen), encoding: .utf8)
+            // Comments are stripped before matching, so prose describing the
+            // modifier cannot stand in for applying it.
+            let applies = text.components(separatedBy: "\n").contains { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.hasPrefix("//") else { return false }
+                return line.contains(".forgetConfirmation(")
+            }
+            #expect(
+                applies,
+                """
+                \(screen) can raise a forget but never presents it: no \
+                `.forgetConfirmation(model:)` on its body.
+
+                The button would set `forgetRequest` and nothing would show it. \
+                Every behavioural test in this suite stays green in that state — \
+                which is exactly why this one reads the file.
+                """)
+        }
+    }
 }
