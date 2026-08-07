@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1358 tests in 153 suites**, 14 of 14 characterised
-  samples on `feat/209-repo-row-board-figures` on 2026-08-08 off `main` at `2494882`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1360 tests in 154 suites**, 5 of 5 samples on
+  `fix/145-card-not-found-hint` on 2026-08-08 off `main` at `ffdf616`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -70,6 +70,15 @@
       advice taken twice over — 15 runs, of which **14 kept their output** and were green; the 15th
       printed no summary and its output had already been discarded by the command that took it, so
       it is unclassified rather than green. A sample you did not keep is not a sample you can cite.
+    - **Landing #217 the conflict was two honest numbers, and the merged value was the exact sum.**
+      Both sides measured off `2494882` and both were right when written — #209's 1358 in 153 and
+      this branch's 1330 in 150 — so `git merge` had no way to choose and the line came through as a
+      conflict rather than as drift. The merged tree measures **1360 in 154**, five of five, which is
+      1330 + #209's own +30/+4 with nothing left over. ⚠️ **That arithmetic was checked against the
+      run, not used instead of it** — the sum was predictable here only because the two branches
+      touched disjoint suites, and the ⛔ bullet below exists because a predicted 1177 once met a
+      measured 1161. Resolve this conflict with a literal `PLACEHOLDER` and let `swift test`
+      overwrite it; that is the whole procedure, and it costs one run.
     - **Landing #177 the branch's own number was stale before anyone read it** — it wrote 1244 in 141
       off `0902c10`, and the merged tree measured **1281 in 144** off `206c029`, five of five samples.
       The branch gained no commit between the two runs, so the whole 37 is `main` moving underneath
@@ -116,6 +125,13 @@
       its own tests existed, so 40 of its 46 were unrecorded drift and only 6 were the branch's own.
       A correction here is rarely evidence that the previous author miscounted; it is mostly the
       interval since they looked.
+    - **Landing #145 the drift was zero and every test of the delta is the branch's own** — the rare
+      complement to the bullet above, and worth recording because the entry is otherwise a list of
+      the opposite. `git merge-base HEAD origin/main` was `2494882`, i.e. **`main` had not moved at
+      all** between branching and the ready-flip, so the +2 tests and +1 suite are exactly what this
+      branch added (`RefusalHintTests`, and one test in `OfflineParityTests`) with nothing else mixed
+      in. Which is the entry's thesis stated the other way round: the number is honest when the
+      interval is short, and the interval — not the author — is what usually spoils it.
   - ⛔ **Do not write the number down before the run prints it.** Resolving one of these collisions in
     #140, this line was first filled in with a *predicted* 1177 — arrived at by adding the two
     branches together — and the run said **1161**. Caught immediately, but it is exactly the act the
