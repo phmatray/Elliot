@@ -62,16 +62,21 @@ struct ElliotApp: App {
         .defaultSize(width: 1_640, height: 840)
         .commands { commands }
 
-        // Preflight, Repositories and Analysis were a `NavigationStack` push
-        // and a modal sheet — both of which cover the board. That is the wrong
-        // shape for this app: runs last minutes, the board is what reports
-        // them, and the detail panel has said since it was a sheet that
-        // watching a run should not blindfold the board — which is now also why
-        // it opens beside the card rather than at the window's edge. Analysis is
-        // the sharpest case —
-        // it starts up to eight runs, three at a time, from inside a modal.
+        // Preflight and Repositories were a `NavigationStack` push and a modal
+        // sheet — both of which cover the board. That is the wrong shape for
+        // this app: runs last minutes, the board is what reports them, and the
+        // detail panel has said since it was a sheet that watching a run should
+        // not blindfold the board — which is now also why it opens beside the
+        // card rather than at the window's edge.
         //
-        // Each root keeps a `NavigationStack` for the same reason the board
+        // Analysis was the sharpest case of all, and it is no longer here. It
+        // starts up to eight runs, three at a time, and its whole output is
+        // cards in Backlog — so a window for it covered the very column it
+        // fills. Since #151 it is the board's leading slot, `BoardSlot.analysis`,
+        // beside that column, toggled from the toolbar and from View ▸ Show
+        // Analysis. There is exactly one path to it, and it is the board.
+        //
+        // Each root here keeps a `NavigationStack` for the same reason the board
         // does: `RepositoriesView` and `PreflightView` were written as
         // `NavigationLink` destinations and still carry `.navigationTitle` and
         // `.safeAreaInset`, both of which want that container.
@@ -176,6 +181,20 @@ struct ElliotApp: App {
                 model.panelSpans = model.panelSpans >= 3 ? 2 : 3
             }
             .disabled(model.selectedCard == nil)
+
+            // The analysis panel's pair of the two above. Not gated on a
+            // repository being selected: the panel states that refusal itself,
+            // and a toggle you cannot switch off is worse than one that opens
+            // onto an explanation.
+            Button(model.showingAnalysisPanel ? "Hide Analysis" : "Show Analysis") {
+                model.showingAnalysisPanel.toggle()
+            }
+            .keyboardShortcut("a", modifiers: [.command, .option])
+
+            Button(model.analysisSpans >= 3 ? "Narrow Analysis" : "Widen Analysis") {
+                model.analysisSpans = model.analysisSpans >= 3 ? 2 : 3
+            }
+            .disabled(!model.showingAnalysisPanel)
 
             Divider()
 

@@ -39,15 +39,24 @@ than letting the two drift.
 
 ## Where stories come from
 
-The backlog holds user stories, and Elliot can write them. *Analyze…* reads a
+The backlog holds user stories, and Elliot can write them. *Analyse* reads a
 registered repository through eight lenses — bugs, quick wins, features, tech
 debt, tests, docs & DX, UX & UI, best practices — one `claude -p` run each, and
 comes back with proposed stories you go through and accept.
 
-Proposals are **not cards**. They live in their own table and their own window,
-so a 30-story analysis does not drown the board and the five columns keep one
-meaning. Accepting calls the same `BoardService.createCard` the New Card sheet
-uses, and the card lands in Backlog, where nothing runs.
+It is a **panel on the board**, the slot before Backlog: two or three columns
+wide, hideable from the toolbar or View ▸ Show Analysis, resized by dragging its
+outer edge — the same shape the detail panel has. It sits there because that is
+where its output lands, in the column immediately to its right.
+
+Proposals are **not cards**. They live in their own table, so a 30-story
+analysis does not drown the board and the five columns keep one meaning.
+Accepting calls the same `BoardService.createCard` the New Card window uses, and
+the card lands in Backlog, where nothing runs.
+
+Hiding the panel is not ending the analysis: runs in flight keep going and
+proposals keep arriving, so re-showing it finds everything that landed
+meanwhile. *Finish*, in its footer, is the act that ends a session.
 
 The same four steps are available over MCP: `board_analyze_repo`,
 `board_list_proposals`, `board_accept_proposals`, `board_reject_proposals`.
