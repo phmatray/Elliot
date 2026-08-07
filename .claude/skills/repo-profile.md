@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1076 tests in 124 suites**, measured on
-  `feat/151-analysis-panel-in-board` on 2026-08-07 off `main` at `80daee6`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1122 tests in 130 suites**, measured on
+  `fix/159-caret-tether-not-drawn` on 2026-08-07 off `main` at `5c92dfb`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -48,7 +48,12 @@
     (1034 → 1050, 119 → 122 suites) — that is a fourth correction, and the drift is now
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
-    your own untouched run and compare against *that*, never against this line.
+    your own untouched run and compare against *that*, never against this line. Corrected a **sixth**
+    time in #159 (1076 → 1122, 124 → 130) — and that one splits, which is the useful detail: the
+    untouched branch already ran **1116 in 129** before a line of this fix's tests existed, so 40 of
+    the 46 were drift that had accumulated unrecorded and only 6 were the branch's own. A correction
+    here is therefore not evidence that the previous author miscounted; it is mostly the interval
+    since they looked.
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.

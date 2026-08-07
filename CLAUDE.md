@@ -366,6 +366,32 @@ the exception and is measured, not computed — a card's Y inside a `LazyVStack`
 of layout — so it comes from `.anchorPreference(.bounds)` resolved in a single overlay, which puts
 card, list and panel in one coordinate space by construction.
 
+**Every writer of `CaretAnchorKey` must be a *sibling* of the others — #159.** `reduce` merges
+sibling subtrees and is the whole defence for the three-anchor design; it is **no defence one level
+up**, because `.anchorPreference` applied to a view that is an *ancestor* of another writer
+**replaces** that writer's value outright and `reduce` is never called for the pair. `ColumnView.list`
+was that ancestor: it wrote `list` on the `ScrollView` holding the cards, so the selected card's
+rectangle was discarded one level below the overlay. It reports through a `.background` now — a
+separate subtree, so the card's contribution is never in a position to be replaced.
+
+What that cost is the lesson worth keeping, and it is not "test the arithmetic": **the arithmetic
+was pure, extracted, and tested, and the decoration still never appeared.** With `card` nil,
+`isDetached` returns true on its first `guard`, so the tether drew at opacity 0 and the caret at 0.35
+against `panel.midY` — a *truthful* rendering of a false input. Nothing was wrong with any function
+`PanelLayoutTests` pins; they were being fed `nil`. The step between the three writers and the one
+reader had no test and no measurement, which is precisely the gap `PanelLayout`'s own extraction
+created and then hid: everything either side of it was green, so intuition had nothing to push
+against.
+
+`CaretAnchorTests` closes it, and its shape is the transferable part. Five tests drive a
+board-shaped hierarchy through a real layout pass (`ImageRenderer` — no window, no store, no running
+app) and assert the anchors arrive; a sixth **reads `BoardView.swift`** the way
+`DrainDuplicationTests` reads its sources. That last one is not belt-and-braces: reverting the fix
+leaves all five behavioural tests green, because they build a *miniature* and so prove the rule
+rather than the board. Verified by actually reverting it. **When a test builds its own model of the
+code, ask what it would say if the code changed underneath it** — and if the honest answer is
+"nothing", the shape needs pinning where the shape lives.
+
 Inside, the GitHub issue body is parsed by `IssueMarkdownParser` (`ElliotModel`, no dependencies,
 total — it never drops a line) into blocks that each get their own view, and a run's log is folded by
 `RunLog.rows` back into the tree it was flattened from: a `tool_result` attaches to its `tool_use`
