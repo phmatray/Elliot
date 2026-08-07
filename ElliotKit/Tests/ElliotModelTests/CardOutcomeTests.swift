@@ -114,6 +114,20 @@ struct CardOutcomeTests {
         #expect(result.changed)
     }
 
+    @Test("A merged pull request first seen already merged records which one it was")
+    func mergedNamesItsPullRequest() {
+        let subject = card(in: .inProgress, issueNumber: 7)
+        let result = VerifiedOutcome
+            .merged(commitSHA: nil, number: 42, url: "https://github.com/o/r/pull/42", branch: "feat/7-x")
+            .applied(to: subject)
+
+        #expect(result.card.prNumber == 42)
+        #expect(result.card.prURL == "https://github.com/o/r/pull/42")
+        #expect(result.card.branch == "feat/7-x")
+        #expect(result.move == .init(column: .done, reason: .prMergedExternally))
+        #expect(result.changed)
+    }
+
     @Test("A pull request that is not merged is a reason on the card, not a move")
     func notMerged() {
         let result = VerifiedOutcome
