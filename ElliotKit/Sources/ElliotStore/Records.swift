@@ -112,6 +112,22 @@ struct DismissalRecord: Codable, FetchableRecord, PersistableRecord {
     var dismissedAt: Date
 }
 
+/// The UUID strategy carries the same weight as `DismissalRecord`'s: `repo.id`
+/// is uppercase text, so a `repoID` written as GRDB's default blob would match
+/// no repository and the `ON DELETE CASCADE` would silently never fire — leaving
+/// statuses for repositories that no longer exist.
+extension PRStatus: FetchableRecord, PersistableRecord {
+    public static let databaseTableName = "prStatus"
+    public static func databaseUUIDEncodingStrategy(for column: String) -> DatabaseUUIDEncodingStrategy {
+        .uppercaseString
+    }
+
+    public enum Columns {
+        public static let repoID = GRDB.Column("repoID")
+        public static let prNumber = GRDB.Column("prNumber")
+    }
+}
+
 /// `Column` means the board's five columns everywhere in Elliot. GRDB's SQL
 /// `Column` is reached through this alias so the unqualified name keeps the
 /// meaning that matters to the domain.

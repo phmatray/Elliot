@@ -65,9 +65,23 @@ public actor PRWatcher {
             guard let prs = try? await gh.pullRequests(repo: repo.nameWithOwner, limit: 100) else {
                 continue
             }
+            var movedHere = false
             for card in cards where await reconcile(card: card, against: prs) {
                 sawChange = true
+                movedHere = true
             }
+            // Re-read rather than reuse `cards` when this repository's cards
+            // moved: `reconcile` above may have just promoted one. With the
+            // stale snapshot a card that reached In Review this very tick was
+            // skipped until the next one — up to ~6 minutes once the quiet
+            // backoff has widened — and a card promoted *out* of it still spent
+            // a call and wrote a row for a pull request already merged.
+            //
+            // Local rather than the accumulating `sawChange`: that one is true
+            // as soon as *any* repository moved, and would re-read every
+            // repository after it for nothing.
+            let settled = movedHere ? (try? await store.cards(repoID: repo.id)) ?? cards : cards
+            await refreshStatuses(repo: repo, cards: settled, prs: prs)
         }
 
         if sawChange || anyRunning {
@@ -112,6 +126,38 @@ public actor PRWatcher {
             await mover?.applySystemMove(cardID: card.id, to: move.column, reason: move.reason)
         }
         return true
+    }
+
+    /// Reads what GitHub says about the pull requests the board is *waiting* on.
+    ///
+    /// **In Review only, deliberately.** A card in In Progress has a draft pull
+    /// request that `implement-issue` is still writing, so a red check there is
+    /// a transient state the run is already handling. The information only
+    /// changes a decision once the card has stopped moving on its own.
+    ///
+    /// The listing above already carries `headRefOid`, so most ticks answer
+    /// "nothing has changed" without spending a call — see
+    /// `PRStatus.needsRefresh`. What this does **not** do is touch the card:
+    /// card fields are decided in one place, `VerifiedOutcome.applied(to:)`, and
+    /// a poller that wrote one would be the second write path that invariant
+    /// exists to prevent.
+    private func refreshStatuses(repo: Repo, cards: [Card], prs: [GHPullRequest]) async {
+        let now = Date()
+        for card in cards where card.column == .inReview {
+            guard let number = card.prNumber else { continue }
+            let currentHead = prs.first { $0.number == number }?.headRefOid
+            let stored = try? await store.prStatus(repoID: repo.id, prNumber: number)
+            guard PRStatus.needsRefresh(stored: stored ?? nil, currentHeadOid: currentHead, now: now)
+            else { continue }
+
+            // A failed read writes nothing and erases nothing: the previous row
+            // stands and ages out on its own, which reports "not established"
+            // rather than inventing either a pass or a failure.
+            guard let status = try? await gh.mergeStatus(repo: repo.nameWithOwner, number: number)
+            else { continue }
+            try? await store.savePRStatus(
+                status.prStatus(repoID: repo.id, prNumber: number, checkedAt: now))
+        }
     }
 
     /// ±20%, so several repos do not fall into lockstep.

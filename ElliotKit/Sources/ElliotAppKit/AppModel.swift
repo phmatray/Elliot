@@ -22,6 +22,8 @@ public final class AppModel {
 
     public private(set) var repos: [Repo] = []
     public private(set) var cards: [Card] = []
+    /// The latest pull request reading per card, for cards in In Review.
+    public private(set) var prStatuses: [UUID: PRStatus] = [:]
     public private(set) var runsByCard: [UUID: [SkillRun]] = [:]
     public private(set) var globalChecks: [CheckResult] = []
     public private(set) var repoChecks: [UUID: [CheckResult]] = [:]
@@ -580,6 +582,22 @@ public final class AppModel {
                 }
             } catch {
                 await MainActor.run { self?.status = "Lost track of the board: \(error.localizedDescription)" }
+            }
+        })
+
+        // Its own observation, because `PRWatcher` writes the reading without
+        // touching any card row: refreshing off the card observation alone would
+        // land the badge exactly never. Same reason `observePRStatuses` exists.
+        let statusObservation = store.observePRStatuses()
+        observationTasks.append(Task { [weak self] in
+            do {
+                for try await rows in statusObservation {
+                    await MainActor.run { self?.applyPRStatuses(rows) }
+                }
+            } catch {
+                // Deliberately quiet, unlike the card observation above: a lost
+                // status stream costs a badge, not the board, and a banner
+                // saying so would be louder than the fact it reports.
             }
         })
 
@@ -1215,6 +1233,57 @@ public final class AppModel {
             return
         }
         activeRuns = (try? await store.activeRuns(cardIDs: ids)) ?? [:]
+        await refreshPRStatuses()
+    }
+
+    /// The pull request readings `PRWatcher` has stored, keyed by card.
+    ///
+    /// Only for cards in In Review, matching what the watcher bothers to read:
+    /// asking for the others would return nothing and make the map look like a
+    /// board-wide answer it is not.
+    func refreshPRStatuses() async {
+        guard let store else { return }
+        var rows: [PRStatus] = []
+        for repoID in Set(cards.filter { $0.column == .inReview }.map(\.repoID)) {
+            rows += (try? await store.prStatuses(repoID: repoID)) ?? []
+        }
+        applyPRStatuses(rows)
+    }
+
+    /// Joins readings to cards on `(repoID, prNumber)`.
+    ///
+    /// Shared by the pull and the observation on purpose. The two arrive from
+    /// different directions — a card changed, or a reading landed — and each
+    /// used to need the whole answer; two copies of this join would drift on
+    /// which columns count, which is the one rule it holds.
+    func applyPRStatuses(_ rows: [PRStatus]) {
+        let byKey = Dictionary(
+            rows.map { (Key(repoID: $0.repoID, prNumber: $0.prNumber), $0) },
+            uniquingKeysWith: { first, _ in first })
+        var next: [UUID: PRStatus] = [:]
+        for card in cards where card.column == .inReview {
+            if let number = card.prNumber,
+               let row = byKey[Key(repoID: card.repoID, prNumber: number)] {
+                next[card.id] = row
+            }
+        }
+        prStatuses = next
+    }
+
+    private struct Key: Hashable {
+        var repoID: UUID
+        var prNumber: Int
+    }
+
+    /// What the card and the panel render. `nil` for a card nothing has read —
+    /// which is not the same as a card whose pull request is fine, so the views
+    /// draw nothing rather than an all-clear.
+    func prStatus(for card: Card) -> ResolvedPRStatus? {
+        // `currentHeadOid` is nil for the same reason as on the MCP side:
+        // establishing the head right now would be a network call in a view
+        // body, and `PRWatcher` already re-reads whenever the head moves. The
+        // age rule still governs.
+        prStatuses[card.id]?.resolved(now: Date(), currentHeadOid: nil)
     }
 
     // MARK: - Repos

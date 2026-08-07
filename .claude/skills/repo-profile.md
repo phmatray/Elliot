@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1196 tests in 137 suites**, 5 of 5 samples on
-  `fix/158-column-empty-space-deselect` on 2026-08-07 off `main` at `a796182`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1281 tests in 144 suites**, 5 of 5 samples on
+  `feat/174-pr-status` on 2026-08-07 off `main` at `206c029`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -48,7 +48,12 @@
     (1034 → 1050, 119 → 122 suites) — that is a fourth correction, and the drift is now
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
-    your own untouched run and compare against *that*, never against this line. Sixth in #155
+    your own untouched run and compare against *that*, never against this line.
+  - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
+    branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
+    hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
+    evidence that it is cheap to keep true when the gap is caught early rather than five features
+    later. Sixth in #155
     (1061 → 1098, 124 → 129), taken from a five-sample run rather than one — and then **again inside
     the same pull request** after merging `main`, which is the seventh correction and the clearest
     demonstration yet that this line is a date-stamp, not a fact. Eighth and ninth in #159
@@ -56,6 +61,11 @@
     Corrected again landing #180 — the branch measured 1170 in 135 off `0902c10`, and the merge
     that landed it measured **1188 in 136** off `5b12add`, both from five samples. No ordinal,
     deliberately, and no attribution of the difference: see the two bullets below.
+    - **Landing #177 the branch's own number was stale before anyone read it** — it wrote 1244 in 141
+      off `0902c10`, and the merged tree measured **1281 in 144** off `206c029`, five of five samples.
+      The branch gained no commit between the two runs, so the whole 37 is `main` moving underneath
+      it: six squashes landed while it sat open. The ordinary case this entry describes, again — the
+      branch measured honestly and was overtaken anyway.
     - **Landing #182 the value did not move at all** — 1196 in 137 off `a796182`, five of five
       samples, byte-identical to what `main` already claimed. That is the cleanest demonstration
       the entry has: #182 ships no Swift whatsoever (two scripts and two markdown files), so the

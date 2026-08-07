@@ -115,6 +115,43 @@ enum Migrations {
             try db.execute(sql: Migrations.backfillCardAnglesSQL)
         }
 
+        // v8, additive: what GitHub says about a pull request, dated and tied to
+        // the commit it was read on.
+        //
+        // Its own table rather than columns on `card`, for one reason: `card`'s
+        // fields are decided in exactly one place — `VerifiedOutcome.applied(to:)`
+        // — and that invariant is kept by grep. A pull request's status is not
+        // the outcome of a run; it is an observation about an object outside the
+        // card, written by a poller. Mixing the two families on one type, with
+        // nothing marking the boundary, is how the next person writes a card
+        // field from the watcher and nobody notices.
+        //
+        // The states are TEXT and not enumerations on purpose. GitHub adds
+        // `mergeStateStatus` values; a stored enum turns that into a decode
+        // failure that takes the whole row, where a string reaches the reader
+        // intact and renders as "not known".
+        //
+        // `checkedAt` and `headRefOid` are what make "I do not know" expressible
+        // at all — without them a stale reading is indistinguishable from a
+        // current one, which is the defect this board has already shipped twice
+        // in other tools.
+        migrator.registerMigration("v8_prStatus") { db in
+            try db.create(table: "prStatus") { t in
+                t.column("repoID", .text).notNull()
+                    .references("repo", onDelete: .cascade)
+                t.column("prNumber", .integer).notNull()
+                t.column("headRefOid", .text).notNull()
+                t.column("checkedAt", .datetime).notNull()
+                t.column("rawMergeStateStatus", .text).notNull()
+                t.column("rawMergeable", .text).notNull()
+                t.column("rawReviewDecision", .text).notNull()
+                // JSON: the rollup as `gh` rendered it, names and all, so the
+                // panel can print what actually ran instead of a verdict.
+                t.column("checks", .text).notNull()
+                t.primaryKey(["repoID", "prNumber"])
+            }
+        }
+
         return migrator
     }
 
