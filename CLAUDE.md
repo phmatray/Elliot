@@ -249,6 +249,28 @@ and then read the window's accessibility tree — the column captions, the toolb
 all carry labels, so "did the board survive" is a text diff rather than a squint. When in doubt,
 build the same check from `main` and compare.
 
+**Since #155 the *agent* can look too: `board_screenshot`.** Elliot renders its own window with
+`NSView.cacheDisplay` and hands back a PNG as an MCP image block, so no permission is involved and
+nothing has to be frontmost — measured, on a window with `isVisible == false` in an app that was not
+active, rendering at full designed size. That is the case this file records as misread nine times.
+The alternatives were both dead ends and are written down so nobody re-explores them:
+ScreenCaptureKit needs the Screen Recording grant this machine does not hold, and
+`CGWindowListCreateImage` is **obsoleted in the macOS 15 SDK** — a compile error on our own floor,
+not merely a deprecation.
+
+⚠️ **It draws Elliot's hierarchy, so three things are absent — and one of them will bite you.**
+Sheets and popovers live in their own windows, and **the toolbar's controls render blank**: measured
+against an independent whole-screen capture, the board's seven toolbar items came back as two empty
+white capsules, because SwiftUI hosts `.toolbar` in titlebar accessory views the frame-view render
+never reaches. The toolbar is a named conflict hot-spot in this repo, so that blind spot sits exactly
+where changes land. `not_included` names all of it in every reply — **read it before concluding that
+something failed to appear**, and use the accessibility tree above for anything in the toolbar.
+
+⚠️ **A long `ELLIOT_HOME` silently costs you the MCP socket.** `sun_path` is capped at 104 bytes on
+macOS, so a scratch home under a deep path makes `startIPC` fail; the app runs fine, the helper
+answers `app_unavailable`, and the reply reads as "Elliot is not running" while it is plainly on
+screen. Keep the check store short — `/tmp/elliot-check` is short on purpose.
+
 **A secondary window is verifiable too — it opens off-screen, it does not fail to open.** Every PR
 from #75 to #89 carried some version of *"opening a `Window` scene needs the app frontmost, which the
 automation driver refuses"*, and it was never true. A background `openWindow` does open the window; it

@@ -337,8 +337,13 @@ struct ToolSurfaceTests {
             #expect(try tool(name).annotations.readOnlyHint == false, "\(name)")
         }
 
+        // `board_screenshot` belongs here and not above: it draws a window Elliot
+        // already has, changes nothing, and — unlike `board_await_run` — does not
+        // travel the write path, so it never launches the app. Photographing a
+        // board that was not running would answer a question about a live board
+        // with a picture of a fresh one.
         let reads = ["board_next", "board_list_cards", "board_get_card",
-                     "board_list_repos", "board_list_runs"]
+                     "board_list_repos", "board_list_runs", "board_screenshot"]
         for name in reads {
             #expect(try tool(name).annotations.readOnlyHint == true, "\(name)")
         }
