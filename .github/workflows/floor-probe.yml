@@ -98,72 +98,43 @@ jobs:
           done
 
   # Which toolchain is the LOWEST that builds this package green — measured, not inferred from an
-  # image label. Every Xcode on the image is tried, oldest first, so if the image carries a 6.2 the
-  # answer is 6.2 and not "whatever was selected".
-  green-floor:
-    runs-on: macos-26
-    timeout-minutes: 60
+  # image label.
+  #
+  # Run 31167931727 did the expensive half: it built the package under **all fourteen** Xcodes the
+  # `macos-26` image carries, twice each. `swift build` was green on every one; `swift build
+  # --build-tests` was RED on 26.0–26.3 and GREEN on 26.4–26.6. So this package has two different
+  # floors, and the earlier warning on this issue — that a green `swift build` leaves the test
+  # targets unmeasured — turns out to be load-bearing rather than pedantic.
+  #
+  # What that run could NOT report is the Swift version behind each Xcode, because it looked for
+  # `swift` at `$DEVELOPER_DIR/usr/bin/swift`, where `xcodebuild` and `xcrun` live but the compiler
+  # does not — it is in the toolchain, `Toolchains/XcodeDefault.xctoolchain/usr/bin`. Every one of
+  # the fourteen printed "No such file or directory" and the builds went ahead anyway, because
+  # `DEVELOPER_DIR` was exported correctly and the `swift` shim on PATH honours it. A version map
+  # that fails to a *message* while the thing it labels succeeds is this repository's recurring
+  # trap once more, so this job re-takes only the map, via `xcrun`, and builds nothing.
+  toolchain-map:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-15, macos-26]
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-
-      # The inventory is a result in its own right, and is printed before anything is built: it is
-      # what says whether a 6.2 measurement was even available to take. An absent toolchain has to
-      # read as "could not be measured here", never as "does not work".
-      - name: What toolchains does this image actually carry
+      - name: Every toolchain on ${{ matrix.image }}, by version
         run: |
+          set +e
           sw_vers
           echo "selected DEVELOPER_DIR: $(xcode-select -p)"
-          echo "selected swift:"; swift --version
+          echo "selected swift: $(swift --version 2>&1 | head -1)"
           for x in /Applications/Xcode*.app; do
             [ -d "$x" ] || continue
-            echo "=== $x ==="
-            "$x/Contents/Developer/usr/bin/swift" --version 2>&1 | head -2
-            "$x/Contents/Developer/usr/bin/xcodebuild" -showsdks 2>&1 | grep -i macos || echo "  (no macOS SDK listed)"
-          done
-
-      - name: Build under every Xcode on the image
-        continue-on-error: true
-        working-directory: ElliotKit
-        run: |
-          # `set +e` deliberately, against the `bash -e` GitHub runs steps under. Without it the
-          # loop aborts on the first toolchain that fails to build — which is the one case this job
-          # exists to look past, and it would report "no 6.2 measurement" as if none were available.
-          set +e
-          set -o pipefail
-          # A per-Xcode build directory. Sharing one `.build` across toolchains is the CI form of
-          # the stale-`.build` trap CLAUDE.md documents: the second compiler reads the first one's
-          # modules and fails in ways that have nothing to do with its own version.
-          for x in /Applications/Xcode*.app; do
-            [ -d "$x" ] || continue
-            tag=$(basename "$x" .app)
             export DEVELOPER_DIR="$x/Contents/Developer"
-            ver=$("$DEVELOPER_DIR/usr/bin/swift" --version 2>&1 | head -1)
-            echo "######## $tag — $ver ########"
-            swift build --scratch-path "/tmp/build-$tag" 2>&1 | tee "/tmp/$tag-build.log"
-            echo "---- $tag swift build exit: $? ----"
-            swift build --build-tests --scratch-path "/tmp/build-$tag" 2>&1 | tee "/tmp/$tag-build-tests.log"
-            echo "---- $tag swift build --build-tests exit: $? ----"
-          done
-          exit 0
-
-      # Green is not "the step went green": `continue-on-error` above means the step always does.
-      # The verdict has to be re-derived from the logs, per toolchain, the same way the 6.1 job
-      # derives its count — one rule, applied twice.
-      - name: Verdict per toolchain
-        if: always()
-        run: |
-          set +e
-          shopt -s nullglob
-          logs=(/tmp/Xcode*-build.log /tmp/Xcode*-build-tests.log)
-          # An empty measurement must say so out loud — the same rule the 6.1 job's `show` helper
-          # exists for. Zero logs and "every log was green" print identically otherwise.
-          if [ ${#logs[@]} -eq 0 ]; then echo "(no build log at all — the build step never ran)"; exit 0; fi
-          for log in "${logs[@]}"; do
-            n=$(grep -cE '^[^ ].*: error: ' "$log")
-            echo "############ $(basename "$log") — $n distinct-ish error lines ############"
-            if [ "$n" -eq 0 ]; then
-              echo "GREEN"
-            else
-              grep -E '^[^ ].*: error: ' "$log" | sort -u
-            fi
+            xcode=$(xcodebuild -version 2>&1 | head -1)
+            swiftv=$(xcrun swift --version 2>&1 | head -1)
+            sdk=$(xcodebuild -showsdks 2>&1 | grep -oE 'macosx[0-9.]+' | sort -u | tr '\n' ' ')
+            # Print the resolved compiler path too: `basename` of the .app is a filename, and two
+            # filenames on this image resolve to the same install. The path is what distinguishes
+            # a genuine seventh toolchain from an alias of one already counted.
+            echo "$(basename "$x") | $xcode | $swiftv | sdk: ${sdk:-(none)} | $(xcrun -f swiftc 2>&1)"
           done
