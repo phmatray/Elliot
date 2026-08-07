@@ -33,6 +33,18 @@ struct CaretAnchors {
 /// and the symptom of that is a caret that never appears, with a green build
 /// and a green test run behind it.
 ///
+/// ⚠️ **And `reduce` only ever sees siblings.** It is the *whole* defence for
+/// three subtrees, and no defence at all one level up: `.anchorPreference`
+/// applied to a view that is an **ancestor** of another writer replaces that
+/// writer's value outright rather than merging with it, so `reduce` is never
+/// called for the pair. That is #159 — `ColumnView.list` wrote `list` on the
+/// `ScrollView` containing the cards, and the selected card's rect was
+/// discarded one level below the overlay while this comment said the design was
+/// safe. Every writer for this key must therefore be a sibling of the others;
+/// the column reports through a `.background` for exactly that reason. Anything
+/// new that wants to contribute here reports from its own subtree, never from
+/// above someone else's.
+///
 /// Anchors are used rather than a coordinate space plus stored state on
 /// purpose. An anchor is resolved by the `GeometryProxy` that reads it, so the
 /// card, the list and the panel are all measured in **one** space by

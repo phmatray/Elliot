@@ -1052,8 +1052,30 @@ struct ColumnView: View {
         // nothing to say about a caret that is not theirs, and four extra
         // rectangles arriving at one key is four chances to answer for the wrong
         // column.
-        .anchorPreference(key: CaretAnchorKey.self, value: .bounds) { bounds in
-            model.selectedCard?.column == column ? CaretAnchors(list: bounds) : CaretAnchors()
+        //
+        // ⚠️ **Through a `.background`, and that is the whole of #159.** Written
+        // directly on this view — an *ancestor* of the `CardView`s — the
+        // modifier does not merge with what they contributed through `reduce`:
+        // it **replaces** it. The selected card's `CaretAnchors(card:)` reached
+        // here and was overwritten one level below the overlay, so `card` was
+        // permanently `nil` and `PanelLayout.isDetached` answered `true` on its
+        // first `guard` for ever. The tether then drew at opacity 0 and the
+        // caret at 0.35 against `panel.midY` — a truthful rendering of a false
+        // input, which is why the gutter looked empty and every number
+        // `PanelLayoutTests` pins was right the whole time.
+        //
+        // A background is a separate subtree rather than an ancestor, so the
+        // card's contribution is never in a position to be replaced and the two
+        // arrive at the overlay as siblings — the case `reduce` was written for
+        // and the case that always worked. `Color.clear` in a background takes
+        // exactly the frame it backs, so this still measures the viewport and
+        // still claims no space. Measured both ways in `CaretAnchorTests`.
+        .background {
+            Color.clear
+                .anchorPreference(key: CaretAnchorKey.self, value: .bounds) { bounds in
+                    model.selectedCard?.column == column
+                        ? CaretAnchors(list: bounds) : CaretAnchors()
+                }
         }
     }
 
