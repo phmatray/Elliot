@@ -49,9 +49,7 @@ struct AnalysisFooterMessage: Equatable {
     ///
     /// The three consequence sentences are the ones the view used to hold, moved
     /// verbatim so the copy cannot drift between here and there.
-    static func setup(angleCount: Int, failure: String?, refusal: String?)
-        -> AnalysisFooterMessage
-    {
+    static func setup(angleCount: Int, failure: String?, refusal: String?) -> AnalysisFooterMessage {
         if let refusal {
             return AnalysisFooterMessage(
                 text: refusal, symbol: "exclamationmark.octagon.fill", tone: .refused)

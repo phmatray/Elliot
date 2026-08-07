@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1328 tests in 149 suites**, 5 of 5 samples on
-  `fix/147-proposal-editor-card-draft` on 2026-08-07 off `main` at `dc5c2ce`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1342 tests in 150 suites**, 5 of 5 samples on
+  `fix/138-start-failure-in-setup-footer` on 2026-08-08 off `main` at `2494882`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -49,6 +49,12 @@
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
     your own untouched run and compare against *that*, never against this line.
+  - ✅ **Second time it did not drift, landing #138 — and this one separates the two halves of the
+    line cleanly.** The branch's untouched baseline measured **1328 in 149**, the line's exact value,
+    off `main` at `2494882`; the line said `dc5c2ce`, which is `2494882`'s parent. So the *value* was
+    right and the *commit* was one behind — which is the whole of what the bullets below argue: the
+    number measures when you looked, and the stamp is the half worth maintaining. The branch itself
+    then adds 14 tests and one suite.
   - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
     branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
     hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
