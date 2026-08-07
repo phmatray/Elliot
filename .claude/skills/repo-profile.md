@@ -158,24 +158,24 @@
 ## CI gates (the exact commands CI fails on — satisfy these locally before ready/merge)
 
 Two workflows, both on `macos-26`, and they answer different questions. Neither replaces running the
-commands locally — see *Branch protection* below for why.
+commands locally — branch protection is off, so see the second warning below for what that costs.
 
 | Workflow | Job | Trigger | What it runs | The claim it establishes |
 |---|---|---|---|---|
 | `.github/workflows/ci.yml` (#21) | `build-and-test` | `pull_request` → `main`, `push` → `main` | `swift build`, then `swift test`, from `ElliotKit` | the suite **passes** somewhere other than one laptop |
 | `.github/workflows/swift-floor.yml` (#116) | `floor` | `pull_request` → `main` | asserts the runner's Swift against the floor `Package.swift` declares, then `swift build` and `swift build --build-tests` | the declared floor is real and **compiles** this package |
 
-So the gates to satisfy locally before flipping a PR ready are exactly the two `ci.yml` runs — pass
-these and you have run the same commands CI does:
+So the gates to satisfy locally before flipping a PR ready are exactly the two commands `ci.yml`
+runs — pass these and you have run what CI runs:
 
 - `cd ElliotKit && swift build`
 - `cd ElliotKit && swift test`
 
 ⚠️ **`swift build --build-tests` is not `swift test`, and the two workflows split precisely there.**
-The floor job compiles the eight test targets and never executes a `@Test`; until `ci.yml` landed,
-nothing anywhere had ever *run* an assertion off this machine. Do not read a green `swift-floor`
-check as a suite that passed — that reading is the same shape as the #116 defect it exists to
-prevent.
+The floor job compiles the eight test targets and never executes a `@Test`; until `ci.yml` landed, no
+assertion in this repository had ever been *run* anywhere but on a contributor's own machine. Do not
+read a green `swift-floor` check as a suite that passed — that reading is the same shape as the #116
+defect it exists to prevent.
 
 ⚠️ **Branch protection on `main` is still off, so both checks are advisory.** Measured 2026-08-06:
 `gh api repos/phmatray/Elliot/branches/main/protection` returns **404 `Branch not protected`** — not
@@ -183,11 +183,11 @@ an `enforcement_level: "off"` object, no object at all — so a red check does n
 `merge-pr` can *read* a verdict but nothing enforces it. Turning it on is #21's Task 3 and needs
 `ci.yml` green on `main` first, which cannot happen until the pull request introducing it lands.
 
-⚠️ **A conflicted pull request produces no run at all, and says nothing about it.** Measured in #140:
-zero runs created for the head SHA over 25 minutes, `check-runs` reporting `total_count: 0`, and the
-Actions status page green throughout. The cause was `mergeStateStatus: DIRTY`; merging `main`
-produced a run within seconds. Read `gh pr view --json mergeable,mergeStateStatus` before concluding
-anything about a missing check — an absent run and a throttled one look identical from outside.
+⚠️ **A conflicted pull request produces no run at all, and reports that as silence.** Read
+`gh pr view --json mergeable,mergeStateStatus` before concluding anything about a missing check —
+`CLAUDE.md` § *Commands* has #140's measurement and the wrong diagnosis it caused. Confirmed again
+landing this section: #102 sat `DIRTY` with zero check-runs, and merging `main` produced both of the
+above within seconds.
 
 - **Format/lint in CI:** none, deliberately. See *Format/lint verify* above — the formatter question
   is unsettled, and a lint step would have landed the first CI run red for a reason unrelated to

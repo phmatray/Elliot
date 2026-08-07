@@ -4,8 +4,8 @@
 #
 # Read that file first — it landed while this pull request sat in draft, and it already does most of
 # what an early draft of this one claimed as its own: `macos-26`, `swift build`, and
-# `swift build --build-tests`. So the compile is covered twice over and this workflow does not exist
-# to cover it a third time.
+# `swift build --build-tests`. Compiling this package is therefore already covered, and covered on
+# the declared floor specifically, which is a stronger claim than this job could make.
 #
 # What nothing runs remotely today is **the suite**. `swift build --build-tests` compiles the eight
 # test targets and stops there; it never executes a single `@Test`. Every green verdict this
