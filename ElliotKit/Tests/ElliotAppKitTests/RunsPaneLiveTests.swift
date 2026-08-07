@@ -346,7 +346,8 @@ struct RunsPaneLiveTests {
         // And the other half of the claim: a receipt that *is* verified still
         // gets the verified tint, so the test above is not passing because
         // nothing is ever green.
-        let created = try #require(VerdictBlock.receipt(for: Self.run(outcome: .merged(commitSHA: nil, number: nil, url: nil, branch: nil))))
+        let merged = VerifiedOutcome.merged(commitSHA: nil, number: nil, url: nil, branch: nil)
+        let created = try #require(VerdictBlock.receipt(for: Self.run(outcome: merged)))
         #expect(try #require(Self.srgb(created.tint, in: appearance)) == verified)
     }
 

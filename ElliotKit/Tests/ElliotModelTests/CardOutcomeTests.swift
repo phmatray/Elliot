@@ -236,7 +236,9 @@ struct CardOutcomeTests {
         let opened = prOpenReady.applied(to: failed)
         #expect(opened.card.lastError == nil)
 
-        let merged = VerifiedOutcome.merged(commitSHA: nil, number: nil, url: nil, branch: nil).applied(to: failed)
+        let merged = VerifiedOutcome
+            .merged(commitSHA: nil, number: nil, url: nil, branch: nil)
+            .applied(to: failed)
         #expect(merged.card.lastError == nil)
     }
 
@@ -251,7 +253,9 @@ struct CardOutcomeTests {
     @Test("A merged pull request on a card already in Done changes nothing at all")
     func mergedOnADoneCardIsANoOp() {
         let subject = card(in: .done, prNumber: 7)
-        let result = VerifiedOutcome.merged(commitSHA: nil, number: nil, url: nil, branch: nil).applied(to: subject)
+        let result = VerifiedOutcome
+            .merged(commitSHA: nil, number: nil, url: nil, branch: nil)
+            .applied(to: subject)
 
         #expect(result.move == nil)
         #expect(result.card == subject)

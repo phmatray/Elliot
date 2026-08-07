@@ -37,7 +37,8 @@ struct VerifiedOutcomeReceiptTests {
             VerifiedOutcome.prOpen(number: 13, url: "u", isDraft: false, branch: "feat/12-x").receiptText
                 == "PR 13 on feat/12-x"
         )
-        #expect(VerifiedOutcome.merged(commitSHA: "abc1234def", number: nil, url: nil, branch: nil).receiptText == "Merged as abc1234")
+        let merged = VerifiedOutcome.merged(commitSHA: "abc1234def", number: nil, url: nil, branch: nil)
+        #expect(merged.receiptText == "Merged as abc1234")
         #expect(
             VerifiedOutcome.notMerged(reason: "checks failed").receiptText
                 == "Not merged — checks failed"
@@ -55,7 +56,8 @@ struct VerifiedOutcomeReceiptTests {
         // `gh` can confirm a merge without handing back the commit. Rendering
         // that as "Merged as " with a dangling preposition, or worse as
         // "Unverified", would misreport a fact it did establish.
-        #expect(VerifiedOutcome.merged(commitSHA: nil, number: nil, url: nil, branch: nil).receiptText == "Merged")
+        let merged = VerifiedOutcome.merged(commitSHA: nil, number: nil, url: nil, branch: nil)
+        #expect(merged.receiptText == "Merged")
     }
 
     @Test("A SHA is abbreviated to seven characters, as git prints it")

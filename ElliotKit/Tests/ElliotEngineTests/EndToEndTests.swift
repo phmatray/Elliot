@@ -664,6 +664,79 @@ struct EndToEndTests {
         #expect(after.branch == "feat/108-the-thing")
         #expect(after.lastError == "The pull request was closed without being merged.")
     }
+
+    /// The regression AC4 creates if `reconcile` keeps matching on the recorded
+    /// number alone, found in review of #139.
+    ///
+    /// Writing the abandoned pull request's number onto a card that is *still
+    /// in flight* ties the watcher to it: `reconcile` prefers an exact
+    /// `card.prNumber` match over `PRMatcher`, so a replacement pull request
+    /// for the same issue becomes invisible for ever and the card never leaves
+    /// In Progress. Before #139 the number was never written, so this could not
+    /// happen — the fix must not buy the panel a link at the cost of the card.
+    ///
+    /// Reachable in production: `tick()` reconciles `.inProgress` as well as
+    /// `.inReview`.
+    @Test("A card whose pull request was abandoned still finds the replacement for the same issue")
+    func watcherFindsAReplacementAfterAnAbandonedPullRequest() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Second attempt").card
+        card.column = .inProgress
+        card.issueNumber = 109
+        try await stack.store.saveCard(card)
+
+        let watcher = watcher(for: stack)
+        let abandoned = pullRequest(number: 208, issue: 109, state: "CLOSED")
+
+        // First sighting: the card records what was abandoned, and stays put.
+        #expect(await watcher.reconcile(card: card, against: [abandoned]))
+        let afterFirst = try #require(try await stack.store.card(id: card.id))
+        #expect(afterFirst.prNumber == 208)
+        #expect(afterFirst.column == .inProgress)
+
+        // Someone opens a new pull request for the same issue. The card must
+        // see it, even though it now holds the dead one's number.
+        let replacement = pullRequest(number: 209, issue: 109, state: "OPEN")
+        #expect(await watcher.reconcile(card: afterFirst, against: [abandoned, replacement]))
+
+        let afterSecond = try #require(try await stack.store.card(id: card.id))
+        #expect(afterSecond.prNumber == 209)
+        #expect(afterSecond.prURL == "https://github.com/phmatray/Elliot/pull/209")
+        #expect(afterSecond.branch == "feat/109-the-thing")
+        #expect(afterSecond.lastError == nil)
+        #expect(afterSecond.column == .inReview)
+    }
+
+    /// The other half of the same rule: a card that has *reached Done* keeps
+    /// the pull request it recorded. Nothing is in flight, so there is no
+    /// replacement to look for, and re-matching by issue could pull the card
+    /// onto an unrelated later pull request.
+    @Test("A Done card keeps the pull request it recorded, and is not re-matched by issue")
+    func doneCardKeepsItsRecordedPullRequest() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Finished").card
+        card.column = .done
+        card.issueNumber = 110
+        card.prNumber = 210
+        card.prURL = "https://github.com/phmatray/Elliot/pull/210"
+        card.branch = "feat/110-the-thing"
+        try await stack.store.saveCard(card)
+
+        let recorded = pullRequest(number: 210, issue: 110, state: "CLOSED")
+        let later = pullRequest(number: 211, issue: 110, state: "OPEN")
+
+        // Nothing to say: it already carries 210's fields and the banner would
+        // be the only change, so this is the no-op branch, not a re-match.
+        _ = await watcher(for: stack).reconcile(card: card, against: [recorded, later])
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.prNumber == 210)
+        #expect(after.column == .done)
+    }
 }
 
 @Suite("Analysis completion", .serialized)
