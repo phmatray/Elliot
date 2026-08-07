@@ -49,6 +49,10 @@ public struct BoardView: View {
             StatusBar()
         }
         .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.selectedCardID)
+        // The columns slide aside for the analysis panel the way they do for the
+        // detail panel. Keyed on its own value: the one above is keyed on the
+        // selection, which does not move when this panel opens.
+        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.showingAnalysisPanel)
         .toolbar { toolbarContent }
         .navigationTitle("Elliot")
         .task(id: model.selectedRepoID) {
@@ -175,13 +179,22 @@ public struct BoardView: View {
 
         ToolbarItem {
             Button {
-                openWindow(id: "analysis")
+                model.showingAnalysisPanel.toggle()
             } label: {
                 Label("Analyse", systemImage: "sparkle.magnifyingglass")
             }
             .labelStyle(.titleAndIcon)
-            .disabled(model.selectedRepoID == nil || isSelectedRepoBlocked)
-            .help(analyseHelp)
+            // Tinted while open, like Details: the panel opens between columns
+            // and the board scrolls, so "is it showing" stopped being answerable
+            // at a glance the moment it stopped being a window.
+            .tint(model.showingAnalysisPanel ? Palette.armed : nil)
+            .foregroundStyle(model.showingAnalysisPanel ? Palette.armed : Color.primary)
+            // ⚠️ No `.disabled`, and that is a change from the window it
+            // replaces. Hiding a panel must never be blocked by the reason its
+            // *contents* are unavailable — a disabled toggle is a toggle you
+            // cannot switch off. The refusal is stated inside the panel by
+            // `analyseHelp`, and the Start button in it is what stays disabled.
+            .help(model.showingAnalysisPanel ? "Hide the analysis" : analyseHelp)
         }
 
         ToolbarItem {
@@ -243,18 +256,11 @@ public struct BoardView: View {
 
     /// Says which gate is closed, rather than repeating the one that is open.
     ///
-    /// The button is disabled for three different reasons and the tooltip named
-    /// only the first, so a blocked or switched-off repository produced a
-    /// disabled control whose explanation was about something else.
+    /// The refusal itself is `AppModel.analysisRefusal`, so this tooltip and the
+    /// panel's own footer say the same sentence and the Start button is disabled
+    /// by the same value that explains why.
     private var analyseHelp: String {
-        guard let id = model.selectedRepoID,
-              let repo = model.repos.first(where: { $0.id == id })
-        else { return "Pick a single repository to analyse." }
-        if !repo.isEnabled { return Consequence.reason(.repoDisabled) }
-        if model.isBlocked(repo) {
-            return "A Preflight check is failing for this repository — fix it there first."
-        }
-        return "Read this repository through several lenses and propose stories."
+        model.analysisRefusal ?? "Read this repository through several lenses and propose stories."
     }
 
     /// The five columns and, when a card is selected, its detail panel between
@@ -286,8 +292,14 @@ public struct BoardView: View {
 
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: Metric.gutter) {
-                    ForEach(PanelLayout.boardOrder(selected: panelOrigin), id: \.self) { slot in
+                    ForEach(
+                        PanelLayout.boardOrder(
+                            selected: panelOrigin, analysisOpen: model.showingAnalysisPanel),
+                        id: \.self
+                    ) { slot in
                         switch slot {
+                        case .analysis:
+                            analysisPanel(width: width)
                         case .column(let column):
                             ColumnView(column: column, width: width)
                         case .panel:
@@ -317,7 +329,9 @@ public struct BoardView: View {
             // the panel or Done silently unreachable with no scrollbar, green
             // on both `swift build` and `swift test`.
             .scrollDisabled(
-                PanelLayout.contentWidth(boardWidth: boardWidth, spans: openSpans) <= boardWidth
+                PanelLayout.contentWidth(
+                    boardWidth: boardWidth, spans: openSpans, analysisSpans: openAnalysisSpans)
+                    <= boardWidth
             )
             // In a window too narrow for what the row holds the board scrolls,
             // and the card you just selected could be the one off-screen.
@@ -335,7 +349,9 @@ public struct BoardView: View {
             // path — and the third is the one that arms the merge, so the
             // confirmation for the single irreversible act in the product was
             // the one that could open off-screen.
-            .onChange(of: framing) { _, framing in frame(framing, boardWidth: boardWidth) }
+            .onChange(of: framing) { old, new in
+                frame(new, from: old, boardWidth: boardWidth)
+            }
         }
         .frame(maxWidth: .infinity)
         .background(Color(nsColor: .underPageBackgroundColor))
@@ -371,12 +387,39 @@ public struct BoardView: View {
         panelOrigin == nil ? nil : model.panelSpans
     }
 
+    /// The reader's analysis-span preference while that panel is showing, `nil`
+    /// while it is hidden — the same shape `PanelLayout.contentWidth` takes for
+    /// "no panel", so a hidden analysis costs the row exactly nothing.
+    private var openAnalysisSpans: Int? {
+        model.showingAnalysisPanel ? model.analysisSpans : nil
+    }
+
     /// Which edge of the panel the caret hangs off, decided by the same function
     /// that put the panel on that side of its column. Reading it off
     /// `panelOrigin` rather than off the card is deliberate: the panel and its
     /// caret cannot then disagree about which column they belong to.
     private var isPanelFlipped: Bool {
         panelOrigin.map(PanelLayout.opensLeft(of:)) ?? false
+    }
+
+    /// The analysis, as one slot of the row — the leading one.
+    ///
+    /// Both modifiers below are load-bearing and neither looks it.
+    private func analysisPanel(width: CGFloat) -> some View {
+        AnalysisPanelView(columnWidth: width)
+            // Later siblings paint over earlier ones, and this one is *first* —
+            // so Backlog's background, clip and border would paint over the
+            // shadow that says this panel floats above the columns. Same
+            // reasoning as the detail panel's `zIndex`, arrived at from the
+            // other end of the row.
+            .zIndex(1)
+            // The columns clear the selection on a tap that reaches their empty
+            // space, and an ancestor's tap fires for taps on its descendants.
+            // Without absorbing its own strays, clicking this panel's padding, a
+            // section label or its header would deselect the card being read in
+            // the column next door.
+            .contentShape(Rectangle())
+            .onTapGesture {}
     }
 
     /// The detail panel, as one slot of the row.
@@ -431,7 +474,9 @@ public struct BoardView: View {
             selectedCardID: model.selectedCardID,
             selectedColumn: model.selectedCard?.column,
             panelOrigin: panelOrigin,
-            spans: model.panelSpans
+            spans: model.panelSpans,
+            analysisOpen: model.showingAnalysisPanel,
+            analysisSpans: model.analysisSpans
         )
     }
 
@@ -441,8 +486,8 @@ public struct BoardView: View {
     /// The arithmetic is `BoardFraming.offsetX(boardWidth:)`, which is pure and
     /// pinned by `swift test`. All that is left here is the deferral, which is
     /// the one part of this no test can see.
-    private func frame(_ framing: BoardFraming, boardWidth: CGFloat) {
-        guard let offset = framing.offsetX(boardWidth: boardWidth) else { return }
+    private func frame(_ framing: BoardFraming, from previous: BoardFraming, boardWidth: CGFloat) {
+        guard let offset = framing.offsetX(from: previous, boardWidth: boardWidth) else { return }
 
         // Deferred by one turn of the main actor, and this is the whole reason
         // the first attempt did nothing on screen. `onChange` runs *inside* the
@@ -588,13 +633,6 @@ public struct BoardView: View {
         Task { await model.addRepo(path: url.path) }
     }
 
-    /// Analysis is refused for the same repositories cards are: a blocked repo
-    /// would fail at the first run anyway, and saying so here is cheaper.
-    private var isSelectedRepoBlocked: Bool {
-        guard let id = model.selectedRepoID, let repo = model.repos.first(where: { $0.id == id })
-        else { return true }
-        return !repo.isEnabled || model.isBlocked(repo)
-    }
 }
 
 // MARK: - What the board frames, and where
@@ -652,6 +690,17 @@ struct BoardFraming: Equatable, Sendable {
     var panelOrigin: ElliotModel.Column?
     /// How many columns wide the panel is.
     var spans: Int
+    /// Whether the analysis panel is showing, as the row's leading slot.
+    ///
+    /// Part of the row's shape, so a change to it must re-frame — the same
+    /// argument the three paths above make. This one is stronger than any of
+    /// them: the analysis panel sits *ahead* of all five columns, so opening it
+    /// moves every column's leading edge, and a board that did not re-frame
+    /// would be looking at the wrong column rather than at the right one from
+    /// the wrong distance.
+    var analysisOpen: Bool
+    /// How many columns wide the analysis panel is.
+    var analysisSpans: Int
 
     /// Where the board must scroll so the selected column and its panel are
     /// framed together, or `nil` when there is nothing to frame.
@@ -663,19 +712,25 @@ struct BoardFraming: Equatable, Sendable {
     /// answers before the layout that inserts the panel has run.
     func offsetX(boardWidth: CGFloat) -> CGFloat? {
         guard let selectedColumn else { return nil }
-        let slots = PanelLayout.boardOrder(selected: panelOrigin)
+        let slots = PanelLayout.boardOrder(selected: panelOrigin, analysisOpen: analysisOpen)
         let columnWidth = PanelLayout.columnWidth(boardWidth: boardWidth)
         let panelWidth = PanelLayout.panelWidth(columnWidth: columnWidth, spans: spans)
+        // Zero when it is shut, which is what makes it contribute nothing to the
+        // sum rather than a width for a slot that is not in the row.
+        let analysisWidth = analysisOpen
+            ? PanelLayout.panelWidth(columnWidth: columnWidth, spans: analysisSpans)
+            : 0
 
         guard let originMinX = PanelLayout.minX(
             of: .column(selectedColumn), in: slots,
-            columnWidth: columnWidth, panelWidth: panelWidth
+            columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: analysisWidth
         ) else { return nil }
         // `nil` when the panel is shut, and passed through as `nil`: the pair is
         // then the column by itself, which is what `frameOffsetX` measures the
         // lead against.
         let panelMinX = PanelLayout.minX(
-            of: .panel, in: slots, columnWidth: columnWidth, panelWidth: panelWidth
+            of: .panel, in: slots,
+            columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: analysisWidth
         )
         return PanelLayout.frameOffsetX(
             originMinX: originMinX,
@@ -687,6 +742,24 @@ struct BoardFraming: Equatable, Sendable {
             // parameter this method is asked in terms of.
             viewportWidth: boardWidth
         )
+    }
+
+    /// The offset to apply given what the row just *became*.
+    ///
+    /// Opening the analysis panel frames the analysis panel — it is the leading
+    /// slot, so that is 0 — because a panel the reader has just asked for that
+    /// lands off-screen to the left reads as a panel that did not open. That
+    /// false negative is written down in `CLAUDE.md`: it cost nine written
+    /// claims and two merges on the window scenes, and the only reason a
+    /// board-inline panel escapes it is that the board scrolls to it.
+    ///
+    /// Every other transition — closing it included — frames the selected card
+    /// and its panel exactly as it does today. Closing is deliberately not a
+    /// special case: the reader's attention after a close is wherever their card
+    /// is, not at the leading edge of a row that no longer has a panel in it.
+    func offsetX(from previous: BoardFraming, boardWidth: CGFloat) -> CGFloat? {
+        if analysisOpen && !previous.analysisOpen { return 0 }
+        return offsetX(boardWidth: boardWidth)
     }
 }
 
@@ -789,12 +862,17 @@ struct StatusBar: View {
 struct ColumnView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openWindow) private var openWindow
     let column: ElliotModel.Column
     let width: CGFloat
     @State private var isTargeted = false
     /// Per column and per repository, so collapsing a repository in Backlog does
     /// not hide it in To Do — the two are different questions.
     @State private var collapsed: Set<UUID> = []
+    /// Which days in Done are folded away. A separate set from `collapsed`
+    /// rather than a widened one: a repository and a day are different things
+    /// to have folded, and one column never shows both.
+    @State private var collapsedDays: Set<Date> = []
     /// The card a drop would land above, or `nil` when the pointer is not over
     /// one. Held on the column rather than as `@State` inside each card, so
     /// exactly one insertion cue can be drawn at a time — two bars would say the
@@ -903,10 +981,19 @@ struct ColumnView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 6) {
-                    // Grouped only when the picker says "All repositories".
-                    // With one repository chosen every card belongs to it, and a
-                    // header repeating its name on every column is furniture.
-                    if let groups {
+                    // Done is grouped by *day*, and that branch is taken before
+                    // the repository one on purpose. Nesting the two would give
+                    // this column two levels of heading where every other has
+                    // one, and nothing is lost by choosing: `CardView` already
+                    // prints the repository name on the card itself whenever
+                    // the picker says "All repositories", which is exactly when
+                    // `groups` is non-nil.
+                    if column == .done {
+                        shippingLogRows
+                    } else if let groups {
+                        // Grouped only when the picker says "All repositories".
+                        // With one repository chosen every card belongs to it, and a
+                        // header repeating its name on every column is furniture.
                         ForEach(groups) { group in
                             groupHeader(group)
                             if !collapsed.contains(group.repoID) {
@@ -1002,6 +1089,16 @@ struct ColumnView: View {
                 // `CardReorder.placement` is about to decline anyway.
                 guard id != card.id else { return false }
 
+                // Done is drawn in `columnEnteredAt` order, so a placement
+                // inside it cannot be honoured: `reorder` would write an
+                // `orderIndex` the column does not read and the card would
+                // redraw exactly where it was. Refused at the gesture, so the
+                // drag snaps back — the same answer #47's review demanded for
+                // every other move the board is about to decline. A drop from
+                // *another* column still passes, because that is a column
+                // change and `reorder` performs it.
+                if card.column == .done, model.card(id: id)?.column == .done { return false }
+
                 // Only a drop from *another* column can be refused; asking
                 // `refuse` about a same-column drop would answer "same column"
                 // and put a refusal note on a gesture that is allowed.
@@ -1012,6 +1109,11 @@ struct ColumnView: View {
                 Task { await model.reorder(cardID: id, in: card.column, above: card) }
                 return true
             } isTargeted: { targeted in
+                // No insertion cue in Done: it would promise a position the
+                // column cannot show. The column's own highlight still says the
+                // drop is accepted, which for a card arriving from elsewhere it
+                // is.
+                guard card.column != .done else { return }
                 insertAbove = targeted ? card.id : (insertAbove == card.id ? nil : insertAbove)
             }
             .onDrag {
@@ -1044,6 +1146,71 @@ struct ColumnView: View {
     private var groups: [CardGroup]? {
         guard model.selectedRepoID == nil else { return nil }
         return groupByRepo(cards, repos: model.repos)
+    }
+
+    /// Done's cards, bucketed by the day they landed and cut to the horizon.
+    ///
+    /// Computed per access, like `groups` beside it and for the same reason:
+    /// the rule is cheap, and caching it would need something to invalidate the
+    /// cache — including at midnight, when the answer changes without any card
+    /// moving.
+    private var doneLog: ShippingLog { model.doneLog() }
+
+    /// A heading per day, newest first, each foldable.
+    ///
+    /// The rows are `draggable(_:)` exactly like every other column's, so a
+    /// finished card can still be dragged back out — Done is a horizon on what
+    /// is *drawn*, never a change to what a card is or what may be done to it.
+    @ViewBuilder
+    private var shippingLogRows: some View {
+        let log = doneLog
+        ForEach(log.days) { day in
+            ShipDayHeader(
+                label: day.label,
+                count: day.cards.count,
+                collapsed: collapsedDays.contains(day.start)
+            ) {
+                if collapsedDays.contains(day.start) {
+                    collapsedDays.remove(day.start)
+                } else {
+                    collapsedDays.insert(day.start)
+                }
+            }
+            if !collapsedDays.contains(day.start) {
+                ForEach(day.cards) { card in
+                    draggable(card)
+                }
+            }
+        }
+        if log.olderCount > 0 {
+            olderFooter(log.olderCount)
+        }
+    }
+
+    /// Where the rest of the finished work went.
+    ///
+    /// Drawn only when the horizon actually hid something, so a board younger
+    /// than the horizon never grows a control that would open an empty window.
+    /// Nothing here is destructive and nothing is lost — the cards it counts
+    /// are in the database exactly as they were, which is what lets this be a
+    /// quiet line rather than a warning.
+    private func olderFooter(_ count: Int) -> some View {
+        Button {
+            openWindow(id: "archive")
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "archivebox")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                Fact(text: "\(count) older", tint: Palette.quiet, small: true)
+                Spacer()
+                ConsoleLabel(text: "Open Archive")
+            }
+            .contentShape(Rectangle())
+            .padding(.top, 6)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(BoardAccessibility.olderFooter(count: count))
     }
 
     /// Deliberately carries no `dropDestination`.
@@ -1178,6 +1345,28 @@ enum BoardAccessibility {
         "\(repoName), \(count) \(cards(count)) in \(column)"
     }
 
+    /// One day's heading in the Done column, or in the archive.
+    ///
+    /// Here rather than spelled out in `ShipDayHeader` for the reason recorded
+    /// on `groupCaption`: the singular has to be written out by the one
+    /// function that knows how, or a third label on this column joins the two
+    /// that once disagreed about "1 cards".
+    static func shipDayCaption(day: String, count: Int) -> String {
+        "\(day), \(count) \(cards(count))"
+    }
+
+    /// Done's footer: how many finished cards the horizon is not drawing, and
+    /// where the rest of them are.
+    ///
+    /// Empty at zero rather than "0 older cards", because at zero the footer is
+    /// **not drawn at all** — a label announcing a control that is not on
+    /// screen is worse than no label. The visible row is terser than this
+    /// ("37 older · Open Archive"); a sentence is what VoiceOver needs.
+    static func olderFooter(count: Int) -> String {
+        guard count > 0 else { return "" }
+        return "\(count) older \(cards(count)). Open Archive."
+    }
+
     /// One row of a card's move history, read as a sentence.
     ///
     /// The visible row is a tabular line — two columns, an age, an origin — and
@@ -1211,6 +1400,24 @@ enum BoardAccessibility {
     /// because it is a sentence a test can hold, next to the other two.
     static func panelLabel(title: String, column: ElliotModel.Column) -> String {
         "Details for \(title), in \(column.displayName)"
+    }
+
+    /// What the analysis panel announces itself as.
+    ///
+    /// The detail panel's label above carries a column because a caret and a
+    /// tether draw that relationship and neither can be heard. This one carries
+    /// a **repository** for the mirror-image reason: the analysis panel has no
+    /// caret and no origin column, so nothing on it draws which repository it is
+    /// about — it is in the toolbar picker, three controls away.
+    ///
+    /// Three sentences, one per state the panel can be in. A pure function for
+    /// the reason the two captions above are: a label written inline in a `body`
+    /// is a claim nothing can hold.
+    static func analysisPanelLabel(repoName: String?, proposalCount: Int?) -> String {
+        guard let repoName else { return "Analysis. Pick a single repository to analyse." }
+        guard let proposalCount else { return "Analysis of \(repoName). Not started." }
+        let noun = proposalCount == 1 ? "proposal" : "proposals"
+        return "Analysis of \(repoName), \(proposalCount) \(noun) to decide."
     }
 
     private static func cards(_ count: Int) -> String {

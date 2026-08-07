@@ -43,25 +43,10 @@ struct ListReposTool: BoardTool {
     }
 
     func call(_: [String: Value], bridge: any BridgeProviding) async throws -> CallTool.Result {
-        switch await bridge.read(.listRepos) {
-        case .live(let response):
-            return try .render(response) { payload in
-                guard case .repos(let repos) = payload else { return nil }
-                return [
-                    "repos": try Value.encoding(repos),
-                    "total": .int(repos.count),
-                    "source": .string("live"),
-                ]
-            }
-        case .offline(let store, let reason):
-            let repos = try await store.repos().map { RepoDTO(repo: $0) }
-            var fields: [String: Value] = [
-                "repos": try Value.encoding(repos),
-                "total": .int(repos.count),
-                "source": .string("offline-db"),
-            ]
-            ToolOutput.attachNote(&fields, ToolOutput.offlineNote(reason))
-            return try .ok(fields)
+        let outcome = await bridge.read(.listRepos)
+        return try .render(outcome) { payload in
+            guard case .repos(let repos) = payload else { return nil }
+            return ["repos": try Value.encoding(repos), "total": .int(repos.count)]
         }
     }
 }

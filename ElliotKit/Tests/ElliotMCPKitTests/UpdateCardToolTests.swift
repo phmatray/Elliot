@@ -118,15 +118,9 @@ struct UpdateCardToolTests {
             isAppRunning: false,
             onRead: { request in
                 log.record(request)
-                return .offline(store, .appNotRunning)
+                return await StubBridge.snapshotOutcome(store, request)
             },
-            onWrite: { _ in
-                .failure(
-                    code: .appUnavailable,
-                    message: "Elliot is not running and could not be launched.",
-                    hint: "Open Elliot.app and try again."
-                )
-            }
+            onWrite: { _ in StubBridge.snapshotRefusesWrites }
         )
 
         let answer = try await call(

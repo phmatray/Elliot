@@ -1,3 +1,4 @@
+import ElliotEngine
 import ElliotModel
 import Foundation
 import Testing
@@ -139,5 +140,110 @@ struct AppModelAnalysisSessionTests {
         model.markStalled(runID: stalling.id)
 
         #expect(model.analysis?.runs.first?.state == .stalled)
+    }
+
+    // MARK: - The panel's visibility, which is not the session
+
+    @Test("Hiding the analysis panel does not end the session")
+    func hidingKeepsTheSession() {
+        // The whole of #151's criterion 5. `closeAnalysis` drops the session,
+        // and `ObservationHandle.deinit` cancels the live proposal observation
+        // with it — so a toggle that called it would silently stop proposals
+        // landing while eight lenses were still reading.
+        let model = model()
+        let id = UUID()
+        model.openAnalysis(id: id)
+        model.showingAnalysisPanel = true
+        #expect(model.analysis?.id == id)
+
+        model.showingAnalysisPanel = false
+        #expect(model.analysis?.id == id)
+
+        // Re-showing finds the same session, not a new one.
+        model.showingAnalysisPanel = true
+        #expect(model.analysis?.id == id)
+
+        // Only this ends it.
+        model.closeAnalysis()
+        #expect(model.analysis == nil)
+    }
+
+    /// The gate #151 broke and put back.
+    ///
+    /// The toolbar button used to carry `.disabled(… || isSelectedRepoBlocked)`,
+    /// and that expression was the **only** preflight gate on the whole analysis
+    /// path — `AnalysisService.start` checks `isEnabled` and the in-flight
+    /// dedupe and nothing else. Dropping the `.disabled` was right (a toggle you
+    /// cannot switch off is worse than one that opens onto an explanation) and
+    /// it took the gate with it: Start would have spawned up to eight unattended
+    /// runs inside a checkout Preflight had already refused.
+    @Test("An analysis is refused for a repository Preflight is failing")
+    func analysisIsGatedOnPreflight() {
+        let healthy = Repo(path: "/tmp/healthy", nameWithOwner: "o/healthy", displayName: "healthy")
+        let off = Repo(
+            path: "/tmp/off", nameWithOwner: "o/off", displayName: "off", isEnabled: false)
+        let blocked = Repo(path: "/tmp/blocked", nameWithOwner: "o/blocked", displayName: "blocked")
+
+        let model = AppModel()
+        model.testOnlySeed(repos: [healthy, off, blocked], cards: [])
+        model.testOnlySeedChecks(
+            repo: blocked.id,
+            [CheckResult(id: "worktree", title: "Main checkout", status: .fail, detail: "linked")])
+
+        // No single repository chosen: eight runs against "everything" is not a
+        // thing this product does.
+        model.selectedRepoID = nil
+        #expect(model.analysisRefusal == "Pick a single repository to analyse.")
+
+        model.selectedRepoID = off.id
+        #expect(model.analysisRefusal == Consequence.reason(.repoDisabled))
+
+        model.selectedRepoID = blocked.id
+        #expect(model.analysisRefusal?.contains("Preflight") == true)
+
+        // And the one case that must be allowed, so the gate is a gate and not a
+        // wall.
+        model.selectedRepoID = healthy.id
+        #expect(model.analysisRefusal == nil)
+    }
+
+    @Test("The setup form and the staged selection survive hiding the panel")
+    func hidingKeepsTheSetupForm() {
+        // The other half of criterion 5, and the half that was still `@State`
+        // until the code-review pass: hiding removes `.analysis` from the row,
+        // which tears the view down. Ticking six lenses, typing instructions and
+        // raising the limit, then glancing at Backlog, must not undo any of it.
+        let model = AppModel()
+        model.analysisAngles = [.bugs, .tests, .docsAndDX]
+        model.analysisInstructions = "Focus on the store layer."
+        model.analysisMaxStories = 20
+        let staged = UUID()
+        model.analysisSelection = [staged]
+
+        model.showingAnalysisPanel = true
+        model.showingAnalysisPanel = false
+
+        #expect(model.analysisAngles == [.bugs, .tests, .docsAndDX])
+        #expect(model.analysisInstructions == "Focus on the store layer.")
+        #expect(model.analysisMaxStories == 20)
+        #expect(model.analysisSelection == [staged])
+    }
+
+    @Test("The analysis panel is hidden at launch and three columns wide")
+    func defaultsAreHiddenAndWide() {
+        let model = AppModel()
+        // Hidden, unlike the detail panel: that one costs nothing with no card
+        // selected, whereas this would claim three columns on every launch for
+        // a setup form nobody asked for.
+        #expect(model.showingAnalysisPanel == false)
+        #expect(model.analysisSpans == PanelLayout.spanChoices.wide)
+
+        // Two panels, two reader preferences. Setting one must not move the
+        // other — the board is wide enough to want them at different widths.
+        model.analysisSpans = PanelLayout.spanChoices.narrow
+        #expect(model.panelSpans == PanelLayout.spanChoices.wide)
+        model.panelSpans = PanelLayout.spanChoices.narrow
+        model.analysisSpans = PanelLayout.spanChoices.wide
+        #expect(model.panelSpans == PanelLayout.spanChoices.narrow)
     }
 }

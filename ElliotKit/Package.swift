@@ -107,7 +107,17 @@ let package = Package(
         // resource bundle: the same files are used by hand from a terminal when
         // reproducing a run.
         .testTarget(name: "ElliotProcessTests", dependencies: ["ElliotProcess", "TestSupport"]),
-        .testTarget(name: "ElliotEngineTests", dependencies: ["ElliotEngine", "TestSupport"]),
+        // `ElliotMCPKit` here is a **test**-target edge and nothing more: this is
+        // the only target that can see both halves of the wire's read path, so
+        // it is the only place `OfflineParityTests` can drive one seeded board
+        // through `MCPRequestHandler.handle` and `OfflineResponder.respond` and
+        // compare the bytes. The source-target invariant is untouched —
+        // `ElliotMCPKit` still depends on neither `ElliotEngine` nor
+        // `ElliotProcess`, so the helper still holds no copy of the rules.
+        .testTarget(
+            name: "ElliotEngineTests",
+            dependencies: ["ElliotEngine", "ElliotMCPKit", "TestSupport"]
+        ),
         // Reaches past the wire into the helper that speaks it: the analysis
         // cases are asserted round-trip, so the encoder and the tool that emits
         // it are proven against each other rather than separately.

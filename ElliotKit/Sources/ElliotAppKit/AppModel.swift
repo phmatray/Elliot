@@ -100,11 +100,26 @@ public final class AppModel {
 
     /// Sheet and inspector state, here rather than in a view, because a menu
     /// command cannot reach a view's `@State`.
-    ///
-    /// Analysis is deliberately absent: it is a `Window` scene now, so its
-    /// presentation is `openWindow`'s business and there is no flag to keep in
-    /// step with it.
     public var showingInspector = true
+
+    /// Whether the analysis panel is showing, as the board row's leading slot.
+    ///
+    /// ⚠️ **This is not ``analysis``.** Hiding the panel must leave the session,
+    /// its runs and its live proposal observation exactly where they are:
+    /// ``closeAnalysis()`` drops the `AnalysisSession`, and
+    /// ``ObservationHandle`` cancels the observation from its `deinit` — so a
+    /// toggle that called it would silently stop proposals landing while eight
+    /// lenses were still reading. Only `Finish`, in the panel's footer, ends a
+    /// session.
+    ///
+    /// Hidden at launch, unlike ``showingInspector``: the detail panel costs
+    /// nothing with no card selected, whereas this one would claim three
+    /// columns of the board for a setup form nobody asked for.
+    ///
+    /// This comment used to say the analysis had no flag at all, because it was
+    /// a `Window` scene and its presentation was `openWindow`'s business. #151
+    /// made it a panel; the scene is gone.
+    public var showingAnalysisPanel = false
 
     /// How many board columns wide the detail panel is.
     ///
@@ -118,6 +133,38 @@ public final class AppModel {
     /// merge confirmation stays in the header at both, where no switch can hide
     /// it.
     public var panelSpans = 3
+
+    /// How many board columns wide the analysis panel is.
+    ///
+    /// The same kind of reader preference ``panelSpans`` is, and deliberately a
+    /// *separate* one: they are two panels a reader sets independently, and the
+    /// board is wide enough to want them at different widths. Sharing one
+    /// number would mean widening the analysis to read a proposal also widened
+    /// the card detail nobody was looking at.
+    ///
+    /// 3 for the same reason `panelSpans` is: the setup screen's lens grid is
+    /// two columns, and a proposal row carries a title, a narrative, a
+    /// rationale and an evidence strip.
+    public var analysisSpans = 3
+
+    /// What the analysis panel's setup form holds, and which proposals are
+    /// staged for a bulk accept or reject.
+    ///
+    /// ⚠️ **On the model, not in the view, because hiding the panel destroys the
+    /// view.** `showingAnalysisPanel = false` removes `.analysis` from
+    /// `PanelLayout.boardOrder`, which tears down `AnalysisPanelView` and every
+    /// `@State` in it. As `@State` these four made the hide lossy in a way the
+    /// README, `CLAUDE.md` and the ✕'s own tooltip all say it is not: tick six
+    /// lenses, type instructions, raise the limit, glance at Backlog, and come
+    /// back to two lenses and an empty field. `AnalysisSessionTests` proved only
+    /// that `analysis` survived — the half that already lived here.
+    ///
+    /// Same argument as ``logFilter`` below, one panel over.
+    public var analysisAngles: Set<AnalysisAngle> = [.bugs, .quickWins]
+    public var analysisInstructions = ""
+    public var analysisMaxStories = 8
+    /// The proposals staged for the footer's Accept / Reject.
+    public var analysisSelection: Set<UUID> = []
 
     /// Which rows of a run log the panel is showing.
     ///
@@ -709,6 +756,29 @@ public final class AppModel {
         cards
             .filter { $0.column == column && (selectedRepoID == nil || $0.repoID == selectedRepoID) }
             .sorted { $0.orderIndex < $1.orderIndex }
+    }
+
+    /// Done as a dated log rather than a pile.
+    ///
+    /// Built on `cards(in:)` so the repository picker is applied in exactly one
+    /// place — a second filter here is how the board and this column would come
+    /// to disagree about what "All repositories" means.
+    ///
+    /// The log re-sorts by `columnEnteredAt`, which makes Done the one column
+    /// whose on-screen order is not `orderIndex`. That is deliberate:
+    /// `orderIndex` records a position a human chose while the card was still
+    /// in play, and it says nothing once the card is finished. Noted here
+    /// because an asymmetry nobody wrote down reads as a bug to whoever finds
+    /// it next.
+    ///
+    /// `now` and `calendar` are parameters with ambient defaults: the view
+    /// wants the wall clock, and a test cannot have one.
+    public func doneLog(
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        horizonDays: Int? = ShippingLog.defaultHorizonDays
+    ) -> ShippingLog {
+        shippingLog(cards(in: .done), now: now, calendar: calendar, horizonDays: horizonDays)
     }
 
     public func repo(for card: Card) -> Repo? {
@@ -1357,6 +1427,28 @@ public final class AppModel {
 
     // MARK: - Analysis
 
+    /// Why an analysis cannot start right now, or `nil` when it can.
+    ///
+    /// One answer, read by both surfaces: the toolbar button's tooltip and the
+    /// panel's own footer. It used to be a `private var` on `BoardView` feeding
+    /// a `.disabled(…)` built from a *second* expression beside it, and #151
+    /// removed that `.disabled` — correctly, because a disabled toggle is a
+    /// toggle you cannot switch off, but the same expression was the **only**
+    /// preflight gate on the analysis path. `AnalysisService.start` checks
+    /// `isEnabled` and the in-flight dedupe and nothing else, so eight
+    /// unattended runs could have started in a checkout Preflight had already
+    /// refused. The gate belongs on the act, not on the panel's visibility.
+    public var analysisRefusal: String? {
+        guard let id = selectedRepoID, let repo = repos.first(where: { $0.id == id }) else {
+            return "Pick a single repository to analyse."
+        }
+        if !repo.isEnabled { return Consequence.reason(.repoDisabled) }
+        if isBlocked(repo) {
+            return "A Preflight check is failing for this repository — fix it there first."
+        }
+        return nil
+    }
+
     public func startAnalysis(
         repoID: UUID, angles: [AnalysisAngle], instructions: String, maxStories: Int
     ) async {
@@ -1372,7 +1464,7 @@ public final class AppModel {
             // Written into the session, which in setup is `nil` — so this is
             // discarded, exactly as it was before, when the footer's first
             // branch made a note unreachable while no analysis was open
-            // (`AnalysisWindow.swift:363`). Logged so the failure stops
+            // (`AnalysisPanelView.swift`, the `footer`). Logged so the failure stops
             // vanishing outright; showing it needs a surface the setup footer
             // does not have, and that is its own issue.
             analysis?.note = error.localizedDescription
@@ -1453,6 +1545,43 @@ public final class AppModel {
         return (try? await store.analyses(repoID: selectedRepoID, limit: 20)) ?? []
     }
 
+    /// One page of the finished history, and how many rows the same filter
+    /// matches overall.
+    ///
+    /// Both halves come back together because the archive cannot use one
+    /// without the other: the page is what it draws, the total is the only
+    /// thing that can say whether to offer another. Read in one call so they
+    /// answer the same filter — asking separately is how a "Load more" that
+    /// loads nothing gets built.
+    ///
+    /// Honours `selectedRepoID`, like every other read on this model. The
+    /// caller has to re-ask when that changes — this reads it, it does not
+    /// watch it.
+    ///
+    /// **`nil` means "could not look", and is not the same as an empty page.**
+    /// `store` is nil until `start()` has opened it, and macOS restores an open
+    /// `Window` scene at launch — so the archive's first read can genuinely
+    /// arrive before there is a database to read. Collapsing that into
+    /// `([], 0)` let the window state "Nothing has reached Done yet." on the
+    /// strength of a question it never got to ask, permanently, because nothing
+    /// re-ran the read. Same distinction the board draws everywhere else
+    /// between an answer and an absence of one.
+    public func archivePage(
+        search: String,
+        limit: Int,
+        offset: Int
+    ) async -> (cards: [Card], total: Int)? {
+        guard let store else { return nil }
+        let term = search.isEmpty ? nil : search
+        guard
+            let cards = try? await store.doneCards(
+                repoID: selectedRepoID, search: term, limit: limit, offset: offset
+            ),
+            let total = try? await store.doneCardCount(repoID: selectedRepoID, search: term)
+        else { return nil }
+        return (cards, total)
+    }
+
     public func updateProposal(_ proposal: StoryProposal) async {
         try? await analysisService?.updateProposal(proposal)
     }
@@ -1504,6 +1633,16 @@ public final class AppModel {
         self.cards = cards
         hasLoadedRepos = true
         selectedRepoID = nil
+    }
+
+    /// The same trick for one repository's preflight verdict.
+    ///
+    /// `repoChecks` is filled by a real preflight sweep, and the rule that needs
+    /// it — "an analysis must not start in a repository Preflight has refused" —
+    /// is exactly the one #151 broke by deleting the toolbar's `.disabled`. A
+    /// rule whose only failing case cannot be seeded is a rule with no test.
+    func testOnlySeedChecks(repo: UUID, _ checks: [CheckResult]) {
+        repoChecks[repo] = checks
     }
 
     /// The same trick for the four collections that hold runs.

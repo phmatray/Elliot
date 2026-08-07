@@ -10,6 +10,16 @@ import SwiftUI
 /// insert — two panels and two carets mid-transition. As one case it is
 /// re-ordered, never rebuilt.
 enum BoardSlot: Hashable {
+    /// The analysis, pinned at the leading edge of the row.
+    ///
+    /// Before Backlog because that is where what it produces lands: accepting a
+    /// proposal makes a card in the column immediately to its right. It has no
+    /// origin column and therefore no caret, no tether and no flip — the whole
+    /// second half of this file is about a panel that belongs to a *card*, and
+    /// this one belongs to the board.
+    ///
+    /// One constant identity, for the reason `.panel` has one.
+    case analysis
     case column(ElliotModel.Column)
     case panel
 }
@@ -97,20 +107,32 @@ enum PanelLayout {
         return spans * columnWidth + (spans - 1) * gutter
     }
 
-    /// What the board's `HStack` actually measures: five columns plus the panel
-    /// and seven gutters, or five columns and six gutters when nothing is
-    /// selected. `spans: nil` means closed.
+    /// What the board's `HStack` actually measures: five columns, plus each
+    /// panel that is open, plus one gutter per slot and one more for the row's
+    /// own padding. A `nil` span means that panel is shut.
     ///
-    /// The closed case is exactly today's layout — at 1640pt it comes to 1640 —
-    /// so a scroll predicate derived from this is a no-op with the panel shut.
-    /// With the panel open it is 1.6–1.7× the viewport at every window size the
-    /// app allows, which is why the board scrolls whenever the panel is open.
-    static func contentWidth(boardWidth: CGFloat, spans: Int?) -> CGFloat {
+    /// The both-shut case is exactly today's layout — at 1640pt it comes to
+    /// 1640 — so a scroll predicate derived from this is a no-op with nothing
+    /// open. With either panel open it is well past the viewport at every
+    /// window size the app allows, which is why the board scrolls whenever one
+    /// is open.
+    ///
+    /// ⚠️ `analysisSpans` is **required, not defaulted**. A default is how a
+    /// caller silently measures a row that is not the one on screen, which is
+    /// exactly the failure `BoardFraming`'s doc comment describes for its three
+    /// missed triggers — and the old predicate already shipped that bug once,
+    /// reporting "everything fits" over content 1.6× the viewport.
+    static func contentWidth(boardWidth: CGFloat, spans: Int?, analysisSpans: Int?) -> CGFloat {
+        let column = columnWidth(boardWidth: boardWidth)
         let count = CGFloat(ElliotModel.Column.allCases.count)
-        let columns = columnWidth(boardWidth: boardWidth) * count
-        guard let spans else { return columns + Metric.gutter * (count + 1) }
-        let panel = panelWidth(columnWidth: columnWidth(boardWidth: boardWidth), spans: spans)
-        return columns + panel + Metric.gutter * (count + 2)
+        var total = column * count
+        var slots = count
+        for open in [spans, analysisSpans] {
+            guard let open else { continue }
+            total += panelWidth(columnWidth: column, spans: open)
+            slots += 1
+        }
+        return total + Metric.gutter * (slots + 1)
     }
 
     // MARK: - Resizing
@@ -229,14 +251,19 @@ enum PanelLayout {
 
     /// The columns in board order with `.panel` inserted immediately after the
     /// origin column — or immediately before it, for the column that opens
-    /// left. Six entries when a card is selected, five otherwise, and always
-    /// all five columns.
-    static func boardOrder(selected: ElliotModel.Column?) -> [BoardSlot] {
+    /// left — and `.analysis` pinned ahead of all of them when it is showing.
+    /// Always all five columns, in order, whatever else is in the row.
+    ///
+    /// The analysis slot is unconditionally first and never flips: it has no
+    /// origin column to be beside, and the column it belongs *next to* is the
+    /// one it fills.
+    static func boardOrder(selected: ElliotModel.Column?, analysisOpen: Bool) -> [BoardSlot] {
         let columns = ElliotModel.Column.allCases
-        guard let selected else { return columns.map(BoardSlot.column) }
+        var slots: [BoardSlot] = analysisOpen ? [.analysis] : []
+        slots.reserveCapacity(columns.count + 2)
 
-        var slots: [BoardSlot] = []
-        slots.reserveCapacity(columns.count + 1)
+        guard let selected else { return slots + columns.map(BoardSlot.column) }
+
         let flipped = opensLeft(of: selected)
         for column in columns {
             if column == selected, flipped { slots.append(.panel) }
@@ -262,15 +289,36 @@ enum PanelLayout {
     /// board and look like it had worked.
     static func minX(
         of target: BoardSlot, in slots: [BoardSlot],
-        columnWidth: CGFloat, panelWidth: CGFloat, gutter: CGFloat = Metric.gutter
+        columnWidth: CGFloat, panelWidth: CGFloat, analysisWidth: CGFloat,
+        gutter: CGFloat = Metric.gutter
     ) -> CGFloat? {
         guard let index = slots.firstIndex(of: target) else { return nil }
         // The row's own padding is one gutter, so the first slot starts there.
         var x = gutter
         for slot in slots[..<index] {
-            x += (slot == .panel ? panelWidth : columnWidth) + gutter
+            x += slotWidth(
+                slot, columnWidth: columnWidth,
+                panelWidth: panelWidth, analysisWidth: analysisWidth) + gutter
         }
         return x
+    }
+
+    /// How wide one slot is.
+    ///
+    /// Extracted from the `slot == .panel ? panelWidth : columnWidth` ternary
+    /// `minX` used to carry. With three slot kinds that ternary silently
+    /// measures the analysis panel as a *column* — a row wrong by hundreds of
+    /// points, with nothing on screen to say so and every test still green,
+    /// because both halves of a two-way ternary stay type-correct when a third
+    /// case appears.
+    static func slotWidth(
+        _ slot: BoardSlot, columnWidth: CGFloat, panelWidth: CGFloat, analysisWidth: CGFloat
+    ) -> CGFloat {
+        switch slot {
+        case .analysis: analysisWidth
+        case .column: columnWidth
+        case .panel: panelWidth
+        }
     }
 
     // MARK: - Caret and tether

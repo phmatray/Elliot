@@ -103,6 +103,28 @@ write path for `column`.
 transition matrix. `rankNextSteps` (what `board_next` answers) decides by *calling* `evaluateMove`, so
 the board predicts its own behaviour instead of holding a second copy of the rules.
 
+**One spawn.** `ChildProcess` (`ElliotProcess/ChildProcess.swift`) is the only thing that starts a
+child, drains its pipes and publishes its exit. `ProcessRunner` and `StreamingProcess` are wrappers
+over it that differ *only* in what they do with the bytes, expressed as a `ChildOutputSink` — and the
+sink's methods are called **while the drain lock is held**, because under the lock is the whole
+invariant. A sink handed a chunk to deal with later can append to a result already returned or yield
+into a stream already finished, which is the tail-dropping bug restored.
+
+This was the mechanism written twice until #146, and the copy was not incidental: **eight comment
+lines were byte-identical between the two files**, and they were the four load-bearing arguments
+themselves. When the *explanation* of an invariant has been copied word for word, the invariant has
+been copied too. It had already cost three defects, each fixed in one file — `22bb230` (dropped run
+tails), `3b1c226`/#18 (`waitUntilExit` parking a cooperative thread), `36b6da6`/#105 (SIGKILL
+escalation `ProcessRunner` never got) — and #26 opened a fourth investigation aimed at one file.
+`DrainDuplicationTests` keeps the measurement runnable: it re-derives that comment count and fails
+naming the invariant that is written twice, because this repository has no CI and a gate that is not
+a test is a gate nobody re-runs.
+
+The single behavioural delta is recorded at both ends: `ProcessRunner` gave up its
+`state.withLock { !$0.exited } &&` conjunct in the SIGKILL backstop, since a sink may hold that lock
+across a write to the run's log. It loses nothing — the flag was set inside the termination handler,
+which runs only once Foundation has reaped the child, so `isRunning` had gone false strictly earlier.
+
 **`ElliotMCPKit` imports neither `ElliotEngine` nor `ElliotProcess`** — deliberate, commented in
 `Package.swift`. The helper holds no copy of the rules, so it cannot diverge from them.
 
@@ -134,10 +156,39 @@ The one difference that is *real* stays a parameter: `Attribution.live` records 
 move versus the board catching up after not running — it is persisted in `MoveAudit` and rendered
 from there, so collapsing the two would rewrite history rather than simplify code.
 
+**A read is answered once, as an `ElliotResponse`, and a tool only renders it.** `BridgeOutcome` has
+two cases and both carry a response: `.live` is what the app sent back, `.offline(response, reason)`
+is what `OfflineResponder` (`ElliotMCPKit/OfflineResponder.swift`) answered from the read-only
+snapshot. A tool never sees a `BoardStore`. `CallTool.Result.render(_ outcome:_ body:)` attaches
+`source` and the snapshot note — **prepending** it to whatever note the body wrote, since
+`board_list_cards` and `board_list_runs` attach a page note too — and the body contributes only the
+fields that are its own.
+
+`.offline` carried a `BoardStore` until #141, and the six sites that unpacked it each held a second
+implementation of the app's query: the clamp, the repo filter, the DTO assembly, the refusals. The
+drift is not hypothetical — it is recorded in the comments of the code that fixed it, four times, one
+tool at a time. `ListRunsTool` had to be taught that an unknown card is a refusal and not an empty
+page (*"which is finding 3 again, one tool over"*); `ListCardsTool` and then `ListProposalsTool` that
+an unknown repository is not "no filter" (*"collapsing them is what made a typo return the whole
+board as a success"*); `GetCardTool` that a snapshot leaving `activeRunID` nil *"would report every
+held card as movable"*. Each was found separately and the next tool started from zero, because
+nothing in the reply tells an agent which branch served it. `respond(to:)` switches **exhaustively
+over `ElliotRequest` with no `default`**, so a read case added to the wire has to be answered from
+the snapshot before the helper builds; `OfflineParityTests` (in `ElliotEngineTests`, which is the
+only target that can import both) drives one seeded board through `MCPRequestHandler.handle` and
+`OfflineResponder.respond` and compares the encoded bytes.
+
+What the two cannot do is share code: `MCPRequestHandler` lives in `ElliotEngine`, and the invariant
+above forbids importing it here. They share a **vocabulary**, which is what makes the parity test
+possible — the honest limit of the fix, and the reason the test exists rather than a comment asking
+for care.
+
 **The app is the sole writer.** SQLite does not notify other processes of writes, so `elliot-mcp` opens
 the store read-only and routes every mutation back over the unix socket. A read may fall back to
 `source: offline-db`; a **write never falls back** — writing a column change straight to the database
-would move a card without firing its rule.
+would move a card without firing its rule. `OfflineResponder` holds the same line one layer down: its
+write cases return `read_only`, spelled out one line each rather than swept into a `default`, because
+a `default` is exactly what would silently answer a *read* case nobody had implemented.
 
 **Rules belong in `ElliotModel`.** Views render and dispatch; they do not judge. This is still the
 rule, but since #72 it is a preference with a reason rather than a workaround: `AppModel` and the
@@ -165,7 +216,8 @@ from #75 to #89 carried some version of *"opening a `Window` scene needs the app
 automation driver refuses"*, and it was never true. A background `openWindow` does open the window; it
 just lands off-screen because the app is not frontmost. The trap is the enumeration, not the window:
 **list all of a pid's windows, never only the ones reporting `is_on_screen`.** Measured on a running
-build, six `Window` scenes declared in `ElliotApp.swift`, two of them open:
+build, when `ElliotApp.swift` declared six `Window` scenes (it declares five since #151 retired the
+Analysis one), two of them open:
 
 ```
 id=2737  on_screen=False  820x720 @ (454,215)  title='Preflight'
@@ -256,7 +308,50 @@ The backlog holds **user stories** (`role` / `want` / `benefit` + acceptance cri
 fields), not loose prose. A card is editable up to the moment it carries an issue number; after that
 `updateCard` refuses rather than letting card and issue drift.
 
-### The detail panel
+### The two panels
+
+The board's row is `PanelLayout.boardOrder(selected:analysisOpen:)`: five columns, plus up to two
+panels. `.analysis` is pinned **first**, before Backlog, because that is where what it produces
+lands; `.panel` sits beside the selected card's column. Both are measured in board columns by the
+same `PanelLayout.panelWidth`, both snap between two and three spans through the same
+`PanelLayout.snappedSpans`, and both are grabbed by the one `PanelResizeHandle` — a second copy of
+that strip would be a second copy of the four fixes written into it.
+
+`PanelLayout.slotWidth` exists because a two-way `slot == .panel ? panelWidth : columnWidth` ternary
+stays type-correct when a third slot kind appears and silently measures the new one as a column.
+
+**Hiding the analysis panel is not closing the analysis.** `showingAnalysisPanel` is view state;
+`closeAnalysis()` drops the `AnalysisSession`, and `ObservationHandle.deinit` cancels the live
+proposal observation with it — so a toggle that called it would stop proposals landing while eight
+lenses were still reading. Only *Finish* ends a session. The detail panel has no such distinction,
+which is why the analysis needed its own rule rather than a copy of `showingInspector`.
+
+⚠️ **Hiding also destroys the view, so nothing the reader has typed may be `@State` in it.** Hiding
+removes `.analysis` from `boardOrder`, which tears `AnalysisPanelView` down. The lens set, the extra
+instructions, the story limit and the staged proposal selection therefore live on `AppModel`
+(`analysisAngles`, `analysisInstructions`, `analysisMaxStories`, `analysisSelection`) — as `@State`
+they made the hide lossy in exactly the way this feature's own prose says it is not, and the test
+that "proved" the hide was safe only ever looked at `analysis`, the half that already lived on the
+model.
+
+⚠️ **An analysis must not start in a repository Preflight refused, and `AnalysisService` will not
+stop it.** `start` checks `isEnabled` and the in-flight dedupe and nothing else, so the gate lives in
+`AppModel.analysisRefusal` — one sentence read by both the toolbar tooltip and the panel's footer,
+and the value the Start button is disabled by. It used to be a `.disabled(…)` on the toolbar button;
+#151 removed that (a toggle you cannot switch off is worse than one that opens onto an explanation)
+and very nearly removed the gate with it.
+
+⛔ **The analysis panel carries no `.keyboardShortcut(.defaultAction)`.** It did as a `Window` scene,
+where Return was scoped to it. As a sibling in the board window it would share Return with
+`DetailPanelView`'s Save, with nothing in the code deciding between them — and the claimant here
+spawns up to eight unattended runs.
+
+Opening the analysis panel scrolls the board to its leading edge
+(`BoardFraming.offsetX(from:boardWidth:)`), because a panel the reader just asked for that lands
+off-screen reads as a panel that did not open — the same false negative that got written down nine
+times about the window scenes.
+
+#### The detail panel
 
 Selecting a card opens `DetailPanelView` **between the columns**, inserted immediately after the
 card's own column — or before it for the last column, which has no right — two or three column-widths
