@@ -7,6 +7,55 @@ public enum CheckStatus: String, Sendable, Hashable {
     case pass, warn, fail
 }
 
+/// Something Preflight can *do* about a finding, as opposed to describe.
+///
+/// The Repositories page has had actionable rows since #12 — `RepoFix`, executed
+/// by `RepoRegistryService.apply(_:layout:)`. Preflight had only `fixHint`,
+/// which is prose. Two screens answering the same question, *here is what is
+/// wrong, fix it*, and only one of them could. This is the other half.
+///
+/// Two cases, and which one applies is decided by **what kind of work it is**:
+///
+/// - `createLabels` is deterministic. `gh label create` per label, nothing to
+///   decide, nothing committed. It runs **no agent** — spending an unattended
+///   `claude -p` (which Elliot launches at `bypassPermissions`, in a real
+///   checkout) on a `for` loop would be slower, cost money, and hand a
+///   general-purpose tool write access for a job with one right answer.
+/// - `seedCard` is for the work that *is* a judgement: choosing a taxonomy edits
+///   `.claude/skills/repo-profile.md`, a **committed** file, so it deserves an
+///   issue, a pull request and a review. That is the board's pipeline, and
+///   reaching the agent through a card rather than through a button here is what
+///   keeps "moving a card is the act of execution" true — a second place that
+///   starts an unattended agent, outside the board, would not.
+public enum CheckFix: Sendable, Hashable, Identifiable {
+    /// Create these labels in this repository, now.
+    case createLabels(repoID: UUID, labels: [RequiredLabel])
+    /// Put a card in Backlog describing work someone should look at.
+    case seedCard(repoID: UUID, title: String, story: UserStory)
+
+    /// The button's text. Named here rather than in the view for the reason
+    /// `RepoFix.label` is: two screens must not spell the same act two ways.
+    public var label: String {
+        switch self {
+        case .createLabels(_, let labels):
+            // The count is in the text on purpose: "Create labels" on a row
+            // listing four of them is a button whose blast radius is guesswork.
+            "Create \(labels.count) label\(labels.count == 1 ? "" : "s")"
+        case .seedCard:
+            "Add a card"
+        }
+    }
+
+    public var id: String {
+        switch self {
+        case .createLabels(let repoID, let labels):
+            "createLabels:\(repoID):\(labels.map(\.name).joined(separator: ","))"
+        case .seedCard(let repoID, let title, _):
+            "seedCard:\(repoID):\(title)"
+        }
+    }
+}
+
 public struct CheckResult: Sendable, Hashable, Identifiable {
     public var id: String
     public var title: String
@@ -16,6 +65,13 @@ public struct CheckResult: Sendable, Hashable, Identifiable {
     /// themselves rather than take Elliot's word for it.
     public var command: String?
     public var fixHint: String?
+    /// What Preflight can do about this finding, if anything.
+    ///
+    /// Plural from the start, and defaulted to empty so not one existing check
+    /// grows a button by accident. Plural because the labels check already needs
+    /// two — a singular `fix` would have to be widened by the second check that
+    /// offers a choice, and that check is the one shipping with it.
+    public var fixes: [CheckFix]
 
     public init(
         id: String,
@@ -23,7 +79,8 @@ public struct CheckResult: Sendable, Hashable, Identifiable {
         status: CheckStatus,
         detail: String,
         command: String? = nil,
-        fixHint: String? = nil
+        fixHint: String? = nil,
+        fixes: [CheckFix] = []
     ) {
         self.id = id
         self.title = title
@@ -31,6 +88,7 @@ public struct CheckResult: Sendable, Hashable, Identifiable {
         self.detail = detail
         self.command = command
         self.fixHint = fixHint
+        self.fixes = fixes
     }
 }
 
