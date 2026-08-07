@@ -62,13 +62,31 @@ public struct ArchiveView: View {
     @State private var state = ArchiveState()
     @State private var query = ""
     @State private var isLoading = false
+    /// Whether a load has ever finished.
+    ///
+    /// Without it the window asserts "Nothing has reached Done yet." for the
+    /// debounce plus the query — before it has asked anything. Saying "there is
+    /// none" when the answer is "I have not looked" is the failure this project
+    /// keeps paying for; an empty view says nothing instead.
+    @State private var hasLoaded = false
 
     public var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 6) {
                 if state.cards.isEmpty {
-                    emptyState
+                    if hasLoaded { emptyState }
                 } else {
+                    // In the content, not the toolbar.
+                    //
+                    // It was a `ToolbarItem(placement: .status)` and macOS drew
+                    // it clipped — "25 of 44 shown" lost the leading digit to
+                    // the capsule the toolbar wraps a status item in, and
+                    // `.fixedSize()` did not stop it, because the width is the
+                    // toolbar's to decide once the search field is expanded.
+                    // Verified on screen twice, which is the only way this was
+                    // ever going to be found.
+                    Fact(text: summary, tint: Palette.quiet, small: true)
+                        .padding(.bottom, 2)
                     // No horizon: the archive is the whole history, which is
                     // the case this parameter exists for.
                     ForEach(shippingLog(state.cards, now: Date(), calendar: .current, horizonDays: nil).days) { day in
@@ -98,11 +116,6 @@ public struct ArchiveView: View {
             guard !Task.isCancelled else { return }
             state.setSearch(query)
             if state.cards.isEmpty { await loadMore() }
-        }
-        .toolbar {
-            ToolbarItem(placement: .status) {
-                Fact(text: summary, tint: Palette.quiet, small: true)
-            }
         }
     }
 
@@ -160,5 +173,6 @@ public struct ArchiveView: View {
             offset: state.loaded
         )
         state.append(page.cards, total: page.total)
+        hasLoaded = true
     }
 }
