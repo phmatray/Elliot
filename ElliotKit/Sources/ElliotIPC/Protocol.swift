@@ -224,6 +224,12 @@ public enum ElliotErrorCode: String, Codable, Sendable {
 /// intersection of the two targets that need it — `ElliotEngine` and
 /// `ElliotMCPKit` both depend on it already, so nothing about the layering
 /// moves to share these words.
+///
+/// ⚠️ **One case, not a sweep.** `repo_not_found` is still written twice —
+/// message *and* its `"Known: …"` hint, in `MCPRequestHandler` and
+/// `OfflineResponder` — so the drift this type closes for `card_not_found`
+/// remains open one refusal over. This enum is where those words go when
+/// somebody moves them; its existence is not evidence that anybody has.
 public enum RefusalHint {
     public static let cardNotFound = "board_list_cards lists the cards this board holds."
 }
