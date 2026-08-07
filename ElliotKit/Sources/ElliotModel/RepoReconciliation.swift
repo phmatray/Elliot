@@ -107,10 +107,20 @@ public struct RepoRow: Identifiable, Sendable, Hashable {
     public var detail: String
     public var fixes: [RepoFix]
 
+    /// What is on this repository's board, when it has one.
+    ///
+    /// Defaulted `nil` in the initialiser so `RepoReconciler` — which
+    /// reconciles GitHub, the disk and the registration, and has no business
+    /// knowing what is on a board — builds every row exactly as it did.
+    /// `RepoBoardDigest` attaches these in a second, separate pass, the shape
+    /// `RepoRegistryService.probe` already uses to refine `.ok` into a git
+    /// verdict.
+    public var board: RepoBoardTally?
+
     public init(
         id: String, nameWithOwner: String? = nil, path: String? = nil, repoID: UUID? = nil,
         visibility: RepoVisibility? = nil, issue: RepoIssue,
-        detail: String = "", fixes: [RepoFix] = []
+        detail: String = "", fixes: [RepoFix] = [], board: RepoBoardTally? = nil
     ) {
         self.id = id
         self.nameWithOwner = nameWithOwner
@@ -120,6 +130,31 @@ public struct RepoRow: Identifiable, Sendable, Hashable {
         self.issue = issue
         self.detail = detail
         self.fixes = fixes
+        self.board = board
+    }
+
+    /// Whether this row is one Elliot drives, and so may carry figures.
+    ///
+    /// **Not `repoID != nil`.** A registered fork has an id — `row(for:)` sets
+    /// `repoID: repo?.id` on the out-of-scope branch below, and so does the
+    /// `.unlisted`/`.notChecked` disk branch — so "has an id" and "is one
+    /// Elliot drives" are different predicates, and the one a view would reach
+    /// for is the wrong one. That is why this is a rule here rather than an
+    /// `if let` at the point of rendering: `swift test` can see it.
+    ///
+    /// The `switch` is exhaustive with **no `default:`**, for the reason
+    /// `RepositoriesView.icon` is: a verdict added to `RepoIssue` must fail to
+    /// compile here, so someone decides whether it carries figures instead of
+    /// inheriting an answer.
+    public var showsBoardFigures: Bool {
+        guard repoID != nil else { return false }
+        switch issue {
+        case .outOfScope:
+            return false
+        case .ok, .notCloned, .notRegistered, .missing, .misplaced, .unlisted, .notChecked,
+            .behind, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable:
+            return true
+        }
     }
 }
 
