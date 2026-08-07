@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1167 tests in 135 suites**, 3 of 3 samples on
-  `fix/116-swift-floor` on 2026-08-07 off `main` at `9de425e`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1244 tests in 141 suites**, 5 of 5 samples on
+  `feat/174-pr-status` on 2026-08-07 off `main` at `0902c10`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -48,7 +48,12 @@
     (1034 → 1050, 119 → 122 suites) — that is a fourth correction, and the drift is now
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
-    your own untouched run and compare against *that*, never against this line. Sixth in #155
+    your own untouched run and compare against *that*, never against this line.
+  - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
+    branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
+    hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
+    evidence that it is cheap to keep true when the gap is caught early rather than five features
+    later. Sixth in #155
     (1061 → 1098, 124 → 129), taken from a five-sample run rather than one — and then **again inside
     the same pull request** after merging `main`, which is the seventh correction and the clearest
     demonstration yet that this line is a date-stamp, not a fact. Eighth and ninth in #159
