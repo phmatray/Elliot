@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1330 tests in 150 suites**, 5 of 5 samples on
-  `fix/145-card-not-found-hint` on 2026-08-08 off `main` at `2494882`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1360 tests in 154 suites**, 5 of 5 samples on
+  `fix/145-card-not-found-hint` on 2026-08-08 off `main` at `ffdf616`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -61,6 +61,24 @@
     Corrected again landing #180 — the branch measured 1170 in 135 off `0902c10`, and the merge
     that landed it measured **1188 in 136** off `5b12add`, both from five samples. No ordinal,
     deliberately, and no attribution of the difference: see the two bullets below.
+    - **#209 is the first entry where the line was true at the start and true again at the end.**
+      Its branch measured the previous value exactly — 1328 in 149, off `2494882`, the commit and
+      count this line already named — so the whole of its +30/+4 is its own five new suites and
+      nothing is unattributed drift. That is only worth recording because it is what the entry keeps
+      failing to be: `main` did not move for the length of the branch, which is the *one* condition
+      under which a number written here survives to be read. Its sampling is also the entry's own
+      advice taken twice over — 15 runs, of which **14 kept their output** and were green; the 15th
+      printed no summary and its output had already been discarded by the command that took it, so
+      it is unclassified rather than green. A sample you did not keep is not a sample you can cite.
+    - **Landing #217 the conflict was two honest numbers, and the merged value was the exact sum.**
+      Both sides measured off `2494882` and both were right when written — #209's 1358 in 153 and
+      this branch's 1330 in 150 — so `git merge` had no way to choose and the line came through as a
+      conflict rather than as drift. The merged tree measures **1360 in 154**, five of five, which is
+      1330 + #209's own +30/+4 with nothing left over. ⚠️ **That arithmetic was checked against the
+      run, not used instead of it** — the sum was predictable here only because the two branches
+      touched disjoint suites, and the ⛔ bullet below exists because a predicted 1177 once met a
+      measured 1161. Resolve this conflict with a literal `PLACEHOLDER` and let `swift test`
+      overwrite it; that is the whole procedure, and it costs one run.
     - **Landing #177 the branch's own number was stale before anyone read it** — it wrote 1244 in 141
       off `0902c10`, and the merged tree measured **1281 in 144** off `206c029`, five of five samples.
       The branch gained no commit between the two runs, so the whole 37 is `main` moving underneath

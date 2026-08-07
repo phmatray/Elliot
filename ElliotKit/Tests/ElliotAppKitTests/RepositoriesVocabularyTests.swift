@@ -206,7 +206,60 @@ struct RepositoriesVocabularyTests {
         #expect(RepositoriesView.clauses(for: []) == ["nothing needs attention"])
     }
 
+    // MARK: - What a row says about its board (#209)
+
+    /// Criterion 3. `no cards` rather than `0 cards`: the criterion asks the row
+    /// to *say so*, and a zero is what a reader skims past.
+    @Test("A repository Elliot drives with nothing on its board says so in words")
+    func emptyBoardSaysNoCards() {
+        #expect(RepositoriesView.boardLine(.empty) == "no cards")
+    }
+
+    @Test("Cards are counted, and one card is not one cards")
+    func cardCount() {
+        #expect(RepositoriesView.boardLine(Self.tally(cards: 11)) == "11 cards")
+        #expect(RepositoriesView.boardLine(Self.tally(cards: 1)) == "1 card")
+    }
+
+    @Test("Runs in flight are named only when there are some")
+    func runsInFlight() {
+        #expect(RepositoriesView.boardLine(Self.tally(cards: 11)) == "11 cards")
+        #expect(RepositoriesView.boardLine(Self.tally(cards: 11, running: 2)) == "11 cards · 2 running")
+        // A repository can be busy with no cards at all: an analysis run has no
+        // card. Saying `no cards · 1 running` beats implying it is idle.
+        #expect(RepositoriesView.boardLine(Self.tally(cards: 0, running: 1)) == "no cards · 1 running")
+    }
+
+    /// The convention `SyncSummary.sentence` already holds: a clean pass does
+    /// not advertise a zero.
+    @Test("Spend is appended only when something was spent")
+    func spendIsAppendedOnlyWhenThereIsSome() {
+        let free = Self.tally(cards: 3, spend: Spend(totalUSD: 0, runs: 2, unknownCost: 0))
+        #expect(RepositoriesView.boardLine(free, locale: Self.enUS) == "3 cards")
+
+        let spent = Self.tally(cards: 3, spend: Spend(totalUSD: 1.42, runs: 2, unknownCost: 0))
+        #expect(RepositoriesView.boardLine(spent, locale: Self.enUS) == "3 cards · $1.42 today")
+    }
+
+    /// Criterion 2. The reason is `gh`'s own words and reaches the row verbatim
+    /// — the row is not the place a machine's sentence gets paraphrased.
+    @Test("The failure line quotes the reason and does not paraphrase it")
+    func failureLineQuotesTheReason() {
+        let reason = "gh exited 1: API rate limit exceeded"
+        let line = RepositoriesView.refreshFailureLine(reason)
+        #expect(line.contains(reason))
+        #expect(line == "could not be refreshed: \(reason)")
+    }
+
     // MARK: - Helpers
+
+    private static let enUS = Locale(identifier: "en_US")
+
+    private static func tally(
+        cards: Int, running: Int = 0, spend: Spend = .nothing
+    ) -> RepoBoardTally {
+        RepoBoardTally(cards: cards, runsInFlight: running, spendToday: spend)
+    }
 
     private static func row(
         _ nameWithOwner: String, _ issue: RepoIssue, fixes: [RepoFix] = []
