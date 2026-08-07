@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1167 tests in 135 suites**, five-sample run on
-  `fix/159-caret-tether-not-drawn` on 2026-08-07 after merging `main` at `c9b8531`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1167 tests in 135 suites**, 3 of 3 samples on
+  `fix/116-swift-floor` on 2026-08-07 off `main` at `9de425e`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -58,10 +58,20 @@
       authors each measured honestly, each counted from the last number they could see, and the
       count only means anything in landing order. If a third branch is open while you read this,
       **your number is already wrong** — take the run, not the line.
+    - There *was* a third: **#140 wrote "sixth" too**, and collided here twice more — once against
+      #155's landing and once against #159's. Inside that one pull request the number moved four
+      times (1116 → 1119 → 1161 → the value above) without the branch adding a single test. Three
+      concurrent authors, three honest "sixth"s. The ordinal is not worth maintaining; the date-stamp
+      and the commit it was taken at are.
     - #159's split is still the useful detail: its untouched branch already ran 1116 before a line of
       its own tests existed, so 40 of its 46 were unrecorded drift and only 6 were the branch's own.
       A correction here is rarely evidence that the previous author miscounted; it is mostly the
       interval since they looked.
+  - ⛔ **Do not write the number down before the run prints it.** Resolving one of these collisions in
+    #140, this line was first filled in with a *predicted* 1177 — arrived at by adding the two
+    branches together — and the run said **1161**. Caught immediately, but it is exactly the act the
+    bullet above warns against, committed while editing the warning itself. Put a placeholder in and
+    let the run overwrite it.
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
@@ -81,15 +91,37 @@
   **Format the lines you wrote, by hand, to match their neighbours.** `swift format lint <one-file>`
   is readable for a file you just touched; the tree-wide form is not. See `CLAUDE.md` § *Do not run
   `swift format` over the tree*.
-- **Format/lint verify (the gate):** none. There is no formatting gate and no CI to enforce one, so a
+- **Format/lint verify (the gate):** none. There is no formatting gate, and the one workflow that
+  exists (`swift-floor.yml`, the toolchain floor) does not enforce one, so a
   pull request is never failed on formatting here. Adopting the formatter wholesale is a live option
   and a one-way door (one ~1 600-line reformat commit), and it is not a decision to make inside a
   feature branch.
-- **Prerequisites / caveats:** macOS 15+ and Swift 6.1+ toolchain (`swiftLanguageModes: [.v6]` — strict
-  concurrency is on, so data-race errors are build failures, not warnings). `ElliotApp` is a SwiftUI GUI
+- **Prerequisites / caveats:** **Swift 6.3.1+ — Xcode 26.4 or newer. There is no lower option.**
+  `Package.swift` declares `swift-tools-version: 6.3.1`, which SwiftPM enforces at manifest parse, so
+  anything older is refused before a source file is read. `swiftLanguageModes: [.v6]` — strict
+  concurrency is on, so data-race errors are build failures, not warnings. `ElliotApp` is a SwiftUI GUI
   target: it builds headlessly but cannot be exercised from a terminal — launch the assembled bundle
   from the **Finder** (`open dist/Elliot.app`), not from a shell, because the preflight checks exist
   precisely to survive *not* inheriting your shell `PATH`.
+  - ⚠️ **This line said "macOS 15+ and Swift 6.1+" and both halves were wrong in different ways —
+    corrected in #116 from 21 builds over 8 toolchains** (runs
+    [31167517846](https://github.com/phmatray/Elliot/actions/runs/31167517846),
+    [31167931727](https://github.com/phmatray/Elliot/actions/runs/31167931727),
+    [31170356694](https://github.com/phmatray/Elliot/actions/runs/31170356694)). Swift 6.1.2 does not
+    build the package at all — two sites in `ElliotAppKit`. Every 6.2.x builds it but cannot compile
+    the **test** targets: one `#expect` at `ElliotProcessTests/StreamingProcessDrainTests.swift:138`
+    exhausts the type-checker's budget. And "macOS 15+" was a *deployment* target read as a host
+    requirement — a different claim, still unverified, tracked as #142. `Package.swift` declares
+    **6.3.1**, the test floor, and its header comment carries the full table and the argument.
+  - ⛔ **"6.2 is enough if you only want `swift build`" is a true measurement and a false
+    instruction — do not put it back in this list.** It was here for one commit. The 6.2 figure is
+    real (recorded in `Package.swift`'s table), but a *Prerequisites* line is read as prescriptive,
+    and after the tools-version bump a contributor following it gets `error: package … is using
+    Swift tools version 6.3.1 but the installed version is 6.2.0`. A documented floor no machine can
+    meet is the exact defect #116 removed; it does not become harmless one file over.
+  - ⚠️ **Do not restate the build floor from `swift build` alone.** That is precisely how the 6.1
+    claim survived: `swift build` compiles the library and executable targets and never touches the
+    eight test targets, so a green `swift build` measures about half of what a contributor needs.
 - **If `swift test` hangs, or the SwiftPM build lock looks held, look for a stale
   `swiftpm-testing-helper` — from *another worktree*.** This is the shape of #7, and its whole cost
   was that it does not present as a stale process: it presents as the toolchain being broken. The
@@ -116,10 +148,17 @@
     building.
 
 ## CI gates (the exact commands CI fails on — satisfy these locally before ready/merge)
-<!-- TODO: there is no `.github/workflows/` directory — this repo has no CI at all, and branch
-protection is disabled (no required status checks). Nothing is enforced remotely, so "green CI" is not
-something merge-pr can wait for. Until CI exists, treat these as the self-imposed gates, run locally
-before flipping a PR ready: -->
+
+There is now **exactly one** workflow, `.github/workflows/swift-floor.yml` (#116). It runs on every
+pull request and does two things: it asserts the runner's toolchain against the floor `Package.swift`
+declares, and it builds on it. It is a *floor* gate, not a build-and-test gate — it does not run the
+suite, and it is the only thing enforced remotely.
+
+Branch protection is still disabled (no required status checks), and there is still **no
+build-and-test CI** — that is #21, in flight on #102. So "wait for green CI" remains something
+`merge-pr` mostly cannot do here, and these stay the self-imposed gates, run locally before flipping
+a PR ready:
+
 - `cd ElliotKit && swift build`
 - `cd ElliotKit && swift test`
 
