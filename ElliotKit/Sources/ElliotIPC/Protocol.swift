@@ -43,7 +43,14 @@ import Foundation
 /// reads `nil` from a 5 app, and `nil` already means "no reading". So this bump
 /// is not protecting against a crash; it is keeping the rule that one number
 /// means one wire, which is what makes the handshake worth reading at all.
-public let elliotProtocolVersion = 6
+///
+/// **7** — `VerifiedOutcomeDTO`'s `merged` and `closed_unmerged` carry the
+/// pull request they are about (`number`, `url`, `branch`), so a card that
+/// reaches Done without ever having been seen as `pr_open` can still say what
+/// finished it (#139). Additive on the wire, like 6, and degrading the same
+/// quiet way — but a 6 helper renders a Done card's receipt with no pull
+/// request at all, which is the defect this closes rather than a cosmetic loss.
+public let elliotProtocolVersion = 7
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
@@ -723,12 +730,12 @@ public struct VerifiedOutcomeDTO: Codable, Sendable, Hashable {
             self.init(kind: "no_issue_created", reason: reason)
         case .prOpen(let number, let url, let isDraft, let branch):
             self.init(kind: "pr_open", number: number, url: url, isDraft: isDraft, branch: branch)
-        case .merged(let commitSHA, _, _, _):
-            self.init(kind: "merged", commitSHA: commitSHA)
+        case .merged(let commitSHA, let number, let url, let branch):
+            self.init(kind: "merged", number: number, url: url, branch: branch, commitSHA: commitSHA)
         case .notMerged(let reason):
             self.init(kind: "not_merged", reason: reason)
-        case .closedUnmerged:
-            self.init(kind: "closed_unmerged")
+        case .closedUnmerged(let number, let url, let branch):
+            self.init(kind: "closed_unmerged", number: number, url: url, branch: branch)
         case .unverified(let reason):
             self.init(kind: "unverified", reason: reason)
         }
