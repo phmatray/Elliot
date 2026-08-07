@@ -1,5 +1,6 @@
 import ElliotModel
 import ElliotProcess
+import ElliotStore
 import Foundation
 import TestSupport
 import Testing
@@ -173,6 +174,96 @@ struct PreflightTests {
     func missingLabelsAreNotBlocking() async {
         let check = await service().labelsCheck(repo, required: LabelPolicy.default)
         #expect(!PreflightService.isBlocking([check]))
+    }
+
+    // MARK: - Performing a fix
+
+    private actor NeverLaunches: RunLaunching {
+        private(set) var launched: [UUID] = []
+        func launch(runID: UUID) async { launched.append(runID) }
+        func cancel(runID: UUID) async {}
+    }
+
+    private func seededBoard() async throws -> (BoardStore, BoardService, NeverLaunches, Repo) {
+        _ = TestHome.root
+        let store = try BoardStore.inMemory()
+        let launcher = NeverLaunches()
+        let board = BoardService(store: store, launcher: launcher)
+        var repo = self.repo
+        repo.id = UUID()
+        try await store.saveRepo(repo)
+        return (store, board, launcher, repo)
+    }
+
+    @Test("Creating the missing labels asks gh once per label and counts them")
+    func createLabelsRunsPerLabel() async throws {
+        let (_, board, _, repo) = try await seededBoard()
+        let argv = FileManager.default.temporaryDirectory
+            .appendingPathComponent("preflight-argv-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: argv) }
+
+        let missing = [
+            RequiredLabel(name: "documentation", color: "0075ca", description: "docs"),
+            RequiredLabel(name: "question", color: "d876e3", description: "q"),
+        ]
+        let outcome = await service(["FAKE_GH_ARGV_OUT": argv]).apply(
+            .createLabels(repoID: repo.id, labels: missing),
+            repo: repo,
+            board: board
+        )
+
+        #expect(outcome.succeeded)
+        #expect(outcome.detail.contains("2"))
+
+        let arguments = try String(contentsOfFile: argv, encoding: .utf8)
+        #expect(arguments.contains("documentation"))
+        #expect(arguments.contains("question"))
+        // Two invocations, not one call with two names.
+        #expect(arguments.components(separatedBy: "create").count - 1 == 2)
+    }
+
+    @Test("A partial failure names what failed and does not report success")
+    func partialFailureIsNotSuccess() async throws {
+        let (_, board, _, repo) = try await seededBoard()
+
+        // Everything fails here, for a reason that is not already-exists — so
+        // the outcome must say so rather than counting them as created.
+        let outcome = await service([
+            "FAKE_GH_MODE": "fail",
+            "FAKE_GH_STDERR": "HTTP 403: Resource not accessible",
+        ]).apply(
+            .createLabels(
+                repoID: repo.id,
+                labels: [RequiredLabel(name: "documentation", color: "0075ca", description: "d")]
+            ),
+            repo: repo,
+            board: board
+        )
+
+        #expect(!outcome.succeeded)
+        #expect(outcome.detail.contains("documentation"))
+    }
+
+    @Test("Seeding a card puts it in Backlog and starts nothing")
+    func seedCardCreatesWithoutRunning() async throws {
+        let (store, board, launcher, repo) = try await seededBoard()
+        let story = UserStory(role: "maintainer", want: "a taxonomy", benefit: "labelled issues")
+
+        let outcome = await service().apply(
+            .seedCard(repoID: repo.id, title: "Decide a label taxonomy", story: story),
+            repo: repo,
+            board: board
+        )
+
+        #expect(outcome.succeeded)
+        let cards = try await store.cards(repoID: repo.id)
+        #expect(cards.count == 1)
+        // Backlog, where nothing runs. A card seeded into `todo` would file an
+        // issue about labels the moment the button was pressed — a button that
+        // spawns an unattended agent is exactly what this design refuses.
+        #expect(cards.first?.column == .backlog)
+        #expect(cards.first?.story?.want == "a taxonomy")
+        #expect(await launcher.launched.isEmpty)
     }
 
     @Test("Fixes are identifiable and hashable, so a view can list them")

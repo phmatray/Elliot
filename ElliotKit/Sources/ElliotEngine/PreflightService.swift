@@ -402,4 +402,85 @@ public struct PreflightService: Sendable {
     public static func isBlocking(_ results: [CheckResult]) -> Bool {
         results.contains { $0.status == .fail }
     }
+
+    // MARK: - Acting on a finding
+
+    /// Performs a `CheckFix`, and never throws into the view.
+    ///
+    /// Shaped on `RepoRegistryService.apply(_:layout:)` deliberately: two screens
+    /// that both turn a diagnostic into an action should do it the same way, and
+    /// the reason that one returns an outcome rather than throwing is that a
+    /// button's failure is information for the reader, not an error for the app.
+    ///
+    /// `board` is passed in rather than held, because **`BoardService` is the
+    /// only thing that creates a card** — the seed fix calls the funnel, it does
+    /// not write a row.
+    public func apply(
+        _ fix: CheckFix, repo: Repo, board: BoardService
+    ) async -> CheckFixOutcome {
+        switch fix {
+        case .createLabels(_, let labels):
+            var created: [String] = []
+            var failed: [String] = []
+            for label in labels {
+                do {
+                    try await gh.createLabel(label, repo: repo.nameWithOwner)
+                    created.append(label.name)
+                } catch {
+                    failed.append(label.name)
+                }
+            }
+            guard failed.isEmpty else {
+                // Named, and **not** reported as success. A partial run counted
+                // as done is the same defect as a truncated page with no note:
+                // the caller reads it as complete and stops looking.
+                return CheckFixOutcome(
+                    succeeded: false,
+                    detail: created.isEmpty
+                        ? "Could not create \(failed.joined(separator: ", "))."
+                        : "Created \(created.joined(separator: ", ")); "
+                            + "could not create \(failed.joined(separator: ", "))."
+                )
+            }
+            return CheckFixOutcome(
+                succeeded: true,
+                detail: "Created \(created.count) label\(created.count == 1 ? "" : "s"): "
+                    + created.joined(separator: ", ") + "."
+            )
+
+        case .seedCard(_, let title, let story):
+            do {
+                // Backlog, where nothing runs. Seeding into `todo` would file an
+                // issue the instant the button was pressed — a button that
+                // starts an unattended agent is precisely what this design
+                // refuses, and the card is how the agent is reached instead.
+                _ = try await board.createCard(
+                    repoID: repo.id, title: title, story: story, column: .backlog
+                )
+                return CheckFixOutcome(
+                    succeeded: true,
+                    detail: "Added a card to Backlog. Nothing has run — move it when you are ready."
+                )
+            } catch {
+                return CheckFixOutcome(
+                    succeeded: false, detail: "Could not add the card: \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+}
+
+/// What a `CheckFix` did, said in a sentence the row can show.
+///
+/// The twin of `RepoFixOutcome`, and separate from it for the reason the two
+/// enums are separate: one screen's vocabulary should not quietly become the
+/// other's contract.
+public struct CheckFixOutcome: Sendable, Hashable {
+    public var succeeded: Bool
+    public var detail: String
+
+    public init(succeeded: Bool, detail: String) {
+        self.succeeded = succeeded
+        self.detail = detail
+    }
 }
