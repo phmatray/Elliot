@@ -69,6 +69,16 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
   build-and-test CI and no branch protection** — that is #21, in flight on #102 — so a pull request is
   otherwise judged by a local `swift test` only, and "wait for green CI" is still not a thing that can
   happen here.
+  - ⚠️ **A conflicted pull request fires no `pull_request` workflow at all — and it fails by silence,
+    not by saying so.** Measured in #140: after `main` moved, GitHub created **zero** runs for the
+    head SHA for 25 minutes, `check-runs` returned `total_count: 0`, a close/reopen produced nothing,
+    and the Actions status page read *All Systems Operational*. The workflow file GitHub held at that
+    SHA was byte-identical to the local one and parsed. I diagnosed it as the trigger throttle that
+    had genuinely blocked this issue for 33 hours the day before — **and wrote that wrong diagnosis
+    into the PR body as a fact.** The actual cause was `mergeStateStatus: DIRTY`; merging `main`
+    produced a run within seconds. **Read `gh pr view --json mergeable,mergeStateStatus` before
+    concluding anything about a missing run** — an absent run and a throttled run are indistinguishable
+    from the outside, and only one of them is yours to fix.
 - Re-run `claude mcp add` after moving the app: the registration records an absolute path.
 
 ### ⛔ Do not run `swift format` over the tree
