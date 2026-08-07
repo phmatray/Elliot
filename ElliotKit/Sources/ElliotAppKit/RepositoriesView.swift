@@ -46,12 +46,24 @@ public struct RepositoriesView: View {
         .task(id: model.isReady) {
             // Only on first arrival: rebuilding costs one `gh repo list` per
             // owner, and coming back from a fix already refreshed the list.
-            if model.isReady, model.repoRows.isEmpty { await model.refreshRepoRows() }
-            // The figures, on *every* arrival: three grouped statements, no
-            // `gh` and no disk scan, so the guard above would be paying the
-            // wrong price here. Coming back to this page should not show counts
-            // from whenever the tree was last reconciled.
-            if model.isReady { await model.refreshRepoTallies() }
+            if model.isReady, model.repoRows.isEmpty {
+                await model.refreshRepoRows()
+            } else if model.isReady {
+                // The figures alone: three grouped statements, no `gh` and no
+                // disk scan, so the guard above would be paying the wrong price
+                // here. `else` rather than a second unconditional call, because
+                // `refreshRepoRows()` reads the tallies itself — running both
+                // is six statements where three answer.
+                //
+                // ⚠️ This is *not* "on every arrival", which is what this
+                // comment claimed until code review measured it. `.task` runs
+                // when the view is created and is cancelled when it goes away,
+                // so re-focusing a Repositories window that stayed open re-runs
+                // nothing. What bounds the staleness is the header's **Refresh**,
+                // which goes through `reloadRepoRows()` and reassigns all three
+                // values together.
+                await model.refreshRepoTallies()
+            }
         }
     }
 

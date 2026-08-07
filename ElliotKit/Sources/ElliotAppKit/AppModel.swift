@@ -1363,11 +1363,16 @@ public final class AppModel {
 
     /// Re-reads only the figures — no `gh`, no disk scan.
     ///
-    /// The Repositories page calls this on every arrival, where
-    /// `refreshRepoRows()` is guarded to the first: rebuilding the rows costs
-    /// one `gh repo list` per owner, and re-counting cards is three grouped
-    /// statements. Coming back to the page should not show counts from whenever
-    /// the tree was last reconciled.
+    /// The Repositories page calls this when it opens with rows already in
+    /// hand, where `refreshRepoRows()` is what a first arrival calls: rebuilding
+    /// the rows costs one `gh repo list` per owner, and re-counting cards is
+    /// three grouped statements, so the second visit should pay the cheaper one
+    /// rather than nothing.
+    ///
+    /// ⚠️ Not "on every arrival" — `.task` does not re-run for a window that
+    /// stayed open and was re-focused. The header's **Refresh** is what bounds
+    /// the staleness, and it goes through `reloadRepoRows()`, which reassigns
+    /// the rows, the listing failures and these figures together.
     ///
     /// Safe to call while `isReconciling`: it touches no other state, so it
     /// cannot leave the rows and the figures describing different passes in a
