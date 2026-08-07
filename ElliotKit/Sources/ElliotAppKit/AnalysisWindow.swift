@@ -850,18 +850,22 @@ struct EvidenceLink: View {
 struct ProposalEditor: View {
     @Environment(AppModel.self) private var model
 
-    @State private var draft: StoryProposal
-    @State private var criteria: [String]
+    /// The one editable state. It was two — a `StoryProposal` and a separate
+    /// `[String]` of criteria reconciled only inside the Save closure, which
+    /// left `draft.story.acceptanceCriteria` stale for the editor's whole life.
+    /// A preview rendered off that value would have shown the pre-edit story.
+    @State private var draft: CardDraft
+    /// What is not edited here: the proposal's rationale, evidence, effort,
+    /// angle and identity. `draft.applied(to:)` puts the edits back on top.
+    private let proposal: StoryProposal
     /// Called when the editor is finished with, saved or not. The list owns
     /// which row is being edited; this view only says it is done.
     private let done: () -> Void
 
     init(proposal: StoryProposal, done: @escaping () -> Void) {
+        self.proposal = proposal
         self.done = done
-        _draft = State(initialValue: proposal)
-        _criteria = State(initialValue: proposal.story.acceptanceCriteria.isEmpty
-            ? [""]
-            : proposal.story.acceptanceCriteria)
+        _draft = State(initialValue: CardDraft(proposal: proposal))
     }
 
     /// Inline in the list, not over it.
@@ -885,46 +889,18 @@ struct ProposalEditor: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ConsoleLabel(text: "Board label")
-                        TextField("Short name for the card", text: $draft.title)
-                            .textFieldStyle(.roundedBorder)
-                    }
+                    // The card editor's fields, not a second copy of them. The
+                    // guarded criterion removal, the one validity rule and the
+                    // single `field()` helper all live over there; this row
+                    // renders the same controls the board's own editor does.
+                    CardFieldsEditor(draft: $draft, kind: .story)
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        field("As a", placeholder: "developer", text: $draft.story.role)
-                        field("I want", placeholder: "to see the run log inside the card", text: $draft.story.want)
-                        field("So that", placeholder: "I can diagnose without opening a terminal", text: $draft.story.benefit)
-                    }
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        ConsoleLabel(text: "Acceptance criteria")
-                        ForEach(criteria.indices, id: \.self) { index in
-                            HStack(spacing: 6) {
-                                TextField("What has to be true when it is done", text: Binding(
-                                    get: { criteria.indices.contains(index) ? criteria[index] : "" },
-                                    set: { if criteria.indices.contains(index) { criteria[index] = $0 } }
-                                ))
-                                .textFieldStyle(.roundedBorder)
-                                Button {
-                                    criteria.remove(at: index)
-                                    if criteria.isEmpty { criteria = [""] }
-                                } label: {
-                                    Image(systemName: "minus.circle")
-                                }
-                                .buttonStyle(.borderless)
-                                .accessibilityLabel("Remove criterion \(index + 1)")
-                            }
-                        }
-                        Button("Add criterion", systemImage: "plus") { criteria.append("") }
-                            .buttonStyle(.borderless)
-                            .controlSize(.small)
-                    }
-
-                    if !draft.evidence.isEmpty {
+                    // The provenance stays here: it is the proposal's, not the
+                    // draft's, and it is displayed rather than edited.
+                    if !proposal.evidence.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             ConsoleLabel(text: "Evidence")
-                            Text(draft.evidence.map(\.display).joined(separator: "   "))
+                            Text(proposal.evidence.map(\.display).joined(separator: "   "))
                                 .font(Type.factSmall)
                                 .foregroundStyle(.tertiary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -940,17 +916,18 @@ struct ProposalEditor: View {
                 Spacer()
                 Button("Cancel", role: .cancel) { done() }
                 Button("Save") {
-                    var edited = draft
-                    edited.story.acceptanceCriteria = criteria
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                        .filter { !$0.isEmpty }
+                    let edited = draft.applied(to: proposal)
                     Task {
                         await model.updateProposal(edited)
                         done()
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!draft.story.isComplete || draft.title.trimmingCharacters(in: .whitespaces).isEmpty)
+                // The card editor's rule, not a second spelling of it. The one
+                // written here trimmed on `.whitespaces` where `CardDraft`
+                // trims on `.whitespacesAndNewlines`, so a title that was only
+                // a newline was refused by the board and accepted here.
+                .disabled(!draft.isValid)
             }
             .padding(18)
         }
@@ -963,16 +940,5 @@ struct ProposalEditor: View {
         // Escape cancels the edit. Without it the key would fall through to the
         // window, which is the wrong thing to close while a row is open.
         .onExitCommand { done() }
-    }
-
-    private func field(_ label: String, placeholder: String, text: Binding<String>) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .font(Type.prose)
-                .foregroundStyle(.secondary)
-                .frame(width: 52, alignment: .trailing)
-            TextField(placeholder, text: text)
-                .textFieldStyle(.roundedBorder)
-        }
     }
 }
