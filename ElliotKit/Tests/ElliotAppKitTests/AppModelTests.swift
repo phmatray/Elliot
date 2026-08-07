@@ -675,22 +675,23 @@ struct AppModelTests {
                 }
             }
         } catch {
-            let seen = model.runsByCard[cardID]
-            Issue.record(
-                """
-                runsByCard[card] was \(seen.map { "empty (\($0.count) rows)" } ?? "still nil") \
-                when the wait gave up
-                """
-            )
+            // The two are different diagnoses: nil is "the refresh never ran",
+            // empty is "it ran and the store had nothing" — a seed that did not
+            // land rather than an update that did not arrive.
+            let seen = model.runsByCard[cardID] == nil ? "still nil" : "empty"
+            Issue.record("runsByCard[card] was \(seen) when the wait gave up")
             throw error
         }
     }
 
     /// The same wait, for the sibling refresh the *same* `apply` call spawns.
     ///
-    /// Used as a fence by the negative test below: `activeRuns` filling is
-    /// proof that this `apply`'s asynchronous work has run, so a `runsByCard`
-    /// entry that has not appeared by then was never going to.
+    /// Used as a fence by the negative test below. `activeRuns` filling proves
+    /// the unconditional `Task` has run; the guarded refresh is enqueued on the
+    /// same actor *ahead* of it, so its window has passed too. That is a fence,
+    /// not a proof of ordering — unstructured tasks promise none — and it is
+    /// the tighter half of the argument. The other half is structural: with
+    /// `cardID` nil there is no key to write an entry under.
     private func awaitActiveRun(cardID: UUID, in model: AppModel) async throws -> SkillRun {
         do {
             return try await withTimeout(.seconds(5)) {
@@ -774,9 +775,9 @@ struct AppModelTests {
 
         fixture.model.apply(.runStarted(runID: analysisRun.id, cardID: nil))
 
-        // The fence: `activeRuns` is refreshed by the unconditional `Task` this
-        // same `apply` spawns, and it finds the card's `.running` row. Once it
-        // has, the asynchronous half of this update is done.
+        // The fence — see `awaitActiveRun`. It also asserts something worth
+        // asserting on its own: a card-less run does not cost the card that
+        // *does* have one its refresh.
         _ = try await awaitActiveRun(cardID: fixture.card.id, in: fixture.model)
         #expect(fixture.model.runsByCard.isEmpty)
     }
