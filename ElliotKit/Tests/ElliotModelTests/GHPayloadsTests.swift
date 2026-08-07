@@ -77,3 +77,55 @@ struct GHPayloadsTests {
         #expect(pr(state: "CLOSED", mergedAt: Date()).verifiedOutcome == .merged(commitSHA: nil))
     }
 }
+
+@Suite("A repository summary knows whether it holds code")
+struct GHRepoSummaryLanguageTests {
+
+    private func summary(_ lang: String?, isEmpty: Bool = false) -> GHRepoSummary {
+        GHRepoSummary(
+            nameWithOwner: "phmatray/Foo", visibility: "PUBLIC",
+            primaryLanguage: lang.map { GHLanguage(name: $0) }, isEmpty: isEmpty)
+    }
+
+    @Test("A language on the allowlist is code")
+    func allowlistedLanguageIsCode() {
+        #expect(summary("C#").isCode)
+        #expect(summary("Swift").isCode)
+        #expect(summary("HTML").isCode)
+    }
+
+    /// The seven LaTeX papers are the reason this allowlist exists: they are
+    /// writing, and the axes that measure code do not apply to them.
+    @Test("TeX is not code")
+    func texIsNotCode() {
+        #expect(!summary("TeX").isCode)
+        #expect(!summary(nil).isCode)
+    }
+
+    /// GitHub classifies on byte volume, not on what a repository builds:
+    /// AtypWebsite is HTML, Linelo JavaScript, github-toolkit TypeScript — all
+    /// three carry .csproj files. This decides SCOPE only. It must never pick a
+    /// template, which is how the Python tool posted the 26-line base
+    /// editorconfig onto the company's own site.
+    @Test("A missing repositoryTopics-style null decodes rather than throwing")
+    func nullLanguageDecodes() throws {
+        let json = """
+            {"nameWithOwner":"phmatray/Foo","visibility":"PUBLIC","isFork":false,
+             "isArchived":false,"primaryLanguage":null,"isEmpty":false}
+            """
+        let decoded = try JSONDecoder().decode(GHRepoSummary.self, from: Data(json.utf8))
+        #expect(decoded.primaryLanguage == nil)
+        #expect(!decoded.isCode)
+    }
+
+    /// `isEmpty` must default, because every existing call site constructs a
+    /// summary without it.
+    @Test("An older payload without isEmpty still decodes")
+    func missingIsEmptyDefaults() throws {
+        let json = """
+            {"nameWithOwner":"phmatray/Foo","visibility":"PUBLIC","isFork":false,"isArchived":false}
+            """
+        let decoded = try JSONDecoder().decode(GHRepoSummary.self, from: Data(json.utf8))
+        #expect(!decoded.isEmpty)
+    }
+}

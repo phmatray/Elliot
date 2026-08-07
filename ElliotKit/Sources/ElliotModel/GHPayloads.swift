@@ -167,6 +167,12 @@ public struct GHRepoInfo: Codable, Sendable, Hashable {
     public var defaultBranch: String { defaultBranchRef?.name ?? "main" }
 }
 
+/// GitHub's primary-language classification.
+public struct GHLanguage: Codable, Sendable, Hashable {
+    public var name: String
+    public init(name: String) { self.name = name }
+}
+
 /// One row of `gh repo list <owner> --json …`.
 public struct GHRepoSummary: Codable, Sendable, Hashable {
     public var nameWithOwner: String
@@ -176,10 +182,17 @@ public struct GHRepoSummary: Codable, Sendable, Hashable {
     public var isArchived: Bool
     public var url: String?
 
+    /// `null` for a repository with no detectable code. The field is always
+    /// requested — `GHClientFieldsTests` pins that — so `nil` here means
+    /// "GitHub detected no language", never "nobody asked".
+    public var primaryLanguage: GHLanguage?
+    public var isEmpty: Bool
+
     public init(
         nameWithOwner: String, visibility: String,
         defaultBranchRef: GHRepoInfo.BranchRef? = nil,
-        isFork: Bool = false, isArchived: Bool = false, url: String? = nil
+        isFork: Bool = false, isArchived: Bool = false, url: String? = nil,
+        primaryLanguage: GHLanguage? = nil, isEmpty: Bool = false
     ) {
         self.nameWithOwner = nameWithOwner
         self.visibility = visibility
@@ -187,9 +200,40 @@ public struct GHRepoSummary: Codable, Sendable, Hashable {
         self.isFork = isFork
         self.isArchived = isArchived
         self.url = url
+        self.primaryLanguage = primaryLanguage
+        self.isEmpty = isEmpty
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        nameWithOwner = try c.decode(String.self, forKey: .nameWithOwner)
+        visibility = try c.decode(String.self, forKey: .visibility)
+        defaultBranchRef = try c.decodeIfPresent(GHRepoInfo.BranchRef.self, forKey: .defaultBranchRef)
+        isFork = try c.decodeIfPresent(Bool.self, forKey: .isFork) ?? false
+        isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
+        url = try c.decodeIfPresent(String.self, forKey: .url)
+        primaryLanguage = try c.decodeIfPresent(GHLanguage.self, forKey: .primaryLanguage)
+        isEmpty = try c.decodeIfPresent(Bool.self, forKey: .isEmpty) ?? false
     }
 
     public var defaultBranch: String { defaultBranchRef?.name ?? "main" }
     public var repoVisibility: RepoVisibility { RepoVisibility(ghVisibility: visibility) }
     public var name: String { String(nameWithOwner.split(separator: "/").last ?? "") }
+}
+
+public extension GHRepoSummary {
+    /// The languages the portfolio standard counts as code.
+    ///
+    /// ⚠️ GitHub classifies on byte volume, not on what a repository builds. This
+    /// decides SCOPE — whether a code-only axis applies — and never which
+    /// template or rule to use.
+    static let codeLanguages: Set<String> = [
+        "C#", "F#", "TypeScript", "JavaScript", "Rust", "Go", "Java", "Python",
+        "Swift", "C", "C++", "Kotlin", "Ruby", "PHP", "HTML", "CSS",
+    ]
+
+    var isCode: Bool {
+        guard let name = primaryLanguage?.name else { return false }
+        return Self.codeLanguages.contains(name)
+    }
 }
