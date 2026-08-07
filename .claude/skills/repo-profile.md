@@ -32,7 +32,7 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**PLACEHOLDER tests in PLACEHOLDER suites**, 5 of 5 samples on
+- **Full test:** `cd ElliotKit && swift test` (**1196 tests in 137 suites**, 5 of 5 samples on
   `fix/158-column-empty-space-deselect` on 2026-08-07 off `main` at `a796182`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
@@ -56,6 +56,12 @@
     Corrected again landing #180 — the branch measured 1170 in 135 off `0902c10`, and the merge
     that landed it measured **1188 in 136** off `5b12add`, both from five samples. No ordinal,
     deliberately, and no attribution of the difference: see the two bullets below.
+    - **Landing #182 the value did not move at all** — 1196 in 137 off `a796182`, five of five
+      samples, byte-identical to what `main` already claimed. That is the cleanest demonstration
+      the entry has: #182 ships no Swift whatsoever (two scripts and two markdown files), so the
+      only thing its re-measurement could change was the **date-stamp and the commit**, and those
+      are exactly the two things this bullet says are worth maintaining. A correction here is
+      almost never about the branch.
     - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
       to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
       authors each measured honestly, each counted from the last number they could see, and the
