@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1328 tests in 149 suites**, 5 of 5 samples on
-  `fix/147-proposal-editor-card-draft` on 2026-08-07 off `main` at `dc5c2ce`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1358 tests in 153 suites**, 14 of 14 characterised
+  samples on `feat/209-repo-row-board-figures` on 2026-08-08 off `main` at `2494882`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -61,6 +61,15 @@
     Corrected again landing #180 — the branch measured 1170 in 135 off `0902c10`, and the merge
     that landed it measured **1188 in 136** off `5b12add`, both from five samples. No ordinal,
     deliberately, and no attribution of the difference: see the two bullets below.
+    - **#209 is the first entry where the line was true at the start and true again at the end.**
+      Its branch measured the previous value exactly — 1328 in 149, off `2494882`, the commit and
+      count this line already named — so the whole of its +30/+4 is its own five new suites and
+      nothing is unattributed drift. That is only worth recording because it is what the entry keeps
+      failing to be: `main` did not move for the length of the branch, which is the *one* condition
+      under which a number written here survives to be read. Its sampling is also the entry's own
+      advice taken twice over — 15 runs, of which **14 kept their output** and were green; the 15th
+      printed no summary and its output had already been discarded by the command that took it, so
+      it is unclassified rather than green. A sample you did not keep is not a sample you can cite.
     - **Landing #177 the branch's own number was stale before anyone read it** — it wrote 1244 in 141
       off `0902c10`, and the merged tree measured **1281 in 144** off `206c029`, five of five samples.
       The branch gained no commit between the two runs, so the whole 37 is `main` moving underneath
