@@ -140,4 +140,48 @@ struct AppModelAnalysisSessionTests {
 
         #expect(model.analysis?.runs.first?.state == .stalled)
     }
+
+    // MARK: - The panel's visibility, which is not the session
+
+    @Test("Hiding the analysis panel does not end the session")
+    func hidingKeepsTheSession() {
+        // The whole of #151's criterion 5. `closeAnalysis` drops the session,
+        // and `ObservationHandle.deinit` cancels the live proposal observation
+        // with it — so a toggle that called it would silently stop proposals
+        // landing while eight lenses were still reading.
+        let model = model()
+        let id = UUID()
+        model.openAnalysis(id: id)
+        model.showingAnalysisPanel = true
+        #expect(model.analysis?.id == id)
+
+        model.showingAnalysisPanel = false
+        #expect(model.analysis?.id == id)
+
+        // Re-showing finds the same session, not a new one.
+        model.showingAnalysisPanel = true
+        #expect(model.analysis?.id == id)
+
+        // Only this ends it.
+        model.closeAnalysis()
+        #expect(model.analysis == nil)
+    }
+
+    @Test("The analysis panel is hidden at launch and three columns wide")
+    func defaultsAreHiddenAndWide() {
+        let model = AppModel()
+        // Hidden, unlike the detail panel: that one costs nothing with no card
+        // selected, whereas this would claim three columns on every launch for
+        // a setup form nobody asked for.
+        #expect(model.showingAnalysisPanel == false)
+        #expect(model.analysisSpans == PanelLayout.spanChoices.wide)
+
+        // Two panels, two reader preferences. Setting one must not move the
+        // other — the board is wide enough to want them at different widths.
+        model.analysisSpans = PanelLayout.spanChoices.narrow
+        #expect(model.panelSpans == PanelLayout.spanChoices.wide)
+        model.panelSpans = PanelLayout.spanChoices.narrow
+        model.analysisSpans = PanelLayout.spanChoices.wide
+        #expect(model.panelSpans == PanelLayout.spanChoices.narrow)
+    }
 }

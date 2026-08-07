@@ -100,11 +100,26 @@ public final class AppModel {
 
     /// Sheet and inspector state, here rather than in a view, because a menu
     /// command cannot reach a view's `@State`.
-    ///
-    /// Analysis is deliberately absent: it is a `Window` scene now, so its
-    /// presentation is `openWindow`'s business and there is no flag to keep in
-    /// step with it.
     public var showingInspector = true
+
+    /// Whether the analysis panel is showing, as the board row's leading slot.
+    ///
+    /// ⚠️ **This is not ``analysis``.** Hiding the panel must leave the session,
+    /// its runs and its live proposal observation exactly where they are:
+    /// ``closeAnalysis()`` drops the `AnalysisSession`, and
+    /// ``ObservationHandle`` cancels the observation from its `deinit` — so a
+    /// toggle that called it would silently stop proposals landing while eight
+    /// lenses were still reading. Only `Finish`, in the panel's footer, ends a
+    /// session.
+    ///
+    /// Hidden at launch, unlike ``showingInspector``: the detail panel costs
+    /// nothing with no card selected, whereas this one would claim three
+    /// columns of the board for a setup form nobody asked for.
+    ///
+    /// This comment used to say the analysis had no flag at all, because it was
+    /// a `Window` scene and its presentation was `openWindow`'s business. #151
+    /// made it a panel; the scene is gone.
+    public var showingAnalysisPanel = false
 
     /// How many board columns wide the detail panel is.
     ///
@@ -118,6 +133,19 @@ public final class AppModel {
     /// merge confirmation stays in the header at both, where no switch can hide
     /// it.
     public var panelSpans = 3
+
+    /// How many board columns wide the analysis panel is.
+    ///
+    /// The same kind of reader preference ``panelSpans`` is, and deliberately a
+    /// *separate* one: they are two panels a reader sets independently, and the
+    /// board is wide enough to want them at different widths. Sharing one
+    /// number would mean widening the analysis to read a proposal also widened
+    /// the card detail nobody was looking at.
+    ///
+    /// 3 for the same reason `panelSpans` is: the setup screen's lens grid is
+    /// two columns, and a proposal row carries a title, a narrative, a
+    /// rationale and an evidence strip.
+    public var analysisSpans = 3
 
     /// Which rows of a run log the panel is showing.
     ///
