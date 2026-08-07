@@ -434,27 +434,34 @@ struct AnalysisPanelView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if model.analysis == nil, let refusal = model.analysisRefusal {
-                // Why Start is disabled, said where the disabled button is.
+            if model.analysis == nil {
+                // Three things this slot has to say — why Start is refused, why
+                // the last Start did not happen, and what the next one will
+                // spend — and one value deciding between them.
                 //
-                // #151 dropped the toolbar button's `.disabled(…)` — a toggle
-                // you cannot switch off is worse than one that opens onto an
-                // explanation — and that trade is only honest if the
-                // explanation is actually here. It used to exist solely as the
-                // toolbar's tooltip, which a reader looking at this panel never
-                // sees.
-                Label(refusal, systemImage: "exclamationmark.octagon.fill")
+                // It was a chain of `if`s here until #138, which is how a failed
+                // start came to be written into a session that does not exist
+                // in setup: the branch that could have shown it sat below one
+                // keyed on exactly the state a failed start leaves behind, and
+                // no test can enter a view body to notice. `swift test` holds
+                // the decision now; this renders it.
+                let message = AnalysisFooterMessage.setup(
+                    angleCount: model.analysisAngles.count,
+                    failure: model.startFailure,
+                    refusal: model.analysisRefusal
+                )
+                Label(message.text, systemImage: message.symbol)
                     .font(Type.prose)
-                    .foregroundStyle(Palette.refused)
+                    .foregroundStyle(message.tone.tint)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if model.analysis == nil {
-                // The same promise the board's columns make: say what the
-                // gesture will do before it is made. Each lens is a full read
-                // of the repository, and that is what the button is spending.
-                Label(startConsequence, systemImage: "bolt.fill")
-                    .font(Type.prose)
-                    .foregroundStyle(model.analysisAngles.isEmpty ? Palette.refused : Palette.armed)
+                    // A second identical failure must transition rather than
+                    // look like the first one never went away.
+                    .id(message.text)
+                    // Driven by the `.animation(reduceMotion ? nil : …)` at the
+                    // foot of this footer, which is keyed on the failure as well
+                    // as the note. Reduce motion switches it off there, once.
+                    .transition(.opacity)
             } else if !model.analysisSelection.isEmpty {
                 // A count of your own clicks is not a consequence, so it
                 // carries no accent.
@@ -540,14 +547,31 @@ struct AnalysisPanelView: View {
             }
         }
         .padding(16)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: model.analysis?.note)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.18), value: fadingMessages)
     }
 
-    private var startConsequence: String {
-        switch model.analysisAngles.count {
-        case 0: "Pick at least one lens."
-        case 1: "Reads the repository once."
-        default: "Reads the repository \(model.analysisAngles.count) times — one run per lens."
+    /// Both messages this footer can fade, in one value: the note that belongs
+    /// to an analysis, and the failure that belongs to a start which never
+    /// produced one. Keyed on the note alone, a failure appearing or clearing
+    /// was the one change in this footer that snapped.
+    ///
+    /// A property rather than an inline array so the `.animation` above stays
+    /// on one line — `BoardAccessibilityTests` reads the line the gate stands
+    /// on, and a call split across four of them hides `reduceMotion` from it.
+    private var fadingMessages: [String?] { [model.analysis?.note, model.startFailure] }
+}
+
+extension AnalysisFooterMessage.Tone {
+    /// The accent, decided here rather than in the value.
+    ///
+    /// `AnalysisFooterMessage` holds no `Color`, so its tests assert the
+    /// decision rather than a colour — and a value that cannot name a colour
+    /// cannot be where a sixth consequence accent arrives. These two are the
+    /// existing ones; `BrandColorTests` pins the five.
+    var tint: Color {
+        switch self {
+        case .armed: Palette.armed
+        case .refused: Palette.refused
         }
     }
 }
