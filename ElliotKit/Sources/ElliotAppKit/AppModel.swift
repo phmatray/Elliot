@@ -22,6 +22,8 @@ public final class AppModel {
 
     public private(set) var repos: [Repo] = []
     public private(set) var cards: [Card] = []
+    /// The latest pull request reading per card, for cards in In Review.
+    public private(set) var prStatuses: [UUID: PRStatus] = [:]
     public private(set) var runsByCard: [UUID: [SkillRun]] = [:]
     public private(set) var globalChecks: [CheckResult] = []
     public private(set) var repoChecks: [UUID: [CheckResult]] = [:]
@@ -1187,6 +1189,40 @@ public final class AppModel {
             return
         }
         activeRuns = (try? await store.activeRuns(cardIDs: ids)) ?? [:]
+        await refreshPRStatuses()
+    }
+
+    /// The pull request readings `PRWatcher` has stored, keyed by card.
+    ///
+    /// Only for cards in In Review, matching what the watcher bothers to read:
+    /// asking for the others would return nothing and make the map look like a
+    /// board-wide answer it is not.
+    func refreshPRStatuses() async {
+        guard let store else { return }
+        var next: [UUID: PRStatus] = [:]
+        // One query per repository holding a waiting card, not one per card.
+        for repoID in Set(cards.filter { $0.column == .inReview }.map(\.repoID)) {
+            guard let rows = try? await store.prStatuses(repoID: repoID) else { continue }
+            let byNumber = Dictionary(rows.map { ($0.prNumber, $0) }, uniquingKeysWith: { a, _ in a })
+            for card in cards
+            where card.column == .inReview && card.repoID == repoID {
+                if let number = card.prNumber, let row = byNumber[number] {
+                    next[card.id] = row
+                }
+            }
+        }
+        prStatuses = next
+    }
+
+    /// What the card and the panel render. `nil` for a card nothing has read —
+    /// which is not the same as a card whose pull request is fine, so the views
+    /// draw nothing rather than an all-clear.
+    func prStatus(for card: Card) -> ResolvedPRStatus? {
+        // `currentHeadOid` is nil for the same reason as on the MCP side:
+        // establishing the head right now would be a network call in a view
+        // body, and `PRWatcher` already re-reads whenever the head moves. The
+        // age rule still governs.
+        prStatuses[card.id]?.resolved(now: Date(), currentHeadOid: nil)
     }
 
     // MARK: - Repos
