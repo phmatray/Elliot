@@ -130,7 +130,11 @@ struct PRStatusBlock: View {
         case .conflict: "in conflict with the base branch"
         case .blocked: "blocked by a rule"
         case .behind: "behind the base branch"
-        case .unstable: "mergeable, a check is unhappy"
+        // GitHub files *pending* under UNSTABLE as well as failing — measured on
+        // this feature's own pull request, whose only check was QUEUED. "A check
+        // is unhappy" read as a failure that had not happened. The CI facet
+        // directly above already says which of the two it is.
+        case .unstable: "mergeable, not every check is green"
         case .unknown: "not established"
         }
     }
