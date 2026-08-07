@@ -1,0 +1,22 @@
+{
+  "headRefOid": "3be5f1ee906ff61bdedef0072b635ec6ec40c632",
+  "mergeCommit": null,
+  "mergeStateStatus": "UNSTABLE",
+  "mergeable": "MERGEABLE",
+  "mergedAt": null,
+  "reviewDecision": "",
+  "state": "OPEN",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "conclusion": "",
+      "detailsUrl": "https://github.com/phmatray/Elliot/actions/runs/31175706424/job/92857201578",
+      "name": "floor",
+      "startedAt": "2026-08-07T11:51:03Z",
+      "status": "IN_PROGRESS",
+      "workflowName": "swift-floor"
+    }
+  ],
+  "url": "https://github.com/phmatray/Elliot/pull/172"
+}

@@ -1,0 +1,13 @@
+{
+  "headRefOid": "b30c2e96ea916b5068e78156a36177d8dbf9e5bf",
+  "mergeCommit": {
+    "oid": "9de425e0b6516651848033100ced98d01ce7f1ed"
+  },
+  "mergeStateStatus": "UNKNOWN",
+  "mergeable": "UNKNOWN",
+  "mergedAt": "2026-08-07T11:24:59Z",
+  "reviewDecision": "",
+  "state": "MERGED",
+  "statusCheckRollup": [],
+  "url": "https://github.com/phmatray/Elliot/pull/163"
+}

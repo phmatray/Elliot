@@ -31,8 +31,24 @@ public enum RepoIssue: Sendable, Hashable {
     /// What it deliberately does **not** claim is *which* of the three happened.
     /// Telling "GitHub said no" from "GitHub did not answer" needs the scanner to
     /// report its own failure modes upward; the reconciler is pure and cannot
-    /// ask. That is a separate change.
+    /// ask. That is a separate change — made in #148, which is `.notChecked`
+    /// below. `.unlisted` keeps its exact meaning: GitHub answered, and this
+    /// repository was not in the answer.
     case unlisted
+
+    /// On disk, and GitHub was never successfully asked about it.
+    ///
+    /// The other half of `.unlisted`, and the change that comment defers.
+    /// `.unlisted` is a fact about the repository — GitHub answered, and this
+    /// was not in the answer. This is a fact about the *listing*: no answer
+    /// arrived, so nothing is known about the repository at all.
+    ///
+    /// It carries no fix, deliberately. Every action the page could offer here
+    /// is grounded in the listing that failed — `Register` most of all, since
+    /// `RepoRegistryService.register` asks `gh repo view` for the default branch
+    /// and falls back to `"main"` when *that* fails too. Offering it during an
+    /// outage bakes a guess into the store, for the same reason the row appeared.
+    case notChecked
     case outOfScope(OutOfScope)
 
     // Git state. Only a probe produces these.
@@ -113,10 +129,14 @@ public struct RepoRow: Identifiable, Sendable, Hashable {
 /// judgement that a directory is in the wrong place — the one this feature acts
 /// on by *moving* it — has to be provable here instead.
 public enum RepoReconciler {
+    /// `listing` rather than a bare `[GHRepoSummary]`, and with **no default**:
+    /// a caller that omitted the failures would silently re-assert that GitHub
+    /// answered, which is precisely the defect #148 fixed one layer up.
     public static func rows(
-        github: [GHRepoSummary], disk: [RepoSlot],
+        listing: GitHubListing, disk: [RepoSlot],
         registered: [Repo], layout: RepoTreeLayout
     ) -> [RepoRow] {
+        let github = listing.repos
         var byName: [String: RepoRow] = [:]
         let diskByName = Dictionary(disk.map { ($0.nameWithOwner, $0) }, uniquingKeysWith: { a, _ in a })
         let registeredByName = Dictionary(
@@ -132,13 +152,23 @@ public enum RepoReconciler {
         // A clone or a registration GitHub did not mention still gets a row —
         // silence is how a repository disappears from a sweep unnoticed.
         //
-        // Unregistered, the verdict stays `.notRegistered`: it is already
-        // actionable and already carries its fix. Registered, it is `.unlisted`
-        // and not `.ok` — nothing is wrong on disk, but nothing was confirmed
-        // either, and those are different answers.
+        // The failed-listing branch comes first, and that ordering is the whole
+        // of #148: both verdicts below read GitHub's *silence*, and silence from
+        // an owner nobody could reach is not an answer. Unregistered, the verdict
+        // stays `.notRegistered`: it is already actionable and already carries
+        // its fix. Registered, it is `.unlisted` and not `.ok` — nothing is wrong
+        // on disk, but nothing was confirmed either, and those are different
+        // answers.
         for slot in disk where byName[slot.nameWithOwner] == nil {
             let path = "\(layout.root)/\(slot.owner)/\(slot.visibility.rawValue)/\(slot.name)"
             let known = registeredByName[slot.nameWithOwner]
+            if let failure = listing.failure(for: slot.owner) {
+                byName[slot.nameWithOwner] = RepoRow(
+                    id: slot.nameWithOwner, nameWithOwner: slot.nameWithOwner, path: path,
+                    repoID: known?.id, visibility: slot.visibility, issue: .notChecked,
+                    detail: "On disk; the listing for \(slot.owner) failed: \(failure.reason)")
+                continue
+            }
             byName[slot.nameWithOwner] = RepoRow(
                 id: slot.nameWithOwner, nameWithOwner: slot.nameWithOwner, path: path,
                 repoID: known?.id, visibility: slot.visibility,

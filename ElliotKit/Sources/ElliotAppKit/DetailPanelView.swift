@@ -338,6 +338,7 @@ struct DetailPanelView: View {
                 switch which {
                 case .issue:
                     provenance(card)
+                    PRStatusBlock(card: card)
                     IssuePane(card: card)
                 case .runs:
                     // Above the runs, mirroring `provenance` above the issue: a

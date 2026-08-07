@@ -114,7 +114,7 @@ public struct GHClient: Sendable {
 
     /// The fields `pullRequests(repo:limit:)` asks for — see `issueListFields`.
     static let pullRequestListFields =
-        "number,url,title,body,headRefName,isDraft,state,createdAt,mergedAt"
+        "number,url,title,body,headRefName,isDraft,state,createdAt,mergedAt,headRefOid"
 
     /// Every PR of a repo, recent first.
     ///
@@ -130,11 +130,21 @@ public struct GHClient: Sendable {
         )
     }
 
+    /// The fields `mergeStatus(repo:number:)` asks for — see `issueListFields`.
+    ///
+    /// `Fixtures/gh/pr-view-*.json` are verbatim captures taken with exactly this
+    /// set, and `GHMergeStatusTests` holds the two against each other: a field
+    /// dropped here arrives as `nil`, which decodes perfectly and would be caught
+    /// by nothing else.
+    static let mergeStatusFields =
+        "state,mergedAt,mergeCommit,url,statusCheckRollup,mergeable,mergeStateStatus,"
+        + "reviewDecision,headRefOid"
+
     public func mergeStatus(repo: String, number: Int) async throws -> GHMergeStatus {
         try await json(
             GHMergeStatus.self,
             arguments: ["pr", "view", String(number), "--repo", repo,
-                        "--json", "state,mergedAt,mergeCommit,url,statusCheckRollup"]
+                        "--json", Self.mergeStatusFields]
         )
     }
 

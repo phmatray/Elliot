@@ -263,3 +263,38 @@ extension VerifiedOutcome {
         }
     }
 }
+
+extension PRSign {
+    /// The same arrangement as `VerifiedOutcome.receipt` above, and for the same
+    /// reason: the *sentence* is `ElliotModel`'s `summary`, shared by the card's
+    /// tooltip and the panel's headline, and only the tint and the glyph are
+    /// decided here, because only they need SwiftUI.
+    ///
+    /// `.unknown` is drawn in the questioning face rather than a warning one. It
+    /// is not bad news — it is the absence of news, and dressing it as a problem
+    /// would make every freshly-seen pull request look broken for one tick.
+    var tint: Color {
+        switch self {
+        case .conflict, .checksFailing: Palette.refused
+        case .changesRequested, .reviewRequired, .mergeBlocked: Palette.attention
+        case .checksRunning: Palette.inert
+        // Nothing has judged this pull request. Not a failure, but not something
+        // to draw quietly either — it is the state the board exists to surface.
+        case .noBuild: Palette.attention
+        case .unknown: Palette.quiet
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .conflict: "arrow.trianglehead.branch"
+        case .checksFailing: "xmark.octagon.fill"
+        case .changesRequested: "bubble.left.and.exclamationmark.bubble.right.fill"
+        case .reviewRequired: "person.crop.circle.badge.clock.fill"
+        case .mergeBlocked: "lock.fill"
+        case .checksRunning: "clock.fill"
+        case .noBuild: "questionmark.square.dashed"
+        case .unknown: "questionmark.circle"
+        }
+    }
+}

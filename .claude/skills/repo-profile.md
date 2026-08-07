@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1200 tests in 139 suites**, on
-  `feat/170-preflight-labels` on 2026-08-07 after merging `main` at `0902c10`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**MEASURE_PENDING**, 5 of 5 samples on
+  `feat/170-preflight-labels` on 2026-08-07 off `main` at `50feecc`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -48,11 +48,30 @@
     (1034 → 1050, 119 → 122 suites) — that is a fourth correction, and the drift is now
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
-    your own untouched run and compare against *that*, never against this line. Sixth in #155
+    your own untouched run and compare against *that*, never against this line.
+  - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
+    branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
+    hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
+    evidence that it is cheap to keep true when the gap is caught early rather than five features
+    later. Sixth in #155
     (1061 → 1098, 124 → 129), taken from a five-sample run rather than one — and then **again inside
     the same pull request** after merging `main`, which is the seventh correction and the clearest
     demonstration yet that this line is a date-stamp, not a fact. Eighth and ninth in #159
     (1076 → 1122 → 1125), then a **tenth** at 1167 in 135 when this branch merged #155's own landing.
+    Corrected again landing #180 — the branch measured 1170 in 135 off `0902c10`, and the merge
+    that landed it measured **1188 in 136** off `5b12add`, both from five samples. No ordinal,
+    deliberately, and no attribution of the difference: see the two bullets below.
+    - **Landing #177 the branch's own number was stale before anyone read it** — it wrote 1244 in 141
+      off `0902c10`, and the merged tree measured **1281 in 144** off `206c029`, five of five samples.
+      The branch gained no commit between the two runs, so the whole 37 is `main` moving underneath
+      it: six squashes landed while it sat open. The ordinary case this entry describes, again — the
+      branch measured honestly and was overtaken anyway.
+    - **Landing #182 the value did not move at all** — 1196 in 137 off `a796182`, five of five
+      samples, byte-identical to what `main` already claimed. That is the cleanest demonstration
+      the entry has: #182 ships no Swift whatsoever (two scripts and two markdown files), so the
+      only thing its re-measurement could change was the **date-stamp and the commit**, and those
+      are exactly the two things this bullet says are worth maintaining. A correction here is
+      almost never about the branch.
     - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
       to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
       authors each measured honestly, each counted from the last number they could see, and the
@@ -82,6 +101,14 @@
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
     A signal 10/11 abort is a suite-level crash, not an assertion — re-run before concluding anything
     about your change, and do not read it as a broken toolchain.
+  - ⛔ **A run made after a `git checkout` or a `main` merge, without clearing `.build`, is not a
+    measurement** — new sources against stale objects, and SwiftPM gives no warning. It has produced
+    wrong values, a link error, a SIGBUS, and three test failures that did not exist with a confident
+    bisect on top of them convicting an innocent commit. `rm -rf ElliotKit/.build` and re-measure
+    before believing any of it. **The tell is an assertion that could not have failed** — for a single
+    optional, `(x → nil) == nil` cannot. `CLAUDE.md` § *Things that bite* has all four measurements;
+    this bullet exists so a reader who only ever opens the profile is not the one who learns it a
+    fifth time.
 - **Single-suite filter (per-task, fast):** `cd ElliotKit && swift test --filter <Suite>` — e.g.
   `--filter ElliotModelTests`, or a single suite/test name (**swift-testing**, `@Test`/`@Suite`, not XCTest)
 - **App bundle:** `./Scripts/build-app.sh` — assembles `dist/Elliot.app` from the two SwiftPM
@@ -96,8 +123,8 @@
   **Format the lines you wrote, by hand, to match their neighbours.** `swift format lint <one-file>`
   is readable for a file you just touched; the tree-wide form is not. See `CLAUDE.md` § *Do not run
   `swift format` over the tree*.
-- **Format/lint verify (the gate):** none. There is no formatting gate, and the one workflow that
-  exists (`swift-floor.yml`, the toolchain floor) does not enforce one, so a
+- **Format/lint verify (the gate):** none. There is no formatting gate, and neither workflow
+  (`ci.yml`, the suite; `swift-floor.yml`, the toolchain floor) enforces one, so a
   pull request is never failed on formatting here. Adopting the formatter wholesale is a live option
   and a one-way door (one ~1 600-line reformat commit), and it is not a decision to make inside a
   feature branch.
@@ -154,18 +181,41 @@
 
 ## CI gates (the exact commands CI fails on — satisfy these locally before ready/merge)
 
-There is now **exactly one** workflow, `.github/workflows/swift-floor.yml` (#116). It runs on every
-pull request and does two things: it asserts the runner's toolchain against the floor `Package.swift`
-declares, and it builds on it. It is a *floor* gate, not a build-and-test gate — it does not run the
-suite, and it is the only thing enforced remotely.
+Two workflows, both on `macos-26`, and they answer different questions. Neither replaces running the
+commands locally — branch protection is off, so see the second warning below for what that costs.
 
-Branch protection is still disabled (no required status checks), and there is still **no
-build-and-test CI** — that is #21, in flight on #102. So "wait for green CI" remains something
-`merge-pr` mostly cannot do here, and these stay the self-imposed gates, run locally before flipping
-a PR ready:
+| Workflow | Job | Trigger | What it runs | The claim it establishes |
+|---|---|---|---|---|
+| `.github/workflows/ci.yml` (#21) | `build-and-test` | `pull_request` → `main`, `push` → `main` | `swift build`, then `swift test`, from `ElliotKit` | the suite **passes** somewhere other than one laptop |
+| `.github/workflows/swift-floor.yml` (#116) | `floor` | `pull_request` → `main` | asserts the runner's Swift against the floor `Package.swift` declares, then `swift build` and `swift build --build-tests` | the declared floor is real and **compiles** this package |
+
+So the gates to satisfy locally before flipping a PR ready are exactly the two commands `ci.yml`
+runs — pass these and you have run what CI runs:
 
 - `cd ElliotKit && swift build`
 - `cd ElliotKit && swift test`
+
+⚠️ **`swift build --build-tests` is not `swift test`, and the two workflows split precisely there.**
+The floor job compiles the eight test targets and never executes a `@Test`; until `ci.yml` landed, no
+assertion in this repository had ever been *run* anywhere but on a contributor's own machine. Do not
+read a green `swift-floor` check as a suite that passed — that reading is the same shape as the #116
+defect it exists to prevent.
+
+⚠️ **Branch protection on `main` is still off, so both checks are advisory.** Measured 2026-08-06:
+`gh api repos/phmatray/Elliot/branches/main/protection` returns **404 `Branch not protected`** — not
+an `enforcement_level: "off"` object, no object at all — so a red check does not block a merge and
+`merge-pr` can *read* a verdict but nothing enforces it. Turning it on is #21's Task 3 and needs
+`ci.yml` green on `main` first, which cannot happen until the pull request introducing it lands.
+
+⚠️ **A conflicted pull request produces no run at all, and reports that as silence.** Read
+`gh pr view --json mergeable,mergeStateStatus` before concluding anything about a missing check —
+`CLAUDE.md` § *Commands* has #140's measurement and the wrong diagnosis it caused. Confirmed again
+landing this section: #102 sat `DIRTY` with zero check-runs, and merging `main` produced both of the
+above within seconds.
+
+- **Format/lint in CI:** none, deliberately. See *Format/lint verify* above — the formatter question
+  is unsettled, and a lint step would have landed the first CI run red for a reason unrelated to
+  correctness, which is the fastest way to teach everyone to ignore the badge.
 
 ## Integration style
 - **Merge mode:** squash — `main` is linear and the landed subjects end in `(#N)`

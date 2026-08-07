@@ -22,6 +22,8 @@ public final class AppModel {
 
     public private(set) var repos: [Repo] = []
     public private(set) var cards: [Card] = []
+    /// The latest pull request reading per card, for cards in In Review.
+    public private(set) var prStatuses: [UUID: PRStatus] = [:]
     public private(set) var runsByCard: [UUID: [SkillRun]] = [:]
     public private(set) var globalChecks: [CheckResult] = []
     public private(set) var repoChecks: [UUID: [CheckResult]] = [:]
@@ -61,6 +63,15 @@ public final class AppModel {
     /// and the store, reconciled. The judgement is `RepoReconciler`'s — the page
     /// renders it and never decides anything itself.
     public private(set) var repoRows: [RepoRow] = []
+
+    /// The owners `gh repo list` never answered for, from the same pass that
+    /// produced `repoRows` (#148).
+    ///
+    /// Assigned beside the rows and nowhere else: the banner and the rows have
+    /// to describe one refresh. A failure surviving into a later pass would be a
+    /// second way of saying something nobody measured, which is the defect this
+    /// carries the answer to rather than a place to reintroduce it.
+    public private(set) var repoListingFailures: [OwnerListingFailure] = []
     public private(set) var layout: RepoTreeLayout = .portfolio
     public private(set) var isReconciling = false
 
@@ -574,6 +585,22 @@ public final class AppModel {
             }
         })
 
+        // Its own observation, because `PRWatcher` writes the reading without
+        // touching any card row: refreshing off the card observation alone would
+        // land the badge exactly never. Same reason `observePRStatuses` exists.
+        let statusObservation = store.observePRStatuses()
+        observationTasks.append(Task { [weak self] in
+            do {
+                for try await rows in statusObservation {
+                    await MainActor.run { self?.applyPRStatuses(rows) }
+                }
+            } catch {
+                // Deliberately quiet, unlike the card observation above: a lost
+                // status stream costs a badge, not the board, and a banner
+                // saying so would be louder than the fact it reports.
+            }
+        })
+
         let repoObservation = store.observeRepos()
         observationTasks.append(Task { [weak self] in
             do {
@@ -647,11 +674,30 @@ public final class AppModel {
         switch update {
         case .queueChanged(let queue):
             self.queue = queue
-        case .runStarted(let runID, _):
+        case .runStarted(let runID, let cardID):
             // Emptied rather than seeded with a line: the tail carries events
             // now, and "started" is not one. `RunningStrip` and `RunRow` both
             // already show the run's state from the run itself.
             liveLog[runID] = []
+            // The same refresh `.runFinished` does below, for the same reason:
+            // **nothing re-reads a run row on its own.** Both `.task(id:)`
+            // callers of `refreshRuns` — `CardView` and `DetailPanelView` — are
+            // keyed on the *card's* id, which a starting run does not change,
+            // so neither fires here. Without this the panel you opened to watch
+            // the run draws "Nothing has run yet" for the whole run and offers
+            // no Cancel, while the card beside it spins from `activeRuns`: the
+            // same split `markStalled` below refuses to leave, one update
+            // earlier.
+            //
+            // The read finds the row because `RunScheduler` saves it
+            // (`RunScheduler.swift:381`) before it yields this update (`:384`).
+            // That ordering is the whole reason a refresh is the right answer
+            // here and the wrong one for `.runStalled`, which is yielded
+            // *before* its write.
+            //
+            // `cardID` is nil for an analysis run, which belongs to a
+            // repository; `analysis?.runs` is refreshed by the `Task` below.
+            if let cardID { Task { await self.refreshRuns(cardID: cardID) } }
             Task {
                 await self.refreshActiveRuns()
                 await self.refreshAnalysisRuns()
@@ -1187,6 +1233,57 @@ public final class AppModel {
             return
         }
         activeRuns = (try? await store.activeRuns(cardIDs: ids)) ?? [:]
+        await refreshPRStatuses()
+    }
+
+    /// The pull request readings `PRWatcher` has stored, keyed by card.
+    ///
+    /// Only for cards in In Review, matching what the watcher bothers to read:
+    /// asking for the others would return nothing and make the map look like a
+    /// board-wide answer it is not.
+    func refreshPRStatuses() async {
+        guard let store else { return }
+        var rows: [PRStatus] = []
+        for repoID in Set(cards.filter { $0.column == .inReview }.map(\.repoID)) {
+            rows += (try? await store.prStatuses(repoID: repoID)) ?? []
+        }
+        applyPRStatuses(rows)
+    }
+
+    /// Joins readings to cards on `(repoID, prNumber)`.
+    ///
+    /// Shared by the pull and the observation on purpose. The two arrive from
+    /// different directions — a card changed, or a reading landed — and each
+    /// used to need the whole answer; two copies of this join would drift on
+    /// which columns count, which is the one rule it holds.
+    func applyPRStatuses(_ rows: [PRStatus]) {
+        let byKey = Dictionary(
+            rows.map { (Key(repoID: $0.repoID, prNumber: $0.prNumber), $0) },
+            uniquingKeysWith: { first, _ in first })
+        var next: [UUID: PRStatus] = [:]
+        for card in cards where card.column == .inReview {
+            if let number = card.prNumber,
+               let row = byKey[Key(repoID: card.repoID, prNumber: number)] {
+                next[card.id] = row
+            }
+        }
+        prStatuses = next
+    }
+
+    private struct Key: Hashable {
+        var repoID: UUID
+        var prNumber: Int
+    }
+
+    /// What the card and the panel render. `nil` for a card nothing has read —
+    /// which is not the same as a card whose pull request is fine, so the views
+    /// draw nothing rather than an all-clear.
+    func prStatus(for card: Card) -> ResolvedPRStatus? {
+        // `currentHeadOid` is nil for the same reason as on the MCP side:
+        // establishing the head right now would be a network call in a view
+        // body, and `PRWatcher` already re-reads whenever the head moves. The
+        // age rule still governs.
+        prStatuses[card.id]?.resolved(now: Date(), currentHeadOid: nil)
     }
 
     // MARK: - Repos
@@ -1236,8 +1333,14 @@ public final class AppModel {
     /// this feature exists to disprove.
     private func reloadRepoRows() async {
         guard let registry else { return }
-        let reconciled = await registry.rows(layout: layout)
-        repoRows = await registry.probe(reconciled)
+        let page = await registry.rows(layout: layout)
+        let probed = await registry.probe(page.rows)
+        // One assignment site for both halves, and the rows assigned last: the
+        // page reads `repoRows` to decide whether to speak at all, so a banner
+        // that arrived a turn before the rows it belongs to would briefly
+        // describe the previous pass.
+        repoListingFailures = page.listingFailures
+        repoRows = probed
     }
 
     /// Fast-forwards every clone the probe found strictly behind, and keeps the
