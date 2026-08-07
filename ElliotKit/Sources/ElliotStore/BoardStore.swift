@@ -23,6 +23,10 @@ public final class BoardStore: Sendable {
         config.busyMode = .timeout(5)
         config.foreignKeysEnabled = true
         let pool = try DatabasePool(path: path, configuration: config)
+        // Before migrating, not during: a migration renamed while it sat
+        // unmerged is unapplied by name on any machine that ran the old branch,
+        // and would run a second time over the schema it already made.
+        try Migrations.adoptRenamedMigrations(in: pool)
         try Migrations.migrator.migrate(pool)
         return BoardStore(writer: pool)
     }
