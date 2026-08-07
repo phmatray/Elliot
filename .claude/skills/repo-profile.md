@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1116 tests in 129 suites**, measured on
-  `fix/116-swift-floor` on 2026-08-07 off `main` at `5c92dfb`, 3 of 3 samples; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1119 tests in 129 suites**, measured on
+  `fix/116-swift-floor` on 2026-08-07 off `main` at `533158b`, 3 of 3 samples; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -51,7 +51,9 @@
     your own untouched run and compare against *that*, never against this line. And a **sixth** time
     in #140 (1061 → 1116, 124 → 129) — noticed only because that branch had to run the suite for an
     unrelated reason, which is the honest reading of every correction on this list: the line is
-    fixed when someone happens to look, not when it goes wrong.
+    fixed when someone happens to look, not when it goes wrong. It then drifted **again inside that
+    same pull request**, 1116 → 1119, when #164 landed on `main` during the final re-sync — the
+    second time this has happened mid-PR, so treat the value as expired the moment `main` moves.
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.
