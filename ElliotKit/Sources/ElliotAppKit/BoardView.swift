@@ -286,8 +286,14 @@ public struct BoardView: View {
 
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: Metric.gutter) {
-                    ForEach(PanelLayout.boardOrder(selected: panelOrigin), id: \.self) { slot in
+                    // `analysisOpen: false` is a placeholder — wired in #151, Task 6.
+                    ForEach(
+                        PanelLayout.boardOrder(selected: panelOrigin, analysisOpen: false),
+                        id: \.self
+                    ) { slot in
                         switch slot {
+                        case .analysis:
+                            EmptyView()  // wired in #151, Task 6
                         case .column(let column):
                             ColumnView(column: column, width: width)
                         case .panel:
@@ -317,7 +323,9 @@ public struct BoardView: View {
             // the panel or Done silently unreachable with no scrollbar, green
             // on both `swift build` and `swift test`.
             .scrollDisabled(
-                PanelLayout.contentWidth(boardWidth: boardWidth, spans: openSpans) <= boardWidth
+                // `analysisSpans: nil` is a placeholder — wired in #151, Task 6.
+                PanelLayout.contentWidth(
+                    boardWidth: boardWidth, spans: openSpans, analysisSpans: nil) <= boardWidth
             )
             // In a window too narrow for what the row holds the board scrolls,
             // and the card you just selected could be the one off-screen.
@@ -663,19 +671,22 @@ struct BoardFraming: Equatable, Sendable {
     /// answers before the layout that inserts the panel has run.
     func offsetX(boardWidth: CGFloat) -> CGFloat? {
         guard let selectedColumn else { return nil }
-        let slots = PanelLayout.boardOrder(selected: panelOrigin)
+        // `analysisOpen: false` / `analysisWidth: 0` are placeholders — wired in
+        // #151, Task 2.
+        let slots = PanelLayout.boardOrder(selected: panelOrigin, analysisOpen: false)
         let columnWidth = PanelLayout.columnWidth(boardWidth: boardWidth)
         let panelWidth = PanelLayout.panelWidth(columnWidth: columnWidth, spans: spans)
 
         guard let originMinX = PanelLayout.minX(
             of: .column(selectedColumn), in: slots,
-            columnWidth: columnWidth, panelWidth: panelWidth
+            columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: 0
         ) else { return nil }
         // `nil` when the panel is shut, and passed through as `nil`: the pair is
         // then the column by itself, which is what `frameOffsetX` measures the
         // lead against.
         let panelMinX = PanelLayout.minX(
-            of: .panel, in: slots, columnWidth: columnWidth, panelWidth: panelWidth
+            of: .panel, in: slots,
+            columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: 0
         )
         return PanelLayout.frameOffsetX(
             originMinX: originMinX,

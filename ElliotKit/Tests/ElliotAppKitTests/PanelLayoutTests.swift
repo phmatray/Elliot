@@ -73,8 +73,8 @@ struct PanelLayoutTests {
         ]
 
         for boardWidth in boardWidths {
-            let three = PanelLayout.contentWidth(boardWidth: boardWidth, spans: 3)
-            let two = PanelLayout.contentWidth(boardWidth: boardWidth, spans: 2)
+            let three = PanelLayout.contentWidth(boardWidth: boardWidth, spans: 3, analysisSpans: nil)
+            let two = PanelLayout.contentWidth(boardWidth: boardWidth, spans: 2, analysisSpans: nil)
 
             #expect(three == expected[boardWidth]?.three)
             #expect(two == expected[boardWidth]?.two)
@@ -88,7 +88,7 @@ struct PanelLayoutTests {
         // Five columns and six gutters — so the derived scroll predicate is a
         // no-op with the panel shut, and the board looks identical.
         for boardWidth in boardWidths {
-            let closed = PanelLayout.contentWidth(boardWidth: boardWidth, spans: nil)
+            let closed = PanelLayout.contentWidth(boardWidth: boardWidth, spans: nil, analysisSpans: nil)
             let column = PanelLayout.columnWidth(boardWidth: boardWidth)
             #expect(closed == 5 * column + 6 * Metric.gutter)
 
@@ -122,7 +122,7 @@ struct PanelLayoutTests {
     @Test("Selecting a card inserts one panel and loses no column")
     func boardOrderHoldsEveryColumnPlusOnePanel() {
         for selected in ElliotModel.Column.allCases {
-            let slots = PanelLayout.boardOrder(selected: selected)
+            let slots = PanelLayout.boardOrder(selected: selected, analysisOpen: false)
 
             #expect(slots.count == ElliotModel.Column.allCases.count + 1)
             #expect(slots.filter { $0 == .panel }.count == 1)
@@ -145,7 +145,7 @@ struct PanelLayoutTests {
 
     @Test("With nothing selected the board is five columns and no panel")
     func boardOrderIsJustTheColumnsWhenNothingIsSelected() {
-        let slots = PanelLayout.boardOrder(selected: nil)
+        let slots = PanelLayout.boardOrder(selected: nil, analysisOpen: false)
         #expect(slots.count == 5)
         #expect(!slots.contains(.panel))
         #expect(slots == ElliotModel.Column.allCases.map(BoardSlot.column))
@@ -320,14 +320,14 @@ struct PanelLayoutTests {
         for boardWidth in boardWidths {
             let column = PanelLayout.columnWidth(boardWidth: boardWidth)
             let panel = PanelLayout.panelWidth(columnWidth: column, spans: 3)
-            let closed = PanelLayout.boardOrder(selected: nil)
+            let closed = PanelLayout.boardOrder(selected: nil, analysisOpen: false)
 
             // Closed: five columns, the first one a gutter in — the row's own
             // padding — and each one a column and a gutter after the last.
             for (index, slot) in closed.enumerated() {
                 #expect(
                     PanelLayout.minX(
-                        of: slot, in: closed, columnWidth: column, panelWidth: panel
+                        of: slot, in: closed, columnWidth: column, panelWidth: panel, analysisWidth: 0
                     ) == Metric.gutter + CGFloat(index) * (column + Metric.gutter)
                 )
             }
@@ -336,7 +336,7 @@ struct PanelLayoutTests {
             // leading edge of the board and look like it had worked.
             #expect(
                 PanelLayout.minX(
-                    of: .panel, in: closed, columnWidth: column, panelWidth: panel
+                    of: .panel, in: closed, columnWidth: column, panelWidth: panel, analysisWidth: 0
                 ) == nil
             )
         }
@@ -354,10 +354,10 @@ struct PanelLayoutTests {
                 let panel = PanelLayout.panelWidth(columnWidth: column, spans: spans)
 
                 for selected in [nil] + ElliotModel.Column.allCases.map(Optional.some) {
-                    let slots = PanelLayout.boardOrder(selected: selected)
+                    let slots = PanelLayout.boardOrder(selected: selected, analysisOpen: false)
                     guard let last = slots.last,
                           let lastMinX = PanelLayout.minX(
-                              of: last, in: slots, columnWidth: column, panelWidth: panel
+                              of: last, in: slots, columnWidth: column, panelWidth: panel, analysisWidth: 0
                           )
                     else { Issue.record("empty board order"); return }
 
@@ -367,7 +367,7 @@ struct PanelLayoutTests {
                     #expect(
                         lastMinX + width + Metric.gutter
                             == PanelLayout.contentWidth(
-                                boardWidth: boardWidth, spans: selected == nil ? nil : spans
+                                boardWidth: boardWidth, spans: selected == nil ? nil : spans, analysisSpans: nil
                             )
                     )
                 }
@@ -382,13 +382,13 @@ struct PanelLayoutTests {
             let panel = PanelLayout.panelWidth(columnWidth: column, spans: 3)
 
             for selected in ElliotModel.Column.allCases {
-                let slots = PanelLayout.boardOrder(selected: selected)
+                let slots = PanelLayout.boardOrder(selected: selected, analysisOpen: false)
                 guard let originMinX = PanelLayout.minX(
                           of: .column(selected), in: slots,
-                          columnWidth: column, panelWidth: panel
+                          columnWidth: column, panelWidth: panel, analysisWidth: 0
                       ),
                       let panelMinX = PanelLayout.minX(
-                          of: .panel, in: slots, columnWidth: column, panelWidth: panel
+                          of: .panel, in: slots, columnWidth: column, panelWidth: panel, analysisWidth: 0
                       )
                 else { Issue.record("no pair for \(selected)"); return }
 
@@ -522,14 +522,14 @@ struct PanelLayoutTests {
     ) -> (offset: CGFloat, leadingMinX: CGFloat, trailingMaxX: CGFloat) {
         let column = PanelLayout.columnWidth(boardWidth: boardWidth)
         let panel = PanelLayout.panelWidth(columnWidth: column, spans: spans)
-        let slots = PanelLayout.boardOrder(selected: selected)
+        let slots = PanelLayout.boardOrder(selected: selected, analysisOpen: false)
         let flipped = PanelLayout.opensLeft(of: selected)
 
         let originMinX = PanelLayout.minX(
-            of: .column(selected), in: slots, columnWidth: column, panelWidth: panel
+            of: .column(selected), in: slots, columnWidth: column, panelWidth: panel, analysisWidth: 0
         ) ?? 0
         let panelMinX = PanelLayout.minX(
-            of: .panel, in: slots, columnWidth: column, panelWidth: panel
+            of: .panel, in: slots, columnWidth: column, panelWidth: panel, analysisWidth: 0
         ) ?? 0
 
         return (
@@ -616,6 +616,145 @@ struct PanelLayoutTests {
         #expect(CaretMetric.detachedTether == 0)
         #expect(CaretMetric.detachedCaret > 0)
         #expect(CaretMetric.detachedCaret < 0.5)
+    }
+
+    // MARK: - 10. The analysis slot
+
+    /// The analysis panel is the row's *other* panel: pinned at the leading
+    /// edge, never flipped, with no origin column and therefore none of the
+    /// caret arithmetic above. What it shares with the detail panel is the one
+    /// thing that must not be written twice — how wide a panel measured in
+    /// board columns is.
+
+    @Test("The analysis panel is the first slot, before Backlog, and never flips")
+    func analysisSlotLeadsTheRow() {
+        let closed = PanelLayout.boardOrder(selected: nil, analysisOpen: false)
+        #expect(closed.first == .column(.backlog))
+        #expect(!closed.contains(.analysis))
+
+        let open = PanelLayout.boardOrder(selected: nil, analysisOpen: true)
+        #expect(open.first == .analysis)
+        #expect(open.count == ElliotModel.Column.allCases.count + 1)
+
+        // Still first with a detail panel out, in every origin column —
+        // including Done, the one that flips.
+        for column in ElliotModel.Column.allCases {
+            let both = PanelLayout.boardOrder(selected: column, analysisOpen: true)
+            #expect(both.first == .analysis)
+            #expect(both.filter { $0 == .analysis }.count == 1)
+            #expect(both.filter { $0 == .panel }.count == 1)
+            #expect(both.count == ElliotModel.Column.allCases.count + 2)
+            // And the five columns are still all there, in board order.
+            #expect(both.compactMap(\.column) == ElliotModel.Column.allCases)
+        }
+    }
+
+    @Test("Each slot is measured by its own width")
+    func slotWidthAnswersPerSlot() {
+        #expect(
+            PanelLayout.slotWidth(
+                .column(.backlog), columnWidth: 316, panelWidth: 968, analysisWidth: 642) == 316)
+        #expect(
+            PanelLayout.slotWidth(
+                .panel, columnWidth: 316, panelWidth: 968, analysisWidth: 642) == 968)
+        #expect(
+            PanelLayout.slotWidth(
+                .analysis, columnWidth: 316, panelWidth: 968, analysisWidth: 642) == 642)
+    }
+
+    @Test("The analysis panel shifts every column right by its width plus a gutter")
+    func analysisShiftsTheColumns() {
+        let width = PanelLayout.columnWidth(boardWidth: 1640)                // 316
+        let analysis = PanelLayout.panelWidth(columnWidth: width, spans: 3)  // 968
+
+        let without = PanelLayout.boardOrder(selected: nil, analysisOpen: false)
+        let with = PanelLayout.boardOrder(selected: nil, analysisOpen: true)
+
+        for column in ElliotModel.Column.allCases {
+            let before = PanelLayout.minX(
+                of: .column(column), in: without,
+                columnWidth: width, panelWidth: 0, analysisWidth: 0)!
+            let after = PanelLayout.minX(
+                of: .column(column), in: with,
+                columnWidth: width, panelWidth: 0, analysisWidth: analysis)!
+            #expect(after - before == analysis + Metric.gutter)
+        }
+        // The panel itself starts at the row's own padding.
+        #expect(
+            PanelLayout.minX(
+                of: .analysis, in: with,
+                columnWidth: width, panelWidth: 0, analysisWidth: analysis) == Metric.gutter)
+        // And asking for it in a row that does not have it is `nil`, not 0 —
+        // zero is a position, and a caller that scrolled to it would look like
+        // it had worked.
+        #expect(
+            PanelLayout.minX(
+                of: .analysis, in: without,
+                columnWidth: width, panelWidth: 0, analysisWidth: analysis) == nil)
+    }
+
+    @Test("Content width counts both panels, and neither when they are shut")
+    func contentWidthCountsBothPanels() {
+        // Shut: exactly today's row, so the scroll predicate is a no-op.
+        #expect(PanelLayout.contentWidth(boardWidth: 1640, spans: nil, analysisSpans: nil) == 1640)
+
+        // Both open at three spans, at the 1000pt window where the 226 floor
+        // binds. Five columns, two panels, and one gutter per slot plus one for
+        // the row's own padding.
+        let column = PanelLayout.columnWidth(boardWidth: 1000)             // 226
+        let panel = PanelLayout.panelWidth(columnWidth: column, spans: 3)  // 698
+        #expect(
+            PanelLayout.contentWidth(boardWidth: 1000, spans: 3, analysisSpans: 3)
+                == 5 * column + 2 * panel + 8 * Metric.gutter)
+
+        // And it is strictly wider than either panel alone.
+        #expect(
+            PanelLayout.contentWidth(boardWidth: 1640, spans: 3, analysisSpans: 3)
+                > PanelLayout.contentWidth(boardWidth: 1640, spans: 3, analysisSpans: nil))
+        #expect(
+            PanelLayout.contentWidth(boardWidth: 1640, spans: 3, analysisSpans: 3)
+                > PanelLayout.contentWidth(boardWidth: 1640, spans: nil, analysisSpans: 3))
+    }
+
+    @Test("The row `minX` walks is the row `contentWidth` measures, analysis included")
+    func minXAndContentWidthAgreeWithTheAnalysisPanel() {
+        // The same guard the detail panel already has one section up: two
+        // descriptions of one row is exactly the defect `PanelLayout` exists to
+        // prevent, and a third slot kind is a third chance at it.
+        for boardWidth in boardWidths {
+            for selected in [nil] + ElliotModel.Column.allCases.map(Optional.some) {
+                for analysisSpans in [nil, 2, 3] as [Int?] {
+                    for spans in [nil, 2, 3] as [Int?] {
+                        let column = PanelLayout.columnWidth(boardWidth: boardWidth)
+                        let panel = spans.map {
+                            PanelLayout.panelWidth(columnWidth: column, spans: $0)
+                        } ?? 0
+                        let analysis = analysisSpans.map {
+                            PanelLayout.panelWidth(columnWidth: column, spans: $0)
+                        } ?? 0
+                        // The panel is only in the row when a column is selected
+                        // *and* a width was asked for.
+                        let panelOrigin = spans == nil ? nil : selected
+                        let slots = PanelLayout.boardOrder(
+                            selected: panelOrigin, analysisOpen: analysisSpans != nil)
+                        guard let last = slots.last,
+                              let lastMinX = PanelLayout.minX(
+                                of: last, in: slots, columnWidth: column,
+                                panelWidth: panel, analysisWidth: analysis)
+                        else { continue }
+
+                        let lastWidth = PanelLayout.slotWidth(
+                            last, columnWidth: column, panelWidth: panel, analysisWidth: analysis)
+                        #expect(
+                            lastMinX + lastWidth + Metric.gutter
+                                == PanelLayout.contentWidth(
+                                    boardWidth: boardWidth,
+                                    spans: panelOrigin == nil ? nil : spans,
+                                    analysisSpans: analysisSpans))
+                    }
+                }
+            }
+        }
     }
 }
 

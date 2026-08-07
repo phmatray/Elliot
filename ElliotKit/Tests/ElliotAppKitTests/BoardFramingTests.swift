@@ -66,8 +66,8 @@ struct BoardFramingTests {
 
         // And the offset stops being inert across that same toggle: shut, the
         // row fits and nothing can scroll; open, it does not.
-        #expect(PanelLayout.contentWidth(boardWidth: boardWidth, spans: nil) <= boardWidth)
-        #expect(PanelLayout.contentWidth(boardWidth: boardWidth, spans: 3) > boardWidth)
+        #expect(PanelLayout.contentWidth(boardWidth: boardWidth, spans: nil, analysisSpans: nil) <= boardWidth)
+        #expect(PanelLayout.contentWidth(boardWidth: boardWidth, spans: 3, analysisSpans: nil) > boardWidth)
         #expect(try #require(open.offsetX(boardWidth: boardWidth)) > 0)
     }
 
@@ -84,8 +84,8 @@ struct BoardFramingTests {
             #expect(wide != narrow, "a resize must reach the framing, in \(column)")
         }
         #expect(
-            PanelLayout.contentWidth(boardWidth: boardWidth, spans: 3)
-                > PanelLayout.contentWidth(boardWidth: boardWidth, spans: 2)
+            PanelLayout.contentWidth(boardWidth: boardWidth, spans: 3, analysisSpans: nil)
+                > PanelLayout.contentWidth(boardWidth: boardWidth, spans: 2, analysisSpans: nil)
         )
     }
 
@@ -194,18 +194,18 @@ struct BoardFramingTests {
             for origin in [nil, column] as [ElliotModel.Column?] {
                 for spans in [PanelLayout.spanChoices.narrow, PanelLayout.spanChoices.wide] {
                     let subject = framing(column: column, origin: origin, spans: spans)
-                    let slots = PanelLayout.boardOrder(selected: origin)
+                    let slots = PanelLayout.boardOrder(selected: origin, analysisOpen: false)
                     let columnWidth = PanelLayout.columnWidth(boardWidth: boardWidth)
                     let panelWidth = PanelLayout.panelWidth(
                         columnWidth: columnWidth, spans: spans
                     )
                     let originMinX = try #require(PanelLayout.minX(
                         of: .column(column), in: slots,
-                        columnWidth: columnWidth, panelWidth: panelWidth
+                        columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: 0
                     ))
                     let panelMinX = PanelLayout.minX(
                         of: .panel, in: slots,
-                        columnWidth: columnWidth, panelWidth: panelWidth
+                        columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: 0
                     )
                     let expected = PanelLayout.frameOffsetX(
                         originMinX: originMinX,
@@ -235,12 +235,12 @@ struct BoardFramingTests {
         let panelWidth = PanelLayout.panelWidth(
             columnWidth: columnWidth, spans: PanelLayout.spanChoices.wide
         )
-        let slots = PanelLayout.boardOrder(selected: .done)
+        let slots = PanelLayout.boardOrder(selected: .done, analysisOpen: false)
         let panelMinX = try #require(PanelLayout.minX(
-            of: .panel, in: slots, columnWidth: columnWidth, panelWidth: panelWidth
+            of: .panel, in: slots, columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: 0
         ))
         let columnMinX = try #require(PanelLayout.minX(
-            of: .column(.done), in: slots, columnWidth: columnWidth, panelWidth: panelWidth
+            of: .column(.done), in: slots, columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: 0
         ))
 
         #expect(panelMinX < columnMinX, "Done's panel is placed before it")
