@@ -6,9 +6,19 @@ import MCP
 
 // MARK: - Results
 //
-// Every tool answers in the same shape — one JSON text block, `isError` telling
-// the agent whether to trust it — so an agent can parse a reply without knowing
-// which tool it came from.
+// Every tool answers with a JSON text block, `isError` telling the agent whether
+// to trust it, so a reply can be parsed without knowing which tool it came from.
+//
+// ⚠️ **One JSON block, not necessarily one block.** `board_screenshot` answers
+// with an image block *and* the JSON, because a description of a window is not a
+// look at one. This paragraph used to claim every result was a single text
+// block, and that stopped being true the moment the screenshot tool landed — a
+// comment asserting a guarantee nothing provides is what #28 was filed for, so
+// it is corrected here rather than left for the next reader to trust.
+//
+// What still holds, and what a reader can rely on: **exactly one text block, and
+// it is JSON.** `ScreenshotTool` builds its own result for that reason — the
+// constructors below are the single-block path.
 
 extension CallTool.Result {
     /// Throws rather than degrading. A tool result that failed to serialise used
@@ -93,7 +103,10 @@ extension CallTool.Result {
         }
     }
 
-    private static func json(_ fields: [String: Value]) throws -> String {
+    /// Internal rather than private: `ScreenshotTool` assembles a two-block
+    /// result and still has to encode its JSON block the same way, through the
+    /// wire codec, so dates and numbers read identically across the surface.
+    static func json(_ fields: [String: Value]) throws -> String {
         let data = try WireCodec.encoder.encode(Value.object(fields))
         guard let text = String(data: data, encoding: .utf8) else {
             throw ToolFailure(code: "internal_error", message: "Tool result was not valid UTF-8.")
