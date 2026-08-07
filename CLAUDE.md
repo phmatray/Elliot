@@ -64,11 +64,15 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
     6.2.4), so **the test targets cannot be compiled on that image at all**. Whether macOS 15 can
     *host* Xcode 26.4 is unmeasured — an image's contents are not Apple's requirements, and inferring
     one from the other is the mistake #116 is about.
-- **CI here is one workflow, and it is not a build.** `.github/workflows/swift-floor.yml` asserts the
-  runner's toolchain against the floor `Package.swift` declares, and builds on it. There is still **no
-  build-and-test CI and no branch protection** — that is #21, in flight on #102 — so a pull request is
-  otherwise judged by a local `swift test` only, and "wait for green CI" is still not a thing that can
-  happen here.
+- **CI here is two workflows, and they answer different questions.**
+  `.github/workflows/swift-floor.yml` (#116) asserts the runner's toolchain against the floor
+  `Package.swift` declares and builds on it; `.github/workflows/ci.yml` (#21) runs `swift build` then
+  `swift test`. ⚠️ **`swift build --build-tests` is not `swift test`** — the floor job compiles the
+  eight test targets and executes no `@Test`, so a green `swift-floor` is not a suite that passed.
+  **Branch protection is still off**, so both checks are advisory: `gh api
+  repos/phmatray/Elliot/branches/main/protection` returns 404 `Branch not protected`, and a red check
+  does not block a merge. "Wait for green CI" now returns a real verdict; it still does not stop
+  anything.
   - ⚠️ **A conflicted pull request fires no `pull_request` workflow at all — and it fails by silence,
     not by saying so.** Measured in #140: after `main` moved, GitHub created **zero** runs for the
     head SHA for 25 minutes, `check-runs` returned `total_count: 0`, a close/reopen produced nothing,
@@ -163,10 +167,12 @@ been copied too. It had already cost three defects, each fixed in one file — `
 tails), `3b1c226`/#18 (`waitUntilExit` parking a cooperative thread), `36b6da6`/#105 (SIGKILL
 escalation `ProcessRunner` never got) — and #26 opened a fourth investigation aimed at one file.
 `DrainDuplicationTests` keeps the measurement runnable: it re-derives that comment count and fails
-naming the invariant that is written twice, because this repository has **no build-and-test CI** and a
-gate that is not a test is a gate nobody re-runs. (The one workflow that does exist, `swift-floor.yml`,
-guards the toolchain floor and runs no tests, so the argument stands unchanged — but "no CI" flatly
-was the wording until #116 added it, and a stale claim in this file is what #116 was about.)
+naming the invariant that is written twice, because **a gate that is not a test is a gate nobody
+re-runs**. Since #21 that argument is stronger rather than weaker — `ci.yml` executes `swift test` on
+every pull request, so a guard shaped as a test is now the *only* kind of guard this repository
+enforces off one laptop. (The wording here has been corrected twice: flatly "no CI" until #116 added
+`swift-floor.yml`, then "no build-and-test CI" until #21 added `ci.yml`. A stale claim in this file is
+what #116 was about, and the shape of it recurs.)
 
 The single behavioural delta is recorded at both ends: `ProcessRunner` gave up its
 `state.withLock { !$0.exited } &&` conjunct in the SIGKILL backstop, since a sink may hold that lock
