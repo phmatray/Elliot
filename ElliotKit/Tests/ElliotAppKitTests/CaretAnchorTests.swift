@@ -183,7 +183,10 @@ struct CaretAnchorTests {
         // The geometry is arranged so these two are different numbers (100 and
         // 150); see `render`.
         let y = panel.minY + PanelLayout.caretY(
-            cardMidY: card.midY, panelMinY: panel.minY, panelHeight: panel.height)
+            cardMidY: card.midY,
+            panelMinY: panel.minY,
+            panelHeight: panel.height
+        )
         #expect(card.midY != panel.midY, "the geometry can no longer tell the fallback apart")
         #expect(y == card.midY)
         #expect(y != panel.midY)
