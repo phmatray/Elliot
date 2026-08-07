@@ -101,4 +101,125 @@ struct CardDraftTests {
         #expect(draft.criteria == [""], "the editor always renders at least one criterion row")
         #expect(draft.role == "developer", "toggling to story mode must not present a blank role")
     }
+
+    // MARK: - Seeding from a proposal, and writing one back
+
+    /// A proposal with enough provenance to notice if `applied(to:)` touched
+    /// any of it. Every field that is *not* editable carries a distinctive
+    /// value so the round-trip assertions are about the real thing.
+    private static func proposal(
+        title: String = "Edit a proposal",
+        story: UserStory = UserStory(
+            role: "reviewer", want: "to correct a proposal", benefit: "a near-miss is not retyped",
+            acceptanceCriteria: ["The editor binds a draft", "Save uses isValid"]
+        )
+    ) -> StoryProposal {
+        StoryProposal(
+            analysisID: UUID(), runID: UUID(), repoID: UUID(),
+            angle: .techDebt,
+            title: title,
+            story: story,
+            rationale: "two editors for the same three fields",
+            evidence: [Evidence(path: "Sources/ElliotAppKit/AnalysisWindow.swift", line: 910, exists: true)],
+            effort: .large,
+            status: .proposed,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+    }
+
+    @Test("Seeding from a proposal carries the label and all three story parts across")
+    func seedFromProposal() {
+        let proposal = Self.proposal()
+        let draft = CardDraft(proposal: proposal)
+
+        #expect(draft.title == "Edit a proposal")
+        #expect(draft.role == "reviewer")
+        #expect(draft.want == "to correct a proposal")
+        #expect(draft.benefit == "a near-miss is not retyped")
+        #expect(draft.criteria == ["The editor binds a draft", "Save uses isValid"])
+        #expect(draft.note.isEmpty, "a proposal has nowhere to put a note")
+    }
+
+    @Test("A draft seeded from a proposal is a story, and cannot open in note mode")
+    func seedFromProposalPinsStoryMode() {
+        let draft = CardDraft(proposal: Self.proposal())
+        #expect(draft.isStory, "a proposal is always a story")
+        #expect(draft.story != nil)
+        #expect(draft.isValid)
+    }
+
+    @Test("A proposal with no acceptance criteria still seeds a row for the editor")
+    func seedFromProposalWithoutCriteria() {
+        let bare = Self.proposal(
+            story: UserStory(role: "reviewer", want: "to correct one", benefit: "it lands right")
+        )
+        let draft = CardDraft(proposal: bare)
+        #expect(draft.criteria == [""], "the editor must always have a row to render")
+    }
+
+    @Test("Applying an unedited draft returns an equal proposal")
+    func applyRoundTrips() {
+        let proposal = Self.proposal()
+        let draft = CardDraft(proposal: proposal)
+        #expect(draft.applied(to: proposal) == proposal)
+    }
+
+    @Test("Applying an edited draft carries the label and the story back")
+    func applyCarriesEdits() {
+        let proposal = Self.proposal()
+        var draft = CardDraft(proposal: proposal)
+        draft.title = "Correct a proposal"
+        draft.want = "to correct it in place"
+        draft.criteria = ["One field set", "One rule"]
+
+        let edited = draft.applied(to: proposal)
+        #expect(edited.title == "Correct a proposal")
+        #expect(edited.story.want == "to correct it in place")
+        #expect(edited.story.acceptanceCriteria == ["One field set", "One rule"])
+        #expect(edited.story.role == "reviewer", "an untouched part is still carried")
+    }
+
+    @Test("Applying drops blank and whitespace-only criteria")
+    func applyDropsBlankCriteria() {
+        let proposal = Self.proposal()
+        var draft = CardDraft(proposal: proposal)
+        draft.criteria = ["kept", "   ", "", "\n", " also kept "]
+
+        let edited = draft.applied(to: proposal)
+        #expect(edited.story.acceptanceCriteria == ["kept", "also kept"])
+    }
+
+    @Test("Applying leaves the proposal's provenance untouched")
+    func applyLeavesProvenanceAlone() {
+        let proposal = Self.proposal()
+        var draft = CardDraft(proposal: proposal)
+        draft.title = "Something else entirely"
+
+        let edited = draft.applied(to: proposal)
+        #expect(edited.id == proposal.id)
+        #expect(edited.analysisID == proposal.analysisID)
+        #expect(edited.runID == proposal.runID)
+        #expect(edited.repoID == proposal.repoID)
+        #expect(edited.angle == proposal.angle)
+        #expect(edited.rationale == proposal.rationale)
+        #expect(edited.evidence == proposal.evidence)
+        #expect(edited.effort == proposal.effort)
+        #expect(edited.status == proposal.status)
+        #expect(edited.createdAt == proposal.createdAt)
+    }
+
+    /// The `nil` branch of `applied(to:)` is unreachable through
+    /// `init(proposal:)`, which pins `isStory`. It is reachable by hand, and
+    /// what it must not do is trap or write an empty story over a real one.
+    @Test("A draft forced into note mode leaves the proposal's story alone")
+    func applyFromNoteModeKeepsTheStory() {
+        let proposal = Self.proposal()
+        var draft = CardDraft(proposal: proposal)
+        draft.isStory = false
+        draft.title = "Still renamed"
+
+        let edited = draft.applied(to: proposal)
+        #expect(edited.title == "Still renamed")
+        #expect(edited.story == proposal.story, "a note has no story to write")
+    }
 }
