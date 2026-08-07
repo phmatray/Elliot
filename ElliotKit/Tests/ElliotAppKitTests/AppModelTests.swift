@@ -1,5 +1,6 @@
 import ElliotEngine
 import ElliotModel
+import ElliotProcess
 import ElliotStore
 import Foundation
 import TestSupport
@@ -833,4 +834,130 @@ struct AppModelTests {
     private func storage(of blocks: [IssueBlock]) -> UInt {
         blocks.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
     }
+
+    // MARK: - A start that failed has to land somewhere setup can read
+
+    /// A real `AnalysisService`, because the thing under test is what
+    /// `startAnalysis` does with a **thrown** error and the cheapest honest way
+    /// to throw one is to ask the real service for a repository the store has
+    /// never heard of. Nothing is spawned: `start` throws on its first `guard`,
+    /// long before it queues a run, and the launcher below is inert anyway.
+    private func analysisService(store: BoardStore) -> AnalysisService {
+        // `start`'s success path resolves an artifact path through
+        // `StoreLocation` and creates the directory for it, so the home has to
+        // be final before any of these run.
+        _ = TestHome.root
+        let launcher = InertLauncher()
+        return AnalysisService(
+            store: store,
+            launcher: launcher,
+            board: BoardService(store: store, launcher: launcher),
+            gh: GHClient(
+                config: ToolConfig(
+                    claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+                    gitPath: "/usr/bin/false", environment: [:]))
+        )
+    }
+
+    private func modelWithAnalysis(store: BoardStore) -> AppModel {
+        let model = AppModel()
+        model.testOnlySeed(repos: [], cards: [])
+        model.testOnlyAttachAnalysisService(analysisService(store: store))
+        return model
+    }
+
+    @Test("A start that throws is recorded where the setup footer can read it")
+    func failedStartIsRecorded() async throws {
+        let model = modelWithAnalysis(store: try BoardStore.inMemory())
+        let missing = UUID()
+
+        await model.startAnalysis(
+            repoID: missing, angles: [.bugs], instructions: "", maxStories: 8)
+
+        // The defect, stated: the message went to `analysis?.note`, and
+        // `analysis` is `nil` in setup — a *failed* start creates no session —
+        // so the assignment compiled, read as if it did something, and threw
+        // the message away.
+        #expect(model.analysis == nil)
+        // Exactly what the `catch` already computes, and nothing friendlier:
+        // rewording these errors is its own piece of work.
+        #expect(model.startFailure == AnalysisError.repoNotFound(missing).localizedDescription)
+    }
+
+    @Test("Pressing Start again clears the previous failure before the attempt")
+    func startClearsBeforeItAttempts() async throws {
+        let model = modelWithAnalysis(store: try BoardStore.inMemory())
+        await model.startAnalysis(repoID: UUID(), angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.startFailure != nil)
+
+        // Detaching the service makes the second `startAnalysis` return at its
+        // own `guard let analysisService` without attempting anything at all.
+        // So a `nil` afterwards can only have come from a clear placed **above**
+        // that guard — it cannot be a second failure that happened to be absent,
+        // and it cannot be `openAnalysis` clearing it on the way through.
+        model.testOnlyAttachAnalysisService(nil)
+        await model.startAnalysis(repoID: UUID(), angles: [.bugs], instructions: "", maxStories: 8)
+
+        #expect(model.startFailure == nil)
+    }
+
+    @Test("A start that succeeds leaves no failure standing behind it")
+    func successfulStartClearsTheFailure() async throws {
+        let store = try BoardStore.inMemory()
+        let model = modelWithAnalysis(store: store)
+        var repo = Repo(path: "/tmp/r", nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        repo.isEnabled = true
+        try await store.saveRepo(repo)
+
+        await model.startAnalysis(repoID: UUID(), angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.startFailure != nil)
+
+        await model.startAnalysis(
+            repoID: repo.id, angles: [.bugs], instructions: "", maxStories: 8)
+
+        // The review state is never entered with a stale failure behind it —
+        // otherwise closing the analysis would drop the reader back onto a
+        // setup form reporting a failure that has since been superseded.
+        #expect(model.analysis != nil)
+        #expect(model.startFailure == nil)
+    }
+
+    @Test("Opening an earlier analysis clears it — it belongs to a start that did not happen")
+    func openingAnAnalysisClearsTheFailure() async throws {
+        let model = modelWithAnalysis(store: try BoardStore.inMemory())
+        await model.startAnalysis(repoID: UUID(), angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.startFailure != nil)
+
+        // The header's *Earlier analyses* menu. What is on screen afterwards is
+        // an analysis that did run; a sentence about one that did not would be
+        // read as belonging to it.
+        model.openAnalysis(id: UUID())
+
+        #expect(model.startFailure == nil)
+    }
+
+    @Test("Finishing an analysis is not a failure")
+    func closingSetsNoFailure() {
+        // `closeAnalysis` deliberately does not touch it. Returning to setup
+        // after an analysis that ran is the ordinary end of the flow, and a
+        // refusal-accented sentence waiting there would be the mirror of the
+        // bug this fixes.
+        let model = AppModel()
+        model.testOnlySeed(repos: [], cards: [])
+        model.openAnalysis(id: UUID())
+
+        model.closeAnalysis()
+
+        #expect(model.startFailure == nil)
+    }
+}
+
+/// Launches nothing.
+///
+/// `AnalysisService` needs a launcher to be constructed, and these tests are
+/// about `AppModel`'s `catch`, not about what would have been spawned — the one
+/// start that succeeds here queues its run and this drops it on the floor.
+private actor InertLauncher: RunLaunching {
+    func launch(runID: UUID) async {}
+    func cancel(runID: UUID) async {}
 }
