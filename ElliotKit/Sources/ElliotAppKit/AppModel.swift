@@ -152,7 +152,78 @@ public final class AppModel {
     /// 2 only one pane fits and a segmented switch appears to choose it; the
     /// merge confirmation stays in the header at both, where no switch can hide
     /// it.
-    public var panelSpans = 3
+    ///
+    /// **Restored, not reset** (#132): the value comes from `preferences.json`
+    /// inside `ELLIOT_HOME` at launch and goes back there on every change, so a
+    /// width expressed once with a drag is not re-expressed every launch. A
+    /// preference that does not survive the reader closing the app is half a
+    /// feature, and the half that shipped in #54 was the expensive one.
+    ///
+    /// Computed over private storage rather than carrying a `didSet`, and the
+    /// reason is **measured, not the obvious one**. Plain Swift does not run a
+    /// property observer for an assignment in the declaring type's initialiser,
+    /// so `didSet { save(…) }` looks safe. `@Observable` changes that: the macro
+    /// rewrites the stored property into a computed one, so `self.panelSpans = …`
+    /// inside `init` becomes a real setter call and the observer *does* fire —
+    /// the first launch after this shipped would rewrite the file it had just
+    /// read. Verified by building the `didSet` form and watching
+    /// `AppModelTests.restoringDoesNotWrite` go red on it, and only that test.
+    ///
+    /// (The tracking itself survives a `didSet` — that was measured too, and it
+    /// is not the reason for this shape.) ``readerPreferences`` is what
+    /// `@Observable` observes; this is where the save hangs, and `init` assigns
+    /// the storage.
+    public var panelSpans: Int {
+        get { readerPreferences.panelSpans }
+        set {
+            // One field of the held value, never a freshly built `Preferences`.
+            // Rebuilding it would make each setter save a struct whose *other*
+            // fields are back at their defaults, so the second preference to be
+            // added here would silently reset the first every time either one
+            // changed — a data-loss bug that cannot exist while there is only one
+            // field, and would arrive fully grown with the second.
+            readerPreferences.panelSpans = newValue
+            // Unclamped on purpose: the two affordances that reach here — the
+            // drag handle and View ▸ Narrow/Widen — can only produce the two
+            // designed spans (`PanelLayout.snappedSpans`), so a clamp on the way
+            // *out* would only hide a caller that had invented a third. The
+            // clamp belongs where the value cannot be trusted, which is the way
+            // *in*, from a file (`PreferencesFile.load`).
+            preferences.save(readerPreferences)
+        }
+    }
+
+    /// What View ▸ Narrow/Widen Details should read right now.
+    ///
+    /// Here rather than in the menu because it is a judgement about which of the
+    /// two designed widths is the *other* one, and a view that judged it would be
+    /// a second place holding the pair — which is what `Preferences.spanChoices`
+    /// exists to prevent.
+    public var panelWidthToggleTitle: String {
+        panelSpans >= Preferences.spanChoices.wide ? "Narrow Details" : "Widen Details"
+    }
+
+    /// Moves the panel to the width it is not currently at, and remembers it.
+    ///
+    /// Goes through ``panelSpans``, so it saves exactly like a drag does — the
+    /// same funnel, not a second write path.
+    public func togglePanelWidth() {
+        panelSpans =
+            panelSpans >= Preferences.spanChoices.wide
+            ? Preferences.spanChoices.narrow : Preferences.spanChoices.wide
+    }
+
+    /// Every reader preference this launch holds, and the single source of the
+    /// values the setters above expose one field at a time.
+    ///
+    /// Held rather than reassembled per save, for the reason in `panelSpans`'s
+    /// setter. ⚠️ It does **not** preserve keys this version has never heard of:
+    /// `Preferences` decodes leniently but stores only what it declares, so a
+    /// field written by a newer build survives a *launch* and not a *write*.
+    /// That is the documented bargain (the spec says unknown fields are
+    /// "ignored"), and it is worth knowing before someone reads the round-trip as
+    /// lossless.
+    private var readerPreferences: Preferences
 
     /// How many board columns wide the analysis panel is.
     ///
@@ -368,7 +439,35 @@ public final class AppModel {
     /// does not replay a week of history as a week of banners.
     private let launchedAt = Date()
 
-    public init() {}
+    /// Where a changed reader preference goes.
+    ///
+    /// ⚠️ **The default writes nowhere, and that is the feature.** Every test in
+    /// `ElliotAppKitTests` builds `AppModel()`, several of them assign
+    /// `panelSpans`, and most never touch `TestHome` — so a writer that defaulted
+    /// to the real file would make "does `swift test` leave a preference in
+    /// `~/Library/Application Support/Elliot`" depend on which suite ran first.
+    /// Persistence is opted into, by exactly one production site
+    /// (`ElliotApp.swift`), the way `makeNotificationDelivery()` hands back
+    /// `NoDelivery` outside a bundle.
+    private let preferences: any PreferencesWriting
+
+    /// - Parameters:
+    ///   - preferences: where a changed preference is written. Defaults to
+    ///     nowhere.
+    ///   - initialPreferences: what was read at launch, clamped on the way in.
+    ///     Passed in rather than loaded here so that this type reaches no
+    ///     environment variable and no filesystem — the two belong to the same
+    ///     file and are handed over together by whoever resolved it.
+    public init(
+        preferences: any PreferencesWriting = NoPreferenceWriting(),
+        initialPreferences: Preferences = .default
+    ) {
+        self.preferences = preferences
+        // The storage directly, never through `panelSpans` — going through the
+        // setter would save the value on the way in, so the first launch after
+        // this ships would rewrite the file it had just read.
+        self.readerPreferences = initialPreferences.clamped()
+    }
 
     // MARK: - Startup
 

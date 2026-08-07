@@ -145,7 +145,14 @@ enum PanelLayout {
     /// is too wide for one pane and too narrow for two. So the drag handle
     /// snaps rather than tracks — a reader who lets go anywhere gets one of the
     /// two layouts that were designed, never a stuck middle.
-    static let spanChoices = (narrow: 2, wide: 3)
+    ///
+    /// The pair itself is `Preferences.spanChoices` and is *referred* to here
+    /// rather than restated, because the same two numbers now decide two things
+    /// in two targets: which layout a drag lands on, and which stored value is
+    /// one a reader could have produced (`Preferences.clamped()`). Writing `2`
+    /// and `3` in both would be a rule with two implementations — the shape this
+    /// repository has paid for four times.
+    static let spanChoices = Preferences.spanChoices
 
     /// Which span a drag on the panel's **outer** edge lands on when it is
     /// released.

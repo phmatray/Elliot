@@ -20,6 +20,23 @@ public enum StoreLocation {
         home.appendingPathComponent("elliot.sqlite")
     }
 
+    /// What the reader chose about how the app looks, beside the board's own
+    /// state rather than in `UserDefaults`.
+    ///
+    /// `UserDefaults.standard` is keyed by bundle identifier, so nothing can
+    /// point it at a different home — and every on-screen verification in this
+    /// project runs against a scratch `ELLIOT_HOME`, where a preference bleeding
+    /// in from the operator's real app means the capture does not show what it
+    /// claims. Derived from ``home``, this follows the variable by construction,
+    /// which is the difference between an isolation nobody can forget and one
+    /// everybody has to remember.
+    ///
+    /// Not board state, so it never crosses the MCP socket and the sole-writer
+    /// rule does not reach it.
+    public static var preferencesURL: URL {
+        home.appendingPathComponent("preferences.json")
+    }
+
     /// One NDJSON file per run, holding every line the CLI emitted. This is the
     /// durable sink: the UI stream is bounded and may drop, this never does.
     public static var runsDirectory: URL {

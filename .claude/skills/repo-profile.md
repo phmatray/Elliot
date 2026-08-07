@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1374 tests in 155 suites**, 5 of 5 samples on
-  `fix/138-start-failure-in-setup-footer` on 2026-08-08 off `main` at `941888c`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1407 tests in 158 suites**, 5 of 5 samples on
+  `feat/132-persist-panel-width` on 2026-08-08 off `main` at `b0d121a`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -86,6 +86,13 @@
       advice taken twice over — 15 runs, of which **14 kept their output** and were green; the 15th
       printed no summary and its output had already been discarded by the command that took it, so
       it is unclassified rather than green. A sample you did not keep is not a sample you can cite.
+    - **Landing #215 the value was right and the commit was one behind — the #138 shape again.** The
+      line read 1374 in 155 off `941888c`, and 1374 in 155 is exactly what `main` measures at
+      `b0d121a`, one squash later: #216 added no test, so the *value* survived a commit the stamp did
+      not name. The merged tree measures **1407 in 158**, five of five, which is that 1374 plus the
+      branch's own +33/+3 with nothing left over. Same caveat as #217 below — the sum was checked
+      **after** the runs, never in place of them, and it is only predictable because the two sides
+      touched disjoint suites.
     - **Landing #217 the conflict was two honest numbers, and the merged value was the exact sum.**
       Both sides measured off `2494882` and both were right when written — #209's 1358 in 153 and
       this branch's 1330 in 150 — so `git merge` had no way to choose and the line came through as a

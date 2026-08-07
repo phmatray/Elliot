@@ -371,10 +371,13 @@ the two above. Anything needing a click or a key is **not verifiable** until som
 ⚠️ **As of today the driver holds neither grant** — `accessibility: false` *and*
 `screen_recording: false`, read against the daemon's own TCC identity `com.trycua.driver`, which is
 the identity that matters because the daemon is its own responsible process. So observation is off
-too, and the window listing above is not currently reproducible through it. `/usr/sbin/screencapture
--l` from a shell still enumerates windows and is what produced today's listings, but it is **not** a
-substitute: a non-frontmost window parks in the Stage Manager strip at ~143×160, and nothing in it
-can be read as text.
+too, and the window listing above is not currently reproducible through it. ⛔ **This paragraph used to
+offer `/usr/sbin/screencapture -l` as a shell fallback that "still enumerates windows"; it does
+neither.** `-l<windowid>` *captures* one window rather than listing any, and from an agent's shell it
+answers `could not create image from window` — the same missing grant, measured 2026-08-08 (#132). The
+caveat it carried was true and beside the point: a non-frontmost window parks in the Stage Manager
+strip at ~143×160 with nothing in it readable as text. See the probe table further down for what an
+agent can and cannot do, and reach for `board_screenshot` instead.
 
 Recognise the shape rather than the tool, because it has now bitten this project four times: **a
 permission that silently changes behaviour instead of erroring.** A blank accessibility tree that
@@ -557,10 +560,48 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
 /usr/sbin/screencapture -x -R <x>,<y>,<w>,<h> /tmp/board.png
 ```
 
-The shell holds Accessibility even when the `cua-driver` daemon does not, so
-`osascript -e 'tell application "System Events" to click at {x, y}'` selects a card and
-`key code 53` is Escape. One more false negative to know: `entire contents` of the window can return
-**empty** while `count of UI elements` returns 6. An empty AX dump is not an empty window.
+⛔ **"The shell holds Accessibility even when the `cua-driver` daemon does not" — that is what this
+paragraph said, and it is not true of an agent's shell.** Measured 2026-08-08 from a `claude -p` run
+(#132), which is how most verification passes in this repository are actually driven:
+
+| probe | answer |
+|---|---|
+| `cua-driver permissions status --json` | `accessibility: false`, `screen_recording: false` |
+| `osascript … to keystroke "q" using command down` | `execution error: osascript is not allowed to send keystrokes. (1002)` |
+| `osascript … to get {position, size} of window 1` | `execution error: osascript is not allowed assistive access. (-1719)` |
+| `osascript … to count of UI elements of window 1` | same, `-1719` |
+| `/usr/sbin/screencapture -x` | `could not create image from display`, exit 1, no file |
+
+So **every command in the recipe above fails for an agent**, and with it the whole chain: no keystroke,
+no AX read, no window position — and without a window position there is no coordinate to aim
+`Scripts/realclick.swift` at, so the real-`CGEvent` path is out too even though it needs only
+Accessibility. An interactive Terminal that has been granted the box is a different TCC identity from
+the one a spawned agent runs under; the claim was probably true where it was written and does not
+transfer. **The grant belongs to whoever is asking — measure it in the session you are in, not from
+this file.**
+
+The one thing that still works with no grant at all is **`board_screenshot`** (#155), because Elliot
+renders its own hierarchy in-process. Aiming it at a scratch instance rather than the everyday board
+does not need a second registered helper either — spawn `elliot-mcp` yourself with the home set and
+speak JSON-RPC at its stdin (`initialize` → `notifications/initialized` → `tools/call`):
+`ELLIOT_HOME=/tmp/elliot-check dist/Elliot.app/Contents/MacOS/elliot-mcp`. The reply carries
+`png_path` at full resolution, inside that home's `screenshots/`. What it cannot do is *act*, so a
+check that needs a card selected still needs a person or a grant.
+
+⚠️ `screencapture` **erroring** rather than handing back a black frame is worth noting on its own: it
+is the one member of this file's false-negative family that actually says no — `-x` gives
+`could not create image from display` and `-l<windowid>` gives `could not create image from window`.
+Both are the missing grant, so capture-by-window-id is **not** a fallback either.
+
+⛔ **Do not read `screencapture`'s short usage line as its option list.** `usage: screencapture
+[-icMPmwsWxSCUtoa] [files]` omits `-l`, and a bare `-l` answers `illegal option -- l` because it wants
+an argument — between them those two outputs read exactly like "this macOS has no such flag", which is
+what got written here for one commit and what code review caught. `screencapture --help` lists
+`-l<windowid> capture this windowsid` plainly. **An option that needs an argument reports its absence
+the same way an unknown option does**; check `--help` before concluding a flag does not exist.
+
+One more false negative to know: `entire contents` of the window can return **empty** while
+`count of UI elements` returns 6. An empty AX dump is not an empty window.
 
 ### Run lifecycle
 
