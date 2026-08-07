@@ -108,12 +108,19 @@ public struct RepoRegistryService: Sendable {
 
         var repos: [GHRepoSummary] = []
         var failures: [OwnerListingFailure] = []
+        var named: Set<String> = []
         for (owner, result) in listed {
             switch result {
             case .success(let listed): repos += listed
             case .failure(let error):
+                // One line per owner, whatever the layout says. A duplicate
+                // entry in `owners` fans out twice and would fail twice, and the
+                // banner's `ForEach` keys on the owner — two rows with one id is
+                // undefined in SwiftUI, and "2 owners could not be listed" would
+                // be a count of *attempts*, which is not what the sentence says.
+                guard named.insert(owner).inserted else { continue }
                 failures.append(
-                    OwnerListingFailure(owner: owner, reason: error.localizedDescription))
+                    OwnerListingFailure(owner: owner, reason: Self.reason(error)))
             }
         }
         // Completion order is not owner order, and the banner reads top to
@@ -307,6 +314,24 @@ public struct RepoRegistryService: Sendable {
         return SyncSummary(
             attempted: pullable.count, succeeded: succeeded,
             skipped: skipped, failed: failed)
+    }
+
+    /// Never empty, for `whyNotSwept`'s reason one screen over: a failure named
+    /// without its reason is the silence the banner exists to break, and it
+    /// renders as a line ending in a bare colon.
+    ///
+    /// `localizedDescription` is normally `ProcessError.failed`'s
+    /// `"gh exited 1: <stderr>"`, which is exactly what the page wants — but it
+    /// is a protocol requirement any error can satisfy with whitespace, and this
+    /// is the one place that decides what the reader is told.
+    ///
+    /// Internal rather than private so `ElliotEngineTests` can hand it a blank
+    /// one. Driving it through `rows(layout:)` cannot: every error the fake `gh`
+    /// can produce already describes itself, so a test at that seam would stay
+    /// green with this function deleted — which is a test that pins nothing.
+    static func reason(_ error: any Error) -> String {
+        let described = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return described.isEmpty ? "\(error)" : described
     }
 
     /// nil on success, the reason on failure.

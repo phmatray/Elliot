@@ -192,6 +192,51 @@ struct RepoRegistryServiceTests {
         #expect(unchecked?.detail.contains("Atypical-Consulting") == true)
     }
 
+    /// A duplicate entry in `owners` fans out twice, so it fails twice. The page
+    /// keys the banner's `ForEach` on the owner and the sentence counts the
+    /// entries, so two rows would be one undefined SwiftUI id and a count of
+    /// *attempts* dressed up as a count of owners.
+    @Test("An owner listed twice in the layout is still one failure")
+    func aDuplicateOwnerIsNamedOnce() async throws {
+        let root = makeTree()
+        try makeClone(root + "/phmatray/private/Koine")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let layout = RepoTreeLayout(root: root, owners: ["phmatray", "phmatray"])
+        let store = try BoardStore.inMemory()
+        let service = RepoRegistryService(
+            store: store, config: testConfig(["FAKE_GH_MODE": "fail"]))
+
+        let page = await service.rows(layout: layout)
+        #expect(page.listingFailures.map(\.owner) == ["phmatray"])
+    }
+
+    /// `whyNotSwept`'s rule, one screen over: a reason is never blank, or the
+    /// banner renders a line ending in a bare colon and the row's detail says a
+    /// listing failed without saying how.
+    ///
+    /// Asserted against `reason(_:)` directly, not through `rows(layout:)`.
+    /// Every error the fake `gh` can produce already describes itself, so the
+    /// end-to-end version of this test stays green with the function deleted —
+    /// it would pin the fake's manners rather than the rule.
+    @Test("A reason is never blank, whatever the error says about itself")
+    func aFailureAlwaysSaysWhy() {
+        struct Wordless: Error, LocalizedError {
+            var errorDescription: String? { "   \n " }
+        }
+        struct Speechless: Error {}
+
+        #expect(!RepoRegistryService.reason(Wordless()).isEmpty)
+        #expect(RepoRegistryService.reason(Wordless()).contains("Wordless"))
+        // The control: an error that *does* describe itself is passed through
+        // verbatim, because `ProcessError.failed`'s "gh exited 1: <stderr>" is
+        // exactly the sentence criterion 1 wants on screen.
+        let real = ProcessError.failed(command: "gh", exitCode: 1, stderr: "no network")
+        #expect(RepoRegistryService.reason(real) == real.localizedDescription)
+        #expect(RepoRegistryService.reason(real).contains("no network"))
+        #expect(!RepoRegistryService.reason(Speechless()).isEmpty)
+    }
+
     @Test("A failing fix reports its reason and changes nothing")
     func failureIsPerRow() async throws {
         let store = try BoardStore.inMemory()
