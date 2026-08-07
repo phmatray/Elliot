@@ -1,10 +1,11 @@
 import ElliotAppKit
+import ElliotStore
 import SwiftUI
 import UserNotifications
 
 @main
 struct ElliotApp: App {
-    @State private var model = AppModel()
+    @State private var model = ElliotApp.liveModel()
     /// Apple requires the notification delegate be set before the app finishes
     /// launching, which is earlier than `AppModel.start()` runs — hence an
     /// adaptor rather than a line in `.task`.
@@ -15,6 +16,21 @@ struct ElliotApp: App {
         // bundle: without it the process starts as an accessory and never
         // shows a window.
         NSApplication.shared.setActivationPolicy(.regular)
+    }
+
+    /// The **only** place Elliot opts into writing a preference to disk (#132).
+    ///
+    /// Everything else — every test, `swift run ElliotApp` under a suite —
+    /// gets `AppModel()`, whose writer has nowhere to write. Keeping the choice
+    /// here rather than behind a default inside `ElliotAppKit` is what makes
+    /// "no test writes a preference it did not ask to" a property of the code
+    /// rather than a habit.
+    ///
+    /// One `PreferencesFile`, read from and written to, so the value restored and
+    /// the value saved cannot end up being two different files.
+    private static func liveModel() -> AppModel {
+        let file = PreferencesFile(url: StoreLocation.preferencesURL)
+        return AppModel(preferences: file, initialPreferences: file.load())
     }
 
     var body: some Scene {

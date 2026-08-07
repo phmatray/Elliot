@@ -2,10 +2,23 @@ import ElliotEngine
 import ElliotModel
 import ElliotStore
 import Foundation
+import Synchronization
 import TestSupport
 import Testing
 
 @testable import ElliotAppKit
+
+/// A `Bool` an `@Sendable` closure may raise.
+///
+/// `withObservationTracking`'s `onChange` is `@Sendable`, so it cannot mutate a
+/// captured `var` — and `Mutex` is non-copyable, so it cannot be captured
+/// directly either. The same shape as `ElliotProcess.Locked`, which this target
+/// does not depend on.
+private final class ObservationFlag: Sendable {
+    private let raised = Mutex(false)
+    func raise() { raised.withLock { $0 = true } }
+    var isRaised: Bool { raised.withLock { $0 } }
+}
 
 /// `AppModel` held 800 lines and no tests, because `ElliotApp` was an
 /// `executableTarget` and nothing in it could be imported. These cover it where
@@ -780,6 +793,134 @@ struct AppModelTests {
         // *does* have one its refresh.
         _ = try await awaitActiveRun(cardID: fixture.card.id, in: fixture.model)
         #expect(fixture.model.runsByCard.isEmpty)
+    }
+
+    // MARK: - The panel's width is remembered, and only when asked
+
+    @Test("A width set on a model that was given a file is on disk afterwards")
+    func settingTheWidthWritesIt() {
+        let url = TestHome.scratch("appmodel-prefs-write")
+            .appendingPathComponent("preferences.json")
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+
+        let model = AppModel(preferences: PreferencesFile(url: url))
+        model.panelSpans = Preferences.spanChoices.narrow
+
+        #expect(PreferencesFile.load(from: url).panelSpans == Preferences.spanChoices.narrow)
+    }
+
+    @Test("Setting it back writes the new value, not just the first one")
+    func settingItAgainWritesAgain() {
+        let url = TestHome.scratch("appmodel-prefs-rewrite")
+            .appendingPathComponent("preferences.json")
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+
+        let model = AppModel(preferences: PreferencesFile(url: url))
+        model.panelSpans = Preferences.spanChoices.narrow
+        model.panelSpans = Preferences.spanChoices.wide
+
+        #expect(PreferencesFile.load(from: url).panelSpans == Preferences.spanChoices.wide)
+    }
+
+    /// Criterion 4, asserted rather than assumed.
+    ///
+    /// Every other test in this bundle builds `AppModel()`, and several of them
+    /// assign `panelSpans`. What stops them leaving a preference in the
+    /// operator's real `~/Library/Application Support/Elliot` is not that they
+    /// remember to isolate themselves — it is that the writer they get by
+    /// default has nowhere to write. This is that claim, pointed at the path a
+    /// default-constructed model would use if it used one at all.
+    @Test("A model nobody handed a file writes no preference anywhere")
+    func theDefaultModelWritesNothing() {
+        _ = TestHome.root
+        let wouldBe = StoreLocation.preferencesURL
+        try? FileManager.default.removeItem(at: wouldBe)
+
+        let model = AppModel()
+        model.panelSpans = Preferences.spanChoices.narrow
+        model.panelSpans = Preferences.spanChoices.wide
+
+        #expect(model.panelSpans == Preferences.spanChoices.wide)
+        #expect(
+            !FileManager.default.fileExists(atPath: wouldBe.path),
+            "a test that did not ask for persistence must not have written \(wouldBe.path)"
+        )
+    }
+
+    /// That `panelSpans` is observable **at all**, now that it is computed over
+    /// private storage rather than stored directly.
+    ///
+    /// If reading it stopped registering a dependency on what the setter mutates,
+    /// the board would silently stop re-laying-out on a resize: `swift build`
+    /// stays clean, every other test stays green, and nobody but a person
+    /// dragging the handle would notice.
+    ///
+    /// ⚠️ **It does not discriminate between the computed form and a `didSet`** —
+    /// measured, by building the `didSet` form and watching this stay green.
+    /// `@Observable` tracks a property carrying an observer perfectly well; what
+    /// rules the `didSet` out is that the observer fires during `init`, and the
+    /// test that catches *that* is `restoringDoesNotWrite`. Kept apart on purpose:
+    /// two different claims, and only one of them is about tracking.
+    @Test("Changing the width is observable, or the board never re-lays-out")
+    func theWidthIsObservable() {
+        let model = AppModel()
+        // `onChange` is `@Sendable`, so the flag cannot be a captured `var`.
+        let fired = ObservationFlag()
+
+        withObservationTracking {
+            _ = model.panelSpans
+        } onChange: {
+            fired.raise()
+        }
+
+        model.panelSpans = Preferences.spanChoices.narrow
+        #expect(
+            fired.isRaised,
+            "reading panelSpans must register a dependency on what the setter mutates"
+        )
+    }
+
+    @Test("A model restored from a stored width opens at it")
+    func restoresTheStoredWidth() {
+        let model = AppModel(
+            initialPreferences: Preferences(panelSpans: Preferences.spanChoices.narrow)
+        )
+        #expect(model.panelSpans == Preferences.spanChoices.narrow)
+    }
+
+    @Test("A stored width the panel was never designed at opens at the default")
+    func nonsenseStoredWidthOpensAtTheDefault() {
+        for spans in [0, 1, 4, -7] {
+            let model = AppModel(initialPreferences: Preferences(panelSpans: spans))
+            #expect(model.panelSpans == Preferences.default.panelSpans)
+        }
+    }
+
+    @Test("Restoring a width does not rewrite the file it was just read from")
+    func restoringDoesNotWrite() throws {
+        // The first launch after this ships reads a file and must leave it
+        // alone: a save fired from `init` would rewrite it before the reader has
+        // touched anything, which is harmless today and would silently defeat any
+        // later attempt to tell "never set" from "set to the default".
+        let url = TestHome.scratch("appmodel-prefs-untouched")
+            .appendingPathComponent("preferences.json")
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data(#"{"panelSpans": 2, "writtenByAnotherVersion": true}"#.utf8).write(to: url)
+        let before = try Data(contentsOf: url)
+
+        let model = AppModel(
+            preferences: PreferencesFile(url: url),
+            initialPreferences: PreferencesFile.load(from: url)
+        )
+
+        #expect(model.panelSpans == Preferences.spanChoices.narrow)
+        #expect(try Data(contentsOf: url) == before)
     }
 
     // MARK: - Parsed issue bodies

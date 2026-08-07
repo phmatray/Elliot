@@ -55,6 +55,13 @@ public struct PreferencesFile: PreferencesWriting {
         return decoded.clamped()
     }
 
+    /// What *this* file holds. The same read as ``load(from:)``, addressed by the
+    /// writer rather than by a URL, so a caller that has one cannot restore from
+    /// one file and save into another.
+    public func load() -> Preferences {
+        Self.load(from: url)
+    }
+
     /// Writes the preference, or loses it — never throws, never crashes.
     ///
     /// Synchronous, and small enough for that to be the simpler choice: the two
