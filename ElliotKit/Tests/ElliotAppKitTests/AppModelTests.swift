@@ -2,6 +2,7 @@ import ElliotEngine
 import ElliotModel
 import ElliotStore
 import Foundation
+import TestSupport
 import Testing
 
 @testable import ElliotAppKit
@@ -550,9 +551,14 @@ struct AppModelTests {
     ///
     /// `SkillRun`'s own initialiser is the one the scheduler uses, so a fixture
     /// built with it is the real shape rather than a stand-in.
-    private func run(cardID: UUID?, state: RunState = .running) -> SkillRun {
+    ///
+    /// `repoID` is a parameter with a throwaway default because the collections
+    /// do not care which repository a run belongs to, but `skillRun.repoID` is a
+    /// foreign key onto `repo` — so the moment a test saves one of these to a
+    /// real store it has to name a repository that exists.
+    private func run(cardID: UUID?, repoID: UUID = UUID(), state: RunState = .running) -> SkillRun {
         var run = SkillRun(
-            cardID: cardID, repoID: UUID(), kind: .createIssue,
+            cardID: cardID, repoID: repoID, kind: .createIssue,
             prompt: "/ai-migration-kit:create-issue x", cwd: "/tmp",
             logPath: "/tmp/run.ndjson", stderrPath: "/tmp/run.log", createdAt: epoch
         )
@@ -615,6 +621,132 @@ struct AppModelTests {
         #expect(AppModel.stalling(running.id, running).state == .stalled)
         // Another run's notice changes nothing.
         #expect(AppModel.stalling(UUID(), running).state == .running)
+    }
+
+    // MARK: - A run that just started has to reach the panel
+
+    /// One store, one repository, one card in **To Do**, and one `.running` run
+    /// for that card — the state the board is in the instant `RunScheduler`
+    /// yields `.runStarted`.
+    ///
+    /// A real `BoardStore` rather than `testOnlySeedRuns`, because the thing
+    /// under test *is* the read: `refreshRuns` goes to SQLite, and a seeded
+    /// dictionary would prove only that a dictionary can be written to. The
+    /// scheduler saves the row (`RunScheduler.swift:381`) before it yields the
+    /// update (`:384`), so seeding the row first is the real order, not a
+    /// convenience.
+    private struct StartedRun {
+        var model: AppModel
+        var store: BoardStore
+        var repo: Repo
+        var card: Card
+        var run: SkillRun
+    }
+
+    private func startedRunFixture() async throws -> StartedRun {
+        let store = try BoardStore.inMemory()
+        let repo = repo("Elliot")
+        let subject = card("watch this run", repoID: repo.id, column: .todo, order: 1)
+        let running = run(cardID: subject.id, repoID: repo.id)
+        try await store.saveRepo(repo)
+        try await store.saveCard(subject)
+        try await store.saveRun(running)
+
+        let model = model(repos: [repo], cards: [subject])
+        model.testOnlySeedStore(store)
+        return StartedRun(model: model, store: store, repo: repo, card: subject, run: running)
+    }
+
+    /// Polls `runsByCard[cardID]` until it holds a row, and says what it last
+    /// saw when it never does.
+    ///
+    /// `apply(_:)` spawns its refresh in a `Task`, so there is nothing for a
+    /// test to await — the same reason `RunsPaneLiveTests.awaitTerminal` polls.
+    /// Bounded by `withTimeout`, because an unbounded wait is how one hung
+    /// child once stopped `swift test` from ever exiting. On giving up it
+    /// records whether the key was absent or merely empty, so a flake names its
+    /// own cause instead of printing "timed out".
+    private func awaitRuns(cardID: UUID, in model: AppModel) async throws -> [SkillRun] {
+        do {
+            return try await withTimeout(.seconds(5)) {
+                while true {
+                    if let rows = await model.runsByCard[cardID], !rows.isEmpty { return rows }
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+            }
+        } catch {
+            let seen = model.runsByCard[cardID]
+            Issue.record(
+                """
+                runsByCard[card] was \(seen.map { "empty (\($0.count) rows)" } ?? "still nil") \
+                when the wait gave up
+                """
+            )
+            throw error
+        }
+    }
+
+    /// The same wait, for the sibling refresh the *same* `apply` call spawns.
+    ///
+    /// Used as a fence by the negative test below: `activeRuns` filling is
+    /// proof that this `apply`'s asynchronous work has run, so a `runsByCard`
+    /// entry that has not appeared by then was never going to.
+    private func awaitActiveRun(cardID: UUID, in model: AppModel) async throws -> SkillRun {
+        do {
+            return try await withTimeout(.seconds(5)) {
+                while true {
+                    if let run = await model.activeRuns[cardID] { return run }
+                    try await Task.sleep(for: .milliseconds(20))
+                }
+            }
+        } catch {
+            Issue.record("activeRuns[card] was still nil when the wait gave up")
+            throw error
+        }
+    }
+
+    @Test("A run that has just started reaches the card's runs")
+    func runStartedFillsRunsByCard() async throws {
+        // `.runStarted` discarded its `cardID` with `_` and refreshed only
+        // `activeRuns`, `analysis?.runs` and `occupancy`, so nothing filled
+        // `runsByCard` when a run began. That is the collection `RunsPane`
+        // draws from, and neither `.task(id:)` that calls `refreshRuns` is
+        // keyed on anything a starting run changes — both key on the card's id
+        // — so the panel opened to watch the run said "Nothing has run yet" for
+        // the whole run.
+        let fixture = try await startedRunFixture()
+
+        fixture.model.apply(.runStarted(runID: fixture.run.id, cardID: fixture.card.id))
+
+        let rows = try await awaitRuns(cardID: fixture.card.id, in: fixture.model)
+        #expect(rows.contains { $0.id == fixture.run.id })
+    }
+
+    @Test("A run with no card — an analysis — adds nothing to any card's runs")
+    func runStartedWithoutACardTouchesNoCardsRuns() async throws {
+        // An analysis run belongs to a repository, not to a card, and
+        // `.runFinished`'s guard is `if let cardID`. "The same way
+        // `.runFinished` does" carries the guard with it: this passes before
+        // the fix as well as after, on purpose — it is what stops the fix
+        // inventing an entry for a run that has no card to key one under.
+        let fixture = try await startedRunFixture()
+        let analysis = Analysis(repoID: fixture.repo.id, angles: [.uxAndUI], createdAt: epoch)
+        let analysisRun = SkillRun.analysis(
+            repoID: fixture.repo.id, analysisID: analysis.id, analysisAngle: .uxAndUI,
+            prompt: "/ai-migration-kit:analyze-repo", cwd: "/tmp", state: .running,
+            logPath: "/tmp/analysis.ndjson", stderrPath: "/tmp/analysis.log", createdAt: epoch
+        )
+        // Saved rather than merely constructed, so the store genuinely holds a
+        // running row this update could have been resolved through.
+        try await fixture.store.saveAnalysis(analysis, runs: [analysisRun])
+
+        fixture.model.apply(.runStarted(runID: analysisRun.id, cardID: nil))
+
+        // The fence: `activeRuns` is refreshed by the unconditional `Task` this
+        // same `apply` spawns, and it finds the card's `.running` row. Once it
+        // has, the asynchronous half of this update is done.
+        _ = try await awaitActiveRun(cardID: fixture.card.id, in: fixture.model)
+        #expect(fixture.model.runsByCard.isEmpty)
     }
 
     // MARK: - Parsed issue bodies
