@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1167 tests in 135 suites**, 3 of 3 samples on
-  `fix/116-swift-floor` on 2026-08-07 off `main` at `9de425e`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1167 tests in 135 suites**, 5 of 5 samples on
+  `fix/158-column-empty-space-deselect` on 2026-08-07 off `main` at `0902c10`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been

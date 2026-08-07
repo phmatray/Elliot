@@ -644,6 +644,32 @@ Two invariants carry most of the weight:
   `ColumnView` now. Putting it on the row's background instead only moved the bug: that background
   also lies under the panel, so a click on the panel being read closed it. **An ancestor's tap fires
   for taps on its descendants, so any deselect above the panel is a deselect through it.**
+
+  ⛔ **It was reported dead a fourth time in #158 — one nesting level further in, the column's own
+  list swallowing what `ColumnView` never heard — and that report was an artefact of the tool.**
+  `osascript -e 'tell application "System Events" to click at {x, y}'` is **not a mouse click**: it
+  resolves the accessibility element at that point and *presses* it. So a view carrying
+  `.accessibilityAction` answers while its `.onTapGesture` never runs — which is why clicking a
+  **card** appeared to work, `CardView` having both — and a view carrying neither returns a
+  thoroughly plausible descriptor and does nothing. The descriptor #158 quotes as the culprit,
+  `scroll area 1 of scroll area 1 of group 1 of window Elliot`, is not a list eating a click; it is
+  the nearest AX element to a press no view had an action for. Re-driven with a real `CGEvent`
+  through `Scripts/realclick.swift`, the deselect cleared the selection in **all seven** states
+  measured — short column, scrollable column, both panels open, both shut, the 6pt gap between two
+  cards, the padding strip beside them, and the last column where the panel flips left — every one
+  of them through the existing `ColumnView` gesture. **`Scripts/probe-deselect.sh` is that
+  measurement, committed**, and it refuses a click that lands outside the window rather than
+  reporting it, because a column scrolled out of view still publishes an off-screen frame.
+
+  The general shape is the one this file already names four times, and this is the fifth: **a
+  mechanism that silently substitutes different behaviour instead of erroring.** A blank AX tree
+  that reads as an empty window; a `cua-driver` click reporting `unverifiable` rather than failing;
+  an absent screen-recording grant while the commands still return; `gh secret list` omitting
+  organisation secrets — and now an accessibility press wearing the name `click`. Not one of the five
+  says *no*. ⚠️ So before concluding that a **pointer** gesture is broken, check what your driver
+  actually posts: `.onTapGesture` is invisible to AX, and the two paths into this app genuinely
+  differ (that is the whole point of `CardView`'s `.accessibilityAction`, which exists because the
+  tap gesture is unreachable from assistive technology).
 - **`onChange` runs inside the update that changed the value, so it sees the layout as it was.**
   `BoardView.frame(...)` computed a scroll offset for the row that was *about to* include the panel
   and applied it to the row that still did not, where it clamped to zero — the board simply never
