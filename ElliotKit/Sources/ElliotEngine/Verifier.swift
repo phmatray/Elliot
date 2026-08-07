@@ -80,7 +80,7 @@ public struct Verifier: Sendable {
         guard let match = PRMatcher.bestMatch(among: prs, issue: issue, runStartedAt: run.startedAt) else {
             return .unverified(reason: "No pull request references issue #\(issue) yet.")
         }
-        if match.isMerged { return .merged(commitSHA: nil) }
+        if match.isMerged { return .merged(commitSHA: nil, number: nil, url: nil, branch: nil) }
         return .prOpen(
             number: match.number,
             url: match.url,
@@ -98,10 +98,10 @@ public struct Verifier: Sendable {
         let status = try await gh.mergeStatus(repo: repo.nameWithOwner, number: pr)
 
         if status.isMerged {
-            return .merged(commitSHA: status.mergeCommit?.oid)
+            return .merged(commitSHA: status.mergeCommit?.oid, number: nil, url: nil, branch: nil)
         }
         if status.state.uppercased() == "CLOSED" {
-            return .closedUnmerged
+            return .closedUnmerged(number: nil, url: nil, branch: nil)
         }
 
         let failing = status.failingChecks

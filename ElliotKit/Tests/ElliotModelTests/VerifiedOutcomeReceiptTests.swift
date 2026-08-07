@@ -37,12 +37,13 @@ struct VerifiedOutcomeReceiptTests {
             VerifiedOutcome.prOpen(number: 13, url: "u", isDraft: false, branch: "feat/12-x").receiptText
                 == "PR 13 on feat/12-x"
         )
-        #expect(VerifiedOutcome.merged(commitSHA: "abc1234def").receiptText == "Merged as abc1234")
+        #expect(VerifiedOutcome.merged(commitSHA: "abc1234def", number: nil, url: nil, branch: nil).receiptText == "Merged as abc1234")
         #expect(
             VerifiedOutcome.notMerged(reason: "checks failed").receiptText
                 == "Not merged — checks failed"
         )
-        #expect(VerifiedOutcome.closedUnmerged.receiptText == "Closed without merging")
+        let closed = VerifiedOutcome.closedUnmerged(number: nil, url: nil, branch: nil)
+        #expect(closed.receiptText == "Closed without merging")
         #expect(
             VerifiedOutcome.unverified(reason: "gh returned nothing").receiptText
                 == "Unverified — gh returned nothing"
@@ -54,13 +55,13 @@ struct VerifiedOutcomeReceiptTests {
         // `gh` can confirm a merge without handing back the commit. Rendering
         // that as "Merged as " with a dangling preposition, or worse as
         // "Unverified", would misreport a fact it did establish.
-        #expect(VerifiedOutcome.merged(commitSHA: nil).receiptText == "Merged")
+        #expect(VerifiedOutcome.merged(commitSHA: nil, number: nil, url: nil, branch: nil).receiptText == "Merged")
     }
 
     @Test("A SHA is abbreviated to seven characters, as git prints it")
     func shaIsAbbreviated() {
         let full = "41cbfd9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e"
-        let text = VerifiedOutcome.merged(commitSHA: full).receiptText
+        let text = VerifiedOutcome.merged(commitSHA: full, number: nil, url: nil, branch: nil).receiptText
         #expect(text == "Merged as 41cbfd9")
         #expect(!text.contains(full), "the whole SHA reached a sentence meant to be read")
     }
@@ -74,9 +75,9 @@ struct VerifiedOutcomeReceiptTests {
             .issueCreated(number: 1, url: "u"),
             .noIssueCreated(reason: "r"),
             .prOpen(number: 1, url: "u", isDraft: false, branch: "b"),
-            .merged(commitSHA: nil),
+            .merged(commitSHA: nil, number: nil, url: nil, branch: nil),
             .notMerged(reason: "r"),
-            .closedUnmerged,
+            .closedUnmerged(number: nil, url: nil, branch: nil),
             .unverified(reason: "r"),
         ]
         for outcome in all {

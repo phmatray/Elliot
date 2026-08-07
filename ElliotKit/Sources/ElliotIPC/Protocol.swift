@@ -723,7 +723,7 @@ public struct VerifiedOutcomeDTO: Codable, Sendable, Hashable {
             self.init(kind: "no_issue_created", reason: reason)
         case .prOpen(let number, let url, let isDraft, let branch):
             self.init(kind: "pr_open", number: number, url: url, isDraft: isDraft, branch: branch)
-        case .merged(let commitSHA):
+        case .merged(let commitSHA, _, _, _):
             self.init(kind: "merged", commitSHA: commitSHA)
         case .notMerged(let reason):
             self.init(kind: "not_merged", reason: reason)

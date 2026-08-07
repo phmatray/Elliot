@@ -39,12 +39,12 @@ struct GHPayloadsTests {
 
     @Test("A merged pull request reads as merged, with no commit to name")
     func mergedReadsAsMerged() {
-        #expect(pr(state: "MERGED", mergedAt: Date()).verifiedOutcome == .merged(commitSHA: nil))
+        #expect(pr(state: "MERGED", mergedAt: Date()).verifiedOutcome == .merged(commitSHA: nil, number: nil, url: nil, branch: nil))
     }
 
     @Test("A pull request closed without merging reads as closed-unmerged")
     func closedUnmergedReadsAsClosedUnmerged() {
-        #expect(pr(state: "CLOSED").verifiedOutcome == .closedUnmerged)
+        #expect(pr(state: "CLOSED").verifiedOutcome == .closedUnmerged(number: nil, url: nil, branch: nil))
     }
 
     @Test("An open pull request reads as prOpen, carrying its number, URL, draft flag and branch")
@@ -74,6 +74,6 @@ struct GHPayloadsTests {
     /// read state alone and every merge becomes an abandonment.
     @Test("A CLOSED pull request that was in fact merged reads as merged, never as closed-unmerged")
     func mergedIsCheckedBeforeClosed() {
-        #expect(pr(state: "CLOSED", mergedAt: Date()).verifiedOutcome == .merged(commitSHA: nil))
+        #expect(pr(state: "CLOSED", mergedAt: Date()).verifiedOutcome == .merged(commitSHA: nil, number: nil, url: nil, branch: nil))
     }
 }
