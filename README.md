@@ -18,6 +18,15 @@ remote state — it is the remote control.
 MCP server, so an agent can create and move cards, and thereby start the same
 runs. Both paths — mouse and tool call — go through *the same rule engine*.
 
+**And an agent can look at the result**: `board_screenshot` photographs one of
+Elliot's own windows and hands back the image, so a change that moved something
+on screen can be checked rather than assumed. Elliot draws its own hierarchy, so
+it needs no Screen Recording grant and works while the window sits in the
+background — but a sheet, a popover and the toolbar's controls live in separate
+windows and do **not** appear. Whatever was left out is listed in
+`not_included`, because "it is not in the picture" must never read as "it did
+not open".
+
 ## The board
 
 | From → To | What happens |

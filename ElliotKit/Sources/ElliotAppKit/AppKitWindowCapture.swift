@@ -124,6 +124,28 @@ public struct AppKitWindowCapture: WindowCapturing {
                     + "(popovers and menus draw in their own windows and are not in this picture)"
             )
         }
+        // ⚠️ Measured on the real board, not predicted. A `cacheDisplay` of the
+        // frame view renders the toolbar's *material* and not its contents: the
+        // picture came back with two blank white capsules where "All
+        // repositories", "New story", "Refresh", "Analyse", "Details",
+        // "Repositories" and "Preflight" actually are — confirmed by comparing
+        // it against an independent whole-screen capture of the same window.
+        //
+        // SwiftUI hosts `.toolbar` items in titlebar accessory view controllers,
+        // a hierarchy hung off the window rather than inside the frame view's
+        // draw path. This is said out loud because the toolbar is precisely
+        // where this project's changes land — `BoardView.swift`'s toolbar is a
+        // named conflict hot-spot — so a silently blank one would let a toolbar
+        // regression pass a look that appeared to work. That is the exact
+        // false negative this tool exists to close, and it must not be the tool
+        // producing it.
+        if window.toolbar != nil {
+            said.append(
+                "toolbar controls (they render blank: SwiftUI draws .toolbar items in titlebar "
+                    + "accessory views, which an in-process hierarchy render does not reach — "
+                    + "blank here is NOT evidence a toolbar item is missing or broken)"
+            )
+        }
         return said
     }
 

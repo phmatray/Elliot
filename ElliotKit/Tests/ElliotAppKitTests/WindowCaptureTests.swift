@@ -96,6 +96,22 @@ struct WindowCaptureTests {
         #expect(AppKitWindowCapture.disclosures(for: makeWindow(id: "board", title: "Elliot")).isEmpty)
     }
 
+    @Test("A window with a toolbar warns that the toolbar did not draw")
+    func toolbarIsDisclosed() {
+        // Found by looking at a real capture of the real board and comparing it
+        // against an independent whole-screen shot: the toolbar came back as two
+        // blank white capsules where seven controls are. Pinned here so the
+        // warning cannot be dropped by someone who has not seen that picture.
+        let window = makeWindow(id: "board", title: "Elliot")
+        window.toolbar = NSToolbar(identifier: "test")
+
+        let said = AppKitWindowCapture.disclosures(for: window)
+        #expect(said.contains { $0.contains("toolbar") })
+        // And it must say that blank is not a finding, or the disclosure trades
+        // one false negative for another.
+        #expect(said.contains { $0.contains("NOT evidence") })
+    }
+
     @Test("A child window is named, because the picture cannot contain it")
     func childWindowsAreDisclosed() {
         let parent = makeWindow(id: "board", title: "Elliot")
