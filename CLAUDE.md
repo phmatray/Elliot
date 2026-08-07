@@ -373,6 +373,47 @@ total — it never drops a line) into blocks that each get their own view, and a
 what the agent *said* in demoted italic (`Type.hearsay`), what `gh` *established* in the fact face,
 never the same tier.
 
+##### Watching the caret's anchors arrive
+
+When the caret or the tether is wrong, the question is almost never the arithmetic — that is
+`PanelLayout`'s and it is pinned by `PanelLayoutTests`. It is which of the three anchors reached the
+overlay. Make that observable by writing the three flags from inside the `.overlayPreferenceValue`
+closure in `BoardView.board`:
+
+```swift
+.overlayPreferenceValue(CaretAnchorKey.self) { anchors in
+    let _ = try? "card:\(anchors.card != nil) list:\(anchors.list != nil) panel:\(anchors.panel != nil)\n"
+        .appendToFile("/tmp/caret-probe.log")          // sketch; any file sink will do
+    CaretRail(anchors: anchors, flipped: isPanelFlipped)
+}
+```
+
+Inside the `ViewBuilder`, not in `.onAppear` — the latter fires once, and what you want is a reading
+per re-evaluation. **To a file, not to `Logger`**: `.debug` is not persisted at all, and on
+2026-08-07 nothing from `subsystem == "dev.phmatray.elliot"` reached `log show` at *any* level, so a
+diagnosis planned around that command silently produces no output rather than an error.
+
+Then drive it against a scratch store (see the seeding recipe above) and read the file after
+selecting a card in Backlog, in Done, and with the analysis panel open.
+
+⚠️ **Three Elliots are routinely running** — this worktree's, another worktree's, and the main
+checkout's. `screencapture -R <region>` captures a *screen region*, so it returns whichever window is
+frontmost there: it can hand you a different Elliot's board, showing "No repository yet", while your
+seeded one renders perfectly. **A region is not a window** — the "target by `unix id`, never by name"
+rule applies to screenshots too. Activate the pid first, then capture:
+
+```bash
+MINE=$(ps -eo pid,command | grep '<your-worktree>/dist/Elliot.app/Contents/MacOS/Elliot' | grep -v grep | awk '{print $1}')
+osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $MINE) to true"
+osascript -e "tell application \"System Events\" to tell (first process whose unix id is $MINE) to get {position, size} of window 1"
+/usr/sbin/screencapture -x -R <x>,<y>,<w>,<h> /tmp/board.png
+```
+
+The shell holds Accessibility even when the `cua-driver` daemon does not, so
+`osascript -e 'tell application "System Events" to click at {x, y}'` selects a card and
+`key code 53` is Escape. One more false negative to know: `entire contents` of the window can return
+**empty** while `count of UI elements` returns 6. An empty AX dump is not an empty window.
+
 ### Run lifecycle
 
 `is_error` is not enough: a run only counts as clean when `permission_denials` is empty too — a run can
