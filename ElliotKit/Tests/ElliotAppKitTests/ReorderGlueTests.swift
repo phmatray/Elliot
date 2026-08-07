@@ -109,17 +109,20 @@ struct ReorderGlueTests {
         model.testOnlyAttachBoard(board)
         model.observe(store: store)
 
-        // Bounded, and on the value rather than the clock: the board has been
-        // observing since `start()` long before any drag, so a test that raced
-        // the first delivery would be measuring its own set-up.
-        try await withTimeout(.seconds(10)) {
-            while await MainActor.run(body: { model.cards.count }) != cards.count {
-                try await Task.sleep(for: .milliseconds(5))
-            }
-        }
-
+        // Inside the same `do` as `body`, not before it: a timeout here throws
+        // too, and teardown that only wrapped `body` would leave three
+        // observation tasks iterating a live observation for the rest of the
+        // process. `defer` cannot be used — `shutdown()` is async.
         let fixture = Fixture(store: store, launcher: launcher, model: model, cards: cards)
         do {
+            // Bounded, and on the value rather than the clock: the board has
+            // been observing since `start()` long before any drag, so a test
+            // that raced the first delivery would be measuring its own set-up.
+            try await withTimeout(.seconds(10)) {
+                while await MainActor.run(body: { model.cards.count }) != cards.count {
+                    try await Task.sleep(for: .milliseconds(5))
+                }
+            }
             try await body(fixture)
         } catch {
             await model.shutdown()
@@ -173,6 +176,17 @@ struct ReorderGlueTests {
             #expect(
                 try await f.store.run(id: runID)?.kind == .createIssue,
                 "and the act is the one To Do promises: create-issue")
+            // ⚠️ This one assertion rides an unsynchronised delivery, and that is
+            // a property of the code rather than of the test. `reorder` performs
+            // the move, then re-reads `cards` to confirm the destination before
+            // placing — and `cards`' only writer is the observation pump, which
+            // nothing sequences against the move. Measured 25/25 here and 22/22
+            // in review, idle and under 12-way load; it has never lost.
+            //
+            // So if this line ever goes red, read it as the scheduling losing a
+            // race, **not** as the placement arithmetic being wrong — that is
+            // `CardReorderTests`, it is pure, and it cannot be affected by
+            // timing. The production consequence is tracked separately, in #205.
             #expect(
                 try await Self.order(f.store, moving.id) == 150,
                 "and it lands where it was dropped: between first(100) and second(200)")

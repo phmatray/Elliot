@@ -88,12 +88,15 @@
       Nothing about the branch changed between the two runs. That is this entry's thesis with the
       interval stretched far enough to be unmistakable: the number measures **when you looked**,
       not what you wrote.
-    - **Landing #49's Task 3 the delta was entirely the branch's own, and it was checkable only
-      because the previous stamp named its commit.** 1328/149 → 1332/150 is exactly the four tests
-      and one suite this branch adds, and `dc5c2ce` is the commit that landed as `2494882` — so the
-      arithmetic closes without anyone re-running `main`. That is the argument for the commit being
-      in this line at all: it is what lets the next author tell "my tests" from "six squashes landed
-      while I was reading", which every bullet above is about. The rare case, recorded as rare.
+    - **Landing #49's Task 3 the delta was entirely the branch's own — the rare case, recorded as
+      rare.** 1328/149 → 1332/150 is exactly the four tests and one suite this branch adds. The
+      arithmetic closes without re-running `main` only because of *which branch* the previous stamp
+      names: `fix/147-proposal-editor-card-draft` is the branch that squashed into `2494882`, this
+      branch's base, so its 1328 is that commit's count measured a squash early.
+      ⚠️ **`dc5c2ce` is that branch's base, not `2494882`** — they are two distinct commits
+      (`git rev-parse 2494882^`), and a first draft of this bullet called them the same one. That is
+      the entry's own thesis biting the person writing it: the branch name and the base commit answer
+      different questions, and only the branch name licenses the shortcut taken here.
     - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
       to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
       authors each measured honestly, each counted from the last number they could see, and the
