@@ -30,12 +30,24 @@ public struct AppKitWindowCapture: WindowCapturing {
     /// Every scene id `ElliotApp` declares.
     ///
     /// A list rather than a lookup because there is nothing to look it up in:
-    /// SwiftUI does not publish its scene graph. `WindowCaptureTests` pins the
-    /// membership so a scene added without a line here fails a test instead of
-    /// being reported to an agent as a window that does not exist.
-    public static let knownWindows = [
-        "board", "repositories", "operations", "nextSteps", "preflight", "newStory", "analysis",
-    ]
+    /// SwiftUI does not publish its scene graph.
+    ///
+    /// ⚠️ **It drifts, and it drifted before this feature had even landed.** The
+    /// first version of this list carried `analysis` and lacked `archive`,
+    /// because #151 retired the Analysis *window* into a board panel and #153
+    /// added the Archive one while this branch was in flight. That state would
+    /// have answered `window_not_found` for a window that exists and
+    /// `window_not_open` for a scene that does not — both of them the misleading
+    /// answers this tool was built to stop giving.
+    ///
+    /// So `WindowCaptureTests` no longer compares this list to a copy of itself.
+    /// It parses `ElliotApp.swift` and fails naming the difference, which is the
+    /// only version of that test that could have caught the drift above.
+    ///
+    /// The list itself lives in `ElliotModel` because `ElliotMCPKit` prints it in
+    /// the tool description and cannot see this target — and when it was written
+    /// out in both places, both went stale together.
+    public static let knownWindows = ElliotWindows.all
 
     /// How many times a resample may give up another 20 % before the inline copy
     /// is abandoned. Bounded so a pathological window cannot spin on the main

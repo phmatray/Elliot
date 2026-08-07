@@ -64,16 +64,42 @@ struct WindowCaptureTests {
         return window
     }
 
-    @Test("The known ids are the scenes ElliotApp declares")
-    func knownWindowsMatchTheSceneGraph() {
-        // Pinned as a set, because the *order* is presentation and the
-        // *membership* is the contract: an id missing here is a window an agent
-        // is told does not exist.
+    @Test("The known ids are the scenes ElliotApp actually declares")
+    func knownWindowsMatchTheSceneGraph() throws {
+        // ⚠️ Read out of `ElliotApp.swift`, not restated here. The first version
+        // of this test asserted the list against a second copy of itself, which
+        // cannot fail: it passed while the list carried `analysis` (retired into
+        // a board panel by #151) and lacked `archive` (added by #153) — the two
+        // scenes that had moved under this branch while it was in flight. A
+        // capture tool with a stale scene list answers `window_not_found` for a
+        // real window and `window_not_open` for one that no longer exists, which
+        // are precisely the misleading answers it exists to prevent.
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()      // ElliotAppKitTests
+            .deletingLastPathComponent()      // Tests
+            .deletingLastPathComponent()      // ElliotKit
+            .appendingPathComponent("Sources/ElliotApp/ElliotApp.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+
+        // Only `Window(…, id: "…")` scene declarations — not the `openWindow(id:)`
+        // call sites, which name the same ids and would make the assertion pass
+        // by counting the buttons instead of the scenes.
+        var declared: Set<String> = []
+        for line in text.split(separator: "\n") where line.contains("Window(") {
+            guard let idRange = line.range(of: "id: \"") else { continue }
+            let rest = line[idRange.upperBound...]
+            guard let end = rest.firstIndex(of: "\"") else { continue }
+            declared.insert(String(rest[..<end]))
+        }
+
+        #expect(!declared.isEmpty, "parsed no scenes out of \(source.path)")
         #expect(
-            Set(AppKitWindowCapture.knownWindows) == [
-                "board", "repositories", "operations", "nextSteps",
-                "preflight", "newStory", "analysis",
-            ]
+            Set(AppKitWindowCapture.knownWindows) == declared,
+            """
+            knownWindows has drifted from ElliotApp.swift.
+              missing from knownWindows: \(declared.subtracting(AppKitWindowCapture.knownWindows))
+              no longer declared:        \(Set(AppKitWindowCapture.knownWindows).subtracting(declared))
+            """
         )
     }
 

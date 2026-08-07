@@ -26,13 +26,17 @@ struct BoardFramingTests {
         card: UUID? = nil,
         column: ElliotModel.Column?,
         origin: ElliotModel.Column?,
-        spans: Int = 3
+        spans: Int = 3,
+        analysisOpen: Bool = false,
+        analysisSpans: Int = 3
     ) -> BoardFraming {
         BoardFraming(
             selectedCardID: card ?? UUID(),
             selectedColumn: column,
             panelOrigin: origin,
-            spans: spans
+            spans: spans,
+            analysisOpen: analysisOpen,
+            analysisSpans: analysisSpans
         )
     }
 
@@ -66,8 +70,8 @@ struct BoardFramingTests {
 
         // And the offset stops being inert across that same toggle: shut, the
         // row fits and nothing can scroll; open, it does not.
-        #expect(PanelLayout.contentWidth(boardWidth: boardWidth, spans: nil) <= boardWidth)
-        #expect(PanelLayout.contentWidth(boardWidth: boardWidth, spans: 3) > boardWidth)
+        #expect(PanelLayout.contentWidth(boardWidth: boardWidth, spans: nil, analysisSpans: nil) <= boardWidth)
+        #expect(PanelLayout.contentWidth(boardWidth: boardWidth, spans: 3, analysisSpans: nil) > boardWidth)
         #expect(try #require(open.offsetX(boardWidth: boardWidth)) > 0)
     }
 
@@ -84,8 +88,8 @@ struct BoardFramingTests {
             #expect(wide != narrow, "a resize must reach the framing, in \(column)")
         }
         #expect(
-            PanelLayout.contentWidth(boardWidth: boardWidth, spans: 3)
-                > PanelLayout.contentWidth(boardWidth: boardWidth, spans: 2)
+            PanelLayout.contentWidth(boardWidth: boardWidth, spans: 3, analysisSpans: nil)
+                > PanelLayout.contentWidth(boardWidth: boardWidth, spans: 2, analysisSpans: nil)
         )
     }
 
@@ -194,18 +198,18 @@ struct BoardFramingTests {
             for origin in [nil, column] as [ElliotModel.Column?] {
                 for spans in [PanelLayout.spanChoices.narrow, PanelLayout.spanChoices.wide] {
                     let subject = framing(column: column, origin: origin, spans: spans)
-                    let slots = PanelLayout.boardOrder(selected: origin)
+                    let slots = PanelLayout.boardOrder(selected: origin, analysisOpen: false)
                     let columnWidth = PanelLayout.columnWidth(boardWidth: boardWidth)
                     let panelWidth = PanelLayout.panelWidth(
                         columnWidth: columnWidth, spans: spans
                     )
                     let originMinX = try #require(PanelLayout.minX(
                         of: .column(column), in: slots,
-                        columnWidth: columnWidth, panelWidth: panelWidth
+                        columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: 0
                     ))
                     let panelMinX = PanelLayout.minX(
                         of: .panel, in: slots,
-                        columnWidth: columnWidth, panelWidth: panelWidth
+                        columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: 0
                     )
                     let expected = PanelLayout.frameOffsetX(
                         originMinX: originMinX,
@@ -235,12 +239,12 @@ struct BoardFramingTests {
         let panelWidth = PanelLayout.panelWidth(
             columnWidth: columnWidth, spans: PanelLayout.spanChoices.wide
         )
-        let slots = PanelLayout.boardOrder(selected: .done)
+        let slots = PanelLayout.boardOrder(selected: .done, analysisOpen: false)
         let panelMinX = try #require(PanelLayout.minX(
-            of: .panel, in: slots, columnWidth: columnWidth, panelWidth: panelWidth
+            of: .panel, in: slots, columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: 0
         ))
         let columnMinX = try #require(PanelLayout.minX(
-            of: .column(.done), in: slots, columnWidth: columnWidth, panelWidth: panelWidth
+            of: .column(.done), in: slots, columnWidth: columnWidth, panelWidth: panelWidth, analysisWidth: 0
         ))
 
         #expect(panelMinX < columnMinX, "Done's panel is placed before it")
@@ -253,5 +257,88 @@ struct BoardFramingTests {
         // clamps at zero rather than going negative. A negative content offset
         // is not a position.
         #expect(framing(column: .backlog, origin: nil).offsetX(boardWidth: boardWidth) == 0)
+    }
+
+    // MARK: - The analysis panel
+
+    @Test("Opening the analysis panel frames it, at the leading edge")
+    func openingTheAnalysisPanelFramesIt() {
+        let shut = BoardFraming(
+            selectedCardID: nil, selectedColumn: .inReview,
+            panelOrigin: .inReview, spans: 3,
+            analysisOpen: false, analysisSpans: 3)
+        var open = shut
+        open.analysisOpen = true
+
+        #expect(open.offsetX(from: shut, boardWidth: boardWidth) == 0)
+    }
+
+    @Test("Every other transition still frames the card and its panel")
+    func otherTransitionsKeepTodaysFraming() {
+        let before = BoardFraming(
+            selectedCardID: nil, selectedColumn: .backlog,
+            panelOrigin: nil, spans: 3,
+            analysisOpen: true, analysisSpans: 3)
+        var after = before
+        after.selectedColumn = .done
+        after.panelOrigin = .done
+
+        #expect(after.offsetX(from: before, boardWidth: boardWidth)
+            == after.offsetX(boardWidth: boardWidth))
+
+        // Closing it is not opening it: no jump to the leading edge.
+        var closing = before
+        closing.analysisOpen = false
+        #expect(closing.offsetX(from: before, boardWidth: boardWidth)
+            == closing.offsetX(boardWidth: boardWidth))
+
+        // And re-opening after a close frames it again — the rule is about the
+        // transition, not about a one-shot.
+        #expect(before.offsetX(from: closing, boardWidth: boardWidth) == 0)
+    }
+
+    @Test("The analysis panel shifts the offset of every card pair right")
+    func analysisPanelShiftsTheFramedPair() {
+        let analysis = PanelLayout.panelWidth(
+            columnWidth: PanelLayout.columnWidth(boardWidth: boardWidth), spans: 3)
+
+        // Every column, not just the flipped one: the analysis panel is ahead of
+        // all five, so `minX` sums it for each of them.
+        for column in ElliotModel.Column.allCases {
+            let without = BoardFraming(
+                selectedCardID: nil, selectedColumn: column,
+                panelOrigin: column, spans: 3,
+                analysisOpen: false, analysisSpans: 3)
+            var with = without
+            with.analysisOpen = true
+
+            let a = without.offsetX(boardWidth: boardWidth)!
+            let b = with.offsetX(boardWidth: boardWidth)!
+            // Backlog clamps at zero without the panel, so it is the one column
+            // whose *shift* is smaller than the panel — it had nowhere to come
+            // from. Everywhere else the shift is exact.
+            if a > 0 {
+                #expect(b - a == analysis + Metric.gutter)
+            } else {
+                #expect(b > 0)
+            }
+        }
+    }
+
+    @Test("The analysis panel does not disturb the detail panel's own invariance")
+    func analysisDoesNotBreakSpanInvariance() {
+        // `offsetIsInvariantToThePanelsWidth` above, replayed with the analysis
+        // panel out: widening the *detail* panel still moves nothing, because
+        // `minX` never sums a slot that sits after its target.
+        for column in ElliotModel.Column.allCases where !PanelLayout.opensLeft(of: column) {
+            let narrow = BoardFraming(
+                selectedCardID: nil, selectedColumn: column,
+                panelOrigin: column, spans: 2,
+                analysisOpen: true, analysisSpans: 3)
+            var wide = narrow
+            wide.spans = 3
+            #expect(narrow.offsetX(boardWidth: boardWidth)
+                == wide.offsetX(boardWidth: boardWidth))
+        }
     }
 }

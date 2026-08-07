@@ -36,9 +36,13 @@ struct ScreenshotTool: BoardTool {
                 "properties": .object([
                     "window": .object([
                         "type": .string("string"),
+                        // Interpolated, never spelled out: this string is the
+                        // only documentation an agent reads, and a hand-written
+                        // copy of the scene list went stale inside this very
+                        // pull request when `main` retired one window and added
+                        // another.
                         "description": .string(
-                            "Which window: board (default), repositories, operations, "
-                                + "nextSteps, preflight, newStory, analysis."
+                            "Which window. One of: \(ElliotWindows.sentence). Defaults to board."
                         ),
                     ]),
                     "max_inline_bytes": .object([

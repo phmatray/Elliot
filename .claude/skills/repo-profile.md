@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1098 tests in 129 suites**, measured on
-  `feat/155-board-screenshot` on 2026-08-07 off `main` at `ebc3ef9`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1161 tests in 134 suites**, measured on
+  `feat/155-board-screenshot` on 2026-08-07 after merging `main` at `533158b`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -49,7 +49,9 @@
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
     your own untouched run and compare against *that*, never against this line. Sixth in #155
-    (1061 → 1098, 124 → 129), taken from a five-sample run rather than one.
+    (1061 → 1098, 124 → 129), taken from a five-sample run rather than one — and then **again inside
+    the same pull request** after merging `main`, which is the seventh correction and the clearest
+    demonstration yet that this line is a date-stamp, not a fact.
   - ⚠️ **The suite is intermittently flaky under signal, and a crashed run is not a red bar.** Of
     three full runs at `862c4ae`, two passed 788/788 and a third died partway with
     `ElliotKitPackageTests … exited with unexpected signal code 11`, having reported no failing test.

@@ -34,6 +34,9 @@ extension Card: FetchableRecord, PersistableRecord {
         public static let issueNumber = GRDB.Column("issueNumber")
         public static let prNumber = GRDB.Column("prNumber")
         public static let idempotencyKey = GRDB.Column("idempotencyKey")
+        /// When the card entered the column it is in. For a finished card that
+        /// is when it landed, which is what the archive orders on.
+        public static let columnEnteredAt = GRDB.Column("columnEnteredAt")
     }
 }
 

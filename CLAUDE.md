@@ -238,7 +238,8 @@ from #75 to #89 carried some version of *"opening a `Window` scene needs the app
 automation driver refuses"*, and it was never true. A background `openWindow` does open the window; it
 just lands off-screen because the app is not frontmost. The trap is the enumeration, not the window:
 **list all of a pid's windows, never only the ones reporting `is_on_screen`.** Measured on a running
-build, six `Window` scenes declared in `ElliotApp.swift`, two of them open:
+build, when `ElliotApp.swift` declared six `Window` scenes (it declares five since #151 retired the
+Analysis one), two of them open:
 
 ```
 id=2737  on_screen=False  820x720 @ (454,215)  title='Preflight'
@@ -329,7 +330,50 @@ The backlog holds **user stories** (`role` / `want` / `benefit` + acceptance cri
 fields), not loose prose. A card is editable up to the moment it carries an issue number; after that
 `updateCard` refuses rather than letting card and issue drift.
 
-### The detail panel
+### The two panels
+
+The board's row is `PanelLayout.boardOrder(selected:analysisOpen:)`: five columns, plus up to two
+panels. `.analysis` is pinned **first**, before Backlog, because that is where what it produces
+lands; `.panel` sits beside the selected card's column. Both are measured in board columns by the
+same `PanelLayout.panelWidth`, both snap between two and three spans through the same
+`PanelLayout.snappedSpans`, and both are grabbed by the one `PanelResizeHandle` — a second copy of
+that strip would be a second copy of the four fixes written into it.
+
+`PanelLayout.slotWidth` exists because a two-way `slot == .panel ? panelWidth : columnWidth` ternary
+stays type-correct when a third slot kind appears and silently measures the new one as a column.
+
+**Hiding the analysis panel is not closing the analysis.** `showingAnalysisPanel` is view state;
+`closeAnalysis()` drops the `AnalysisSession`, and `ObservationHandle.deinit` cancels the live
+proposal observation with it — so a toggle that called it would stop proposals landing while eight
+lenses were still reading. Only *Finish* ends a session. The detail panel has no such distinction,
+which is why the analysis needed its own rule rather than a copy of `showingInspector`.
+
+⚠️ **Hiding also destroys the view, so nothing the reader has typed may be `@State` in it.** Hiding
+removes `.analysis` from `boardOrder`, which tears `AnalysisPanelView` down. The lens set, the extra
+instructions, the story limit and the staged proposal selection therefore live on `AppModel`
+(`analysisAngles`, `analysisInstructions`, `analysisMaxStories`, `analysisSelection`) — as `@State`
+they made the hide lossy in exactly the way this feature's own prose says it is not, and the test
+that "proved" the hide was safe only ever looked at `analysis`, the half that already lived on the
+model.
+
+⚠️ **An analysis must not start in a repository Preflight refused, and `AnalysisService` will not
+stop it.** `start` checks `isEnabled` and the in-flight dedupe and nothing else, so the gate lives in
+`AppModel.analysisRefusal` — one sentence read by both the toolbar tooltip and the panel's footer,
+and the value the Start button is disabled by. It used to be a `.disabled(…)` on the toolbar button;
+#151 removed that (a toggle you cannot switch off is worse than one that opens onto an explanation)
+and very nearly removed the gate with it.
+
+⛔ **The analysis panel carries no `.keyboardShortcut(.defaultAction)`.** It did as a `Window` scene,
+where Return was scoped to it. As a sibling in the board window it would share Return with
+`DetailPanelView`'s Save, with nothing in the code deciding between them — and the claimant here
+spawns up to eight unattended runs.
+
+Opening the analysis panel scrolls the board to its leading edge
+(`BoardFraming.offsetX(from:boardWidth:)`), because a panel the reader just asked for that lands
+off-screen reads as a panel that did not open — the same false negative that got written down nine
+times about the window scenes.
+
+#### The detail panel
 
 Selecting a card opens `DetailPanelView` **between the columns**, inserted immediately after the
 card's own column — or before it for the last column, which has no right — two or three column-widths
