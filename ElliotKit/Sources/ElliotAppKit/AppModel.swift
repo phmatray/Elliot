@@ -72,6 +72,15 @@ public final class AppModel {
     /// second way of saying something nobody measured, which is the defect this
     /// carries the answer to rather than a place to reintroduce it.
     public private(set) var repoListingFailures: [OwnerListingFailure] = []
+
+    /// What is on each repository's board, from the same pass that produced
+    /// `repoRows`. Keyed by `Repo.id`; a repository the store never mentioned is
+    /// absent, which `RepoBoardDigest` turns into `.empty` for the rows entitled
+    /// to figures at all.
+    ///
+    /// It holds no refresh failure: that is session state, it arrives on a
+    /// different clock, and it is joined in by `repoBoardRows` at read time.
+    public private(set) var repoTallies: [UUID: RepoBoardTally] = [:]
     public private(set) var layout: RepoTreeLayout = .portfolio
     public private(set) var isReconciling = false
 
@@ -1335,12 +1344,63 @@ public final class AppModel {
         guard let registry else { return }
         let page = await registry.rows(layout: layout)
         let probed = await registry.probe(page.rows)
-        // One assignment site for both halves, and the rows assigned last: the
+        let tallies = await boardTallies()
+        // One assignment site for all three, and the rows assigned last: the
         // page reads `repoRows` to decide whether to speak at all, so a banner
         // that arrived a turn before the rows it belongs to would briefly
         // describe the previous pass.
+        //
+        // The figures belong to that same group for the same reason. A row
+        // saying `11 cards` beside a verdict from the previous reconcile is two
+        // moments rendered as one, which is what this method's shape exists to
+        // rule out — and the cheapest way to get there would have been a view
+        // that asked the store as it drew each row, producing per-row answers
+        // from N different moments with no pass to attribute them to.
         repoListingFailures = page.listingFailures
+        repoTallies = tallies
         repoRows = probed
+    }
+
+    /// Re-reads only the figures — no `gh`, no disk scan.
+    ///
+    /// The Repositories page calls this on every arrival, where
+    /// `refreshRepoRows()` is guarded to the first: rebuilding the rows costs
+    /// one `gh repo list` per owner, and re-counting cards is three grouped
+    /// statements. Coming back to the page should not show counts from whenever
+    /// the tree was last reconciled.
+    ///
+    /// Safe to call while `isReconciling`: it touches no other state, so it
+    /// cannot leave the rows and the figures describing different passes in a
+    /// way `reloadRepoRows` would not immediately correct.
+    public func refreshRepoTallies() async {
+        repoTallies = await boardTallies()
+    }
+
+    /// Today's figures, or nothing at all if there is no store behind the model.
+    ///
+    /// An empty dictionary rather than a thrown error: every entitled row then
+    /// reads `.empty`, which is "no cards" — and that is honest for a model with
+    /// no database, which is exactly what a seeded test model is.
+    private func boardTallies() async -> [UUID: RepoBoardTally] {
+        guard let store else { return [:] }
+        // The day boundary `spentToday` and `RunScheduler` already use, supplied
+        // by the caller rather than read from a clock inside the store.
+        let startOfDay = Calendar.current.startOfDay(for: Date())
+        return (try? await store.repoBoardTallies(since: startOfDay)) ?? [:]
+    }
+
+    /// The rows the Repositories page renders: the reconciler's verdicts, with
+    /// board figures attached to the rows entitled to them.
+    ///
+    /// The join happens **on read**, against `importSession.failures`, rather
+    /// than being snapshotted into `repoTallies`. Failures are recorded by
+    /// `record(_:for:)` from two call sites that have nothing to do with this
+    /// page, so a row holding a copy would be one refresh behind the banner it
+    /// is supposed to agree with — and the two disagreeing is the defect, not
+    /// the staleness.
+    public var repoBoardRows: [RepoRow] {
+        RepoBoardDigest.decorate(
+            repoRows, tallies: repoTallies, failures: importSession.failures)
     }
 
     /// Fast-forwards every clone the probe found strictly behind, and keeps the
@@ -1859,6 +1919,19 @@ public final class AppModel {
         session.runs = runs
         session.note = note
         analysis = session
+    }
+
+    /// The same trick for the Repositories page's two halves.
+    ///
+    /// `repoRows` and `repoTallies` are `private(set)` because one method fills
+    /// both, and that method needs a `RepoRegistryService` — `gh repo list` per
+    /// owner, a disk scan and a git probe per clone. What `repoBoardRows` is
+    /// about is none of that: it is which rows the figures reach, and whether
+    /// the failure joined on read agrees with the banner. Seeding the pair is
+    /// what lets those be asserted without the fan-out that produces them.
+    func testOnlySeedRepoBoard(rows: [RepoRow], tallies: [UUID: RepoBoardTally] = [:]) {
+        repoRows = rows
+        repoTallies = tallies
     }
 
     /// Puts a real store behind the model without `start()`.
