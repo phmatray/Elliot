@@ -84,9 +84,29 @@ public struct RepositoriesView: View {
                 .disabled(model.isReconciling || behindCount == 0)
                 .help(syncHelp)
             }
-            Text(countSentence)
-                .font(Type.prose)
-                .foregroundStyle(.secondary)
+            Text(
+                Self.countSentence(
+                    rows: model.repoRows, failures: model.repoListingFailures,
+                    isReconciling: model.isReconciling, root: model.layout.root)
+            )
+            .font(Type.prose)
+            .foregroundStyle(.secondary)
+
+            // Criterion 1: the owner and the error, said out loud, beside
+            // whatever *did* read. Not instead of the rows — the disk scan and
+            // the store read both succeeded and have real answers, and blanking
+            // them for one owner's rate limit is the regression #131 fixed for
+            // the board.
+            //
+            // No retry button, for #131's reason unchanged: re-reading fails
+            // identically, and the header already has **Refresh**.
+            ForEach(model.repoListingFailures, id: \.owner) { failure in
+                Label(Self.bannerLine(failure), systemImage: "exclamationmark.triangle.fill")
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.refused)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(Self.bannerLine(failure))
+            }
 
             // The outcome sentence used to go to `status`, which lives in the
             // board's status bar — a different window from the button that
@@ -167,15 +187,50 @@ public struct RepositoriesView: View {
                 + "detached HEAD — is skipped and named. Never merges, never moves a directory."
     }
 
-    private var countSentence: String {
-        let total = model.repoRows.count
-        guard total > 0 else {
-            return model.isReconciling
-                ? "Reading GitHub, the disk and the board…"
-                : "Nothing found under \(model.layout.root)."
+    /// The sentence above the rows.
+    ///
+    /// `nonisolated static` for the reason `clauses`, `icon`, `tint` and
+    /// `verdict` are: what the page *says* is assertable, and `ElliotAppKitTests`
+    /// reads it. It takes the failures rather than asking the model, because the
+    /// two new rules are about them.
+    ///
+    /// **Any failed listing and it counts nothing.** Not the rows that need
+    /// attention, and not the "nothing needs attention" that stands in for
+    /// them — with part of the tree unread, both are claims about a whole nobody
+    /// measured. It says what it counted and what it could not.
+    ///
+    /// **No rows *and* a failure is not an empty tree.** The direct analogue of
+    /// `BoardPhase.of` refusing `.empty` while `unreadableCount > 0`: "Nothing
+    /// found under `<root>`" is a claim about the disk, and the disk was never
+    /// what failed.
+    nonisolated static func countSentence(
+        rows: [RepoRow], failures: [OwnerListingFailure],
+        isReconciling: Bool, root: String
+    ) -> String {
+        let unlistable = failures.isEmpty
+            ? []
+            : ["\(failures.count) owner\(failures.count == 1 ? "" : "s") could not be listed"]
+
+        guard !rows.isEmpty else {
+            if isReconciling { return "Reading GitHub, the disk and the board…" }
+            // The banner underneath names each owner and its error; this line
+            // only has to stop asserting the one thing that is not known.
+            if let unlistable = unlistable.first { return unlistable + "." }
+            return "Nothing found under \(root)."
         }
-        let repositories = "\(total) repositor\(total == 1 ? "y" : "ies")"
-        return ([repositories] + Self.clauses(for: model.repoRows)).joined(separator: " · ")
+        let repositories = "\(rows.count) repositor\(rows.count == 1 ? "y" : "ies")"
+        guard failures.isEmpty else {
+            return ([repositories] + unlistable).joined(separator: " · ")
+        }
+        return ([repositories] + clauses(for: rows)).joined(separator: " · ")
+    }
+
+    /// One failed owner, as one line. A static so the `Label`, its accessibility
+    /// label and the test all read the same string — an unlabelled banner is an
+    /// unverifiable one, and this page's on-screen check is an accessibility-tree
+    /// diff.
+    nonisolated static func bannerLine(_ failure: OwnerListingFailure) -> String {
+        "GitHub could not list \(failure.owner): \(failure.reason)"
     }
 
     /// The sentence's clauses, in order, or the single "nothing" clause.
@@ -294,6 +349,11 @@ public struct RepositoriesView: View {
         // broken. The fill keeps it in this file's "wants a decision" tier
         // rather than the neutral one a fork sits in.
         case .unlisted: "questionmark.circle.fill"
+        // The dashed outline against `.unlisted`'s filled one, because the
+        // difference between the two verdicts is exactly an answer that is
+        // missing rather than negative. Same family so nobody has to learn a
+        // second symbol; a different weight so the two rows never read alike.
+        case .notChecked: "questionmark.circle.dashed"
         case .notCloned, .notRegistered, .missing, .misplaced: "exclamationmark.triangle.fill"
         // The git-state verdicts a probe produces. Grouped, and drawn exactly as
         // the `default:` arm drew them before this file became exhaustive —
@@ -315,6 +375,12 @@ public struct RepositoriesView: View {
         // spends the same tint on "Nothing verified for this run", which is the
         // same claim about a run that this is about a repository.
         case .unlisted: Palette.attention
+        // The same tint, and no sixth accent invented for it: `BrandColorTests`
+        // pins five, and a new one is a design decision rather than a merge. The
+        // distinction between "GitHub said nothing about it" and "GitHub was
+        // never asked" is carried by the word and the symbol, which is where the
+        // test asserts it.
+        case .notChecked: Palette.attention
         case .notCloned, .notRegistered, .missing, .misplaced: Palette.attention
         // As above: the tint the `default:` arm gave them, preserved verbatim.
         case .behind, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable:
@@ -330,6 +396,7 @@ public struct RepositoriesView: View {
         case .missing: "missing"
         case .misplaced: "misplaced"
         case .unlisted: "unlisted"
+        case .notChecked: "not checked"
         case .outOfScope(.fork): "fork"
         case .outOfScope(.archived): "archived"
         case .outOfScope(.otherRoot): "out of scope"

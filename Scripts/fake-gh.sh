@@ -25,10 +25,18 @@
 #   FAKE_GH_EXIT       exit code used by `fail` (default 1)
 #   FAKE_GH_ARGV_OUT   file to dump argv into, one argument per line, so a test
 #                      can assert what was actually asked of `gh`
+#   FAKE_GH_REPOS      path to a JSON file printed for `repo list` (default [])
+#   FAKE_GH_FAIL_OWNER fail only when the owner argument of `repo list` is this
+#                      exact value, and answer normally for every other owner.
+#                      The sibling of FAKE_GH_FAIL_REPO, one subcommand over:
+#                      `RepoRegistryService.rows` shares one `GHClient` across
+#                      its fan-out over owners, so this is the only way to state
+#                      #148's criterion 5 — one owner's failed listing must not
+#                      change what the page says about a healthy one
 #
-# Anything other than `issue list`, `pr list` or `pr view` exits non-zero on
-# purpose: an unexpected call has to fail loudly rather than return an empty
-# list, which would look exactly like a repository with no open work.
+# Anything other than `issue list`, `pr list`, `pr view` or `repo list` exits
+# non-zero on purpose: an unexpected call has to fail loudly rather than return
+# an empty list, which would look exactly like a repository with no open work.
 #
 # There is no ready-file and no delay here, and that is not an oversight —
 # nothing about this fake is asynchronous, so a test has nothing to wait for.
@@ -67,6 +75,16 @@ if [ -n "${FAKE_GH_FAIL_REPO:-}" ]; then
   done
 fi
 
+# Fail for one named owner only. `GHClient.repos` passes the owner positionally,
+# as the argument right after `list`, so that is what is matched — by position
+# rather than by flag, because there is no flag to key off.
+if [ -n "${FAKE_GH_FAIL_OWNER:-}" ] && [ "${1:-} ${2:-}" = "repo list" ]; then
+  if [ "${3:-}" = "$FAKE_GH_FAIL_OWNER" ]; then
+    echo "fake-gh: simulated failure for owner $3" >&2
+    exit "${FAKE_GH_EXIT:-1}"
+  fi
+fi
+
 # `gh issue list …` / `gh pr list …` — dispatch on the first two arguments.
 # Printing an empty array rather than nothing when no fixture is configured:
 # `[]` is what `gh` returns for a repository with no matching items, and it is
@@ -96,6 +114,7 @@ case "${1:-} ${2:-}" in
   "issue list") emit "${FAKE_GH_ISSUES:-}" ;;
   "pr list")    emit "${FAKE_GH_PRS:-}" ;;
   "pr view")    emit_object "${FAKE_GH_PR_VIEW:-}" ;;
+  "repo list")  emit "${FAKE_GH_REPOS:-}" ;;
   *)
     echo "fake-gh: unexpected invocation: $*" >&2
     exit 64
