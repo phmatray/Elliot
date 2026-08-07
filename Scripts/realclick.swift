@@ -21,10 +21,17 @@
 // toolchain is already a hard requirement here, so this costs a second of
 // interpretation and nothing to maintain.
 //
-// ⚠️ Posting events needs the caller to hold Accessibility. The shell does even
-// when the `cua-driver` daemon does not. Without it the events are dropped in
-// silence — the same false negative one layer down, so if every click appears
-// to do nothing, check the grant before believing the app.
+// ⚠️ Posting events needs the caller to hold Accessibility, and **whether your
+// shell holds it depends on which shell you are.** This comment used to say the
+// shell does even when the `cua-driver` daemon does not; measured from a
+// `claude -p` run on 2026-08-08 (#132) that is false — `osascript` returns
+// `-1719 not allowed assistive access` and `screencapture -x` returns
+// `could not create image from display`. An interactive Terminal someone ticked
+// the box for is a different TCC identity from a spawned agent. Without the
+// grant the events are dropped in silence — the same false negative one layer
+// down, so if every click appears to do nothing, check the grant before
+// believing the app. CLAUDE.md § *Watching the caret's anchors arrive* has the
+// five probes and what still works without any grant.
 import CoreGraphics
 import Foundation
 
