@@ -112,6 +112,34 @@ public final class BoardStore: Sendable {
         }
     }
 
+    // MARK: - Pull request status
+
+    /// Records one reading. Keyed by `(repoID, prNumber)`, so a second reading
+    /// of the same pull request replaces the first rather than accumulating
+    /// history — the board wants the current answer, and an old reading is
+    /// exactly what `PRStatus.resolved` refuses to report anyway.
+    public func savePRStatus(_ status: PRStatus) async throws {
+        try await requireWriter().write { db in try status.save(db) }
+    }
+
+    public func prStatus(repoID: UUID, prNumber: Int) async throws -> PRStatus? {
+        try await reader.read { db in
+            try PRStatus
+                .filter(PRStatus.Columns.repoID == repoID.databaseKey)
+                .filter(PRStatus.Columns.prNumber == prNumber)
+                .fetchOne(db)
+        }
+    }
+
+    public func prStatuses(repoID: UUID) async throws -> [PRStatus] {
+        try await reader.read { db in
+            try PRStatus
+                .filter(PRStatus.Columns.repoID == repoID.databaseKey)
+                .order(PRStatus.Columns.prNumber)
+                .fetchAll(db)
+        }
+    }
+
     // MARK: - Settings
 
     private static let layoutKey = "repositoryLayout"
