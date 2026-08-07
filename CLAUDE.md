@@ -654,11 +654,13 @@ Two invariants carry most of the weight:
   thoroughly plausible descriptor and does nothing. The descriptor #158 quotes as the culprit,
   `scroll area 1 of scroll area 1 of group 1 of window Elliot`, is not a list eating a click; it is
   the nearest AX element to a press no view had an action for. Re-driven with a real `CGEvent`
-  through `Scripts/realclick.swift`, the deselect cleared the selection in **all seven** states
-  measured — short column, scrollable column, both panels open, both shut, the 6pt gap between two
-  cards, the padding strip beside them, and the last column where the panel flips left — every one
-  of them through the existing `ColumnView` gesture. **`Scripts/probe-deselect.sh` is that
-  measurement, committed**, and it refuses a click that lands outside the window rather than
+  through `Scripts/realclick.swift`, the deselect cleared the selection in **every one of seven
+  runs** against unmodified `main` — short column, scrollable column (content 894pt against a 748pt
+  viewport, scroll bar and all), both panels open, both shut, the 6pt gap between two cards, the
+  padding strip beside them, and the last column where the panel flips left. Five of those seven
+  were instrumented, and all five named the `ColumnView` gesture; the other two ran against a
+  pristine bundle carrying no instrumentation at all and agreed. **`Scripts/probe-deselect.sh` is
+  that measurement, committed**, and it refuses a click that lands outside the window rather than
   reporting it, because a column scrolled out of view still publishes an off-screen frame.
 
   The general shape is the one this file already names four times, and this is the fifth: **a
