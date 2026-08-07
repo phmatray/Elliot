@@ -88,6 +88,21 @@ public enum CIState: Sendable, Hashable {
     case passing(Int)
     case failing([String])
     case unknown
+
+    /// Stable identifier surfaced to MCP callers, like `MoveBlock.code`.
+    ///
+    /// Deliberately not the enum's own name: these travel over the wire, and a
+    /// case renamed for readability must not silently change what an agent
+    /// matches on.
+    public var code: String {
+        switch self {
+        case .noChecks: "no_checks"
+        case .running: "running"
+        case .passing: "passing"
+        case .failing: "failing"
+        case .unknown: "unknown"
+        }
+    }
 }
 
 public enum MergeState: Sendable, Hashable {
@@ -97,6 +112,17 @@ public enum MergeState: Sendable, Hashable {
     case behind
     case unstable
     case unknown
+
+    public var code: String {
+        switch self {
+        case .clean: "clean"
+        case .conflict: "conflict"
+        case .blocked: "blocked"
+        case .behind: "behind"
+        case .unstable: "unstable"
+        case .unknown: "unknown"
+        }
+    }
 }
 
 public enum ReviewState: Sendable, Hashable {
@@ -107,6 +133,16 @@ public enum ReviewState: Sendable, Hashable {
     case changesRequested
     case reviewRequired
     case unknown
+
+    public var code: String {
+        switch self {
+        case .none: "none"
+        case .approved: "approved"
+        case .changesRequested: "changes_requested"
+        case .reviewRequired: "review_required"
+        case .unknown: "unknown"
+        }
+    }
 }
 
 // MARK: - The single sign a card carries
@@ -125,6 +161,19 @@ public enum PRSign: Sendable, Hashable {
     case checksRunning
     case noBuild
     case unknown
+
+    public var code: String {
+        switch self {
+        case .conflict: "conflict"
+        case .checksFailing: "checks_failing"
+        case .changesRequested: "changes_requested"
+        case .reviewRequired: "review_required"
+        case .mergeBlocked: "merge_blocked"
+        case .checksRunning: "checks_running"
+        case .noBuild: "no_build"
+        case .unknown: "unknown"
+        }
+    }
 
     /// One sentence, for the card's tooltip and the panel's headline.
     ///

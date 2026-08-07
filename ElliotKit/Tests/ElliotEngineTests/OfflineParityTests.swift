@@ -46,6 +46,56 @@ struct OfflineParityTests {
         }
     }
 
+    /// The positive control the equality check cannot be.
+    ///
+    /// `readsAgree` compares two encoded answers, so **two nils compare equal**:
+    /// if neither side carried the pull request reading at all, it would pass
+    /// having compared nothing — the same blindness the proposal seeding above
+    /// records, one field over. This asserts each side independently carries the
+    /// reading, and carries the right one.
+    @Test("Both sides actually carry the pull request reading, not a matching nil")
+    func prStatusReachesBothAnswers() async throws {
+        let board = try await ParityBoard.seeded()
+        let request = ElliotRequest.getCard(id: board.reviewCardID)
+
+        let answers = [
+            ("live", await board.handler.handle(request)),
+            ("snapshot", await board.responder.respond(to: request)),
+        ]
+        for (side, response) in answers {
+            guard case .ok(let payload) = response, case .card(let card) = payload else {
+                Issue.record("\(side) did not answer with a card")
+                continue
+            }
+            let status = try #require(card.prStatus, "\(side) carried no pull request reading")
+            // The seeded row is DIRTY with a failing check: the conflict wins the
+            // sign, and the failure survives on its own facet rather than being
+            // swallowed by it.
+            #expect(status.sign == "conflict", "\(side)")
+            #expect(status.merge == "conflict", "\(side)")
+            #expect(status.ci == "failing", "\(side)")
+            #expect(status.checks.map(\.name) == ["build", "test"], "\(side)")
+            #expect(!status.isStale, "\(side)")
+        }
+    }
+
+    @Test("A card with no reading says so with an absent object, on both sides")
+    func cardWithoutAReadingCarriesNothing() async throws {
+        let board = try await ParityBoard.seeded()
+        let request = ElliotRequest.getCard(id: board.cardID)
+
+        for (side, response) in [
+            ("live", await board.handler.handle(request)),
+            ("snapshot", await board.responder.respond(to: request)),
+        ] {
+            guard case .ok(let payload) = response, case .card(let card) = payload else {
+                Issue.record("\(side) did not answer with a card")
+                continue
+            }
+            #expect(card.prStatus == nil, "\(side) invented a reading")
+        }
+    }
+
     // MARK: - Refusals
 
     /// The two refusals every recorded drift was about.
@@ -194,6 +244,9 @@ private struct ParityBoard {
     var handler: MCPRequestHandler
     var responder: OfflineResponder
     var cardID: UUID
+    /// The card in In Review — the only one that carries a pull request reading,
+    /// and therefore the only `getCard` that compares a `PRStatusDTO`.
+    var reviewCardID: UUID
 
     static func seeded() async throws -> ParityBoard {
         // `AnalysisService` computes an artifact path through `StoreLocation`
@@ -237,6 +290,21 @@ private struct ParityBoard {
         let held = card("Held", elliot.id, .inProgress, 3072, issue: 12)
         let review = card("Merge me", koine.id, .inReview, 4096, issue: 13, pr: 7)
         for one in [backlog, stuck, held, review] { try await store.saveCard(one) }
+
+        // A pull request reading for the card in In Review, so `getCard` has the
+        // whole `PRStatusDTO` to compare rather than two nils. Dated **now**, not
+        // at the epoch: an epoch row is stale on both sides and the comparison
+        // would hold "unknown" against "unknown" and see none of the fields —
+        // the same blindness the proposal seeding above records.
+        try await store.savePRStatus(PRStatus(
+            repoID: koine.id, prNumber: 7,
+            headRefOid: "3be5f1ee906ff61bdedef0072b635ec6ec40c632",
+            checkedAt: Date(),
+            rawMergeStateStatus: "DIRTY", rawMergeable: "CONFLICTING", rawReviewDecision: "",
+            checks: [
+                GHMergeStatus.StatusCheck(name: "build", conclusion: "SUCCESS", status: "COMPLETED"),
+                GHMergeStatus.StatusCheck(name: "test", conclusion: "FAILURE", status: "COMPLETED"),
+            ]))
 
         func run(
             _ cardID: UUID, _ repoID: UUID, _ kind: SkillKind, _ state: RunState, _ at: Date
@@ -288,7 +356,8 @@ private struct ParityBoard {
             store: store,
             handler: MCPRequestHandler(store: store, board: board, analysis: analysis),
             responder: OfflineResponder(store: store),
-            cardID: held.id
+            cardID: held.id,
+            reviewCardID: review.id
         )
     }
 
@@ -302,6 +371,7 @@ private struct ParityBoard {
             .listCards(repo: "phmatray/Elliot", column: .inProgress, limit: 0),
             .listCards(repo: nil, column: nil, limit: 2),
             .getCard(id: cardID),
+            .getCard(id: reviewCardID),
             .listRuns(cardID: nil, limit: 0),
             .listRuns(cardID: cardID, limit: 0),
             .next(repo: nil, limit: 0),

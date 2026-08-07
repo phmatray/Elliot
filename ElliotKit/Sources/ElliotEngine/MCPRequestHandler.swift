@@ -556,6 +556,27 @@ public struct MCPRequestHandler: Sendable {
     private func dto(for card: Card) async throws -> CardDTO {
         let repoName = try await store.repo(id: card.repoID)?.nameWithOwner ?? "?"
         let activeRunID = try await store.activeRun(cardID: card.id)?.id
-        return CardDTO(card: card, repoName: repoName, activeRunID: activeRunID)
+        return CardDTO(
+            card: card, repoName: repoName, activeRunID: activeRunID,
+            prStatus: try await prStatusDTO(for: card))
+    }
+
+    /// The stored reading, resolved against the clock.
+    ///
+    /// `currentHeadOid` is `nil` here on purpose: establishing the pull
+    /// request's head right now would mean a network call inside a read, and
+    /// `PRWatcher` already re-reads whenever the head moves. What remains in
+    /// force is the age rule, which is the one that matters when nothing has
+    /// been running — the app closed, asleep, or unable to reach `gh`.
+    ///
+    /// `OfflineResponder` holds the identical five lines. They cannot be shared:
+    /// `ElliotMCPKit` imports neither this target nor `ElliotProcess`, so the
+    /// helper cannot hold a copy of the rules. `OfflineParityTests` is what keeps
+    /// them equal.
+    private func prStatusDTO(for card: Card) async throws -> PRStatusDTO? {
+        guard let number = card.prNumber,
+              let status = try await store.prStatus(repoID: card.repoID, prNumber: number)
+        else { return nil }
+        return PRStatusDTO(status, resolved: status.resolved(now: Date(), currentHeadOid: nil))
     }
 }

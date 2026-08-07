@@ -264,6 +264,22 @@ struct OfflineResponder: Sendable {
     private func dto(for card: Card) async throws -> CardDTO {
         let repoName = try await store.repo(id: card.repoID)?.nameWithOwner ?? "?"
         let activeRunID = try await store.activeRun(cardID: card.id)?.id
-        return CardDTO(card: card, repoName: repoName, activeRunID: activeRunID)
+        return CardDTO(
+            card: card, repoName: repoName, activeRunID: activeRunID,
+            prStatus: try await prStatusDTO(for: card))
+    }
+
+    /// The snapshot's half of the reading — see `MCPRequestHandler.prStatusDTO`,
+    /// which this must match word for word, and which `OfflineParityTests`
+    /// proves it does.
+    ///
+    /// Note this half is the *more* honest of the two by circumstance: the app
+    /// may have been closed for days when the helper is asked, and the age rule
+    /// is what stops the snapshot reporting a week-old green.
+    private func prStatusDTO(for card: Card) async throws -> PRStatusDTO? {
+        guard let number = card.prNumber,
+              let status = try await store.prStatus(repoID: card.repoID, prNumber: number)
+        else { return nil }
+        return PRStatusDTO(status, resolved: status.resolved(now: Date(), currentHeadOid: nil))
     }
 }
