@@ -1367,6 +1367,13 @@ public final class AppModel {
     /// fix that failed quietly reads exactly like one that worked, which is the
     /// failure mode this page exists to remove.
     public func apply(_ fix: RepoFix) async {
+        // The one destructive fix on this page goes through the confirmation.
+        // Gating here rather than at the button covers every caller of
+        // `.forget`, and leaves the row's button untouched.
+        if case .forget(let repoID) = fix {
+            await requestForget(repoID: repoID, origin: .repositories)
+            return
+        }
         guard let registry else { return }
         let outcome = await registry.apply(fix, layout: layout)
         status = outcome.detail
@@ -1517,8 +1524,74 @@ public final class AppModel {
         try? await store?.saveRepo(repo)
     }
 
+    /// Deletes without asking, and has exactly one caller left: Preflight's
+    /// trash button, which Task 4 of #210 routes through `requestForget`.
+    /// It goes with that rewire — an ungated deleter on the model is the second
+    /// write path this issue exists to close.
     public func removeRepo(id: UUID) async {
         try? await store?.deleteRepo(id: id)
+    }
+
+    /// A forget waiting for an answer.
+    ///
+    /// One optional rather than a per-screen flag: both screens present the same
+    /// dialog from this, so a second one cannot appear with different words.
+    public struct ForgetRequest: Identifiable, Sendable, Hashable {
+        /// Which button asked, and therefore which deleter runs on confirm.
+        /// Preflight deletes through the store; the Repositories page goes back
+        /// through `RepoRegistryService` so it keeps its outcome sentence and
+        /// its row refresh. The *confirmation* is what had to exist once.
+        public enum Origin: Sendable, Hashable { case preflight, repositories }
+
+        public let id: UUID
+        public let displayName: String
+        public let path: String
+        public let impact: ForgetImpact
+        public let origin: Origin
+
+        public var prompt: ForgetPrompt {
+            ForgetPrompt(impact: impact, displayName: displayName, path: path)
+        }
+    }
+
+    public private(set) var forgetRequest: ForgetRequest?
+
+    /// Counts what would go, then asks. Nothing is deleted here.
+    ///
+    /// A failure to count refuses the whole act rather than falling through to a
+    /// dialog with no numbers in it: a gate that fails open is not a gate, and a
+    /// vague warning is what this replaced.
+    public func requestForget(repoID: UUID, origin: ForgetRequest.Origin) async {
+        guard let store, let repo = repos.first(where: { $0.id == repoID }) else { return }
+        do {
+            let impact = try await store.forgetImpact(repoID: repoID)
+            forgetRequest = ForgetRequest(
+                id: repoID, displayName: repo.displayName, path: repo.path,
+                impact: impact, origin: origin)
+        } catch {
+            status = "Could not work out what forgetting \(repo.displayName) would delete: "
+                + error.localizedDescription
+        }
+    }
+
+    public func cancelForget() {
+        forgetRequest = nil
+    }
+
+    public func confirmForget() async {
+        guard let request = forgetRequest else { return }
+        forgetRequest = nil
+        switch request.origin {
+        case .preflight:
+            try? await store?.deleteRepo(id: request.id)
+            status = "Forgot \(request.displayName). The clone on disk is untouched."
+        case .repositories:
+            guard let registry else { return }
+            let outcome = await registry.apply(.forget(repoID: request.id), layout: layout)
+            status = outcome.detail
+            await refreshRepoRows()
+            lastFixOutcome = FixOutcome(detail: outcome.detail, succeeded: outcome.succeeded)
+        }
     }
 
     public func refreshRepoChecks(using service: PreflightService? = nil) async {
