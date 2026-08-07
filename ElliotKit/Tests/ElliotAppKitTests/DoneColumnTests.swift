@@ -103,6 +103,23 @@ struct DoneColumnTests {
         #expect(scoped.days.first?.cards.first?.title == "mine")
     }
 
+    /// The visible footer is terse — "37 older · Open Archive". This is the
+    /// sentence read aloud, and it follows the same singular rule as the column
+    /// caption and the group header, for the reason recorded on those two.
+    @Test("The footer counts what the horizon hid, and says nothing when it hid nothing")
+    func footerWording() {
+        #expect(BoardAccessibility.olderFooter(count: 37) == "37 older cards. Open Archive.")
+        #expect(BoardAccessibility.olderFooter(count: 1) == "1 older card. Open Archive.")
+    }
+
+    /// Not "0 older cards" — an empty string, because the footer is not drawn
+    /// at all. A label announcing a control that is not there is worse than no
+    /// label.
+    @Test("Nothing hidden is no sentence at all")
+    func footerSilentWhenNothingHidden() {
+        #expect(BoardAccessibility.olderFooter(count: 0).isEmpty)
+    }
+
     @Test("An empty Done is an empty log, and draws no archive footer")
     func emptyDone() {
         let elliot = repo("Elliot")

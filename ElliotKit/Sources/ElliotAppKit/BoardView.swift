@@ -789,6 +789,7 @@ struct StatusBar: View {
 struct ColumnView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openWindow) private var openWindow
     let column: ElliotModel.Column
     let width: CGFloat
     @State private var isTargeted = false
@@ -1074,7 +1075,8 @@ struct ColumnView: View {
     /// is *drawn*, never a change to what a card is or what may be done to it.
     @ViewBuilder
     private var shippingLogRows: some View {
-        ForEach(doneLog.days) { day in
+        let log = doneLog
+        ForEach(log.days) { day in
             ShipDayHeader(
                 label: day.label,
                 count: day.cards.count,
@@ -1092,6 +1094,35 @@ struct ColumnView: View {
                 }
             }
         }
+        if log.olderCount > 0 {
+            olderFooter(log.olderCount)
+        }
+    }
+
+    /// Where the rest of the finished work went.
+    ///
+    /// Drawn only when the horizon actually hid something, so a board younger
+    /// than the horizon never grows a control that would open an empty window.
+    /// Nothing here is destructive and nothing is lost — the cards it counts
+    /// are in the database exactly as they were, which is what lets this be a
+    /// quiet line rather than a warning.
+    private func olderFooter(_ count: Int) -> some View {
+        Button {
+            openWindow(id: "archive")
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "archivebox")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                Fact(text: "\(count) older", tint: Palette.quiet, small: true)
+                Spacer()
+                ConsoleLabel(text: "Open Archive")
+            }
+            .contentShape(Rectangle())
+            .padding(.top, 6)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(BoardAccessibility.olderFooter(count: count))
     }
 
     /// Deliberately carries no `dropDestination`.
@@ -1234,6 +1265,18 @@ enum BoardAccessibility {
     /// that once disagreed about "1 cards".
     static func shipDayCaption(day: String, count: Int) -> String {
         "\(day), \(count) \(cards(count))"
+    }
+
+    /// Done's footer: how many finished cards the horizon is not drawing, and
+    /// where the rest of them are.
+    ///
+    /// Empty at zero rather than "0 older cards", because at zero the footer is
+    /// **not drawn at all** — a label announcing a control that is not on
+    /// screen is worse than no label. The visible row is terser than this
+    /// ("37 older · Open Archive"); a sentence is what VoiceOver needs.
+    static func olderFooter(count: Int) -> String {
+        guard count > 0 else { return "" }
+        return "\(count) older \(cards(count)). Open Archive."
     }
 
     /// One row of a card's move history, read as a sentence.
