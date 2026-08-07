@@ -210,6 +210,30 @@ public enum ElliotErrorCode: String, Codable, Sendable {
     case windowNotOpen = "window_not_open"
 }
 
+/// The words a refusal adds to say what to do next.
+///
+/// Shared rather than written at each site: `card_not_found` is raised on six
+/// paths across two targets, and the offline copy already drifted once — it
+/// carried this pointer while the live path did not, and #144 reconciled them
+/// by dropping it. A constant makes the divergence impossible instead of
+/// merely detectable, which is strictly more than `OfflineParityTests` can buy
+/// on its own: a guard fires only once the two texts have already parted.
+///
+/// Here rather than in `ElliotModel` because it is wire vocabulary, and it
+/// belongs beside the code string it explains. `ElliotIPC` is also exactly the
+/// intersection of the two targets that need it — `ElliotEngine` and
+/// `ElliotMCPKit` both depend on it already, so nothing about the layering
+/// moves to share these words.
+///
+/// ⚠️ **One case, not a sweep.** `repo_not_found` is still written twice —
+/// message *and* its `"Known: …"` hint, in `MCPRequestHandler` and
+/// `OfflineResponder` — so the drift this type closes for `card_not_found`
+/// remains open one refusal over. This enum is where those words go when
+/// somebody moves them; its existence is not evidence that anybody has.
+public enum RefusalHint {
+    public static let cardNotFound = "board_list_cards lists the cards this board holds."
+}
+
 public enum ElliotResponse: Codable, Sendable {
     case ok(ElliotPayload)
     case failure(code: ElliotErrorCode, message: String, hint: String?)
