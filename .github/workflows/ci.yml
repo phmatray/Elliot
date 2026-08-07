@@ -80,7 +80,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Its own line, so a runner-image toolchain drift reads as a version rather than as a mystery
       # compile error further down. `swift-floor.yml` is what *fails* on that drift; this is only so
