@@ -56,7 +56,9 @@ struct DrainDuplicationTests {
                 """
                 \(file) handles a child's pipes itself — that mechanism belongs to \
                 ChildProcess.swift alone: \
-                \(offenders.map { "line \($0.offset + 1)" }.joined(separator: ", "))
+                \(offenders.map { "line \($0.offset + 1)" }.joined(separator: ", ")). \
+                If this is a `CheckedContinuation` doing something unrelated to draining \
+                a child, narrow this gate to the drain shapes rather than deleting it.
                 """
             )
         }
@@ -99,11 +101,17 @@ struct DrainDuplicationTests {
             signalSites.allSatisfy { $0.hasPrefix("ProcessTermination.swift:") },
             "something outside ProcessTermination.swift signals a child: \(signalSites)"
         )
-        // One line declares it *and* gives it its value, so both needles land on
-        // the same line and one hit is the expected count.
+        // Asserted by count and file, never by line number: a gate that breaks
+        // when a comment is added above it teaches people to edit the gate.
+        // One line declares the constant *and* gives it its value, so both
+        // needles land on the same line and one hit is the expected count.
         #expect(
-            graceDeclarations == ["ProcessTermination.swift:19"],
+            graceDeclarations.count == 1,
             "the hard-kill grace should be written exactly once, found \(graceDeclarations)"
+        )
+        #expect(
+            graceDeclarations.allSatisfy { $0.hasPrefix("ProcessTermination.swift:") },
+            "the hard-kill grace belongs to ProcessTermination.swift, found \(graceDeclarations)"
         )
     }
 
