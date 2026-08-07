@@ -8,12 +8,17 @@
 #
 #   FAKE_GH_ISSUES     path to a JSON file printed for `issue list` (default [])
 #   FAKE_GH_PRS        path to a JSON file printed for `pr list`    (default [])
+#   FAKE_GH_LABELS     path to a JSON file printed for `label list` (default [])
 #   FAKE_GH_PR_VIEW    path to a JSON file printed for `pr view`    (NO default —
 #                      unset or missing exits 65). `gh` answers a list with `[]`
 #                      for an empty repository, so an absent list fixture has a
 #                      correct stand-in; there is no such thing as an empty
 #                      object, so inventing one here would be a decode error
 #                      dressed up as a missing fixture
+#   FAKE_GH_STDERR     text written to stderr by `fail`, so a test can drive the
+#                      one failure `GHClient.createLabel` tolerates (a label that
+#                      already exists) apart from every other one, which it must
+#                      still throw
 #   FAKE_GH_MODE       ok   = print the fixtures (default)
 #                      fail = write to stderr and exit non-zero
 #   FAKE_GH_FAIL_REPO  fail only when `--repo` is this exact value, and answer
@@ -34,9 +39,10 @@
 #                      #148's criterion 5 — one owner's failed listing must not
 #                      change what the page says about a healthy one
 #
-# Anything other than `issue list`, `pr list`, `pr view` or `repo list` exits
-# non-zero on purpose: an unexpected call has to fail loudly rather than return
-# an empty list, which would look exactly like a repository with no open work.
+# Anything other than `issue list`, `pr list`, `pr view`, `repo list`,
+# `label list` or `label create` exits non-zero on purpose: an unexpected call
+# has to fail loudly rather than return an empty list, which would look exactly
+# like a repository with no open work.
 #
 # There is no ready-file and no delay here, and that is not an oversight —
 # nothing about this fake is asynchronous, so a test has nothing to wait for.
@@ -58,7 +64,7 @@ if [ -n "${FAKE_GH_ARGV_OUT:-}" ]; then
 fi
 
 if [ "${FAKE_GH_MODE:-ok}" = "fail" ]; then
-  echo "fake-gh: simulated failure" >&2
+  echo "${FAKE_GH_STDERR:-fake-gh: simulated failure}" >&2
   exit "${FAKE_GH_EXIT:-1}"
 fi
 
@@ -115,6 +121,10 @@ case "${1:-} ${2:-}" in
   "pr list")    emit "${FAKE_GH_PRS:-}" ;;
   "pr view")    emit_object "${FAKE_GH_PR_VIEW:-}" ;;
   "repo list")  emit "${FAKE_GH_REPOS:-}" ;;
+  "label list") emit "${FAKE_GH_LABELS:-}" ;;
+  # Prints nothing, like the real one: the caller checks the exit status, and a
+  # JSON body here would be a decode nobody asked for.
+  "label create") : ;;
   *)
     echo "fake-gh: unexpected invocation: $*" >&2
     exit 64

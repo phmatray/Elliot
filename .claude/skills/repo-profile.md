@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1281 tests in 144 suites**, 5 of 5 samples on
-  `feat/174-pr-status` on 2026-08-07 off `main` at `206c029`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1314 tests in 148 suites**, 5 of 5 samples on
+  `feat/170-preflight-labels` on 2026-08-07 off `main` at `50feecc`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -72,6 +72,15 @@
       only thing its re-measurement could change was the **date-stamp and the commit**, and those
       are exactly the two things this bullet says are worth maintaining. A correction here is
       almost never about the branch.
+    - **Landing #172 the five samples cost a sixth, and that is the entry's most useful day yet.**
+      The merged tree measured **1314 in 148** off `50feecc` — but the fourth sample went **red**,
+      and because the sampler kept the whole output rather than the summary line, #190's ~1-in-50
+      unnamed failure finally has a name: `AnalysisEndToEndTests.swift:174` and `:180`,
+      `(report.workingTreeChanged → nil) == false` and `(proposals.count → 6) == 4`. #172 touches
+      no analysis code whatsoever — 15 files, all Preflight and labels — so the red was not its
+      own, and five *consecutive* greens were taken afterwards rather than counting the three
+      before it. **Five green samples cannot disprove a 1-in-50; keeping the output is what turns
+      the one you do catch into evidence.**
     - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
       to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
       authors each measured honestly, each counted from the last number they could see, and the
@@ -82,6 +91,11 @@
       times (1116 → 1119 → 1161 → the value above) without the branch adding a single test. Three
       concurrent authors, three honest "sixth"s. The ordinal is not worth maintaining; the date-stamp
       and the commit it was taken at are.
+    - **#170 collided here too, and took the advice above rather than adding a fourth ordinal.** Its
+      branch measured 1196/139 off `9de425e`; `main` arrived carrying 1167/135 from `fix/116`; the
+      merged tree runs **1200/139**. The number was left as a literal `PLACEHOLDER` through the
+      resolution and only replaced once the run printed — which is the ⛔ bullet below, followed on
+      purpose the first time it was read.
     - #159's split is still the useful detail: its untouched branch already ran 1116 before a line of
       its own tests existed, so 40 of its 46 were unrecorded drift and only 6 were the branch's own.
       A correction here is rarely evidence that the previous author miscounted; it is mostly the

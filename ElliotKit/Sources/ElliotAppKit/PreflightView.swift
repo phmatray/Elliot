@@ -371,6 +371,33 @@ public struct PreflightView: View {
                                 .foregroundStyle(tint(result.status))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
+                        // A finding you can act on. Every check that shipped
+                        // before #170 carries no fixes, so this renders nothing
+                        // for all of them — the screen did not grow buttons, it
+                        // gained the ability to have one.
+                        let buttons = PreflightFixes.buttons(for: result)
+                        if !buttons.isEmpty {
+                            HStack(spacing: 8) {
+                                ForEach(buttons) { button in
+                                    Button(button.title) {
+                                        Task { await model.apply(button.fix) }
+                                    }
+                                    .font(Type.prose)
+                                }
+                            }
+                            .padding(.top, 2)
+                        }
+                        if let outcome = model.fixOutcome(for: result) {
+                            // What the last fix did, in its own words. Shown
+                            // rather than swallowed because `apply` reports a
+                            // *partial* success — four labels asked for, three
+                            // created — and that sentence is the only place that
+                            // distinction survives.
+                            Text(outcome.detail)
+                                .font(Type.prose)
+                                .foregroundStyle(outcome.succeeded ? .secondary : tint(.fail))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 4)

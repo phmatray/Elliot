@@ -1523,6 +1523,11 @@ public final class AppModel {
 
     public func refreshRepoChecks(using service: PreflightService? = nil) async {
         guard let toolConfig else { return }
+        // Cleared on an explicit refresh, the way `reloadRepoRows` clears the
+        // Repositories page's. A sentence about a fix, still sitting under a row
+        // the user has just re-checked, describes a board state that may no
+        // longer hold.
+        lastCheckFix = nil
         let environment = LoginShellEnvironment(
             variables: toolConfig.environment, capturedVia: "session"
         )
@@ -1534,6 +1539,75 @@ public final class AppModel {
 
     public func isBlocked(_ repo: Repo) -> Bool {
         PreflightService.isBlocking(repoChecks[repo.id] ?? [])
+    }
+
+    /// What the last **Preflight** fix did, and **which fix it was**.
+    ///
+    /// The id is not decoration. `lastCheckFixOutcome` alone was read inside the
+    /// row loop, so one model-wide sentence appeared under *every* check of
+    /// *every* repository: press "Create 2 labels" on one repository and the
+    /// "Working tree" check of another announced "Created 2 labels", as if that
+    /// were about it. The doc comment claimed "shown beside the row that offered
+    /// it" while the code did nothing of the kind — and it survived a Check
+    /// again, unlike the Repositories page's outcome, which its refresh clears.
+    ///
+    /// Its own property beside `lastFixOutcome`, which belongs to the
+    /// Repositories page: two screens sharing one slot would each wipe the
+    /// other's sentence. They share the display *type* and not the storage.
+    public private(set) var lastCheckFix: (id: String, outcome: FixOutcome)?
+
+    /// The sentence to show under this check, if the last fix was one of its own.
+    public func fixOutcome(for result: CheckResult) -> FixOutcome? {
+        guard let last = lastCheckFix, result.fixes.contains(where: { $0.id == last.id })
+        else { return nil }
+        return last.outcome
+    }
+
+    /// Performs a `CheckFix` and **re-runs the checks** rather than editing the
+    /// row to look fixed.
+    ///
+    /// Re-running is the point. A row edited in place to say "pass" is a row
+    /// that lies when the fix half-worked — and `apply` reports partial success
+    /// precisely because half-working is the realistic outcome of creating four
+    /// labels over a network. Asking again is the only answer that cannot drift
+    /// from what GitHub actually has.
+    public func apply(_ fix: CheckFix) async {
+        guard let toolConfig, let board else {
+            lastCheckFix = (
+                fix.id,
+                FixOutcome(detail: "Elliot is still starting; try again in a moment.", succeeded: false)
+            )
+            return
+        }
+        // Resolved from the fix's own `repoID`, never from which row was
+        // pressed. A repository that is no longer registered is said out loud —
+        // a button that silently does nothing is the failure this screen is
+        // being taught to avoid.
+        guard let repo = repos.first(where: { $0.id == fix.repoID }) else {
+            lastCheckFix = (
+                fix.id,
+                FixOutcome(detail: "That repository is no longer registered.", succeeded: false)
+            )
+            return
+        }
+
+        let preflight = PreflightService(
+            environment: LoginShellEnvironment(
+                variables: toolConfig.environment, capturedVia: "session"
+            ),
+            config: toolConfig
+        )
+        let outcome = await preflight.apply(fix, repo: repo, board: board)
+        lastCheckFix = (fix.id, FixOutcome(detail: outcome.detail, succeeded: outcome.succeeded))
+        // A seeded card needs no reload here: the board observes the store, so
+        // it arrives the way every other card does. Only the checks have to be
+        // asked again — and only **this** repository's.
+        //
+        // `refreshRepoChecks` loops every registered repository at ~6
+        // subprocesses each, plus a networked `gh label list` per repo since
+        // #170. Pressing one button should not start a full-board sweep with no
+        // progress and no re-entrancy guard.
+        repoChecks[repo.id] = await preflight.repoChecks(repo)
     }
 
     // MARK: - Analysis
