@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1328 tests in 149 suites**, 5 of 5 samples on
-  `fix/147-proposal-editor-card-draft` on 2026-08-07 off `main` at `dc5c2ce`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1339 tests in 149 suites**, 5 of 5 samples on
+  `fix/139-merged-outcome-carries-pr` on 2026-08-07 off `main` at `dc5c2ce`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -61,6 +61,13 @@
     Corrected again landing #180 — the branch measured 1170 in 135 off `0902c10`, and the merge
     that landed it measured **1188 in 136** off `5b12add`, both from five samples. No ordinal,
     deliberately, and no attribution of the difference: see the two bullets below.
+    - **Landing #139 the line was exactly right, and the whole delta was the branch's own.** It
+      read 1328 in 149 off `dc5c2ce`; the branch measured **1339 in 149** off the same commit, and
+      11 is precisely the number of tests #139 adds. Suites did not move at all. That is the second
+      time this entry records *no* drift (the first was #174), and the two agree on the cause: the
+      gap between the previous author's measurement and this one was hours, not features. The
+      instruction is unchanged — take your own baseline — but it is worth knowing that the line is
+      cheap to keep true and only goes stale when a branch sits open across other landings.
     - **Landing #177 the branch's own number was stale before anyone read it** — it wrote 1244 in 141
       off `0902c10`, and the merged tree measured **1281 in 144** off `206c029`, five of five samples.
       The branch gained no commit between the two runs, so the whole 37 is `main` moving underneath
