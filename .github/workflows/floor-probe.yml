@@ -18,6 +18,16 @@
 #      rotted.
 #   2. It runs against current `main`. The earlier probe branch is ~4 000 lines behind, so its
 #      count described a tree that no longer exists.
+#
+# And one thing THIS revision adds, because run 31167517846 closed the lower half of the bracket and
+# left the upper half asserted rather than measured. That run establishes that 6.1.2 is RED. Nothing
+# had ever established what is GREEN: `macos-26` is called "Swift 6.3" in a comment on #102's
+# `ci.yml`, and this plan's global constraint is that no conclusion may rest on reading a comment.
+# So the `green-floor` job below builds under **every** Xcode the image carries, not just the
+# selected one — which is also the only way to answer the spec's open edge case, "6.2 is untested,
+# do not write it down as supported or unsupported without building it". A floor raised to the
+# lowest toolchain measured green is minimal; one raised to the toolchain that happens to be
+# default is merely sufficient.
 name: floor-probe
 
 on:
@@ -85,4 +95,75 @@ jobs:
             show "grep -E '^[^ ].*: error: ' '$log' | grep -oE '^/[^:]+\.swift' | sort -u"
             echo "=== modules the compiler reached ==="
             show "grep -oE 'Compiling [A-Za-z]+' '$log' | sort -u"
+          done
+
+  # Which toolchain is the LOWEST that builds this package green — measured, not inferred from an
+  # image label. Every Xcode on the image is tried, oldest first, so if the image carries a 6.2 the
+  # answer is 6.2 and not "whatever was selected".
+  green-floor:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The inventory is a result in its own right, and is printed before anything is built: it is
+      # what says whether a 6.2 measurement was even available to take. An absent toolchain has to
+      # read as "could not be measured here", never as "does not work".
+      - name: What toolchains does this image actually carry
+        run: |
+          sw_vers
+          echo "selected DEVELOPER_DIR: $(xcode-select -p)"
+          echo "selected swift:"; swift --version
+          for x in /Applications/Xcode*.app; do
+            [ -d "$x" ] || continue
+            echo "=== $x ==="
+            "$x/Contents/Developer/usr/bin/swift" --version 2>&1 | head -2
+            "$x/Contents/Developer/usr/bin/xcodebuild" -showsdks 2>&1 | grep -i macos || echo "  (no macOS SDK listed)"
+          done
+
+      - name: Build under every Xcode on the image
+        continue-on-error: true
+        working-directory: ElliotKit
+        run: |
+          # `set +e` deliberately, against the `bash -e` GitHub runs steps under. Without it the
+          # loop aborts on the first toolchain that fails to build — which is the one case this job
+          # exists to look past, and it would report "no 6.2 measurement" as if none were available.
+          set +e
+          set -o pipefail
+          # A per-Xcode build directory. Sharing one `.build` across toolchains is the CI form of
+          # the stale-`.build` trap CLAUDE.md documents: the second compiler reads the first one's
+          # modules and fails in ways that have nothing to do with its own version.
+          for x in /Applications/Xcode*.app; do
+            [ -d "$x" ] || continue
+            tag=$(basename "$x" .app)
+            export DEVELOPER_DIR="$x/Contents/Developer"
+            ver=$("$DEVELOPER_DIR/usr/bin/swift" --version 2>&1 | head -1)
+            echo "######## $tag — $ver ########"
+            swift build --scratch-path "/tmp/build-$tag" 2>&1 | tee "/tmp/$tag-build.log"
+            echo "---- $tag swift build exit: $? ----"
+            swift build --build-tests --scratch-path "/tmp/build-$tag" 2>&1 | tee "/tmp/$tag-build-tests.log"
+            echo "---- $tag swift build --build-tests exit: $? ----"
+          done
+          exit 0
+
+      # Green is not "the step went green": `continue-on-error` above means the step always does.
+      # The verdict has to be re-derived from the logs, per toolchain, the same way the 6.1 job
+      # derives its count — one rule, applied twice.
+      - name: Verdict per toolchain
+        if: always()
+        run: |
+          set +e
+          shopt -s nullglob
+          logs=(/tmp/Xcode*-build.log /tmp/Xcode*-build-tests.log)
+          # An empty measurement must say so out loud — the same rule the 6.1 job's `show` helper
+          # exists for. Zero logs and "every log was green" print identically otherwise.
+          if [ ${#logs[@]} -eq 0 ]; then echo "(no build log at all — the build step never ran)"; exit 0; fi
+          for log in "${logs[@]}"; do
+            n=$(grep -cE '^[^ ].*: error: ' "$log")
+            echo "############ $(basename "$log") — $n distinct-ish error lines ############"
+            if [ "$n" -eq 0 ]; then
+              echo "GREEN"
+            else
+              grep -E '^[^ ].*: error: ' "$log" | sort -u
+            fi
           done
