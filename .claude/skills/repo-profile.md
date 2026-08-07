@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1328 tests in 149 suites**, 5 of 5 samples on
-  `fix/147-proposal-editor-card-draft` on 2026-08-07 off `main` at `dc5c2ce`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1332 tests in 150 suites**, 5 of 5 samples on
+  `feat/49-reorder-glue-tests` on 2026-08-07 off `main` at `2494882`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -88,6 +88,12 @@
       Nothing about the branch changed between the two runs. That is this entry's thesis with the
       interval stretched far enough to be unmistakable: the number measures **when you looked**,
       not what you wrote.
+    - **Landing #49's Task 3 the delta was entirely the branch's own, and it was checkable only
+      because the previous stamp named its commit.** 1328/149 → 1332/150 is exactly the four tests
+      and one suite this branch adds, and `dc5c2ce` is the commit that landed as `2494882` — so the
+      arithmetic closes without anyone re-running `main`. That is the argument for the commit being
+      in this line at all: it is what lets the next author tell "my tests" from "six squashes landed
+      while I was reading", which every bullet above is about. The rare case, recorded as rare.
     - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
       to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
       authors each measured honestly, each counted from the last number they could see, and the
