@@ -190,6 +190,19 @@ would move a card without firing its rule. `OfflineResponder` holds the same lin
 write cases return `read_only`, spelled out one line each rather than swept into a `default`, because
 a `default` is exactly what would silently answer a *read* case nobody had implemented.
 
+**A diagnostic that can be fixed carries the fix, and the fix's kind decides who runs it.** Since #170
+a `CheckResult` may carry `fixes: [CheckFix]`, the way a `RepoRow` has carried `RepoFix` since #12 —
+before that, Preflight could only *describe* a remedy in `fixHint` prose while the Repositories page
+could perform one, which was two screens answering the same question and only one of them working.
+
+⛔ **The choice of mechanism is not stylistic.** `createLabels` is deterministic — `gh label create`,
+one right answer, nothing committed — so it runs `gh` directly and **no agent**: an unattended
+`claude -p`, which Elliot launches at `bypassPermissions` inside a real checkout, is a slower and
+far wider-reaching way to run a `for` loop. `seedCard` is for work that *is* a judgement and edits a
+committed file, so it goes on the board and through a pull request. Reaching the agent through a card
+rather than through a button is what keeps *moving a card is the act of execution* true: a second
+place that starts an unattended agent, outside the board, would quietly make that claim false.
+
 **Rules belong in `ElliotModel`.** Views render and dispatch; they do not judge. This is still the
 rule, but since #72 it is a preference with a reason rather than a workaround: `AppModel` and the
 views live in `ElliotAppKit`, a library, so `ElliotAppKitTests` can reach them. Put a rule in

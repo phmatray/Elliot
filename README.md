@@ -18,6 +18,14 @@ remote state — it is the remote control.
 MCP server, so an agent can create and move cards, and thereby start the same
 runs. Both paths — mouse and tool call — go through *the same rule engine*.
 
+**Preflight findings you can act on**: a check can now carry a fix, not just a
+sentence describing one. The first is labels — `create-issue` silently drops a
+label a repository does not have and files the issue anyway, so Preflight names
+the missing ones and offers to create them. Creating a *declared* label is
+deterministic, so that button runs `gh`, not an agent. Deciding a repository's
+own taxonomy is not, and edits a committed file, so that button adds a **card**
+— the work goes through the board, which is where Elliot starts agents.
+
 **And an agent can look at the result**: `board_screenshot` photographs one of
 Elliot's own windows and hands back the image, so a change that moved something
 on screen can be checked rather than assumed. Elliot draws its own hierarchy, so
