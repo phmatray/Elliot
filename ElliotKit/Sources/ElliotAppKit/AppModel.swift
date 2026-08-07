@@ -215,6 +215,53 @@ public final class AppModel {
     /// had to enumerate it. They had already drifted — see ``AnalysisSession``.
     public private(set) var analysis: AnalysisSession?
 
+    /// Why the last Start did not start anything, or `nil`.
+    ///
+    /// ⚠️ **This is not ``AnalysisSession/note``, and merging the two reopens
+    /// #138.** They are two messages with two owners and two lifetimes: a note
+    /// belongs to an analysis that exists, and this belongs to a start that
+    /// never produced one. #134 put the note *inside* the session precisely so
+    /// that closing an analysis takes its sentence with it — and that is what
+    /// leaves a failed start with nowhere to land, because in setup
+    /// ``analysis`` is `nil` and `analysis?.note = …` is a no-op that compiles.
+    /// Hoisting `note` back out here would fix this case by restoring the one
+    /// #134 removed, where a sentence from a failed start rendered under the
+    /// *next* analysis you opened. Two optionals say the two lifetimes; one
+    /// does not.
+    ///
+    /// Cleared at exactly two points — the top of ``startAnalysis(repoID:angles:instructions:maxStories:)``
+    /// and ``openAnalysis(id:)`` — and set at exactly one. ``closeAnalysis()``
+    /// deliberately leaves it alone: returning to setup after an analysis that
+    /// ran is not a failure.
+    ///
+    /// ⚠️ **Scoped to the repository it was thrown for**, which is why it is
+    /// computed rather than plain storage. Stored flat, a failure against a
+    /// disabled repository A went on being rendered — in the refusal accent,
+    /// beside a *live* Start button — after the picker moved to a healthy
+    /// repository B. That is #134's defect on a second axis: a sentence shown
+    /// under a subject it does not belong to. The panel is about one repository
+    /// at a time, so the message is too.
+    ///
+    /// Switching away and back brings it back, deliberately. Nothing has been
+    /// attempted for that repository in between, so the sentence is exactly as
+    /// true as it was — no staler than the spec already accepts when the reader
+    /// stays put and toggles lenses.
+    public var startFailure: String? {
+        guard startFailureRepoID == selectedRepoID else { return nil }
+        return startFailureMessage
+    }
+
+    /// The failure's text and the repository it belongs to, which only ever move
+    /// together — hence ``clearStartFailure()`` rather than two assignments at
+    /// each of the two clearing points.
+    private var startFailureMessage: String?
+    private var startFailureRepoID: UUID?
+
+    private func clearStartFailure() {
+        startFailureMessage = nil
+        startFailureRepoID = nil
+    }
+
     /// Live tail per run, for the card's strip and the panel's log. Bounded —
     /// the file on disk is the complete record.
     ///
@@ -1702,6 +1749,12 @@ public final class AppModel {
     public func startAnalysis(
         repoID: UUID, angles: [AnalysisAngle], instructions: String, maxStories: Int
     ) async {
+        // Above the guard, deliberately: the reader has pressed Start, so
+        // whatever the last one said has stopped being the outcome of anything.
+        // Below it, the clear would be conditional on a member the reader
+        // cannot see, and a stale sentence would sit there reading as the
+        // verdict on the attempt they just made.
+        clearStartFailure()
         guard let analysisService else { return }
         do {
             let started = try await analysisService.start(
@@ -1711,18 +1764,24 @@ public final class AppModel {
             analysis = nil
             openAnalysis(id: started.analysis.id)
         } catch {
-            // Written into the session, which in setup is `nil` — so this is
-            // discarded, exactly as it was before, when the footer's first
-            // branch made a note unreachable while no analysis was open
-            // (`AnalysisPanelView.swift`, the `footer`). Logged so the failure stops
-            // vanishing outright; showing it needs a surface the setup footer
-            // does not have, and that is its own issue.
-            analysis?.note = error.localizedDescription
+            // Not `analysis?.note`: this is a *failed* start, so there is no
+            // session and that assignment was a no-op that compiled and read as
+            // if it did something. See ``startFailure`` for why the two are not
+            // one member, and why the repository travels with the message.
+            startFailureMessage = error.localizedDescription
+            startFailureRepoID = repoID
+            // Kept. A visible message and a logged one are not alternatives —
+            // the log is what a bug report can be reconstructed from.
             Self.log.error("Analysis failed to start: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     public func openAnalysis(id: UUID) {
+        // The failure belongs to a start that did not happen, not to the
+        // analysis about to be on screen — including the one picked from the
+        // header's *Earlier analyses* menu, which is the path that does not go
+        // through `startAnalysis` at all.
+        clearStartFailure()
         // One assignment. The outgoing session goes with it, and its
         // observation is cancelled by `ObservationHandle.deinit` rather than
         // by a line here that a sixth member could out-live.
@@ -1966,5 +2025,18 @@ public final class AppModel {
     /// `Scripts/fake-gh.sh` so no real `gh` is involved.
     func testOnlyAttachImporter(_ importer: GitHubImportService) {
         self.importer = importer
+    }
+
+    /// Puts an analysis service behind the model without `start()`.
+    ///
+    /// The rule under test in #138 is what `startAnalysis` does with a **thrown**
+    /// error, and only a real `AnalysisService` throws the errors it throws. It
+    /// takes an optional because *detaching* is the seam: with no service,
+    /// `startAnalysis` returns at its own guard without attempting anything, so
+    /// a cleared failure afterwards can only have come from the clear placed
+    /// above that guard — which is otherwise indistinguishable from a second
+    /// failure that happened not to occur.
+    func testOnlyAttachAnalysisService(_ service: AnalysisService?) {
+        analysisService = service
     }
 }

@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1360 tests in 154 suites**, 5 of 5 samples on
-  `fix/145-card-not-found-hint` on 2026-08-08 off `main` at `ffdf616`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1374 tests in 155 suites**, 5 of 5 samples on
+  `fix/138-start-failure-in-setup-footer` on 2026-08-08 off `main` at `941888c`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -49,6 +49,22 @@
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
     your own untouched run and compare against *that*, never against this line.
+  - ✅ **Second time it did not drift, landing #138 — and this one separates the two halves of the
+    line cleanly.** The branch's untouched baseline measured **1328 in 149**, the line's exact value,
+    off `main` at `2494882`; the line said `dc5c2ce`, which is `2494882`'s parent. So the *value* was
+    right and the *commit* was one behind — which is the whole of what the bullets below argue: the
+    number measures when you looked, and the stamp is the half worth maintaining. The branch itself
+    then adds 14 tests and one suite.
+    - **And then it was overtaken anyway, which is the same entry's other half arriving in the same
+      pull request.** Between the ready-flip and the merge, `main` took #211 and #217, so the branch's
+      honest 1342 in 150 met a `main` at 1360 in 154 and `git merge` had, once again, no way to
+      choose. The merged tree measures the value in the line above, five of five. Both halves are
+      therefore demonstrated by one branch: a baseline can be exactly right when taken **and** stale
+      by the time it lands, and neither fact is evidence against the other. #217's instruction was
+      followed literally — the line went in as `PLACEHOLDER` and `swift test` overwrote it — and the
+      arithmetic (1342 + #211/#217's own +32/+5 over the shared base) matched the run exactly, which
+      is worth recording only because it was checked **after** the run rather than used in place of
+      one.
   - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
     branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
     hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
