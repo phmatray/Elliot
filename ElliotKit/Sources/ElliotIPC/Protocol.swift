@@ -192,6 +192,15 @@ public enum ElliotErrorCode: String, Codable, Sendable {
     case proposalNotFound = "proposal_not_found"
     case unknownAngle = "unknown_angle"
     case analysisRefused = "analysis_refused"
+    /// No scene by that id exists. A typo, or a helper newer than the app.
+    case windowNotFound = "window_not_found"
+    /// The id is real and that window is simply not open right now.
+    ///
+    /// Its own code beside `windowNotFound` for the reason `cardAlreadyFiled`
+    /// has its own beside `readOnly`: the two demand different next actions —
+    /// fix the name, or open the window — and an agent that cannot tell them
+    /// apart will retry the one that can never succeed.
+    case windowNotOpen = "window_not_open"
 }
 
 public enum ElliotResponse: Codable, Sendable {
