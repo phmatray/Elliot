@@ -351,4 +351,47 @@ struct IPCTests {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         #expect(attributes[.posixPermissions] as? Int == 0o600)
     }
+
+    /// The limit is the platform's, so it is asserted as a range rather than as
+    /// 104: pinning the number would make this suite the thing that has to be
+    /// edited when Darwin changes it, and `MemoryLayout` already knows.
+    @Test("sun_path's size is read from the platform, not hard-coded")
+    func maxPathBytesIsThePlatformLimit() {
+        #expect(UnixSocket.maxPathBytes > 100)
+        #expect(UnixSocket.maxPathBytes < 110)
+    }
+
+    /// `<`, not `<=`. `strcpy` writes a terminating NUL, so a path of exactly
+    /// `maxPathBytes` needs one byte the field does not have — and this is the
+    /// off-by-one that would let `pathFits` say yes to a path `bind` then
+    /// refuses, which is the whole reason the two share one expression.
+    @Test("A path fits by its bytes, one short of the field")
+    func pathFitsMeasuresBytesAndLeavesRoomForTheTerminator() {
+        #expect(UnixSocket.pathFits("/tmp/elliot.sock"))
+
+        let exact = String(repeating: "a", count: UnixSocket.maxPathBytes)
+        #expect(exact.utf8.count == UnixSocket.maxPathBytes)
+        #expect(!UnixSocket.pathFits(exact))
+        #expect(UnixSocket.pathFits(String(exact.dropLast())))
+
+        // Bytes, not characters: `é` is two bytes in UTF-8, so a path of
+        // `maxPathBytes` of them is half the *characters* and twice the limit.
+        // Counting `.count` here would call it comfortably short.
+        let accented = String(repeating: "é", count: UnixSocket.maxPathBytes / 2)
+        #expect(accented.count < UnixSocket.maxPathBytes)
+        #expect(!UnixSocket.pathFits(accented))
+    }
+
+    /// The guard and the check are one expression, so a caller that asks
+    /// `pathFits` first can never be told yes by a path `makeAddress` rejects.
+    @Test("What pathFits refuses is exactly what binding refuses")
+    func bindAgreesWithPathFits() {
+        let tooLong = "/tmp/" + String(repeating: "x", count: UnixSocket.maxPathBytes)
+        #expect(!UnixSocket.pathFits(tooLong))
+        #expect(throws: SocketError.self) { try UnixSocket.makeAddress(path: tooLong) }
+
+        let fits = temporarySocketPath()
+        #expect(UnixSocket.pathFits(fits))
+        #expect(throws: Never.self) { try UnixSocket.makeAddress(path: fits) }
+    }
 }

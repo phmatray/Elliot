@@ -79,6 +79,19 @@ struct OfflineResponder: Sendable {
                 return Self.readOnly("Accepting a proposal")
             case .rejectProposals:
                 return Self.readOnly("Rejecting a proposal")
+            case .screenshot:
+                // `app_unavailable`, not `read_only`. Nothing is being written;
+                // there is simply no window. Saying "read only" would send an
+                // agent looking for a permission problem that does not exist,
+                // and `read_only` is the code that means "come back when Elliot
+                // is up *and* stop trying to write" — only half of which is true
+                // here.
+                return .failure(
+                    code: .appUnavailable,
+                    message: "Elliot is not running; a snapshot of its database has no window to "
+                        + "photograph.",
+                    hint: "Open Elliot.app."
+                )
             }
         } catch {
             return .failure(code: .internalError, message: error.localizedDescription, hint: nil)
@@ -251,6 +264,35 @@ struct OfflineResponder: Sendable {
     private func dto(for card: Card) async throws -> CardDTO {
         let repoName = try await store.repo(id: card.repoID)?.nameWithOwner ?? "?"
         let activeRunID = try await store.activeRun(cardID: card.id)?.id
-        return CardDTO(card: card, repoName: repoName, activeRunID: activeRunID)
+        return CardDTO(
+            card: card, repoName: repoName, activeRunID: activeRunID,
+            prStatus: try await prStatusDTO(for: card))
+    }
+
+    /// The snapshot's half of the reading — see `MCPRequestHandler.prStatusDTO`,
+    /// which this must match word for word, and which `OfflineParityTests`
+    /// proves it does.
+    ///
+    /// Note this half is the *more* honest of the two by circumstance: the app
+    /// may have been closed for days when the helper is asked, and the age rule
+    /// is what stops the snapshot reporting a week-old green.
+    private func prStatusDTO(for card: Card) async throws -> PRStatusDTO? {
+        // In Review only, matching what `PRWatcher` bothers to read and what the
+        // app renders. Without it a card `merge-pr` has just moved to Done keeps
+        // serving its **pre-merge** reading as fresh for the whole `maximumAge`
+        // window — "a review is required", about a pull request already merged.
+        guard card.column == .inReview, let number = card.prNumber else { return nil }
+
+        // `try?`, and this is the one place it is right. `openReadOnly`
+        // deliberately accepts a database **older** than this helper, so the
+        // board is not blanked between upgrading the bundle and the next launch
+        // of the app. That tolerance was written for added *columns*, which read
+        // as absent; `v8_prStatus` adds a *table*, and querying a missing table
+        // throws. Letting it propagate would answer `app_unavailable` to every
+        // offline `board_get_card` in exactly the window `openReadOnly` exists
+        // to keep working. No reading is the honest answer there.
+        guard let status = try? await store.prStatus(repoID: card.repoID, prNumber: number)
+        else { return nil }
+        return PRStatusDTO(status, resolved: status.resolved(now: Date(), currentHeadOid: nil))
     }
 }

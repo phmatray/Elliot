@@ -18,6 +18,23 @@ remote state — it is the remote control.
 MCP server, so an agent can create and move cards, and thereby start the same
 runs. Both paths — mouse and tool call — go through *the same rule engine*.
 
+**Preflight findings you can act on**: a check can now carry a fix, not just a
+sentence describing one. The first is labels — `create-issue` silently drops a
+label a repository does not have and files the issue anyway, so Preflight names
+the missing ones and offers to create them. Creating a *declared* label is
+deterministic, so that button runs `gh`, not an agent. Deciding a repository's
+own taxonomy is not, and edits a committed file, so that button adds a **card**
+— the work goes through the board, which is where Elliot starts agents.
+
+**And an agent can look at the result**: `board_screenshot` photographs one of
+Elliot's own windows and hands back the image, so a change that moved something
+on screen can be checked rather than assumed. Elliot draws its own hierarchy, so
+it needs no Screen Recording grant and works while the window sits in the
+background — but a sheet, a popover and the toolbar's controls live in separate
+windows and do **not** appear. Whatever was left out is listed in
+`not_included`, because "it is not in the picture" must never read as "it did
+not open".
+
 ## The board
 
 | From → To | What happens |
@@ -39,15 +56,28 @@ than letting the two drift.
 
 ## Where stories come from
 
-The backlog holds user stories, and Elliot can write them. *Analyze…* reads a
+The backlog holds user stories, and Elliot can write them. *Analyse* reads a
 registered repository through eight lenses — bugs, quick wins, features, tech
 debt, tests, docs & DX, UX & UI, best practices — one `claude -p` run each, and
 comes back with proposed stories you go through and accept.
 
-Proposals are **not cards**. They live in their own table and their own window,
-so a 30-story analysis does not drown the board and the five columns keep one
-meaning. Accepting calls the same `BoardService.createCard` the New Card sheet
-uses, and the card lands in Backlog, where nothing runs.
+It is a **panel on the board**, the slot before Backlog: two or three columns
+wide, hideable from the toolbar or View ▸ Show Analysis, resized by dragging its
+outer edge — the same shape the detail panel has. It sits there because that is
+where its output lands, in the column immediately to its right.
+
+Proposals are **not cards**. They live in their own table, so a 30-story
+analysis does not drown the board and the five columns keep one meaning.
+Accepting calls the same `BoardService.createCard` the New Card window uses, and
+the card lands in Backlog, where nothing runs.
+
+Hiding the panel is not ending the analysis: runs in flight keep going, proposals
+keep arriving, and the lenses you ticked, the instructions you typed and the
+proposals you staged are all still there when you show it again. *Finish*, in its
+footer, is the act that ends a session.
+
+Starting is refused for a repository Preflight is failing, one that is switched
+off, or none at all — and the panel says which, where the disabled button is.
 
 The same four steps are available over MCP: `board_analyze_repo`,
 `board_list_proposals`, `board_accept_proposals`, `board_reject_proposals`.

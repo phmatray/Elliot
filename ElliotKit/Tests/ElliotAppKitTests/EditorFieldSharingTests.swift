@@ -175,13 +175,20 @@ struct EditorFieldSharingTests {
 
     /// A scan that finds nothing because it is looking in the wrong place is a
     /// guard that passes for ever. This is the control: the directory resolves,
-    /// it holds the views, and `AnalysisWindow.swift` — the file that carried
+    /// it holds the views, and `AnalysisPanelView.swift` — the file that carried
     /// the second copy — is among the files actually read.
+    ///
+    /// It was `AnalysisWindow.swift` when this suite was written, and #151
+    /// renamed it while this branch sat open. The control caught its own
+    /// rename, which is the whole reason to name a file here rather than
+    /// trust `files.count`: had this only counted, the suite would have stayed
+    /// green while pointing at a directory that no longer held the file the
+    /// other three tests exist to watch.
     @Test("The scan is reading the real sources")
     func theScanReadsSomething() {
         let files = Self.sources
         #expect(files.count > 10, "found only \(files.count) source files")
-        #expect(files.contains { $0.name == "AnalysisWindow.swift" })
+        #expect(files.contains { $0.name == "AnalysisPanelView.swift" })
         #expect(files.contains { $0.name == "CardFieldsEditor.swift" })
     }
 }

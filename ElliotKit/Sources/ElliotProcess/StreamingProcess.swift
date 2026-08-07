@@ -13,21 +13,41 @@ import Foundation
 /// already does it. Claude Code's own handling of the signal — aborting the
 /// turn, running its SessionEnd hooks, exiting 143 — happens in its own
 /// process, not as a prerequisite for its ordinary Bash children's exit.
+///
+/// `ChildProcess` owns the spawn, the drain and the exit. What remains here is
+/// this spawner's own idea — that stdout is a sequence of lines.
 public final class StreamingProcess: Sendable {
-    private let process: Process
-    private let state = Locked(State())
+    private let child: ChildProcess<LineSink>
 
-    private struct State: @unchecked Sendable {
+    /// Turns chunks into lines. Called under `ChildProcess`'s lock, which is
+    /// what stops a handler caught mid-flight by the child's exit yielding into
+    /// a stream the final drain has already finished — the failure that arrives
+    /// as an entire run being empty.
+    ///
+    /// That lock is therefore held across `mirror`, a synchronous write to the
+    /// run's log file. It is the reason `ChildProcess` never consults it from
+    /// the SIGKILL backstop.
+    private struct LineSink: ChildOutputSink {
         var buffer = LineBuffer()
         var stderr = Data()
-        var finished = false
-        /// Set once the final drain has run. Past this point the descriptors are
-        /// spent and the line stream is closed, so nothing may read or yield.
-        var drained = false
-        var exit: Exit?
-        /// Whoever is waiting for the exit, parked under the same lock that
-        /// publishes it.
-        var waiter: CheckedContinuation<Exit, Never>?
+        let mirror: (@Sendable (Data) -> Void)?
+        let continuation: AsyncStream<Data>.Continuation
+
+        mutating func receiveStdout(_ chunk: Data) {
+            // The durable sink gets the raw bytes before anything is parsed,
+            // so a decoding bug can never lose an event.
+            mirror?(chunk)
+            for line in buffer.append(chunk) { continuation.yield(line) }
+        }
+
+        mutating func receiveStderr(_ chunk: Data) { stderr.append(chunk) }
+
+        mutating func finish() {
+            // A process that ended without a trailing newline still has one
+            // last event waiting in the buffer.
+            if let tail = buffer.flush(), !tail.isEmpty { continuation.yield(tail) }
+            continuation.finish()
+        }
     }
 
     public struct Exit: Sendable {
@@ -42,8 +62,6 @@ public final class StreamingProcess: Sendable {
     /// finishes when the process exits and the last partial line is flushed.
     public let lines: AsyncStream<Data>
 
-    private let terminationRequested = Locked(false)
-
     public init(
         executable: String,
         arguments: [String],
@@ -51,130 +69,31 @@ public final class StreamingProcess: Sendable {
         environment: [String: String],
         stdoutMirror: (@Sendable (Data) -> Void)? = nil
     ) throws {
-        guard FileManager.default.isExecutableFile(atPath: executable) else {
-            throw ProcessError.notExecutable(executable)
-        }
-
-        process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.environment = environment
-        process.currentDirectoryURL = URL(fileURLWithPath: cwd)
-        process.standardInput = FileHandle.nullDevice
-
-        let outPipe = Pipe(), errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-
-        let state = self.state
         var continuation: AsyncStream<Data>.Continuation!
         lines = AsyncStream(bufferingPolicy: .unbounded) { continuation = $0 }
-        let lineContinuation = continuation!
 
-        // Reading the descriptor, buffering it and yielding it all happen under
-        // one lock, here and in the final drain below. Clearing a
-        // `readabilityHandler` does not wait for one that is already running, so
-        // the lock is the only thing that orders the two: without it a handler
-        // caught mid-flight by the child's exit yields its lines *after* the
-        // drain has finished the stream, and an entire run arrives empty.
-        outPipe.fileHandleForReading.readabilityHandler = { handle in
-            let spent = state.withLock { current -> Bool in
-                guard !current.drained else { return true }
-                let chunk = handle.availableData
-                guard !chunk.isEmpty else { return true }
-                // The durable sink gets the raw bytes before anything is parsed,
-                // so a decoding bug can never lose an event.
-                stdoutMirror?(chunk)
-                for line in current.buffer.append(chunk) { lineContinuation.yield(line) }
-                return false
-            }
-            // Empty means end of file, and the source goes on firing at end of
-            // file — half a million times a second, each one now taking the
-            // lock. Detach as soon as the descriptor has nothing left to give.
-            if spent { handle.readabilityHandler = nil }
-        }
-
-        errPipe.fileHandleForReading.readabilityHandler = { handle in
-            let spent = state.withLock { current -> Bool in
-                guard !current.drained else { return true }
-                let chunk = handle.availableData
-                guard !chunk.isEmpty else { return true }
-                current.stderr.append(chunk)
-                return false
-            }
-            if spent { handle.readabilityHandler = nil }
-        }
-
-        let terminationRequested = self.terminationRequested
-        process.terminationHandler = { process in
-            // Detaching stops a new invocation being scheduled; it does not wait
-            // for one already running. Closing the door under the lock does: a
-            // handler holds it across its whole read-append-yield, so once this
-            // returns none is in flight and no later one will read a byte. The
-            // descriptors are this handler's alone from here.
-            outPipe.fileHandleForReading.readabilityHandler = nil
-            errPipe.fileHandleForReading.readabilityHandler = nil
-            state.withLock { $0.drained = true }
-
-            // Drained with the lock released. `terminate()` already reaches the
-            // child's whole process group — measured directly, an ordinary
-            // descendant like fake-claude's looping `sleep` dies in the same
-            // instant as the shell — but a descendant that broke into its own
-            // session with `setsid()` would not, and would keep the write end
-            // open for as long as it lives. `waitForExit` takes this same lock
-            // on a cooperative thread, so blocking under it here would park one
-            // for exactly that long, on the rare process where it happens.
-            let rest = outPipe.fileHandleForReading.readDataToEndOfFile()
-            let restErr = errPipe.fileHandleForReading.readDataToEndOfFile()
-            if !rest.isEmpty { stdoutMirror?(rest) }
-
-            state.withLock { current in
-                for line in current.buffer.append(rest) { lineContinuation.yield(line) }
-                current.stderr.append(restErr)
-
-                // A process that ended without a trailing newline still has one
-                // last event waiting in the buffer.
-                if let tail = current.buffer.flush(), !tail.isEmpty {
-                    lineContinuation.yield(tail)
-                }
-                lineContinuation.finish()
-            }
-
-            let exit = Exit(
-                code: process.terminationStatus,
-                stderr: state.withLock { String(decoding: $0.stderr, as: UTF8.self) },
-                wasTerminated: terminationRequested.withLock { $0 }
-            )
-            // Publishing the exit and handing off any waiter happen under one
-            // lock, so a `waitForExit` arriving at this instant cannot miss it
-            // and hang forever.
-            let waiter = state.withLock { current -> CheckedContinuation<Exit, Never>? in
-                current.finished = true
-                current.exit = exit
-                defer { current.waiter = nil }
-                return current.waiter
-            }
-            waiter?.resume(returning: exit)
-        }
-
-        try process.run()
+        child = try ChildProcess(
+            executable: executable,
+            arguments: arguments,
+            cwd: cwd,
+            environment: environment,
+            sink: LineSink(mirror: stdoutMirror, continuation: continuation!)
+        )
     }
 
-    public var isRunning: Bool { process.isRunning }
-    public var processIdentifier: Int32 { process.processIdentifier }
+    public var isRunning: Bool { child.isRunning }
+    public var processIdentifier: Int32 { child.processIdentifier }
 
     /// Waits for the child to exit.
     public func waitForExit() async -> Exit {
-        await withCheckedContinuation { continuation in
-            // Checking and parking under one lock: the termination handler
-            // cannot slip between them and leave this waiting forever.
-            let alreadyExited = state.withLock { current -> Exit? in
-                if let exit = current.exit { return exit }
-                current.waiter = continuation
-                return nil
-            }
-            if let alreadyExited { continuation.resume(returning: alreadyExited) }
-        }
+        let termination = await child.wait()
+        // Read after the exit is published, so the stderr this reports is the
+        // whole of it — the final drain's bytes included.
+        return Exit(
+            code: termination.code,
+            stderr: child.withSink { String(decoding: $0.stderr, as: UTF8.self) },
+            wasTerminated: termination.wasTerminated
+        )
     }
 
     /// Asks the child to stop, escalating only if it ignores the request.
@@ -182,24 +101,6 @@ public final class StreamingProcess: Sendable {
     /// SIGTERM first because Claude Code shuts itself down cleanly on it;
     /// SIGKILL is the backstop for a process that is wedged.
     public func terminate(hardKillAfter grace: Duration = ProcessTermination.hardKillGrace) {
-        guard process.isRunning else { return }
-        terminationRequested.withLock { $0 = true }
-
-        let process = self.process
-        ProcessTermination.terminate(process, hardKillAfter: grace) {
-            // Deliberately `isRunning` alone, and deliberately not `state`:
-            // `ProcessRunner` consults its exit flag here and this one must not.
-            // That lock is held across `stdoutMirror`, which is a synchronous
-            // write to the run's log file, so reading it would let a slow — or
-            // wedged — disk delay the one signal that is supposed to be
-            // unconditional. A backstop that can block on the log it is trying
-            // to close out is not a backstop.
-            //
-            // Nothing is lost by it. The flag is set inside the termination
-            // handler, which only runs once Foundation has already reaped the
-            // child, so `isRunning` has gone false strictly earlier: the extra
-            // term could never have vetoed a kill this one allows.
-            process.isRunning
-        }
+        child.terminate(hardKillAfter: grace)
     }
 }

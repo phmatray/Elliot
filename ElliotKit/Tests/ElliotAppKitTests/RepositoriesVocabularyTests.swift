@@ -70,9 +70,109 @@ struct RepositoriesVocabularyTests {
     /// same addition visible *here*, where the word and symbol get checked.
     private static let everyIssue: [RepoIssue] = [
         .ok, .notCloned, .notRegistered, .missing, .misplaced(expected: "/R/x"),
-        .unlisted, .outOfScope(.fork), .outOfScope(.archived), .outOfScope(.otherRoot),
+        .unlisted, .notChecked, .outOfScope(.fork), .outOfScope(.archived),
+        .outOfScope(.otherRoot),
         .behind(by: 3), .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable("no HEAD"),
     ]
+
+    // MARK: - A listing that never arrived (#148)
+
+    /// `.unlisted` and `.notChecked` are the two halves of GitHub's silence, and
+    /// the page has to keep them apart with the word and the symbol alone: they
+    /// share `Palette.attention`, because a sixth accent is a design decision
+    /// rather than a merge (`BrandColorTests` pins five).
+    ///
+    /// The `.ok` half of the claim is the one that matters most — an unread
+    /// repository drawn as a green tick is the non-measurement-as-a-pass this
+    /// whole issue is about.
+    @Test("A repository nobody could check reads like neither ok nor unlisted")
+    func notCheckedIsItsOwnWord() {
+        #expect(RepositoriesView.verdict(.notChecked) == "not checked")
+        #expect(RepositoriesView.verdict(.notChecked) != RepositoriesView.verdict(.ok))
+        #expect(RepositoriesView.verdict(.notChecked) != RepositoriesView.verdict(.unlisted))
+        #expect(RepositoriesView.icon(.notChecked) != RepositoriesView.icon(.ok))
+        #expect(RepositoriesView.icon(.notChecked) != RepositoriesView.icon(.unlisted))
+    }
+
+    @MainActor
+    @Test("A repository nobody could check is not painted in the verified tint")
+    func notCheckedIsNotGreen() throws {
+        let appearance = try #require(NSAppearance(named: .aqua))
+        let verified = try #require(Self.srgb(Palette.verified, in: appearance))
+        let notChecked = try #require(Self.srgb(RepositoriesView.tint(.notChecked), in: appearance))
+        #expect(notChecked != verified)
+    }
+
+    // MARK: - The count sentence
+
+    /// Criterion 3. With one owner unreachable the tree is only partly known, so
+    /// *both* aggregate claims are claims about a whole nobody measured — the
+    /// count of what needs attention, and the "nothing needs attention" that
+    /// stands in for it. The sentence says what it counted and what it could not.
+    @Test("With a failed listing the sentence counts nothing and says so")
+    func countSentenceMakesNoClaimWhenAnOwnerFailed() {
+        let sentence = RepositoriesView.countSentence(
+            rows: [Self.row("phmatray/Koine", .notChecked), Self.row("phmatray/Ducky", .ok)],
+            failures: [Self.failure("phmatray")], isReconciling: false, root: "/R")
+        #expect(sentence.contains("2 repositories"))
+        #expect(sentence.contains("1 owner could not be listed"))
+        #expect(
+            !sentence.contains("need"),
+            "\(sentence) claims a measurement of a tree half of which was never read")
+        #expect(!sentence.contains("nothing needs attention"))
+    }
+
+    /// Criterion 4, and the direct analogue of `BoardPhase.of` refusing `.empty`
+    /// while `unreadableCount > 0`: "nothing is there" is a claim about the tree,
+    /// and the tree was never what failed.
+    @Test("With no rows and a failed listing the page does not say the tree is empty")
+    func countSentenceDoesNotCallAFailedListingAnEmptyTree() {
+        let sentence = RepositoriesView.countSentence(
+            rows: [], failures: [Self.failure("phmatray")], isReconciling: false, root: "/R")
+        #expect(!sentence.contains("Nothing found under"))
+        #expect(sentence.contains("1 owner could not be listed"))
+    }
+
+    @Test("Two failed owners are counted as two")
+    func countSentencePluralisesOwners() {
+        let sentence = RepositoriesView.countSentence(
+            rows: [], failures: [Self.failure("phmatray"), Self.failure("Atypical-Consulting")],
+            isReconciling: false, root: "/R")
+        #expect(sentence.contains("2 owners could not be listed"))
+    }
+
+    /// The control: with nothing failed the sentence is byte-for-byte what it was
+    /// before #148. The new rules are a refusal to speak under one condition, not
+    /// a rewrite of what the page says the rest of the time.
+    @Test("With no failures the sentence is exactly what it always was")
+    func countSentenceIsUnchangedWithoutFailures() {
+        #expect(
+            RepositoriesView.countSentence(
+                rows: [Self.row("phmatray/Koine", .ok)], failures: [],
+                isReconciling: false, root: "/R") == "1 repository · nothing needs attention")
+        #expect(
+            RepositoriesView.countSentence(
+                rows: [], failures: [], isReconciling: false, root: "/R")
+                == "Nothing found under /R.")
+        #expect(
+            RepositoriesView.countSentence(
+                rows: [], failures: [], isReconciling: true, root: "/R")
+                == "Reading GitHub, the disk and the board…")
+    }
+
+    // MARK: - The banner
+
+    /// Criterion 1: the owner *and* the error. The line is a static so the test
+    /// reads the same string the `Label` and its accessibility label render —
+    /// where the banner sits on screen is still not assertable, and Task 5 of the
+    /// plan is what looks at that.
+    @Test("The banner names the owner and the error it got")
+    func bannerNamesTheOwnerAndTheReason() {
+        let line = RepositoriesView.bannerLine(
+            OwnerListingFailure(owner: "phmatray", reason: "gh exited 1: HTTP 403 rate limited"))
+        #expect(line.contains("phmatray"))
+        #expect(line.contains("gh exited 1: HTTP 403 rate limited"))
+    }
 
     // MARK: - The summary sentence
 
@@ -112,6 +212,10 @@ struct RepositoriesVocabularyTests {
         _ nameWithOwner: String, _ issue: RepoIssue, fixes: [RepoFix] = []
     ) -> RepoRow {
         RepoRow(id: nameWithOwner, nameWithOwner: nameWithOwner, issue: issue, fixes: fixes)
+    }
+
+    private static func failure(_ owner: String) -> OwnerListingFailure {
+        OwnerListingFailure(owner: owner, reason: "gh exited 1: could not resolve host")
     }
 
     private static func srgb(_ color: Color, in appearance: NSAppearance) -> [CGFloat]? {

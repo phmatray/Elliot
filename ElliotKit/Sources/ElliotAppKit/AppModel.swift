@@ -22,6 +22,8 @@ public final class AppModel {
 
     public private(set) var repos: [Repo] = []
     public private(set) var cards: [Card] = []
+    /// The latest pull request reading per card, for cards in In Review.
+    public private(set) var prStatuses: [UUID: PRStatus] = [:]
     public private(set) var runsByCard: [UUID: [SkillRun]] = [:]
     public private(set) var globalChecks: [CheckResult] = []
     public private(set) var repoChecks: [UUID: [CheckResult]] = [:]
@@ -61,6 +63,15 @@ public final class AppModel {
     /// and the store, reconciled. The judgement is `RepoReconciler`'s — the page
     /// renders it and never decides anything itself.
     public private(set) var repoRows: [RepoRow] = []
+
+    /// The owners `gh repo list` never answered for, from the same pass that
+    /// produced `repoRows` (#148).
+    ///
+    /// Assigned beside the rows and nowhere else: the banner and the rows have
+    /// to describe one refresh. A failure surviving into a later pass would be a
+    /// second way of saying something nobody measured, which is the defect this
+    /// carries the answer to rather than a place to reintroduce it.
+    public private(set) var repoListingFailures: [OwnerListingFailure] = []
     public private(set) var layout: RepoTreeLayout = .portfolio
     public private(set) var isReconciling = false
 
@@ -100,11 +111,26 @@ public final class AppModel {
 
     /// Sheet and inspector state, here rather than in a view, because a menu
     /// command cannot reach a view's `@State`.
-    ///
-    /// Analysis is deliberately absent: it is a `Window` scene now, so its
-    /// presentation is `openWindow`'s business and there is no flag to keep in
-    /// step with it.
     public var showingInspector = true
+
+    /// Whether the analysis panel is showing, as the board row's leading slot.
+    ///
+    /// ⚠️ **This is not ``analysis``.** Hiding the panel must leave the session,
+    /// its runs and its live proposal observation exactly where they are:
+    /// ``closeAnalysis()`` drops the `AnalysisSession`, and
+    /// ``ObservationHandle`` cancels the observation from its `deinit` — so a
+    /// toggle that called it would silently stop proposals landing while eight
+    /// lenses were still reading. Only `Finish`, in the panel's footer, ends a
+    /// session.
+    ///
+    /// Hidden at launch, unlike ``showingInspector``: the detail panel costs
+    /// nothing with no card selected, whereas this one would claim three
+    /// columns of the board for a setup form nobody asked for.
+    ///
+    /// This comment used to say the analysis had no flag at all, because it was
+    /// a `Window` scene and its presentation was `openWindow`'s business. #151
+    /// made it a panel; the scene is gone.
+    public var showingAnalysisPanel = false
 
     /// How many board columns wide the detail panel is.
     ///
@@ -118,6 +144,38 @@ public final class AppModel {
     /// merge confirmation stays in the header at both, where no switch can hide
     /// it.
     public var panelSpans = 3
+
+    /// How many board columns wide the analysis panel is.
+    ///
+    /// The same kind of reader preference ``panelSpans`` is, and deliberately a
+    /// *separate* one: they are two panels a reader sets independently, and the
+    /// board is wide enough to want them at different widths. Sharing one
+    /// number would mean widening the analysis to read a proposal also widened
+    /// the card detail nobody was looking at.
+    ///
+    /// 3 for the same reason `panelSpans` is: the setup screen's lens grid is
+    /// two columns, and a proposal row carries a title, a narrative, a
+    /// rationale and an evidence strip.
+    public var analysisSpans = 3
+
+    /// What the analysis panel's setup form holds, and which proposals are
+    /// staged for a bulk accept or reject.
+    ///
+    /// ⚠️ **On the model, not in the view, because hiding the panel destroys the
+    /// view.** `showingAnalysisPanel = false` removes `.analysis` from
+    /// `PanelLayout.boardOrder`, which tears down `AnalysisPanelView` and every
+    /// `@State` in it. As `@State` these four made the hide lossy in a way the
+    /// README, `CLAUDE.md` and the ✕'s own tooltip all say it is not: tick six
+    /// lenses, type instructions, raise the limit, glance at Backlog, and come
+    /// back to two lenses and an empty field. `AnalysisSessionTests` proved only
+    /// that `analysis` survived — the half that already lived here.
+    ///
+    /// Same argument as ``logFilter`` below, one panel over.
+    public var analysisAngles: Set<AnalysisAngle> = [.bugs, .quickWins]
+    public var analysisInstructions = ""
+    public var analysisMaxStories = 8
+    /// The proposals staged for the footer's Accept / Reject.
+    public var analysisSelection: Set<UUID> = []
 
     /// Which rows of a run log the panel is showing.
     ///
@@ -402,7 +460,15 @@ public final class AppModel {
     private func startIPC(board: BoardService, store: BoardStore, analysis: AnalysisService) {
         do {
             let token = try IPCServer.loadOrCreateToken(at: StoreLocation.tokenURL)
-            let handler = MCPRequestHandler(store: store, board: board, analysis: analysis)
+            // The one place the app hands the engine a way to look at itself.
+            // `MCPRequestHandler` defaults this to `nil` and refuses a
+            // screenshot without it, so every headless construction — the tests,
+            // the parity harness — is honest about having no windows rather than
+            // reporting a picture of none.
+            let handler = MCPRequestHandler(
+                store: store, board: board, analysis: analysis,
+                capture: AppKitWindowCapture()
+            )
             let server = IPCServer(
                 socketPath: StoreLocation.socketURL.path,
                 token: token
@@ -519,6 +585,22 @@ public final class AppModel {
             }
         })
 
+        // Its own observation, because `PRWatcher` writes the reading without
+        // touching any card row: refreshing off the card observation alone would
+        // land the badge exactly never. Same reason `observePRStatuses` exists.
+        let statusObservation = store.observePRStatuses()
+        observationTasks.append(Task { [weak self] in
+            do {
+                for try await rows in statusObservation {
+                    await MainActor.run { self?.applyPRStatuses(rows) }
+                }
+            } catch {
+                // Deliberately quiet, unlike the card observation above: a lost
+                // status stream costs a badge, not the board, and a banner
+                // saying so would be louder than the fact it reports.
+            }
+        })
+
         let repoObservation = store.observeRepos()
         observationTasks.append(Task { [weak self] in
             do {
@@ -592,11 +674,30 @@ public final class AppModel {
         switch update {
         case .queueChanged(let queue):
             self.queue = queue
-        case .runStarted(let runID, _):
+        case .runStarted(let runID, let cardID):
             // Emptied rather than seeded with a line: the tail carries events
             // now, and "started" is not one. `RunningStrip` and `RunRow` both
             // already show the run's state from the run itself.
             liveLog[runID] = []
+            // The same refresh `.runFinished` does below, for the same reason:
+            // **nothing re-reads a run row on its own.** Both `.task(id:)`
+            // callers of `refreshRuns` — `CardView` and `DetailPanelView` — are
+            // keyed on the *card's* id, which a starting run does not change,
+            // so neither fires here. Without this the panel you opened to watch
+            // the run draws "Nothing has run yet" for the whole run and offers
+            // no Cancel, while the card beside it spins from `activeRuns`: the
+            // same split `markStalled` below refuses to leave, one update
+            // earlier.
+            //
+            // The read finds the row because `RunScheduler` saves it
+            // (`RunScheduler.swift:381`) before it yields this update (`:384`).
+            // That ordering is the whole reason a refresh is the right answer
+            // here and the wrong one for `.runStalled`, which is yielded
+            // *before* its write.
+            //
+            // `cardID` is nil for an analysis run, which belongs to a
+            // repository; `analysis?.runs` is refreshed by the `Task` below.
+            if let cardID { Task { await self.refreshRuns(cardID: cardID) } }
             Task {
                 await self.refreshActiveRuns()
                 await self.refreshAnalysisRuns()
@@ -709,6 +810,29 @@ public final class AppModel {
         cards
             .filter { $0.column == column && (selectedRepoID == nil || $0.repoID == selectedRepoID) }
             .sorted { $0.orderIndex < $1.orderIndex }
+    }
+
+    /// Done as a dated log rather than a pile.
+    ///
+    /// Built on `cards(in:)` so the repository picker is applied in exactly one
+    /// place — a second filter here is how the board and this column would come
+    /// to disagree about what "All repositories" means.
+    ///
+    /// The log re-sorts by `columnEnteredAt`, which makes Done the one column
+    /// whose on-screen order is not `orderIndex`. That is deliberate:
+    /// `orderIndex` records a position a human chose while the card was still
+    /// in play, and it says nothing once the card is finished. Noted here
+    /// because an asymmetry nobody wrote down reads as a bug to whoever finds
+    /// it next.
+    ///
+    /// `now` and `calendar` are parameters with ambient defaults: the view
+    /// wants the wall clock, and a test cannot have one.
+    public func doneLog(
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        horizonDays: Int? = ShippingLog.defaultHorizonDays
+    ) -> ShippingLog {
+        shippingLog(cards(in: .done), now: now, calendar: calendar, horizonDays: horizonDays)
     }
 
     public func repo(for card: Card) -> Repo? {
@@ -1109,6 +1233,57 @@ public final class AppModel {
             return
         }
         activeRuns = (try? await store.activeRuns(cardIDs: ids)) ?? [:]
+        await refreshPRStatuses()
+    }
+
+    /// The pull request readings `PRWatcher` has stored, keyed by card.
+    ///
+    /// Only for cards in In Review, matching what the watcher bothers to read:
+    /// asking for the others would return nothing and make the map look like a
+    /// board-wide answer it is not.
+    func refreshPRStatuses() async {
+        guard let store else { return }
+        var rows: [PRStatus] = []
+        for repoID in Set(cards.filter { $0.column == .inReview }.map(\.repoID)) {
+            rows += (try? await store.prStatuses(repoID: repoID)) ?? []
+        }
+        applyPRStatuses(rows)
+    }
+
+    /// Joins readings to cards on `(repoID, prNumber)`.
+    ///
+    /// Shared by the pull and the observation on purpose. The two arrive from
+    /// different directions — a card changed, or a reading landed — and each
+    /// used to need the whole answer; two copies of this join would drift on
+    /// which columns count, which is the one rule it holds.
+    func applyPRStatuses(_ rows: [PRStatus]) {
+        let byKey = Dictionary(
+            rows.map { (Key(repoID: $0.repoID, prNumber: $0.prNumber), $0) },
+            uniquingKeysWith: { first, _ in first })
+        var next: [UUID: PRStatus] = [:]
+        for card in cards where card.column == .inReview {
+            if let number = card.prNumber,
+               let row = byKey[Key(repoID: card.repoID, prNumber: number)] {
+                next[card.id] = row
+            }
+        }
+        prStatuses = next
+    }
+
+    private struct Key: Hashable {
+        var repoID: UUID
+        var prNumber: Int
+    }
+
+    /// What the card and the panel render. `nil` for a card nothing has read —
+    /// which is not the same as a card whose pull request is fine, so the views
+    /// draw nothing rather than an all-clear.
+    func prStatus(for card: Card) -> ResolvedPRStatus? {
+        // `currentHeadOid` is nil for the same reason as on the MCP side:
+        // establishing the head right now would be a network call in a view
+        // body, and `PRWatcher` already re-reads whenever the head moves. The
+        // age rule still governs.
+        prStatuses[card.id]?.resolved(now: Date(), currentHeadOid: nil)
     }
 
     // MARK: - Repos
@@ -1158,8 +1333,14 @@ public final class AppModel {
     /// this feature exists to disprove.
     private func reloadRepoRows() async {
         guard let registry else { return }
-        let reconciled = await registry.rows(layout: layout)
-        repoRows = await registry.probe(reconciled)
+        let page = await registry.rows(layout: layout)
+        let probed = await registry.probe(page.rows)
+        // One assignment site for both halves, and the rows assigned last: the
+        // page reads `repoRows` to decide whether to speak at all, so a banner
+        // that arrived a turn before the rows it belongs to would briefly
+        // describe the previous pass.
+        repoListingFailures = page.listingFailures
+        repoRows = probed
     }
 
     /// Fast-forwards every clone the probe found strictly behind, and keeps the
@@ -1342,6 +1523,11 @@ public final class AppModel {
 
     public func refreshRepoChecks(using service: PreflightService? = nil) async {
         guard let toolConfig else { return }
+        // Cleared on an explicit refresh, the way `reloadRepoRows` clears the
+        // Repositories page's. A sentence about a fix, still sitting under a row
+        // the user has just re-checked, describes a board state that may no
+        // longer hold.
+        lastCheckFix = nil
         let environment = LoginShellEnvironment(
             variables: toolConfig.environment, capturedVia: "session"
         )
@@ -1355,7 +1541,98 @@ public final class AppModel {
         PreflightService.isBlocking(repoChecks[repo.id] ?? [])
     }
 
+    /// What the last **Preflight** fix did, and **which fix it was**.
+    ///
+    /// The id is not decoration. `lastCheckFixOutcome` alone was read inside the
+    /// row loop, so one model-wide sentence appeared under *every* check of
+    /// *every* repository: press "Create 2 labels" on one repository and the
+    /// "Working tree" check of another announced "Created 2 labels", as if that
+    /// were about it. The doc comment claimed "shown beside the row that offered
+    /// it" while the code did nothing of the kind — and it survived a Check
+    /// again, unlike the Repositories page's outcome, which its refresh clears.
+    ///
+    /// Its own property beside `lastFixOutcome`, which belongs to the
+    /// Repositories page: two screens sharing one slot would each wipe the
+    /// other's sentence. They share the display *type* and not the storage.
+    public private(set) var lastCheckFix: (id: String, outcome: FixOutcome)?
+
+    /// The sentence to show under this check, if the last fix was one of its own.
+    public func fixOutcome(for result: CheckResult) -> FixOutcome? {
+        guard let last = lastCheckFix, result.fixes.contains(where: { $0.id == last.id })
+        else { return nil }
+        return last.outcome
+    }
+
+    /// Performs a `CheckFix` and **re-runs the checks** rather than editing the
+    /// row to look fixed.
+    ///
+    /// Re-running is the point. A row edited in place to say "pass" is a row
+    /// that lies when the fix half-worked — and `apply` reports partial success
+    /// precisely because half-working is the realistic outcome of creating four
+    /// labels over a network. Asking again is the only answer that cannot drift
+    /// from what GitHub actually has.
+    public func apply(_ fix: CheckFix) async {
+        guard let toolConfig, let board else {
+            lastCheckFix = (
+                fix.id,
+                FixOutcome(detail: "Elliot is still starting; try again in a moment.", succeeded: false)
+            )
+            return
+        }
+        // Resolved from the fix's own `repoID`, never from which row was
+        // pressed. A repository that is no longer registered is said out loud —
+        // a button that silently does nothing is the failure this screen is
+        // being taught to avoid.
+        guard let repo = repos.first(where: { $0.id == fix.repoID }) else {
+            lastCheckFix = (
+                fix.id,
+                FixOutcome(detail: "That repository is no longer registered.", succeeded: false)
+            )
+            return
+        }
+
+        let preflight = PreflightService(
+            environment: LoginShellEnvironment(
+                variables: toolConfig.environment, capturedVia: "session"
+            ),
+            config: toolConfig
+        )
+        let outcome = await preflight.apply(fix, repo: repo, board: board)
+        lastCheckFix = (fix.id, FixOutcome(detail: outcome.detail, succeeded: outcome.succeeded))
+        // A seeded card needs no reload here: the board observes the store, so
+        // it arrives the way every other card does. Only the checks have to be
+        // asked again — and only **this** repository's.
+        //
+        // `refreshRepoChecks` loops every registered repository at ~6
+        // subprocesses each, plus a networked `gh label list` per repo since
+        // #170. Pressing one button should not start a full-board sweep with no
+        // progress and no re-entrancy guard.
+        repoChecks[repo.id] = await preflight.repoChecks(repo)
+    }
+
     // MARK: - Analysis
+
+    /// Why an analysis cannot start right now, or `nil` when it can.
+    ///
+    /// One answer, read by both surfaces: the toolbar button's tooltip and the
+    /// panel's own footer. It used to be a `private var` on `BoardView` feeding
+    /// a `.disabled(…)` built from a *second* expression beside it, and #151
+    /// removed that `.disabled` — correctly, because a disabled toggle is a
+    /// toggle you cannot switch off, but the same expression was the **only**
+    /// preflight gate on the analysis path. `AnalysisService.start` checks
+    /// `isEnabled` and the in-flight dedupe and nothing else, so eight
+    /// unattended runs could have started in a checkout Preflight had already
+    /// refused. The gate belongs on the act, not on the panel's visibility.
+    public var analysisRefusal: String? {
+        guard let id = selectedRepoID, let repo = repos.first(where: { $0.id == id }) else {
+            return "Pick a single repository to analyse."
+        }
+        if !repo.isEnabled { return Consequence.reason(.repoDisabled) }
+        if isBlocked(repo) {
+            return "A Preflight check is failing for this repository — fix it there first."
+        }
+        return nil
+    }
 
     public func startAnalysis(
         repoID: UUID, angles: [AnalysisAngle], instructions: String, maxStories: Int
@@ -1372,7 +1649,7 @@ public final class AppModel {
             // Written into the session, which in setup is `nil` — so this is
             // discarded, exactly as it was before, when the footer's first
             // branch made a note unreachable while no analysis was open
-            // (`AnalysisWindow.swift:363`). Logged so the failure stops
+            // (`AnalysisPanelView.swift`, the `footer`). Logged so the failure stops
             // vanishing outright; showing it needs a surface the setup footer
             // does not have, and that is its own issue.
             analysis?.note = error.localizedDescription
@@ -1453,6 +1730,43 @@ public final class AppModel {
         return (try? await store.analyses(repoID: selectedRepoID, limit: 20)) ?? []
     }
 
+    /// One page of the finished history, and how many rows the same filter
+    /// matches overall.
+    ///
+    /// Both halves come back together because the archive cannot use one
+    /// without the other: the page is what it draws, the total is the only
+    /// thing that can say whether to offer another. Read in one call so they
+    /// answer the same filter — asking separately is how a "Load more" that
+    /// loads nothing gets built.
+    ///
+    /// Honours `selectedRepoID`, like every other read on this model. The
+    /// caller has to re-ask when that changes — this reads it, it does not
+    /// watch it.
+    ///
+    /// **`nil` means "could not look", and is not the same as an empty page.**
+    /// `store` is nil until `start()` has opened it, and macOS restores an open
+    /// `Window` scene at launch — so the archive's first read can genuinely
+    /// arrive before there is a database to read. Collapsing that into
+    /// `([], 0)` let the window state "Nothing has reached Done yet." on the
+    /// strength of a question it never got to ask, permanently, because nothing
+    /// re-ran the read. Same distinction the board draws everywhere else
+    /// between an answer and an absence of one.
+    public func archivePage(
+        search: String,
+        limit: Int,
+        offset: Int
+    ) async -> (cards: [Card], total: Int)? {
+        guard let store else { return nil }
+        let term = search.isEmpty ? nil : search
+        guard
+            let cards = try? await store.doneCards(
+                repoID: selectedRepoID, search: term, limit: limit, offset: offset
+            ),
+            let total = try? await store.doneCardCount(repoID: selectedRepoID, search: term)
+        else { return nil }
+        return (cards, total)
+    }
+
     public func updateProposal(_ proposal: StoryProposal) async {
         try? await analysisService?.updateProposal(proposal)
     }
@@ -1504,6 +1818,16 @@ public final class AppModel {
         self.cards = cards
         hasLoadedRepos = true
         selectedRepoID = nil
+    }
+
+    /// The same trick for one repository's preflight verdict.
+    ///
+    /// `repoChecks` is filled by a real preflight sweep, and the rule that needs
+    /// it — "an analysis must not start in a repository Preflight has refused" —
+    /// is exactly the one #151 broke by deleting the toolbar's `.disabled`. A
+    /// rule whose only failing case cannot be seeded is a rule with no test.
+    func testOnlySeedChecks(repo: UUID, _ checks: [CheckResult]) {
+        repoChecks[repo] = checks
     }
 
     /// The same trick for the four collections that hold runs.

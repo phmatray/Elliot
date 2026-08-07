@@ -34,6 +34,9 @@ extension Card: FetchableRecord, PersistableRecord {
         public static let issueNumber = GRDB.Column("issueNumber")
         public static let prNumber = GRDB.Column("prNumber")
         public static let idempotencyKey = GRDB.Column("idempotencyKey")
+        /// When the card entered the column it is in. For a finished card that
+        /// is when it landed, which is what the archive orders on.
+        public static let columnEnteredAt = GRDB.Column("columnEnteredAt")
     }
 }
 
@@ -107,6 +110,22 @@ struct DismissalRecord: Codable, FetchableRecord, PersistableRecord {
     var kind: String
     var number: Int
     var dismissedAt: Date
+}
+
+/// The UUID strategy carries the same weight as `DismissalRecord`'s: `repo.id`
+/// is uppercase text, so a `repoID` written as GRDB's default blob would match
+/// no repository and the `ON DELETE CASCADE` would silently never fire — leaving
+/// statuses for repositories that no longer exist.
+extension PRStatus: FetchableRecord, PersistableRecord {
+    public static let databaseTableName = "prStatus"
+    public static func databaseUUIDEncodingStrategy(for column: String) -> DatabaseUUIDEncodingStrategy {
+        .uppercaseString
+    }
+
+    public enum Columns {
+        public static let repoID = GRDB.Column("repoID")
+        public static let prNumber = GRDB.Column("prNumber")
+    }
 }
 
 /// `Column` means the board's five columns everywhere in Elliot. GRDB's SQL

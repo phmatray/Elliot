@@ -32,6 +32,7 @@ public struct ElliotMCPServer: Sendable {
         ListCardsTool(),
         GetCardTool(),
         ListReposTool(),
+        ScreenshotTool(),
         CreateCardTool(),
         UpdateCardTool(),
         MoveCardTool(),

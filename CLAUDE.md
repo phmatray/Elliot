@@ -29,10 +29,60 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
 - `swift test --filter` matches the **type** name, not the `@Suite` display name: `ClaudeRunnerTests`,
   not `"Claude runner"`. A filter matching nothing prints `warning: No matching test cases were run`
   and **exits 0** — indistinguishable from success.
-- Swift 6.1 tools-version, `swiftLanguageModes: [.v6]`, macOS 15+. Strict concurrency is on: every new
-  type crossing an isolation boundary must be `Sendable`.
-- **There is no CI.** No `.github/workflows/`, no branch protection. A pull request here is judged by a
-  local `swift test` only — "wait for green CI" is not a thing that can happen in this repo.
+- **Swift 6.3.1 tools-version** — Xcode 26.4 or newer, no lower option — `swiftLanguageModes: [.v6]`,
+  deployment target macOS 15. Strict concurrency is on: every new type crossing an isolation boundary
+  must be `Sendable`.
+  - This line said **6.1** until #116, and no machine had ever built the package on a 6.1 toolchain —
+    the first CI run this repository ever had failed on one
+    ([31118743562](https://github.com/phmatray/Elliot/actions/runs/31118743562)) in under two
+    minutes. The floor did not start wrong; it **rotted**, silently, because nothing exercised it.
+  - The replacement is measured — 21 builds over 8 Apple toolchains, runs
+    [31167517846](https://github.com/phmatray/Elliot/actions/runs/31167517846),
+    [31167931727](https://github.com/phmatray/Elliot/actions/runs/31167931727) and
+    [31170356694](https://github.com/phmatray/Elliot/actions/runs/31170356694) — and it found **two
+    floors, four releases apart**:
+
+    | | lowest toolchain measured green |
+    |---|---|
+    | `swift build` (library + executables) | **6.2** — Xcode 26.0 |
+    | `swift build --build-tests` / `swift test` | **6.3.1** — Xcode 26.4 |
+
+    6.1.2 fails two sites in `ElliotAppKit`; every 6.2.x fails one expression in
+    `ElliotProcessTests/StreamingProcessDrainTests.swift:138`, where the compiler gives up
+    type-checking a `#expect` in reasonable time. `Package.swift` declares **6.3.1**, the higher one,
+    and says at length why: `swift test` is this repo's only gate, so the failure a 6.2 contributor
+    would actually meet is the test one, and a tools-version refusal at manifest parse is the whole
+    point — a named refusal instead of a mystery. Read that comment before changing this.
+  - ⛔ **The patch is load-bearing: `6.3.1`, never `6.3`.** SwiftPM resolves a bare `6.3` as **6.3.0**
+    and *does* enforce a declared patch (verified: a `6.3.9` manifest is refused by a 6.3.3 toolchain,
+    by name). swift.org's `swift-6.3-RELEASE` reports exactly `6.3`, so rounding this down readmits a
+    toolchain that parses, builds, and then hits the `#expect` timeout — the mystery this floor exists
+    to prevent, restored by three characters. It shipped as `6.3` for one commit; code review caught it.
+  - ⚠️ **`swift build` being green is not the floor being green** — that is how the 6.1 claim survived.
+    The test targets are substantial and `swift build` never compiles them.
+  - Measured while establishing this: the `macos-15` runner image tops out at Xcode 26.3 (Swift
+    6.2.4), so **the test targets cannot be compiled on that image at all**. Whether macOS 15 can
+    *host* Xcode 26.4 is unmeasured — an image's contents are not Apple's requirements, and inferring
+    one from the other is the mistake #116 is about.
+- **CI here is two workflows, and they answer different questions.**
+  `.github/workflows/swift-floor.yml` (#116) asserts the runner's toolchain against the floor
+  `Package.swift` declares and builds on it; `.github/workflows/ci.yml` (#21) runs `swift build` then
+  `swift test`. ⚠️ **`swift build --build-tests` is not `swift test`** — the floor job compiles the
+  eight test targets and executes no `@Test`, so a green `swift-floor` is not a suite that passed.
+  **Branch protection is still off**, so both checks are advisory: `gh api
+  repos/phmatray/Elliot/branches/main/protection` returns 404 `Branch not protected`, and a red check
+  does not block a merge. "Wait for green CI" now returns a real verdict; it still does not stop
+  anything.
+  - ⚠️ **A conflicted pull request fires no `pull_request` workflow at all — and it fails by silence,
+    not by saying so.** Measured in #140: after `main` moved, GitHub created **zero** runs for the
+    head SHA for 25 minutes, `check-runs` returned `total_count: 0`, a close/reopen produced nothing,
+    and the Actions status page read *All Systems Operational*. The workflow file GitHub held at that
+    SHA was byte-identical to the local one and parsed. I diagnosed it as the trigger throttle that
+    had genuinely blocked this issue for 33 hours the day before — **and wrote that wrong diagnosis
+    into the PR body as a fact.** The actual cause was `mergeStateStatus: DIRTY`; merging `main`
+    produced a run within seconds. **Read `gh pr view --json mergeable,mergeStateStatus` before
+    concluding anything about a missing run** — an absent run and a throttled run are indistinguishable
+    from the outside, and only one of them is yours to fix.
 - Re-run `claude mcp add` after moving the app: the registration records an absolute path.
 
 ### ⛔ Do not run `swift format` over the tree
@@ -103,6 +153,32 @@ write path for `column`.
 transition matrix. `rankNextSteps` (what `board_next` answers) decides by *calling* `evaluateMove`, so
 the board predicts its own behaviour instead of holding a second copy of the rules.
 
+**One spawn.** `ChildProcess` (`ElliotProcess/ChildProcess.swift`) is the only thing that starts a
+child, drains its pipes and publishes its exit. `ProcessRunner` and `StreamingProcess` are wrappers
+over it that differ *only* in what they do with the bytes, expressed as a `ChildOutputSink` — and the
+sink's methods are called **while the drain lock is held**, because under the lock is the whole
+invariant. A sink handed a chunk to deal with later can append to a result already returned or yield
+into a stream already finished, which is the tail-dropping bug restored.
+
+This was the mechanism written twice until #146, and the copy was not incidental: **eight comment
+lines were byte-identical between the two files**, and they were the four load-bearing arguments
+themselves. When the *explanation* of an invariant has been copied word for word, the invariant has
+been copied too. It had already cost three defects, each fixed in one file — `22bb230` (dropped run
+tails), `3b1c226`/#18 (`waitUntilExit` parking a cooperative thread), `36b6da6`/#105 (SIGKILL
+escalation `ProcessRunner` never got) — and #26 opened a fourth investigation aimed at one file.
+`DrainDuplicationTests` keeps the measurement runnable: it re-derives that comment count and fails
+naming the invariant that is written twice, because **a gate that is not a test is a gate nobody
+re-runs**. Since #21 that argument is stronger rather than weaker — `ci.yml` executes `swift test` on
+every pull request, so a guard shaped as a test is now the *only* kind of guard this repository
+enforces off one laptop. (The wording here has been corrected twice: flatly "no CI" until #116 added
+`swift-floor.yml`, then "no build-and-test CI" until #21 added `ci.yml`. A stale claim in this file is
+what #116 was about, and the shape of it recurs.)
+
+The single behavioural delta is recorded at both ends: `ProcessRunner` gave up its
+`state.withLock { !$0.exited } &&` conjunct in the SIGKILL backstop, since a sink may hold that lock
+across a write to the run's log. It loses nothing — the flag was set inside the termination handler,
+which runs only once Foundation has reaped the child, so `isRunning` had gone false strictly earlier.
+
 **`ElliotMCPKit` imports neither `ElliotEngine` nor `ElliotProcess`** — deliberate, commented in
 `Package.swift`. The helper holds no copy of the rules, so it cannot diverge from them.
 
@@ -168,6 +244,19 @@ would move a card without firing its rule. `OfflineResponder` holds the same lin
 write cases return `read_only`, spelled out one line each rather than swept into a `default`, because
 a `default` is exactly what would silently answer a *read* case nobody had implemented.
 
+**A diagnostic that can be fixed carries the fix, and the fix's kind decides who runs it.** Since #170
+a `CheckResult` may carry `fixes: [CheckFix]`, the way a `RepoRow` has carried `RepoFix` since #12 —
+before that, Preflight could only *describe* a remedy in `fixHint` prose while the Repositories page
+could perform one, which was two screens answering the same question and only one of them working.
+
+⛔ **The choice of mechanism is not stylistic.** `createLabels` is deterministic — `gh label create`,
+one right answer, nothing committed — so it runs `gh` directly and **no agent**: an unattended
+`claude -p`, which Elliot launches at `bypassPermissions` inside a real checkout, is a slower and
+far wider-reaching way to run a `for` loop. `seedCard` is for work that *is* a judgement and edits a
+committed file, so it goes on the board and through a pull request. Reaching the agent through a card
+rather than through a button is what keeps *moving a card is the act of execution* true: a second
+place that starts an unattended agent, outside the board, would quietly make that claim false.
+
 **Rules belong in `ElliotModel`.** Views render and dispatch; they do not judge. This is still the
 rule, but since #72 it is a preference with a reason rather than a workaround: `AppModel` and the
 views live in `ElliotAppKit`, a library, so `ElliotAppKitTests` can reach them. Put a rule in
@@ -189,12 +278,52 @@ and then read the window's accessibility tree — the column captions, the toolb
 all carry labels, so "did the board survive" is a text diff rather than a squint. When in doubt,
 build the same check from `main` and compare.
 
+**Since #155 the *agent* can look too: `board_screenshot`.** Elliot renders its own window with
+`NSView.cacheDisplay` and hands back a PNG as an MCP image block, so no permission is involved and
+nothing has to be frontmost — measured, on a window with `isVisible == false` in an app that was not
+active, rendering at full designed size. That is the case this file records as misread nine times.
+The alternatives were both dead ends and are written down so nobody re-explores them:
+ScreenCaptureKit needs the Screen Recording grant this machine does not hold, and
+`CGWindowListCreateImage` is **obsoleted in the macOS 15 SDK** — a compile error on our own floor,
+not merely a deprecation.
+
+⚠️ **It draws Elliot's hierarchy, so three things are absent — and one of them will bite you.**
+Sheets and popovers live in their own windows, and **the toolbar's controls render blank**: measured
+against an independent whole-screen capture, the board's seven toolbar items came back as two empty
+white capsules, because SwiftUI hosts `.toolbar` in titlebar accessory views the frame-view render
+never reaches. The toolbar is a named conflict hot-spot in this repo, so that blind spot sits exactly
+where changes land. `not_included` names all of it in every reply — **read it before concluding that
+something failed to appear**, and use the accessibility tree above for anything in the toolbar.
+
+⚠️ **A long `ELLIOT_HOME` silently costs you the MCP socket.** `sun_path` is capped at 104 bytes on
+macOS, so a scratch home under a deep path makes `startIPC` fail; the app runs fine, and Preflight
+says so under *MCP socket*. Keep the check store short — `/tmp/elliot-check` is short on purpose.
+
+**Since #168 the helper names that instead of blaming the app.** It used to decide everything from
+`IPCClient.isAppRunning()` — *does something answer at this path* — so a socket that was never bound
+was indistinguishable from an app that was never launched, and the reply read as "Elliot is not
+running" while it was plainly on screen. `AppBridge` now measures the path against
+`UnixSocket.pathFits` **before** it asks whether the app is up, and both `read` and `write` consult
+that one guard. Measured on the fix's own branch, same machine, same home, within a minute of each
+other, with that Elliot's 1599×937 board captured on screen at the time:
+
+| | reply to `board_next` |
+|---|---|
+| the helper on `main` | `isError: false`, `source: offline-db`, *"Elliot is not running; this is a snapshot of its database."* |
+| the helper after #168 | `app_unavailable` — *"the path ELLIOT_HOME leads to is 112 bytes, and a unix socket path must be under 104"* |
+
+The old answer is the worse of the two and it is the one that looks fine: correct rows under a false
+explanation, `isError: false`, no reason to doubt it. That is why a read here **refuses** rather than
+falling back to the snapshot. ⚠️ It covers the **length** cause only — a socket directory that cannot
+be created or written still reads as an absent app.
+
 **A secondary window is verifiable too — it opens off-screen, it does not fail to open.** Every PR
 from #75 to #89 carried some version of *"opening a `Window` scene needs the app frontmost, which the
 automation driver refuses"*, and it was never true. A background `openWindow` does open the window; it
 just lands off-screen because the app is not frontmost. The trap is the enumeration, not the window:
 **list all of a pid's windows, never only the ones reporting `is_on_screen`.** Measured on a running
-build, six `Window` scenes declared in `ElliotApp.swift`, two of them open:
+build, when `ElliotApp.swift` declared six `Window` scenes (it declares five since #151 retired the
+Analysis one), two of them open:
 
 ```
 id=2737  on_screen=False  820x720 @ (454,215)  title='Preflight'
@@ -285,7 +414,50 @@ The backlog holds **user stories** (`role` / `want` / `benefit` + acceptance cri
 fields), not loose prose. A card is editable up to the moment it carries an issue number; after that
 `updateCard` refuses rather than letting card and issue drift.
 
-### The detail panel
+### The two panels
+
+The board's row is `PanelLayout.boardOrder(selected:analysisOpen:)`: five columns, plus up to two
+panels. `.analysis` is pinned **first**, before Backlog, because that is where what it produces
+lands; `.panel` sits beside the selected card's column. Both are measured in board columns by the
+same `PanelLayout.panelWidth`, both snap between two and three spans through the same
+`PanelLayout.snappedSpans`, and both are grabbed by the one `PanelResizeHandle` — a second copy of
+that strip would be a second copy of the four fixes written into it.
+
+`PanelLayout.slotWidth` exists because a two-way `slot == .panel ? panelWidth : columnWidth` ternary
+stays type-correct when a third slot kind appears and silently measures the new one as a column.
+
+**Hiding the analysis panel is not closing the analysis.** `showingAnalysisPanel` is view state;
+`closeAnalysis()` drops the `AnalysisSession`, and `ObservationHandle.deinit` cancels the live
+proposal observation with it — so a toggle that called it would stop proposals landing while eight
+lenses were still reading. Only *Finish* ends a session. The detail panel has no such distinction,
+which is why the analysis needed its own rule rather than a copy of `showingInspector`.
+
+⚠️ **Hiding also destroys the view, so nothing the reader has typed may be `@State` in it.** Hiding
+removes `.analysis` from `boardOrder`, which tears `AnalysisPanelView` down. The lens set, the extra
+instructions, the story limit and the staged proposal selection therefore live on `AppModel`
+(`analysisAngles`, `analysisInstructions`, `analysisMaxStories`, `analysisSelection`) — as `@State`
+they made the hide lossy in exactly the way this feature's own prose says it is not, and the test
+that "proved" the hide was safe only ever looked at `analysis`, the half that already lived on the
+model.
+
+⚠️ **An analysis must not start in a repository Preflight refused, and `AnalysisService` will not
+stop it.** `start` checks `isEnabled` and the in-flight dedupe and nothing else, so the gate lives in
+`AppModel.analysisRefusal` — one sentence read by both the toolbar tooltip and the panel's footer,
+and the value the Start button is disabled by. It used to be a `.disabled(…)` on the toolbar button;
+#151 removed that (a toggle you cannot switch off is worse than one that opens onto an explanation)
+and very nearly removed the gate with it.
+
+⛔ **The analysis panel carries no `.keyboardShortcut(.defaultAction)`.** It did as a `Window` scene,
+where Return was scoped to it. As a sibling in the board window it would share Return with
+`DetailPanelView`'s Save, with nothing in the code deciding between them — and the claimant here
+spawns up to eight unattended runs.
+
+Opening the analysis panel scrolls the board to its leading edge
+(`BoardFraming.offsetX(from:boardWidth:)`), because a panel the reader just asked for that lands
+off-screen reads as a panel that did not open — the same false negative that got written down nine
+times about the window scenes.
+
+#### The detail panel
 
 Selecting a card opens `DetailPanelView` **between the columns**, inserted immediately after the
 card's own column — or before it for the last column, which has no right — two or three column-widths
@@ -300,12 +472,95 @@ the exception and is measured, not computed — a card's Y inside a `LazyVStack`
 of layout — so it comes from `.anchorPreference(.bounds)` resolved in a single overlay, which puts
 card, list and panel in one coordinate space by construction.
 
+**Every writer of `CaretAnchorKey` must be a *sibling* of the others — #159.** `reduce` merges
+sibling subtrees and is the whole defence for the three-anchor design; it is **no defence one level
+up**, because `.anchorPreference` applied to a view that is an *ancestor* of another writer
+**replaces** that writer's value outright and `reduce` is never called for the pair. `ColumnView.list`
+was that ancestor: it wrote `list` on the `ScrollView` holding the cards, so the selected card's
+rectangle was discarded one level below the overlay. It reports through a `.background` now — a
+separate subtree, so the card's contribution is never in a position to be replaced.
+
+What that cost is the lesson worth keeping, and it is not "test the arithmetic": **the arithmetic
+was pure, extracted, and tested, and the decoration still never appeared.** With `card` nil,
+`isDetached` returns true on its first `guard`, so the tether drew at opacity 0 and the caret at 0.35
+against `panel.midY` — a *truthful* rendering of a false input. Nothing was wrong with any function
+`PanelLayoutTests` pins; they were being fed `nil`. The step between the three writers and the one
+reader had no test and no measurement, which is precisely the gap `PanelLayout`'s own extraction
+created and then hid: everything either side of it was green, so intuition had nothing to push
+against.
+
+`CaretAnchorTests` closes it, and its shape is the transferable part. Five tests drive a
+board-shaped hierarchy through a real layout pass (`ImageRenderer` — no window, no store, no running
+app) and assert the anchors arrive; a sixth **reads `BoardView.swift`** the way
+`DrainDuplicationTests` reads its sources. That last one is not belt-and-braces: reverting the fix
+leaves all five behavioural tests green, because they build a *miniature* and so prove the rule
+rather than the board. Verified by actually reverting it. **When a test builds its own model of the
+code, ask what it would say if the code changed underneath it** — and if the honest answer is
+"nothing", the shape needs pinning where the shape lives.
+
 Inside, the GitHub issue body is parsed by `IssueMarkdownParser` (`ElliotModel`, no dependencies,
 total — it never drops a line) into blocks that each get their own view, and a run's log is folded by
 `RunLog.rows` back into the tree it was flattened from: a `tool_result` attaches to its `tool_use`
 **by id, never by arrival order**. The verdict block is the app's central invariant made visible —
 what the agent *said* in demoted italic (`Type.hearsay`), what `gh` *established* in the fact face,
 never the same tier.
+
+##### Watching the caret's anchors arrive
+
+When the caret or the tether is wrong, the question is almost never the arithmetic — that is
+`PanelLayout`'s and it is pinned by `PanelLayoutTests`. It is which of the three anchors reached the
+overlay. Make that observable by writing the three flags from inside the `.overlayPreferenceValue`
+closure in `BoardView.board`:
+
+```swift
+.overlayPreferenceValue(CaretAnchorKey.self) { anchors in
+    let _ = {
+        let line = "card:\(anchors.card != nil) list:\(anchors.list != nil) panel:\(anchors.panel != nil)\n"
+        let url = URL(fileURLWithPath: "/tmp/caret-probe.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: url)
+        }
+    }()
+    CaretRail(anchors: anchors, flipped: isPanelFlipped)
+}
+```
+
+Inside the `ViewBuilder`, not in `.onAppear` — the latter fires once, and what you want is a reading
+per re-evaluation. **To a file, not to `Logger`**: `.debug` is not persisted at all, and on
+2026-08-07 nothing from `subsystem == "dev.phmatray.elliot"` reached `log show` at *any* level, so a
+diagnosis planned around that command silently produces no output rather than an error.
+
+Then drive it against a scratch store (see the seeding recipe above) and read the file after
+selecting a card in Backlog, in Done, and with the analysis panel open.
+
+**Prefer `board_screenshot` (#155) when it is pointed at the right app** — it renders a named window
+from Elliot's own hierarchy, so none of the aiming problems below arise. The catch is which Elliot
+answers: the MCP helper finds its socket through `ELLIOT_HOME`, so a helper registered against the
+default home talks to *your everyday board*, not the scratch instance you just launched. For a
+look-at-my-branch pass that is the wrong target, and it fails by returning a perfectly good
+screenshot of the wrong app. Either register a helper for the scratch home or capture by pid, below.
+
+⚠️ **Three Elliots are routinely running** — this worktree's, another worktree's, and the main
+checkout's. `screencapture -R <region>` captures a *screen region*, so it returns whichever window is
+frontmost there: it can hand you a different Elliot's board, showing "No repository yet", while your
+seeded one renders perfectly. **A region is not a window** — the "target by `unix id`, never by name"
+rule applies to screenshots too. Activate the pid first, then capture:
+
+```bash
+MINE=$(ps -eo pid,command | grep '<your-worktree>/dist/Elliot.app/Contents/MacOS/Elliot' | grep -v grep | awk '{print $1}')
+osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $MINE) to true"
+osascript -e "tell application \"System Events\" to tell (first process whose unix id is $MINE) to get {position, size} of window 1"
+/usr/sbin/screencapture -x -R <x>,<y>,<w>,<h> /tmp/board.png
+```
+
+The shell holds Accessibility even when the `cua-driver` daemon does not, so
+`osascript -e 'tell application "System Events" to click at {x, y}'` selects a card and
+`key code 53` is Escape. One more false negative to know: `entire contents` of the window can return
+**empty** while `count of UI elements` returns 6. An empty AX dump is not an empty window.
 
 ### Run lifecycle
 
@@ -425,6 +680,34 @@ Two invariants carry most of the weight:
   `ColumnView` now. Putting it on the row's background instead only moved the bug: that background
   also lies under the panel, so a click on the panel being read closed it. **An ancestor's tap fires
   for taps on its descendants, so any deselect above the panel is a deselect through it.**
+
+  ⛔ **It was reported dead a fourth time in #158 — one nesting level further in, the column's own
+  list swallowing what `ColumnView` never heard — and that report was an artefact of the tool.**
+  `osascript -e 'tell application "System Events" to click at {x, y}'` is **not a mouse click**: it
+  resolves the accessibility element at that point and *presses* it. So a view carrying
+  `.accessibilityAction` answers while its `.onTapGesture` never runs — which is why clicking a
+  **card** appeared to work, `CardView` having both — and a view carrying neither returns a
+  thoroughly plausible descriptor and does nothing. The descriptor #158 quotes as the culprit,
+  `scroll area 1 of scroll area 1 of group 1 of window Elliot`, is not a list eating a click; it is
+  the nearest AX element to a press no view had an action for. Re-driven with a real `CGEvent`
+  through `Scripts/realclick.swift`, the deselect cleared the selection in **every one of seven
+  runs** against unmodified `main` — short column, scrollable column (content 894pt against a 748pt
+  viewport, scroll bar and all), both panels open, both shut, the 6pt gap between two cards, the
+  padding strip beside them, and the last column where the panel flips left. Five of those seven
+  were instrumented, and all five named the `ColumnView` gesture; the other two ran against a
+  pristine bundle carrying no instrumentation at all and agreed. **`Scripts/probe-deselect.sh` is
+  that measurement, committed**, and it refuses a click that lands outside the window rather than
+  reporting it, because a column scrolled out of view still publishes an off-screen frame.
+
+  The general shape is the one this file already names four times, and this is the fifth: **a
+  mechanism that silently substitutes different behaviour instead of erroring.** A blank AX tree
+  that reads as an empty window; a `cua-driver` click reporting `unverifiable` rather than failing;
+  an absent screen-recording grant while the commands still return; `gh secret list` omitting
+  organisation secrets — and now an accessibility press wearing the name `click`. Not one of the five
+  says *no*. ⚠️ So before concluding that a **pointer** gesture is broken, check what your driver
+  actually posts: `.onTapGesture` is invisible to AX, and the two paths into this app genuinely
+  differ (that is the whole point of `CardView`'s `.accessibilityAction`, which exists because the
+  tap gesture is unreachable from assistive technology).
 - **`onChange` runs inside the update that changed the value, so it sees the layout as it was.**
   `BoardView.frame(...)` computed a scroll offset for the row that was *about to* include the panel
   and applied it to the row that still did not, where it clamped to zero — the board simply never

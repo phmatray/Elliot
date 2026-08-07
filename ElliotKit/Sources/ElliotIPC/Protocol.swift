@@ -27,7 +27,23 @@ import Foundation
 /// and report a repository nobody checked as unchecked-for-the-wrong-reason —
 /// a statement about the user's checkout, derived from the age of their app
 /// bundle. Absent has to keep meaning one thing, so the pairing is refused.
-public let elliotProtocolVersion = 4
+///
+/// **5** — the wire carries a picture of a window: `screenshot` and
+/// `ScreenshotDTO`. Purely additive to the app, and refused anyway in the one
+/// direction that matters. A 5 helper sending `.screenshot` to a 4 app sends a
+/// case that app has no branch for, and a request that cannot be decoded fails
+/// somewhere inside the socket rather than at the handshake — which is the
+/// difference between "your helper is older than your Elliot" and an agent
+/// concluding the board is broken. The other direction is harmless and is
+/// refused for the same reason every other pairing is: one number, one meaning.
+///
+/// **6** — `CardDTO` carries `prStatus`: what GitHub last said about the card's
+/// pull request. Additive, and both directions degrade quietly rather than
+/// dangerously — a 5 helper drops a field it has no property for, a 6 helper
+/// reads `nil` from a 5 app, and `nil` already means "no reading". So this bump
+/// is not protecting against a crash; it is keeping the rule that one number
+/// means one wire, which is what makes the handshake worth reading at all.
+public let elliotProtocolVersion = 6
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
@@ -104,6 +120,17 @@ public enum ElliotRequest: Codable, Sendable, Equatable {
     case listProposals(analysisID: UUID?, repo: String?, status: String?, limit: Int)
     case acceptProposals(ids: [UUID])
     case rejectProposals(ids: [UUID])
+    /// A picture of one of Elliot's own windows, so an agent can check a change
+    /// that moved something on screen.
+    ///
+    /// A read: it changes nothing, and it deliberately does **not** launch the
+    /// app. Photographing a board that was not running answers a question about
+    /// a live board with a picture of a fresh one.
+    ///
+    /// `window` is a scene id rather than a title, because titles are localised
+    /// and change with the selection; `maxInlineBytes` is a base64 budget, and
+    /// non-positive means "you decide".
+    case screenshot(window: String, maxInlineBytes: Int)
 
     /// The three parts of a user story, separately — so a skill generating
     /// stories from a repository can fill them in rather than hand over prose
@@ -172,6 +199,15 @@ public enum ElliotErrorCode: String, Codable, Sendable {
     case proposalNotFound = "proposal_not_found"
     case unknownAngle = "unknown_angle"
     case analysisRefused = "analysis_refused"
+    /// No scene by that id exists. A typo, or a helper newer than the app.
+    case windowNotFound = "window_not_found"
+    /// The id is real and that window is simply not open right now.
+    ///
+    /// Its own code beside `windowNotFound` for the reason `cardAlreadyFiled`
+    /// has its own beside `readOnly`: the two demand different next actions —
+    /// fix the name, or open the window — and an agent that cannot tell them
+    /// apart will retry the one that can never succeed.
+    case windowNotOpen = "window_not_open"
 }
 
 public enum ElliotResponse: Codable, Sendable {
@@ -192,6 +228,85 @@ public enum ElliotPayload: Codable, Sendable {
     case analysisStarted(AnalysisDTO)
     case proposals([ProposalDTO])
     case proposalsDecided(DecisionDTO)
+    case screenshot(ScreenshotDTO)
+}
+
+// MARK: - Screenshots
+
+/// One window, photographed, and an honest account of what the photograph does
+/// not contain.
+///
+/// The capture renders Elliot's own view hierarchy in-process, so it needs no
+/// Screen Recording grant and works while the window is off-screen and the app
+/// is in the background — measured, and the reason the tool exists at all. The
+/// price is that anything drawn in a *different* window (an attached sheet, a
+/// popover, a menu) and anything belonging to another app is simply absent.
+///
+/// `notIncluded` is therefore load-bearing rather than decorative. "The popover
+/// is not in the picture" and "the popover did not open" must not look alike;
+/// this repository has written the second down nine times while the first was
+/// true. Anything the capture knows it left out is named here, at capture time,
+/// because that is the only moment it is knowable.
+public struct ScreenshotDTO: Codable, Sendable, Hashable {
+    /// The scene id captured — `board`, `preflight`, … — not the window's title.
+    public var window: String
+    /// The window's actual title, which is what a human recognises.
+    public var title: String
+    /// Points, not pixels: `scale` says how many pixels each of these bought.
+    public var width: Int
+    public var height: Int
+    /// The backing scale actually rendered at. Reported rather than assumed to
+    /// be 2 — a second display can differ, and a picture whose dimensions nobody
+    /// can explain is a picture nobody trusts.
+    public var scale: Double
+    /// The full-resolution PNG on disk. Always written, always returned, even
+    /// when the inline copy was dropped — the lossless sink, exactly as a run's
+    /// log file is the lossless sink behind a bounded live stream.
+    public var pngPath: String
+    /// The inline image, base64. `nil` when it could not be made to fit the
+    /// budget; the reply then says why rather than shipping a blank picture.
+    public var pngBase64: String?
+    /// Size of the inline copy after any downscaling, in encoded bytes.
+    public var byteCount: Int
+    /// The scale it *was* drawn at, set only when the budget bit. Absent means
+    /// the picture is full-size, which is a different statement from "small".
+    public var downscaledFrom: Double?
+    /// Whether the window was on screen. **`false` is not a failure**: the whole
+    /// point is that a background window still photographs at its designed size.
+    public var isVisible: Bool
+    public var isKeyWindow: Bool
+    /// What this picture cannot show, in words — `"attached sheet: New story"`,
+    /// `"2 child windows"`. Empty means nothing was left out, and is the only
+    /// reading of empty.
+    public var notIncluded: [String]
+
+    public init(
+        window: String,
+        title: String,
+        width: Int,
+        height: Int,
+        scale: Double,
+        pngPath: String,
+        pngBase64: String?,
+        byteCount: Int,
+        downscaledFrom: Double? = nil,
+        isVisible: Bool,
+        isKeyWindow: Bool,
+        notIncluded: [String] = []
+    ) {
+        self.window = window
+        self.title = title
+        self.width = width
+        self.height = height
+        self.scale = scale
+        self.pngPath = pngPath
+        self.pngBase64 = pngBase64
+        self.byteCount = byteCount
+        self.downscaledFrom = downscaledFrom
+        self.isVisible = isVisible
+        self.isKeyWindow = isKeyWindow
+        self.notIncluded = notIncluded
+    }
 }
 
 // MARK: - Limits
@@ -261,6 +376,102 @@ public enum ElliotTimeouts {
 // `VerifiedOutcomeDTO.kind`, `MoveBlock.code`), which is the convention this
 // file already had.
 
+/// A pull request's state as the board last read it, ready to render.
+///
+/// The facets travel **separately** from the sign, and both travel. A card has
+/// room for one mark; an agent reading `board_get_card` has room for the whole
+/// picture, and collapsing the three into the headline would hide "green, but in
+/// conflict" — a combination this board sees regularly.
+///
+/// `checks` carries the real names rather than a verdict about them. Elliot
+/// deliberately does not decide that `CodeQL` or `renovate/stability-days` is
+/// not a build: that judgement's data already lives in `repo-audit`, and a
+/// second copy here would drift. Printing what actually ran lets the reader
+/// judge, and `ci == "no_checks"` states the one thing that needs no list.
+public struct PRStatusDTO: Codable, Sendable, Hashable {
+    /// The most blocking known fact, or absent when there is nothing to report.
+    /// Absent here is an *answer*; `"unknown"` is the refusal to give one.
+    public var sign: String?
+    public var summary: String?
+    public var ci: String
+    public var merge: String
+    public var review: String
+    public var checks: [CheckDTO]
+    /// When this was read, and on which commit — so a caller can weigh it rather
+    /// than trust it.
+    public var checkedAt: Date
+    public var headRefOid: String
+    public var isStale: Bool
+
+    public struct CheckDTO: Codable, Sendable, Hashable {
+        public var name: String
+        public var conclusion: String?
+        public var isPending: Bool
+        /// Stated outright rather than left to be derived from `conclusion`.
+        ///
+        /// `gh` reports a **legacy StatusContext**'s verdict in `state`, not in
+        /// `conclusion`, so a failing legacy status arrives here with
+        /// `conclusion: null` — indistinguishable from a pass by any reader
+        /// inspecting that field alone. `CIState.failing` names the failures but
+        /// `code` flattens to `"failing"`, so without this the agent is told
+        /// something failed and cannot tell which.
+        public var hasFailed: Bool
+
+        public init(
+            name: String, conclusion: String? = nil, isPending: Bool = false,
+            hasFailed: Bool = false
+        ) {
+            self.name = name
+            self.conclusion = conclusion
+            self.isPending = isPending
+            self.hasFailed = hasFailed
+        }
+    }
+
+    public init(
+        sign: String? = nil,
+        summary: String? = nil,
+        ci: String,
+        merge: String,
+        review: String,
+        checks: [CheckDTO] = [],
+        checkedAt: Date,
+        headRefOid: String,
+        isStale: Bool
+    ) {
+        self.sign = sign
+        self.summary = summary
+        self.ci = ci
+        self.merge = merge
+        self.review = review
+        self.checks = checks
+        self.checkedAt = checkedAt
+        self.headRefOid = headRefOid
+        self.isStale = isStale
+    }
+
+    /// Built from the model's own resolution, never re-derived here — the
+    /// precedence order has exactly one implementation and it is in
+    /// `ElliotModel`.
+    public init(_ status: PRStatus, resolved: ResolvedPRStatus) {
+        sign = resolved.sign?.code
+        summary = resolved.sign?.summary
+        ci = resolved.ci.code
+        merge = resolved.merge.code
+        review = resolved.review.code
+        checks = resolved.isStale
+            ? []
+            : status.checks.map {
+                CheckDTO(
+                    name: $0.label, conclusion: $0.conclusion,
+                    isPending: $0.isPending, hasFailed: $0.hasFailed)
+            }
+        checkedAt = resolved.checkedAt
+        headRefOid = resolved.headRefOid
+        isStale = resolved.isStale
+    }
+}
+
 public struct CardDTO: Codable, Sendable, Hashable {
     public var id: UUID
     public var title: String
@@ -281,6 +492,15 @@ public struct CardDTO: Codable, Sendable, Hashable {
     /// must say so in its own note rather than leave this nil, or every held
     /// card reads as movable.
     public var activeRunID: UUID?
+
+    /// What GitHub says about this card's pull request, when a reading exists.
+    ///
+    /// Absent means Elliot has not read one — a card outside In Review, a card
+    /// with no pull request, or one nothing has looked at yet. It does **not**
+    /// mean the pull request is fine, which is why there is no "all clear" value:
+    /// the caller has to distinguish "no reading" from "a reading with nothing to
+    /// report", and only the presence of the object can do that.
+    public var prStatus: PRStatusDTO?
 
     public struct StoryDTO: Codable, Sendable, Hashable {
         public var role: String
@@ -312,7 +532,9 @@ public struct CardDTO: Codable, Sendable, Hashable {
         }
     }
 
-    public init(card: Card, repoName: String, activeRunID: UUID? = nil) {
+    public init(
+        card: Card, repoName: String, activeRunID: UUID? = nil, prStatus: PRStatusDTO? = nil
+    ) {
         id = card.id
         title = card.displayTitle
         column = card.column.rawValue
@@ -326,6 +548,7 @@ public struct CardDTO: Codable, Sendable, Hashable {
         branch = card.branch
         lastError = card.lastError
         self.activeRunID = activeRunID
+        self.prStatus = prStatus
     }
 
     /// Field by field, so a test can state the shape it expects without

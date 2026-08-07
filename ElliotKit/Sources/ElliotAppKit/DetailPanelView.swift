@@ -41,10 +41,6 @@ struct DetailPanelView: View {
     /// stopped meaning anything.
     @State private var pane: PanelPane = .issue
 
-    /// Whether the pointer is over the resize strip. Drives nothing but the
-    /// grip's own weight — the cursor is pushed and popped in the same handler.
-    @State private var isOverResizeHandle = false
-
     /// No empty state on purpose: the board only builds this view when a card is
     /// selected, so there is no reachable "nothing selected" case. One existed
     /// briefly, while `.inspector()` kept the panel open across a deselect —
@@ -94,7 +90,14 @@ struct DetailPanelView: View {
         // — they cannot take a drag from the handle, and the handle cannot
         // paint over them, because it is on the other edge of the panel.
         .overlay(alignment: opensLeft(card) ? .leading : .trailing) {
-            resizeHandle(flipped: opensLeft(card))
+            @Bindable var model = model
+            PanelResizeHandle(
+                spans: $model.panelSpans,
+                columnWidth: columnWidth,
+                opensLeft: opensLeft(card),
+                help: "Drag to make the panel two or three columns wide",
+                label: "Panel width"
+            )
         }
         // The only shadow on the board: the panel floats above the columns it is
         // placed between, and that is what says it is not one of them.
@@ -128,87 +131,16 @@ struct DetailPanelView: View {
     }
 
     // MARK: - Resizing
-
-    /// The panel's outer edge, as something you can grab.
-    ///
-    /// Before this the only way to change the panel's width was View ▸ Narrow /
-    /// Widen Details, which a reader looking at the panel has no reason to
-    /// find. The menu items still work and still say the same thing — this is
-    /// an additional affordance, not a replacement, and both write the same
-    /// `model.panelSpans`.
-    ///
-    /// Three things make it a handle rather than a decoration: it advertises
-    /// itself with `NSCursor.resizeLeftRight` on hover, it draws a grip so
-    /// there is something to aim at before the cursor changes, and it is
-    /// adjustable from VoiceOver — a drag gesture alone would be a control only
-    /// a mouse can reach.
-    ///
-    /// ⚠️ The snap lives in `PanelLayout.snappedSpans`, not here. `ElliotApp`
-    /// and this view have no assertions in them; the arithmetic of "given a
-    /// drag and a column width, which span wins" is the half of this a test can
-    /// hold, and it is held in `PanelResizeTests`. What is left in this file is
-    /// only the plumbing.
-    private func resizeHandle(flipped: Bool) -> some View {
-        Rectangle()
-            .fill(.clear)
-            .frame(width: Metric.resizeStripWidth)
-            .overlay {
-                Capsule()
-                    .fill(isOverResizeHandle ? Surface.chipFillHover : Surface.hairline)
-                    .frame(width: Metric.resizeGrip.width, height: Metric.resizeGrip.height)
-            }
-            // The strip is transparent, so without this only the 2pt grip would
-            // take a hit and the cursor would flicker along the edge.
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                // Guarded so the push and the pop stay paired: SwiftUI can
-                // deliver a repeated `true` while the pointer moves inside the
-                // strip, and an unpaired push leaves the resize cursor stuck
-                // over the whole board.
-                guard hovering != isOverResizeHandle else { return }
-                isOverResizeHandle = hovering
-                if hovering {
-                    NSCursor.resizeLeftRight.push()
-                } else {
-                    NSCursor.pop()
-                }
-            }
-            // Escape closes the panel, and it can close while the pointer is on
-            // the handle — in which case the exit hover never arrives and the
-            // resize cursor is left pushed over the whole board with nothing
-            // left on screen to explain it.
-            .onDisappear {
-                guard isOverResizeHandle else { return }
-                isOverResizeHandle = false
-                NSCursor.pop()
-            }
-            .gesture(
-                // Snapped on release, not tracked live: the two settings are
-                // two *layouts* (one pane behind a switch, or two side by
-                // side), and rebuilding the body at every intermediate width
-                // would flip the pane switch in and out under the reader's
-                // hand.
-                DragGesture(minimumDistance: 2)
-                    .onEnded { drag in
-                        model.panelSpans = PanelLayout.snappedSpans(
-                            from: model.panelSpans,
-                            translation: drag.translation.width,
-                            columnWidth: columnWidth,
-                            opensLeft: flipped
-                        )
-                    }
-            )
-            .help("Drag to make the panel two or three columns wide")
-            .accessibilityLabel("Panel width")
-            .accessibilityValue("\(model.panelSpans) columns")
-            .accessibilityAdjustableAction { direction in
-                switch direction {
-                case .increment: model.panelSpans = PanelLayout.spanChoices.wide
-                case .decrement: model.panelSpans = PanelLayout.spanChoices.narrow
-                @unknown default: break
-                }
-            }
-    }
+    //
+    // The handle itself is `PanelResizeHandle`, applied as an overlay in
+    // `panel(_:)` above. It lived here until #151, when the analysis panel
+    // became the board's second resizable panel: the strip carries four fixes
+    // whose reasons are written into it, and a second copy of it would be a
+    // second copy of those.
+    //
+    // Both affordances still write the same `model.panelSpans` — the drag and
+    // View ▸ Narrow / Widen Details, which a reader looking at the panel has no
+    // reason to find.
 
     /// The origin column's standing cost, carried onto the panel so the panel
     /// reads as *of* that column rather than as a floating window that happens
@@ -406,6 +338,7 @@ struct DetailPanelView: View {
                 switch which {
                 case .issue:
                     provenance(card)
+                    PRStatusBlock(card: card)
                     IssuePane(card: card)
                 case .runs:
                     // Above the runs, mirroring `provenance` above the issue: a

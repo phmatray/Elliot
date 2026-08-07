@@ -74,12 +74,29 @@ struct CardView: View {
                 .transition(reduceMotion ? .identity : .opacity)
             }
 
-            if !facts.isEmpty || repoName != nil || stagnation != nil {
+            if !facts.isEmpty || repoName != nil || stagnation != nil || prSign != nil {
                 HStack(spacing: 5) {
                     ForEach(facts, id: \.text) { fact in
                         LinkBadge(text: fact.text, systemImage: fact.icon, url: fact.url)
                     }
                     Spacer(minLength: 0)
+                    // What is holding this card's pull request up, when anything
+                    // is. One mark, the most blocking known fact — the panel
+                    // shows the three facets apart. Nothing is drawn when there
+                    // is nothing to report, and nothing is drawn for a card
+                    // nobody has read: an all-clear nobody established would be
+                    // the false green this whole feature exists to avoid.
+                    //
+                    // Same shape as the age badge beside it rather than a new
+                    // container: every window this project has broken was broken
+                    // by new structure.
+                    if let prSign {
+                        Image(systemName: prSign.icon)
+                            .font(.system(size: 10))
+                            .foregroundStyle(prSign.tint)
+                            .accessibilityLabel(prSign.summary)
+                            .help(prSign.summary)
+                    }
                     // Not in `facts`: every element of that array renders as a
                     // `LinkBadge` button, and an age is not a link.
                     if let stagnation {
@@ -148,7 +165,12 @@ struct CardView: View {
         //
         // Only the selected card contributes. Every other card writes the empty
         // value, which `CaretAnchorKey.reduce` merges away.
-        .anchorPreference(key: CaretAnchorKey.self, value: .bounds) { bounds in
+        //
+        // Through `reportsCaretAnchor` rather than a bare `.anchorPreference`:
+        // this card has children, so the same ancestor-replaces-subtree rule
+        // that cost #159 applies here the moment anything below reports an
+        // anchor. The helper is the one supported way to write this key.
+        .reportsCaretAnchor { bounds in
             isSelected ? CaretAnchors(card: bounds) : CaretAnchors()
         }
     }
@@ -211,6 +233,16 @@ struct CardView: View {
 
     private var isBlockedRepo: Bool {
         model.repo(for: card).map { model.isBlocked($0) } == true
+    }
+
+    /// The one mark the card has room for.
+    ///
+    /// Suppressed while a run is in flight, for the same reason `stagnation` is:
+    /// the strip owns the card's attention then, and a stale conflict badge
+    /// beside a live run reads as a contradiction.
+    private var prSign: PRSign? {
+        guard activeRun == nil else { return nil }
+        return model.prStatus(for: card)?.sign
     }
 
     /// The verdict of the most recent finished run.

@@ -120,7 +120,7 @@ struct CardDraftTests {
             title: title,
             story: story,
             rationale: "two editors for the same three fields",
-            evidence: [Evidence(path: "Sources/ElliotAppKit/AnalysisWindow.swift", line: 910, exists: true)],
+            evidence: [Evidence(path: "Sources/ElliotAppKit/AnalysisPanelView.swift", line: 910, exists: true)],
             effort: .large,
             status: .proposed,
             createdAt: Date(timeIntervalSince1970: 1_700_000_000)

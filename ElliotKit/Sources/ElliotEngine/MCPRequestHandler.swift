@@ -13,11 +13,24 @@ public struct MCPRequestHandler: Sendable {
     private let store: BoardStore
     private let board: BoardService
     private let analysis: AnalysisService
+    /// How this build photographs its own windows, if it can at all.
+    ///
+    /// Optional and defaulted to `nil` because the app is the only thing that
+    /// has windows: every headless construction of this handler — the tests, the
+    /// parity harness — genuinely has none, and a handler that manufactured one
+    /// would report a picture of nothing as a picture.
+    private let capture: (any WindowCapturing)?
 
-    public init(store: BoardStore, board: BoardService, analysis: AnalysisService) {
+    public init(
+        store: BoardStore,
+        board: BoardService,
+        analysis: AnalysisService,
+        capture: (any WindowCapturing)? = nil
+    ) {
         self.store = store
         self.board = board
         self.analysis = analysis
+        self.capture = capture
     }
 
     /// Exhaustive by construction — no `default`. A request case added to the
@@ -71,6 +84,8 @@ public struct MCPRequestHandler: Sendable {
                 return try await decide(ids: ids, accept: true)
             case .rejectProposals(let ids):
                 return try await decide(ids: ids, accept: false)
+            case .screenshot(let window, let maxInlineBytes):
+                return await screenshot(window: window, maxInlineBytes: maxInlineBytes)
             }
         } catch let error as BoardError {
             switch error {
@@ -135,6 +150,32 @@ public struct MCPRequestHandler: Sendable {
             }
         } catch {
             return .failure(code: .internalError, message: error.localizedDescription, hint: nil)
+        }
+    }
+
+    // MARK: - Looking
+
+    /// Routes a screenshot and translates its failure. Decides nothing about the
+    /// picture: a successful capture is passed through byte for byte, because
+    /// what the window looked like is the capturer's finding and not this
+    /// layer's to edit.
+    private func screenshot(window: String, maxInlineBytes: Int) async -> ElliotResponse {
+        guard let capture else {
+            // Not "no windows are open" — that would be a claim about the user's
+            // screen, made by a build that has no way to look at it. The same
+            // distinction `AnalysisReportDTO.workingTreeChanged` draws between
+            // "checked, and nothing moved" and "nobody checked".
+            return .failure(
+                code: .internalError,
+                message: "This build of Elliot cannot photograph its own windows.",
+                hint: "Screenshots need the app; this handler was built without a window capturer."
+            )
+        }
+        switch await capture.capture(window: window, maxInlineBytes: maxInlineBytes) {
+        case .success(let shot):
+            return .ok(.screenshot(shot))
+        case .failure(let failure):
+            return failure.response(for: window)
         }
     }
 
@@ -515,6 +556,31 @@ public struct MCPRequestHandler: Sendable {
     private func dto(for card: Card) async throws -> CardDTO {
         let repoName = try await store.repo(id: card.repoID)?.nameWithOwner ?? "?"
         let activeRunID = try await store.activeRun(cardID: card.id)?.id
-        return CardDTO(card: card, repoName: repoName, activeRunID: activeRunID)
+        return CardDTO(
+            card: card, repoName: repoName, activeRunID: activeRunID,
+            prStatus: try await prStatusDTO(for: card))
+    }
+
+    /// The stored reading, resolved against the clock.
+    ///
+    /// `currentHeadOid` is `nil` here on purpose: establishing the pull
+    /// request's head right now would mean a network call inside a read, and
+    /// `PRWatcher` already re-reads whenever the head moves. What remains in
+    /// force is the age rule, which is the one that matters when nothing has
+    /// been running — the app closed, asleep, or unable to reach `gh`.
+    ///
+    /// `OfflineResponder` holds the identical five lines. They cannot be shared:
+    /// `ElliotMCPKit` imports neither this target nor `ElliotProcess`, so the
+    /// helper cannot hold a copy of the rules. `OfflineParityTests` is what keeps
+    /// them equal.
+    private func prStatusDTO(for card: Card) async throws -> PRStatusDTO? {
+        // In Review only — the same gate the watcher and the board apply. A card
+        // `merge-pr` has just moved to Done would otherwise serve its pre-merge
+        // reading as fresh for the whole `maximumAge` window, and the app and
+        // this surface would disagree about the same card.
+        guard card.column == .inReview, let number = card.prNumber else { return nil }
+        guard let status = try await store.prStatus(repoID: card.repoID, prNumber: number)
+        else { return nil }
+        return PRStatusDTO(status, resolved: status.resolved(now: Date(), currentHeadOid: nil))
     }
 }
