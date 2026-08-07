@@ -1259,6 +1259,24 @@ enum BoardAccessibility {
         "Details for \(title), in \(column.displayName)"
     }
 
+    /// What the analysis panel announces itself as.
+    ///
+    /// The detail panel's label above carries a column because a caret and a
+    /// tether draw that relationship and neither can be heard. This one carries
+    /// a **repository** for the mirror-image reason: the analysis panel has no
+    /// caret and no origin column, so nothing on it draws which repository it is
+    /// about — it is in the toolbar picker, three controls away.
+    ///
+    /// Three sentences, one per state the panel can be in. A pure function for
+    /// the reason the two captions above are: a label written inline in a `body`
+    /// is a claim nothing can hold.
+    static func analysisPanelLabel(repoName: String?, proposalCount: Int?) -> String {
+        guard let repoName else { return "Analysis. Pick a single repository to analyse." }
+        guard let proposalCount else { return "Analysis of \(repoName). Not started." }
+        let noun = proposalCount == 1 ? "proposal" : "proposals"
+        return "Analysis of \(repoName), \(proposalCount) \(noun) to decide."
+    }
+
     private static func cards(_ count: Int) -> String {
         count == 1 ? "card" : "cards"
     }

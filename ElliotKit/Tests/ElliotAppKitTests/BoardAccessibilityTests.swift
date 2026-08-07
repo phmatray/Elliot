@@ -113,6 +113,34 @@ struct BoardAccessibilityTests {
         }
     }
 
+    /// The analysis panel has no caret, no tether and no origin column, so the
+    /// only thing that says *what repository it is reading* is this sentence.
+    /// Three states, one per thing the panel can be, because "Analysis" alone
+    /// tells a listener the one thing the toolbar has already told them.
+    @Test("The analysis panel says which repository it is reading, and how much is waiting")
+    func analysisPanelCaptionNamesTheRepositoryAndTheBacklogOfDecisions() {
+        #expect(
+            BoardAccessibility.analysisPanelLabel(repoName: nil, proposalCount: nil)
+                == "Analysis. Pick a single repository to analyse.")
+        #expect(
+            BoardAccessibility.analysisPanelLabel(repoName: "Elliot", proposalCount: nil)
+                == "Analysis of Elliot. Not started.")
+        // Singular written out, for the reason the two captions above give: "1
+        // proposals" is what makes a careful product look careless, and this is
+        // read aloud.
+        #expect(
+            BoardAccessibility.analysisPanelLabel(repoName: "Elliot", proposalCount: 1)
+                == "Analysis of Elliot, 1 proposal to decide.")
+        #expect(
+            BoardAccessibility.analysisPanelLabel(repoName: "Elliot", proposalCount: 12)
+                == "Analysis of Elliot, 12 proposals to decide.")
+        // Nothing left to decide is a state, not an absence: it must not fall
+        // back to the "Not started" sentence.
+        #expect(
+            BoardAccessibility.analysisPanelLabel(repoName: "Elliot", proposalCount: 0)
+                == "Analysis of Elliot, 0 proposals to decide.")
+    }
+
     // MARK: - 3. Reduce motion, as a property of the source
 
     /// #79's acceptance criterion 20, mechanised.

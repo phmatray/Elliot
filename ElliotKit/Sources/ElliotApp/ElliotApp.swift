@@ -111,13 +111,6 @@ struct ElliotApp: App {
         }
         .defaultSize(width: 620, height: 640)
 
-        // Not wrapped: `AnalysisWindow` has no `.toolbar` and no
-        // `.navigationTitle` — it draws its own header and footer — so a
-        // navigation container would only add an empty title bar above it.
-        Window("Analysis", id: "analysis") {
-            AnalysisWindow().environment(model)
-        }
-        .defaultSize(width: 900, height: 760)
     }
 
     @CommandsBuilder
@@ -227,7 +220,8 @@ private struct OpenWindowButtons: View {
     var body: some View {
         Button("Operations") { openWindow(id: "operations") }
         Button("Up Next") { openWindow(id: "nextSteps") }
-        Button("Analysis…") { openWindow(id: "analysis") }
+        // No Analysis entry: it is not a window any more (#151). Show/Hide
+        // Analysis lives with the other View items, beside Show/Hide Details.
         Button("Repositories") { openWindow(id: "repositories") }
         Button("Preflight") { openWindow(id: "preflight") }
     }
