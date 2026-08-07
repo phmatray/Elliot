@@ -103,6 +103,28 @@ write path for `column`.
 transition matrix. `rankNextSteps` (what `board_next` answers) decides by *calling* `evaluateMove`, so
 the board predicts its own behaviour instead of holding a second copy of the rules.
 
+**One spawn.** `ChildProcess` (`ElliotProcess/ChildProcess.swift`) is the only thing that starts a
+child, drains its pipes and publishes its exit. `ProcessRunner` and `StreamingProcess` are wrappers
+over it that differ *only* in what they do with the bytes, expressed as a `ChildOutputSink` — and the
+sink's methods are called **while the drain lock is held**, because under the lock is the whole
+invariant. A sink handed a chunk to deal with later can append to a result already returned or yield
+into a stream already finished, which is the tail-dropping bug restored.
+
+This was the mechanism written twice until #146, and the copy was not incidental: **eight comment
+lines were byte-identical between the two files**, and they were the four load-bearing arguments
+themselves. When the *explanation* of an invariant has been copied word for word, the invariant has
+been copied too. It had already cost three defects, each fixed in one file — `22bb230` (dropped run
+tails), `3b1c226`/#18 (`waitUntilExit` parking a cooperative thread), `36b6da6`/#105 (SIGKILL
+escalation `ProcessRunner` never got) — and #26 opened a fourth investigation aimed at one file.
+`DrainDuplicationTests` keeps the measurement runnable: it re-derives that comment count and fails
+naming the invariant that is written twice, because this repository has no CI and a gate that is not
+a test is a gate nobody re-runs.
+
+The single behavioural delta is recorded at both ends: `ProcessRunner` gave up its
+`state.withLock { !$0.exited } &&` conjunct in the SIGKILL backstop, since a sink may hold that lock
+across a write to the run's log. It loses nothing — the flag was set inside the termination handler,
+which runs only once Foundation has reaped the child, so `isRunning` had gone false strictly earlier.
+
 **`ElliotMCPKit` imports neither `ElliotEngine` nor `ElliotProcess`** — deliberate, commented in
 `Package.swift`. The helper holds no copy of the rules, so it cannot diverge from them.
 

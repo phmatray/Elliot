@@ -14,8 +14,8 @@ import Foundation
 /// turn, running its SessionEnd hooks, exiting 143 — happens in its own
 /// process, not as a prerequisite for its ordinary Bash children's exit.
 ///
-/// The spawn, the drain and the exit belong to `ChildProcess`; what is left here
-/// is this spawner's own idea — that stdout is a sequence of lines.
+/// `ChildProcess` owns the spawn, the drain and the exit. What remains here is
+/// this spawner's own idea — that stdout is a sequence of lines.
 public final class StreamingProcess: Sendable {
     private let child: ChildProcess<LineSink>
 
