@@ -96,7 +96,11 @@ public struct PreferencesFile: PreferencesWriting {
         } catch {
             // Logged rather than surfaced: there is no action a reader could take
             // and nothing about the board is wrong.
-            Self.log.error("Could not write \(self.url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            let name = url.lastPathComponent
+            let reason = error.localizedDescription
+            Self.log.error(
+                "Could not write \(name, privacy: .public): \(reason, privacy: .public)"
+            )
         }
     }
 }

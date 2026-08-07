@@ -75,9 +75,8 @@ public struct Preferences: Codable, Sendable, Equatable {
     /// can hold) resolves to the default instead"* — and this is the integer
     /// preference it was anticipating.
     public func clamped() -> Preferences {
-        guard panelSpans == Preferences.spanChoices.narrow
-            || panelSpans == Preferences.spanChoices.wide
-        else { return .default }
+        let designed = [Preferences.spanChoices.narrow, Preferences.spanChoices.wide]
+        guard designed.contains(panelSpans) else { return .default }
         return self
     }
 }
