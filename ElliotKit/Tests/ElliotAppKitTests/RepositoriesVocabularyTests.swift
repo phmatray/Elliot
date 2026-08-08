@@ -103,6 +103,81 @@ struct RepositoriesVocabularyTests {
         #expect(notChecked != verified)
     }
 
+    // MARK: - What a probed not-checked row can read as (#189)
+
+    /// Since #189 a `.notChecked` row is probed, so the page has to have a word
+    /// and a symbol for every verdict that probe can leave it in — not just for
+    /// `.notChecked` itself.
+    ///
+    /// The states are **derived** rather than listed: each one is put through
+    /// `RepoIssue.notChecked.refined(by:)`, which is the model function that
+    /// decides them. A hand-written list of "what a not-checked row becomes"
+    /// would be a second copy of that rule, green forever, and silent the day
+    /// the rule changed underneath it — which is the trap `CaretAnchorTests`
+    /// was written to escape.
+    ///
+    /// `observable` mirrors `RepoRegistryService.classify`'s arms, and that
+    /// mirror *is* hand-made — the honest limit of this test. What it cannot go
+    /// stale on is the composition, because that is being called rather than
+    /// re-stated.
+    @MainActor
+    @Test("Every verdict a probed not-checked row can be left in has a word and a symbol")
+    func aProbedNotCheckedRowAlwaysHasAWord() {
+        for shown in Self.reachableFromNotChecked {
+            #expect(!RepositoriesView.verdict(shown).isEmpty)
+            let name = RepositoriesView.icon(shown)
+            #expect(
+                NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil,
+                "\(shown) names \(name), which is not an SF Symbol on this system")
+        }
+    }
+
+    /// ⛔ The one that can fail. A row whose owner GitHub never answered about
+    /// must not read `ok` — in any word, symbol or tint — whatever git found on
+    /// its clone.
+    ///
+    /// This is #148's defect asserted where a reader would meet it: collapse
+    /// `.notChecked + .ok` to `.ok` in the model and the page starts drawing a
+    /// green tick and the word "ok" on a repository nobody could check. Every
+    /// other arm is a real observation and is entitled to its own word.
+    @MainActor
+    @Test("No probed not-checked row ever reads ok")
+    func aProbedNotCheckedRowIsNeverSpelledOk() throws {
+        let appearance = try #require(NSAppearance(named: .aqua))
+        let verified = try #require(Self.srgb(Palette.verified, in: appearance))
+
+        for shown in Self.reachableFromNotChecked {
+            #expect(
+                RepositoriesView.verdict(shown) != RepositoriesView.verdict(.ok),
+                "a repository nobody could check reads as \(RepositoriesView.verdict(.ok))")
+            #expect(try #require(Self.srgb(RepositoriesView.tint(shown), in: appearance)) != verified)
+        }
+
+        // The control, and the reason the loop above is not passing merely
+        // because nothing is ever green: an `.ok` row genuinely is.
+        #expect(RepositoriesView.verdict(RepoIssue.ok.refined(by: .ok)) == "ok")
+    }
+
+    /// The clean clone stays `not checked` rather than becoming `ok`, said in
+    /// the page's own vocabulary. Split out from the loop because it is the
+    /// specific arm the issue turns on, and a failure here should name itself.
+    @Test("A clean clone whose owner was never listed still reads not checked")
+    func theSurvivingArmStillReadsNotChecked() {
+        #expect(RepositoriesView.verdict(RepoIssue.notChecked.refined(by: .ok)) == "not checked")
+    }
+
+    /// Every verdict `RepoRegistryService.classify` can return, put through the
+    /// composition. `.ok` is in the input on purpose — it is the arm where
+    /// `.notChecked` survives, and leaving it out would drop the only case that
+    /// distinguishes this list from `everyIssue`.
+    private static let reachableFromNotChecked: [RepoIssue] = {
+        let observable: [RepoIssue] = [
+            .outOfScope(.otherRoot), .detached, .dirty, .unreadable("fetch failed"),
+            .noRemote, .ok, .behind(by: 2), .ahead, .diverged,
+        ]
+        return observable.map { RepoIssue.notChecked.refined(by: $0) }
+    }()
+
     // MARK: - The count sentence
 
     /// Criterion 3. With one owner unreachable the tree is only partly known, so
@@ -206,7 +281,60 @@ struct RepositoriesVocabularyTests {
         #expect(RepositoriesView.clauses(for: []) == ["nothing needs attention"])
     }
 
+    // MARK: - What a row says about its board (#209)
+
+    /// Criterion 3. `no cards` rather than `0 cards`: the criterion asks the row
+    /// to *say so*, and a zero is what a reader skims past.
+    @Test("A repository Elliot drives with nothing on its board says so in words")
+    func emptyBoardSaysNoCards() {
+        #expect(RepositoriesView.boardLine(.empty) == "no cards")
+    }
+
+    @Test("Cards are counted, and one card is not one cards")
+    func cardCount() {
+        #expect(RepositoriesView.boardLine(Self.tally(cards: 11)) == "11 cards")
+        #expect(RepositoriesView.boardLine(Self.tally(cards: 1)) == "1 card")
+    }
+
+    @Test("Runs in flight are named only when there are some")
+    func runsInFlight() {
+        #expect(RepositoriesView.boardLine(Self.tally(cards: 11)) == "11 cards")
+        #expect(RepositoriesView.boardLine(Self.tally(cards: 11, running: 2)) == "11 cards · 2 running")
+        // A repository can be busy with no cards at all: an analysis run has no
+        // card. Saying `no cards · 1 running` beats implying it is idle.
+        #expect(RepositoriesView.boardLine(Self.tally(cards: 0, running: 1)) == "no cards · 1 running")
+    }
+
+    /// The convention `SyncSummary.sentence` already holds: a clean pass does
+    /// not advertise a zero.
+    @Test("Spend is appended only when something was spent")
+    func spendIsAppendedOnlyWhenThereIsSome() {
+        let free = Self.tally(cards: 3, spend: Spend(totalUSD: 0, runs: 2, unknownCost: 0))
+        #expect(RepositoriesView.boardLine(free, locale: Self.enUS) == "3 cards")
+
+        let spent = Self.tally(cards: 3, spend: Spend(totalUSD: 1.42, runs: 2, unknownCost: 0))
+        #expect(RepositoriesView.boardLine(spent, locale: Self.enUS) == "3 cards · $1.42 today")
+    }
+
+    /// Criterion 2. The reason is `gh`'s own words and reaches the row verbatim
+    /// — the row is not the place a machine's sentence gets paraphrased.
+    @Test("The failure line quotes the reason and does not paraphrase it")
+    func failureLineQuotesTheReason() {
+        let reason = "gh exited 1: API rate limit exceeded"
+        let line = RepositoriesView.refreshFailureLine(reason)
+        #expect(line.contains(reason))
+        #expect(line == "could not be refreshed: \(reason)")
+    }
+
     // MARK: - Helpers
+
+    private static let enUS = Locale(identifier: "en_US")
+
+    private static func tally(
+        cards: Int, running: Int = 0, spend: Spend = .nothing
+    ) -> RepoBoardTally {
+        RepoBoardTally(cards: cards, runsInFlight: running, spendToday: spend)
+    }
 
     private static func row(
         _ nameWithOwner: String, _ issue: RepoIssue, fixes: [RepoFix] = []

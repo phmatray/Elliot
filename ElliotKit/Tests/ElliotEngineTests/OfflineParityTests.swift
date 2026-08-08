@@ -163,6 +163,20 @@ struct OfflineParityTests {
         #expect(try encoded(live) == encoded(snapshot))
     }
 
+    /// The hint is asserted **positively**, not just held equal.
+    ///
+    /// Equality alone is the vacuous pass this suite has already been caught
+    /// making twice: two sides that both answer `nil` compare fine and prove
+    /// nothing. That is not hypothetical here — it is this exact refusal's
+    /// history. The snapshot carried a pointer to `board_list_cards` and the
+    /// live path did not, so #144 reached parity by taking the pointer away,
+    /// and the equality below went on holding throughout. Naming the string
+    /// makes dropping it from *both* sides a failure rather than a tidy-up.
+    ///
+    /// Asserted on the snapshot rather than on each side in turn because the
+    /// byte comparison that follows carries it to the live answer: a live path
+    /// that stopped sending the hint would fail on the encoded diff, with the
+    /// field named in the output.
     @Test("A card id nothing matches is refused in the same words on both sides")
     func unknownCardRefusalAgrees() async throws {
         let board = try await ParityBoard.seeded()
@@ -171,11 +185,43 @@ struct OfflineParityTests {
         let live = await board.handler.handle(request)
         let snapshot = await board.responder.respond(to: request)
 
-        guard case .failure(let code, _, _) = snapshot else {
+        guard case .failure(let code, _, let hint) = snapshot else {
             Issue.record("the snapshot answered a page for a card that does not exist")
             return
         }
         #expect(code == .cardNotFound)
+        #expect(hint == RefusalHint.cardNotFound)
+        #expect(try encoded(live) == encoded(snapshot))
+    }
+
+    /// The sibling refusal, which nothing held together until #145.
+    ///
+    /// `listRuns` and `getCard` reach `card_not_found` from two separate
+    /// lookups in each of two files, and only the first pair was compared — so
+    /// the second was free to drift in either direction with the suite green.
+    /// That is not a theoretical gap: every drift this file's own comments
+    /// record was found one tool at a time, precisely because the next tool
+    /// over had no assertion on it.
+    ///
+    /// The `readRequests` list above cannot cover this. It compares *answers*
+    /// to reads that succeed; the interesting thing about a refusal is that it
+    /// happens at all, and an id that matches nothing has to be constructed on
+    /// purpose.
+    @Test("board_get_card refuses an unknown card in the same words on both sides")
+    func unknownCardOnGetCardRefusalAgrees() async throws {
+        let board = try await ParityBoard.seeded()
+        let request = ElliotRequest.getCard(id: UUID())
+
+        let live = await board.handler.handle(request)
+        let snapshot = await board.responder.respond(to: request)
+
+        guard case .failure(let code, let message, let hint) = snapshot else {
+            Issue.record("the snapshot answered with a card that does not exist")
+            return
+        }
+        #expect(code == .cardNotFound)
+        #expect(message.contains("No card with id"))
+        #expect(hint == RefusalHint.cardNotFound)
         #expect(try encoded(live) == encoded(snapshot))
     }
 

@@ -90,7 +90,11 @@ public struct MCPRequestHandler: Sendable {
         } catch let error as BoardError {
             switch error {
             case .cardNotFound(let id):
-                return .failure(code: .cardNotFound, message: "No card with id \(id).", hint: nil)
+                return .failure(
+                    code: .cardNotFound,
+                    message: "No card with id \(id).",
+                    hint: RefusalHint.cardNotFound
+                )
             case .repoNotFound(let id):
                 return .failure(code: .repoNotFound, message: "No repository \(id).", hint: nil)
             case .runNotFound(let id):
@@ -212,7 +216,11 @@ public struct MCPRequestHandler: Sendable {
 
     private func getCard(_ id: UUID) async throws -> ElliotResponse {
         guard let card = try await store.card(id: id) else {
-            return .failure(code: .cardNotFound, message: "No card with id \(id).", hint: nil)
+            return .failure(
+                code: .cardNotFound,
+                message: "No card with id \(id).",
+                hint: RefusalHint.cardNotFound
+            )
         }
         let payload = try await dto(for: card)
         return .ok(.card(payload))
@@ -224,7 +232,11 @@ public struct MCPRequestHandler: Sendable {
         // of them means keep waiting.
         if let cardID {
             guard try await store.card(id: cardID) != nil else {
-                return .failure(code: .cardNotFound, message: "No card with id \(cardID).", hint: nil)
+                return .failure(
+                    code: .cardNotFound,
+                    message: "No card with id \(cardID).",
+                    hint: RefusalHint.cardNotFound
+                )
             }
         }
 
@@ -276,7 +288,11 @@ public struct MCPRequestHandler: Sendable {
         id: UUID, to column: ElliotModel.Column, followUps: [String], client: String
     ) async throws -> ElliotResponse {
         guard let before = try await store.card(id: id) else {
-            return .failure(code: .cardNotFound, message: "No card with id \(id).", hint: nil)
+            return .failure(
+                code: .cardNotFound,
+                message: "No card with id \(id).",
+                hint: RefusalHint.cardNotFound
+            )
         }
         let from = before.column
 

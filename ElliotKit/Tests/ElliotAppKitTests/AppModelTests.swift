@@ -1,11 +1,25 @@
 import ElliotEngine
 import ElliotModel
+import ElliotProcess
 import ElliotStore
 import Foundation
+import Synchronization
 import TestSupport
 import Testing
 
 @testable import ElliotAppKit
+
+/// A `Bool` an `@Sendable` closure may raise.
+///
+/// `withObservationTracking`'s `onChange` is `@Sendable`, so it cannot mutate a
+/// captured `var` — and `Mutex` is non-copyable, so it cannot be captured
+/// directly either. The same shape as `ElliotProcess.Locked`, which this target
+/// does not depend on.
+private final class ObservationFlag: Sendable {
+    private let raised = Mutex(false)
+    func raise() { raised.withLock { $0 = true } }
+    var isRaised: Bool { raised.withLock { $0 } }
+}
 
 /// `AppModel` held 800 lines and no tests, because `ElliotApp` was an
 /// `executableTarget` and nothing in it could be imported. These cover it where
@@ -782,6 +796,170 @@ struct AppModelTests {
         #expect(fixture.model.runsByCard.isEmpty)
     }
 
+    // MARK: - The panel's width is remembered, and only when asked
+
+    @Test("A width set on a model that was given a file is on disk afterwards")
+    func settingTheWidthWritesIt() {
+        let url = TestHome.scratch("appmodel-prefs-write")
+            .appendingPathComponent("preferences.json")
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+
+        let model = AppModel(preferences: PreferencesFile(url: url))
+        model.panelSpans = Preferences.spanChoices.narrow
+
+        #expect(PreferencesFile.load(from: url).panelSpans == Preferences.spanChoices.narrow)
+    }
+
+    @Test("Setting it back writes the new value, not just the first one")
+    func settingItAgainWritesAgain() {
+        let url = TestHome.scratch("appmodel-prefs-rewrite")
+            .appendingPathComponent("preferences.json")
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+
+        let model = AppModel(preferences: PreferencesFile(url: url))
+        model.panelSpans = Preferences.spanChoices.narrow
+        model.panelSpans = Preferences.spanChoices.wide
+
+        #expect(PreferencesFile.load(from: url).panelSpans == Preferences.spanChoices.wide)
+    }
+
+    /// Criterion 4, asserted rather than assumed.
+    ///
+    /// Every other test in this bundle builds `AppModel()`, and several of them
+    /// assign `panelSpans`. What stops them leaving a preference in the
+    /// operator's real `~/Library/Application Support/Elliot` is not that they
+    /// remember to isolate themselves — it is that the writer they get by
+    /// default has nowhere to write. This is that claim, pointed at the path a
+    /// default-constructed model would use if it used one at all.
+    /// ⚠️ Pointed at a **scratch** path, not `StoreLocation.preferencesURL`.
+    /// `TestHome` adopts an `ELLIOT_HOME` the operator already exported, so
+    /// asserting on the resolved store path meant `swift test` from a shell
+    /// carrying `ELLIOT_HOME=/tmp/elliot-check` deleted that instance's real
+    /// preference — and a running app on that home could fail this assertion for
+    /// reasons that are nothing to do with the code. A test that destroys state
+    /// outside its own scratch directory is a bad test even when it passes.
+    /// Nothing is lost by moving: the default writer holds no URL at all, so any
+    /// path it could conceivably have written to is an equally good witness.
+    @Test("A model nobody handed a file writes no preference anywhere")
+    func theDefaultModelWritesNothing() {
+        let wouldBe = TestHome.scratch("appmodel-prefs-default-writer")
+            .appendingPathComponent("preferences.json")
+
+        let model = AppModel()
+        model.panelSpans = Preferences.spanChoices.narrow
+        model.panelSpans = Preferences.spanChoices.wide
+
+        #expect(model.panelSpans == Preferences.spanChoices.wide)
+        #expect(
+            !FileManager.default.fileExists(atPath: wouldBe.path),
+            "a test that did not ask for persistence must not have written \(wouldBe.path)"
+        )
+    }
+
+    /// That `panelSpans` is observable **at all**, now that it is computed over
+    /// private storage rather than stored directly.
+    ///
+    /// If reading it stopped registering a dependency on what the setter mutates,
+    /// the board would silently stop re-laying-out on a resize: `swift build`
+    /// stays clean, every other test stays green, and nobody but a person
+    /// dragging the handle would notice.
+    ///
+    /// ⚠️ **It does not discriminate between the computed form and a `didSet`** —
+    /// measured, by building the `didSet` form and watching this stay green.
+    /// `@Observable` tracks a property carrying an observer perfectly well; what
+    /// rules the `didSet` out is that the observer fires during `init`, and the
+    /// test that catches *that* is `restoringDoesNotWrite`. Kept apart on purpose:
+    /// two different claims, and only one of them is about tracking.
+    @Test("Changing the width is observable, or the board never re-lays-out")
+    func theWidthIsObservable() {
+        let model = AppModel()
+        // `onChange` is `@Sendable`, so the flag cannot be a captured `var`.
+        let fired = ObservationFlag()
+
+        withObservationTracking {
+            _ = model.panelSpans
+        } onChange: {
+            fired.raise()
+        }
+
+        model.panelSpans = Preferences.spanChoices.narrow
+        #expect(
+            fired.isRaised,
+            "reading panelSpans must register a dependency on what the setter mutates"
+        )
+    }
+
+    @Test("The width toggle lands on a designed span from either side, and says which")
+    func toggleMovesBetweenTheTwoDesignedSpans() {
+        let model = AppModel()
+        #expect(model.panelSpans == Preferences.spanChoices.wide)
+        #expect(model.panelWidthToggleTitle == "Narrow Details")
+
+        model.togglePanelWidth()
+        #expect(model.panelSpans == Preferences.spanChoices.narrow)
+        #expect(model.panelWidthToggleTitle == "Widen Details")
+
+        model.togglePanelWidth()
+        #expect(model.panelSpans == Preferences.spanChoices.wide)
+    }
+
+    @Test("The toggle saves through the same path a drag does")
+    func toggleWritesThePreference() {
+        let url = TestHome.scratch("appmodel-prefs-toggle")
+            .appendingPathComponent("preferences.json")
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+
+        let model = AppModel(preferences: PreferencesFile(url: url))
+        model.togglePanelWidth()
+
+        #expect(PreferencesFile.load(from: url).panelSpans == Preferences.spanChoices.narrow)
+    }
+
+    @Test("A model restored from a stored width opens at it")
+    func restoresTheStoredWidth() {
+        let model = AppModel(
+            initialPreferences: Preferences(panelSpans: Preferences.spanChoices.narrow)
+        )
+        #expect(model.panelSpans == Preferences.spanChoices.narrow)
+    }
+
+    @Test("A stored width the panel was never designed at opens at the default")
+    func nonsenseStoredWidthOpensAtTheDefault() {
+        for spans in [0, 1, 4, -7] {
+            let model = AppModel(initialPreferences: Preferences(panelSpans: spans))
+            #expect(model.panelSpans == Preferences.default.panelSpans)
+        }
+    }
+
+    @Test("Restoring a width does not rewrite the file it was just read from")
+    func restoringDoesNotWrite() throws {
+        // The first launch after this ships reads a file and must leave it
+        // alone: a save fired from `init` would rewrite it before the reader has
+        // touched anything, which is harmless today and would silently defeat any
+        // later attempt to tell "never set" from "set to the default".
+        let url = TestHome.scratch("appmodel-prefs-untouched")
+            .appendingPathComponent("preferences.json")
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data(#"{"panelSpans": 2, "writtenByAnotherVersion": true}"#.utf8).write(to: url)
+        let before = try Data(contentsOf: url)
+
+        let model = AppModel(
+            preferences: PreferencesFile(url: url),
+            initialPreferences: PreferencesFile.load(from: url)
+        )
+
+        #expect(model.panelSpans == Preferences.spanChoices.narrow)
+        #expect(try Data(contentsOf: url) == before)
+    }
+
     // MARK: - Parsed issue bodies
 
     @Test("An issue body is parsed once per body, and again when it changes")
@@ -833,4 +1011,203 @@ struct AppModelTests {
     private func storage(of blocks: [IssueBlock]) -> UInt {
         blocks.withUnsafeBufferPointer { UInt(bitPattern: $0.baseAddress) }
     }
+
+    // MARK: - A start that failed has to land somewhere setup can read
+
+    /// A real `AnalysisService`, because the thing under test is what
+    /// `startAnalysis` does with a **thrown** error and the cheapest honest way
+    /// to throw one is to ask the real service for a repository the store has
+    /// never heard of. Nothing is spawned: `start` throws on its first `guard`,
+    /// long before it queues a run, and the launcher below is inert anyway.
+    private func analysisService(store: BoardStore) -> AnalysisService {
+        // `start`'s success path resolves an artifact path through
+        // `StoreLocation` and creates the directory for it, so the home has to
+        // be final before any of these run.
+        _ = TestHome.root
+        let launcher = InertLauncher()
+        return AnalysisService(
+            store: store,
+            launcher: launcher,
+            board: BoardService(store: store, launcher: launcher),
+            gh: GHClient(
+                config: ToolConfig(
+                    claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+                    gitPath: "/usr/bin/false", environment: [:]))
+        )
+    }
+
+    /// A model in the state the Start button is actually pressable from: one
+    /// repository, selected, nothing refusing it.
+    ///
+    /// The selection is not decoration. `startFailure` is scoped to the
+    /// repository the failure was thrown for, and Start passes
+    /// `model.selectedRepoID` — so a test that left the picker empty would be
+    /// exercising a combination the button cannot produce.
+    ///
+    /// The repository is seeded onto the **model** and not into the **store**,
+    /// which is what makes `start` throw `repoNotFound`: the panel offers it,
+    /// the service cannot find it. Callers that want a start to *succeed* save
+    /// it to the store as well.
+    private func analysisModel(store: BoardStore, repo: Repo) -> AppModel {
+        let model = AppModel()
+        model.testOnlySeed(repos: [repo], cards: [])
+        model.selectedRepoID = repo.id
+        model.testOnlyAttachAnalysisService(analysisService(store: store))
+        return model
+    }
+
+    @Test("A start that throws is recorded where the setup footer can read it")
+    func failedStartIsRecorded() async throws {
+        let subject = repo("subject")
+        let model = analysisModel(store: try BoardStore.inMemory(), repo: subject)
+        // Nothing is refusing this repository, so the failure is what the footer
+        // has to say — not the preflight gate, which outranks it.
+        #expect(model.analysisRefusal == nil)
+
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+
+        // The defect, stated: the message went to `analysis?.note`, and
+        // `analysis` is `nil` in setup — a *failed* start creates no session —
+        // so the assignment compiled, read as if it did something, and threw
+        // the message away.
+        #expect(model.analysis == nil)
+        // Exactly what the `catch` already computes, and nothing friendlier:
+        // rewording these errors is its own piece of work.
+        #expect(model.startFailure == AnalysisError.repoNotFound(subject.id).localizedDescription)
+    }
+
+    @Test("Pressing Start again clears the previous failure before the attempt")
+    func startClearsBeforeItAttempts() async throws {
+        let subject = repo("subject")
+        let model = analysisModel(store: try BoardStore.inMemory(), repo: subject)
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.startFailure != nil)
+
+        // Detaching the service makes the second `startAnalysis` return at its
+        // own `guard let analysisService` without attempting anything at all.
+        // So a `nil` afterwards can only have come from a clear placed **above**
+        // that guard — it cannot be a second failure that happened to be absent,
+        // and it cannot be `openAnalysis` clearing it on the way through.
+        model.testOnlyAttachAnalysisService(nil)
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+
+        #expect(model.startFailure == nil)
+    }
+
+    @Test("A start that succeeds leaves no failure standing behind it")
+    func successfulStartClearsTheFailure() async throws {
+        let store = try BoardStore.inMemory()
+        let subject = repo("subject")
+        let model = analysisModel(store: store, repo: subject)
+
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.startFailure != nil)
+
+        // Now the service can find it, so the same press succeeds.
+        try await store.saveRepo(subject)
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+
+        // The review state is never entered with a stale failure standing behind
+        // it — otherwise finishing the analysis would drop the reader back onto
+        // a setup form reporting a failure that has since been superseded.
+        #expect(model.analysis != nil)
+        #expect(model.startFailure == nil)
+    }
+
+    @Test("Opening an earlier analysis clears it — it belongs to a start that did not happen")
+    func openingAnAnalysisClearsTheFailure() async throws {
+        let subject = repo("subject")
+        let model = analysisModel(store: try BoardStore.inMemory(), repo: subject)
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.startFailure != nil)
+
+        // The header's *Earlier analyses* menu. What is on screen afterwards is
+        // an analysis that did run; a sentence about one that did not would be
+        // read as belonging to it.
+        model.openAnalysis(id: UUID())
+
+        #expect(model.startFailure == nil)
+    }
+
+    @Test("A failure belongs to the repository it was thrown for, not to the picker")
+    func failureIsScopedToItsRepository() async throws {
+        // Found by the code-review pass on this branch, and it is #134's defect
+        // one axis over: stored flat, a failure against A went on rendering — in
+        // the refusal accent — beside a *live* Start button for B.
+        let a = repo("a")
+        let b = repo("b")
+        let model = AppModel()
+        model.testOnlySeed(repos: [a, b], cards: [])
+        model.selectedRepoID = a.id
+        model.testOnlyAttachAnalysisService(analysisService(store: try BoardStore.inMemory()))
+
+        await model.startAnalysis(repoID: a.id, angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.startFailure != nil)
+
+        model.selectedRepoID = b.id
+        #expect(model.startFailure == nil, "B's Start is live; A's failure says nothing about it")
+
+        // And back, deliberately: nothing has been attempted for A in between,
+        // so the sentence is exactly as true as it was.
+        model.selectedRepoID = a.id
+        #expect(model.startFailure != nil)
+    }
+
+    @Test("A failure outranks the consequence until it is cleared, whatever the lenses do")
+    func failureSurvivesTogglingLenses() async throws {
+        // The spec's rule, and the one with teeth: toggling a lens changes what
+        // the *next* start would spend, it does not un-fail the last one. The
+        // slot must not go back to advertising a cost after refusing to pay one.
+        let subject = repo("subject")
+        let model = analysisModel(store: try BoardStore.inMemory(), repo: subject)
+        model.analysisAngles = [.bugs]
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+        let failure = try #require(model.startFailure)
+
+        model.analysisAngles = [.bugs, .tests, .docsAndDX]
+
+        #expect(model.startFailure == failure)
+        // Asserted through the value the footer actually renders, so this covers
+        // the precedence and not merely the storage.
+        let shown = AnalysisFooterMessage.setup(
+            angleCount: model.analysisAngles.count,
+            failure: model.startFailure,
+            refusal: model.analysisRefusal)
+        #expect(shown.text == failure)
+        #expect(shown.tone == .refused)
+    }
+
+    @Test("Finishing an analysis does not invent a failure")
+    func closingSetsNoFailure() {
+        // ⚠️ **Bounded, and worth saying which bound.** The only inversion this
+        // catches is `closeAnalysis` *assigning* a failure — the direction the
+        // doc comment forbids. It cannot catch a `closeAnalysis` that *clears*
+        // one, because the state that would need is unreachable: the only route
+        // into an open analysis is `openAnalysis`, which clears on the way in.
+        // `failureSurvivesTogglingLenses` above is where the teeth are.
+        let model = AppModel()
+        model.testOnlySeed(repos: [], cards: [])
+        model.openAnalysis(id: UUID())
+
+        model.closeAnalysis()
+
+        #expect(model.startFailure == nil)
+    }
+}
+
+/// Launches nothing.
+///
+/// `AnalysisService` needs a launcher to be constructed, and these tests are
+/// about `AppModel`'s `catch`, not about what would have been spawned — the one
+/// start that succeeds here queues its run and this drops it on the floor.
+private actor InertLauncher: RunLaunching {
+    func launch(runID: UUID) async {}
+    func cancel(runID: UUID) async {}
 }

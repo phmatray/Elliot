@@ -131,7 +131,11 @@ struct OfflineResponder: Sendable {
 
     private func getCard(_ id: UUID) async throws -> ElliotResponse {
         guard let card = try await store.card(id: id) else {
-            return .failure(code: .cardNotFound, message: "No card with id \(id).", hint: nil)
+            return .failure(
+                code: .cardNotFound,
+                message: "No card with id \(id).",
+                hint: RefusalHint.cardNotFound
+            )
         }
         return .ok(.card(try await dto(for: card)))
     }
@@ -142,7 +146,11 @@ struct OfflineResponder: Sendable {
         // of them means keep waiting.
         if let cardID {
             guard try await store.card(id: cardID) != nil else {
-                return .failure(code: .cardNotFound, message: "No card with id \(cardID).", hint: nil)
+                return .failure(
+                    code: .cardNotFound,
+                    message: "No card with id \(cardID).",
+                    hint: RefusalHint.cardNotFound
+                )
             }
         }
 
