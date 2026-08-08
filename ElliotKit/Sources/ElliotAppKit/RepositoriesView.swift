@@ -40,6 +40,18 @@ public struct RepositoriesView: View {
                     }
                 }
                 .listStyle(.inset)
+                // ↩ on the focused list, alongside the menu item's ⌘↩. The
+                // menu item is what makes the shortcut *discoverable*; this is
+                // the gesture a person reaches for without being told, and it
+                // is the same act through the same method.
+                //
+                // `.ignored` rather than swallowing the key when there is
+                // nothing to open: ↩ belongs to whatever else wants it, and a
+                // handled-but-silent Return is the "confident-looking no-op"
+                // this file keeps refusing to ship.
+                .onKeyPress(.return) {
+                    openBoard(model.selectedRowBoardAction) ? .handled : .ignored
+                }
             } else {
                 ContentUnavailableView(
                     "Still starting", systemImage: "hourglass",
@@ -368,13 +380,13 @@ public struct RepositoriesView: View {
         // what is wanted here is both — the double-click selects the row *and*
         // opens its board, which is what makes the selection the menu item
         // reads agree with the window that just came forward.
-        .simultaneousGesture(TapGesture(count: 2).onEnded { openBoard(row) })
+        .simultaneousGesture(TapGesture(count: 2).onEnded { openBoard(row.boardAction) })
         .contextMenu {
             // Conditional content rather than a conditionally-applied modifier:
             // switching the modifier on and off would change the row's view
             // identity for a menu.
             if case .open = row.boardAction {
-                Button("Open board") { openBoard(row) }
+                Button("Open board") { openBoard(row.boardAction) }
             }
         }
     }
@@ -388,7 +400,7 @@ public struct RepositoriesView: View {
     private func boardButton(_ row: RepoRow) -> some View {
         switch row.boardAction {
         case .open:
-            Button("Open board") { openBoard(row) }
+            Button("Open board") { openBoard(row.boardAction) }
                 .controlSize(.small)
                 // Deliberately **not** `.disabled(model.isReconciling)`, unlike
                 // every button below it. A sweep in flight is a reason not to
@@ -404,21 +416,26 @@ public struct RepositoriesView: View {
         }
     }
 
-    /// The one closure the button, the double-click and the context menu share.
+    /// The one implementation the button, the double-click, the context menu
+    /// and ↩ all share.
     ///
-    /// Three entry points, one act — factored so they cannot drift, which is
-    /// the failure mode this repository has paid for elsewhere (three
-    /// hand-written switches over `VerifiedOutcome`, #135).
+    /// Four entry points, one act — factored so they cannot drift, which is the
+    /// failure mode this repository has paid for elsewhere (three hand-written
+    /// switches over `VerifiedOutcome`, #135). It takes the *action* rather than
+    /// the row because ↩ acts on `model.selectedRowBoardAction`, which is a
+    /// selection and not a row in hand; a row-shaped parameter would have made
+    /// the keyboard path a second copy.
     ///
     /// The window is raised only when the selection actually happened:
-    /// `showBoard` refuses a registration that has been forgotten since the
-    /// sweep, and bringing an unchanged board forward would answer the click
-    /// with a confident-looking no-op.
-    private func openBoard(_ row: RepoRow) {
-        guard case .open(let repoID) = row.boardAction, model.showBoard(repoID: repoID) else {
-            return
-        }
+    /// `showBoard` refuses a registration forgotten since the sweep, and
+    /// bringing an unchanged board forward would answer the act with a
+    /// confident-looking no-op. Returning whether it acted is what lets
+    /// `onKeyPress` say `.ignored` and leave ↩ to whatever else wants it.
+    @discardableResult
+    private func openBoard(_ action: RepoRowBoardAction) -> Bool {
+        guard case .open(let repoID) = action, model.showBoard(repoID: repoID) else { return false }
         openWindow(id: "board")
+        return true
     }
 
     /// Why pressing **Open board** is worth it, in the row's own name.

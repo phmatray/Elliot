@@ -178,6 +178,14 @@ struct ElliotApp: App {
                 .disabled(model.selectedCard == nil)
         }
 
+        // Going from "this repository wants attention" to its cards is the
+        // Repositories page's other half, and criterion 4 of #143 is the same
+        // position the Card menu above states: an act worth a button is an act
+        // worth a shortcut, and a shortcut with no menu item is invisible.
+        CommandMenu("Repository") {
+            OpenBoardMenuItem(model: model)
+        }
+
         // Everything the toolbar offers, reachable without a pointer and
         // discoverable by reading the menus.
         CommandGroup(after: .toolbar) {
@@ -256,6 +264,28 @@ private struct NewStoryMenuItem: View {
             openWindow(id: "newStory")
         }
         .keyboardShortcut("n")
+    }
+}
+
+/// Open Board for the Selected Repository, as a menu item.
+///
+/// ⚠️ The model is **passed in, never read from the environment**, for the
+/// reason spelled out on `NewStoryMenuItem` above: `@Environment(AppModel.self)`
+/// in a `Commands` tree compiles, passes every test, and kills the app at launch
+/// (#64, #84). This item is the second one written to that shape.
+private struct OpenBoardMenuItem: View {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Open Board for Selected Repository") {
+            guard case .open(let repoID) = model.selectedRowBoardAction,
+                model.showBoard(repoID: repoID)
+            else { return }
+            openWindow(id: "board")
+        }
+        .keyboardShortcut(.return, modifiers: .command)
+        .disabled({ if case .open = model.selectedRowBoardAction { false } else { true } }())
     }
 }
 
