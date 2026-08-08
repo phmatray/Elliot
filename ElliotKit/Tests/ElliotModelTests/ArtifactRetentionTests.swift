@@ -126,13 +126,16 @@ struct ArtifactRetentionTests {
 
     @Test("The defaults leave today's directory alone")
     func defaultsAreANoOpOnTodaysData() {
-        // The measurement from the issue: 730 files, 31 MB, all written in the
-        // last fortnight. Pinned here so a later change to either constant has to
-        // face what it does to the directory that motivated the feature.
+        // The directory that motivated the feature, as measured on the day it was
+        // built: 754 files, 73 MB, every one written inside the fortnight. Pinned
+        // here so a later change to either constant has to face what it does to
+        // that shape. (The issue quotes 730 files and 31 MB, three days earlier —
+        // the bytes had more than doubled by the time this ran, which is the
+        // argument for the feature rather than a discrepancy in it.)
         #expect(ArtifactRetention.keepEverythingYoungerThan == 14 * 24 * 3600)
         #expect(ArtifactRetention.byteCeiling == 512 * 1024 * 1024)
 
-        let todaysRuns = (0..<730).map { file("f\($0).ndjson", bytes: 42_000, daysOld: Double($0 % 14)) }
+        let todaysRuns = (0..<754).map { file("f\($0).ndjson", bytes: 97_000, daysOld: Double($0 % 14)) }
         #expect(ArtifactRetention.prunable(todaysRuns, protected: [], now: now).isEmpty)
     }
 

@@ -23,8 +23,13 @@ public struct ArtifactFile: Codable, Sendable, Hashable {
 /// `runs/`, `screenshots/` and `analyses/` are all written on purpose and all
 /// useful the day they are written; nothing here is a leak. The defect the rule
 /// closes is only that "useful the day it is written" and "kept for ever" had
-/// never been separated — measured at 730 files and 31 MB of `runs/` with no
-/// code anywhere that removes one.
+/// never been separated.
+///
+/// Measured on the author's machine: **730 files and 31 MB** of `runs/` when
+/// #167 was filed, and **754 files and 73 MB** three days later when it was
+/// implemented — the second figure being the more useful of the two, since the
+/// bytes more than doubled while the file count barely moved. Both are
+/// date-stamps rather than facts; what they establish is the direction.
 ///
 /// Pure, in `ElliotModel`, for the reason every rule here is: `now` is a
 /// parameter rather than a reading, `protected` is given rather than queried,
@@ -49,9 +54,10 @@ public enum ArtifactRetention {
     /// dares turn on.
     ///
     /// Chosen against the measurement rather than against taste: `runs/` holds
-    /// 31 MB today, so the first run of this sweep deletes nothing. A retention
-    /// rule whose first run removes something nobody expected is a retention
-    /// rule that gets reverted.
+    /// 73 MB, so the first run of this sweep deletes nothing — verified against a
+    /// copy of that directory, 754 files in and 754 out. A retention rule whose
+    /// first run removes something nobody expected is a retention rule that gets
+    /// reverted.
     public static let byteCeiling = 512 * 1024 * 1024
 
     /// Which of `files` may be removed.

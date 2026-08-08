@@ -99,17 +99,61 @@ struct ArtifactSweepWiringTests {
         #expect(detachIndex < runIndex)
     }
 
-    @Test("An empty report leaves the status line exactly as it was")
-    func anEmptySweepDoesNotTouchTheStatusLine() throws {
-        // The rule stated where it is applied, not only where it is computed:
-        // the assignment must be conditional on there being a sentence at all.
-        // Written as `status += report.sentence ?? ""` this test still passes and
-        // the status line still ends with a stray space, so the guard is on the
-        // *statement*, not on the string.
-        let source = try source
+    @Test("The sweep never writes to the status line")
+    func theSweepDoesNotTouchTheStatusLine() throws {
+        // ⛔ This is a regression test for a fix, not a style preference. The
+        // first attempt appended the sentence to `status` from inside the task,
+        // and it was unfixable by placement: the task shares the main actor with
+        // `start()`, so it resumes at the next suspension — which is
+        // `importIfNeeded`'s `await importer.importRepo(repo)`, whose very next
+        // statement assigns `status`. The message was destroyed within
+        // milliseconds on every launch that had one, and nothing else read the
+        // report, so it left no trace at all.
+        //
+        // Read the task's body rather than the whole file: `status` is assigned
+        // a dozen times in `start()` legitimately, and only the assignments
+        // *inside* this task are the bug.
+        let lines = lines(of: try source)
+        let buildIndex = try #require(lines.firstIndex { $0.contains("ArtifactSweeper(store:") })
+        let taskIndex = try #require(lines[buildIndex...].firstIndex { $0.contains("Task {") })
+        // Matched by brace depth rather than by indentation: keying the end of
+        // the body off a literal run of spaces makes this test fail on a
+        // reformat and pass on a real regression, which is the wrong way round.
+        var depth = 0
+        var end = taskIndex
+        for (offset, line) in lines[taskIndex...].enumerated() {
+            depth += line.filter { $0 == "{" }.count - line.filter { $0 == "}" }.count
+            if depth == 0 {
+                end = taskIndex + offset
+                break
+            }
+        }
+        let body = lines[taskIndex...end]
+        #expect(body.contains { $0.contains("artifactSweep = report") }, "the report is recorded")
         #expect(
-            source.contains("if let sentence = report.sentence"),
-            "the status line is only touched when there is something to say"
+            !body.contains { $0.contains("status =") || $0.contains("status +=") },
+            "and the status line, which any later writer owns, is left alone"
         )
+    }
+
+    @Test("The status bar shows the count only when a sweep removed something")
+    func theStatusBarRendersTheReportConditionally() throws {
+        // `swift test` cannot see layout, so what is held here is the same thing
+        // `RepositoriesSweepReportTests` holds: the shape of the source. The rule
+        // is the one the queue figure beside it already follows — a permanent
+        // "0 pruned" is furniture, and this strip has been pushed around by its
+        // own contents before.
+        let path = URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Sources/ElliotAppKit/BoardView.swift")
+        let board = try String(contentsOf: path, encoding: .utf8)
+
+        #expect(
+            board.contains("if let sweep = model.artifactSweep, let sentence = sweep.sentence"),
+            "the figure is conditional on there being something to report"
+        )
+        #expect(board.contains("pruned\""), "and it names the count")
     }
 }

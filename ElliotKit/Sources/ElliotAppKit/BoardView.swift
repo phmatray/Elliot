@@ -820,6 +820,21 @@ struct StatusBar: View {
                 )
             }
 
+            // Same rule as the queue above — only when there is one. With the
+            // shipped retention constants a launch prunes nothing, so this is
+            // absent on an ordinary day rather than reading "0 pruned"; and
+            // because it is derived from `artifactSweep` rather than pushed into
+            // `status`, nothing that speaks later can overwrite it.
+            if let sweep = model.artifactSweep, let sentence = sweep.sentence {
+                figure(
+                    text: "\(sweep.removed) pruned",
+                    tint: Palette.quiet,
+                    help: "\(sentence) Artefacts past the retention horizon, removed at launch.",
+                    spoken: sentence,
+                    window: "operations"
+                )
+            }
+
             figure(
                 text: MoneyFormat.usd(model.spentToday.totalUSD),
                 tint: model.isOverDailyCeiling ? Palette.refused : Palette.quiet,

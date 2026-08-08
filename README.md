@@ -356,9 +356,15 @@ and skips a file it cannot delete rather than giving up on the rest.
 Both numbers were chosen so the first run deletes **nothing** — verified against
 a copy of that real directory, 754 files in and 754 out. A retention rule whose
 first run removes something nobody expected is a retention rule that gets
-reverted. That it deletes *at all* was verified separately, on the same build, by
-stacking aged copies past the ceiling: 523 files and 50.8 MB went, and the status
-line said so. A no-op that is a no-op for the wrong reason would not be evidence.
+reverted. That it deletes *at all* was verified separately, on the same build
+with no constant patched, by stacking aged copies past the ceiling: 872 files
+went and the status bar said `872 pruned`. A no-op that is a no-op for the wrong
+reason would not be evidence.
+
+When a launch does prune something, the status bar carries a figure beside the
+worker and spend counts — the count in the strip, the byte total in its tooltip.
+When it prunes nothing, which is every ordinary day, there is no figure: a
+permanent "0 pruned" is furniture.
 
 ## Testing
 

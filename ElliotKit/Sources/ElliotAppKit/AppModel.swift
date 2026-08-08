@@ -593,27 +593,25 @@ public final class AppModel {
             // ones whose logs start being. Reading the runs table ahead of it
             // would read it one state behind reality.
             //
-            // After the status line has settled too, and that half is a race
-            // rather than a preference. This task shares the main actor with the
-            // rest of `start()`, so it can only run where `start()` suspends —
-            // and started any earlier, a sweep that finished inside one of those
-            // suspensions would append its sentence to a status line the
-            // assignment above then overwrote. It would go missing exactly when
-            // it had something to say.
-            //
             // Detached, because nothing on screen waits for it: it walks three
             // directories and unlinks files, to bound something nobody is looking
             // at. A failure inside cannot reach start-up either — `sweep()` does
             // not throw, by construction.
+            //
+            // ⛔ The result is *recorded*, never written into `status`. Appending
+            // to that line was the first attempt and it is unfixable by
+            // placement: this task shares the main actor with `start()`, so it
+            // resumes at whichever suspension comes next — which is
+            // `importIfNeeded`'s `await importer.importRepo(repo)`, whose very
+            // next statement assigns `status`. The sentence was overwritten
+            // within milliseconds, every time, and left no trace. `status` is a
+            // single narration owned by whoever spoke last; a fact that has to
+            // survive belongs in a field of its own, and the status bar renders
+            // it from there.
             let sweeper = ArtifactSweeper(store: store)
             Task { [weak self] in
                 let report = await sweeper.sweep()
-                guard let self else { return }
-                self.artifactSweep = report
-                // Appended rather than assigned, and only when there is something
-                // to say. With the shipped constants there is not — the ordinary
-                // launch leaves this line exactly as it found it.
-                if let sentence = report.sentence { self.status = "\(self.status) \(sentence)" }
+                self?.artifactSweep = report
             }
 
             // The first import is kicked from here, and the order above is
