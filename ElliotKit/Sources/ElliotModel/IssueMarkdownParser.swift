@@ -10,9 +10,13 @@ import Foundation
 /// error, no crash and no failing test, just a panel with less in it.
 ///
 /// Hand-written rather than a dependency: the output has to be `Sendable` under
-/// `swiftLanguageModes: [.v6]`, totality is the contract and a general-purpose
-/// library does not promise it, and this repository has no CI — a dependency
-/// that stops resolving would be discovered by a human at the wrong moment.
+/// `swiftLanguageModes: [.v6]`, and totality is the contract where a
+/// general-purpose library promises only best-effort parsing. Totality is a
+/// property of this type rather than of anyone's attention, which is why
+/// `ci.yml` does not make that reasoning weaker — CI catches a dependency that
+/// stops *resolving*, the loud failure, and nothing here pins a third-party
+/// parser's segmentation, so a bump that quietly drops a line still arrives
+/// with no red bar to miss.
 ///
 /// Three recognitions are deliberately narrower than CommonMark, each because
 /// being wrong costs more than being incomplete:
