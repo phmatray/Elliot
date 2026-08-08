@@ -32,7 +32,7 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1428 tests in 161 suites**, 5 of 5 samples on
+- **Full test:** `cd ElliotKit && swift test` (**1429 tests in 161 suites**, 5 of 5 samples on
   `fix/179-concurrent-pumps` on 2026-08-08 off `main` at `27e370f`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
@@ -82,7 +82,10 @@
       of the branch, so the whole +10/+3 is this branch's own three suites with nothing mixed in.
       **The transferable part is that the two halves fail independently**: the value is wrong when
       `main` gains tests, the stamp is wrong when `main` gains anything at all, and the stamp is the
-      cheaper one to keep true because it does not need a run to update.
+      cheaper one to keep true because it does not need a run to update. It then drifted once more
+      *inside* the same pull request — 1428 → 1429 — because the code-review pass added a test after
+      the line was written, which is the ⛔ bullet below arriving on schedule: the number was taken
+      from the run both times, never from adding one to the previous value.
   - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
     branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
     hours earlier. The instruction did not change: take your own baseline anyway. What changed is the

@@ -84,16 +84,52 @@ struct RunSchedulerShapeTests {
         )
     }
 
-    @Test("pump does not assign the whole pending array")
-    func pumpDoesNotRebuildTheQueue() {
+    /// The body of `private func pump() async {` up to the next declaration.
+    private func pumpBody() -> String {
         let code = Self.code
         guard let begin = code.range(of: "private func pump() async {"),
               let end = code.range(of: "\n    public func queueSnapshot() async -> [QueuedRun] {")
-        else {
-            Issue.record("pump() not found — this test's parser needs updating, not deleting")
+        else { return "" }
+        return String(code[begin.upperBound..<end.lowerBound])
+    }
+
+    /// A containment check *before* the read is a shortcut; the one that carries
+    /// the invariant has to sit after it. `drain` and `cancel` both take their id
+    /// out of `pending` synchronously and only then suspend to mark the row
+    /// `.cancelled`, so a pump whose read landed in that window resumes holding a
+    /// stale `.queued` value.
+    ///
+    /// This is the deterministic half, for the same reason Task 5 exists at all:
+    /// the behavioural evidence destroys itself. If the defect fires, `start`
+    /// saves `.running` over the `.cancelled` row, so the very state a test would
+    /// assert on is gone by the time it could look.
+    @Test("pump re-checks the queue after the read that suspends it")
+    func pumpRechecksContainmentAfterTheRead() {
+        let body = pumpBody()
+        #expect(!body.isEmpty, "pump() not found — this test's parser needs updating, not deleting")
+        guard let read = body.range(of: "await store.run(") else {
+            Issue.record("pump no longer reads the run — parser needs updating, not deleting")
             return
         }
-        let body = String(code[begin.upperBound..<end.lowerBound])
+        #expect(
+            body[read.upperBound...].contains("pending.contains(runID)"),
+            """
+            `pump` decides on a run without re-checking that it is still in the \
+            queue after the read that suspended it. `drain` and `cancel` remove \
+            their id from `pending` and only then suspend to mark the row \
+            `.cancelled`, so this pump can be holding a stale `.queued` value — \
+            starting it spawns a `claude` for a run the user just discarded, and \
+            `start` then writes `.running` over the `.cancelled` row so the \
+            cancellation disappears too. For `merge-pr` that is a merge to `main` \
+            after being told to stop.
+            """
+        )
+    }
+
+    @Test("pump does not assign the whole pending array")
+    func pumpDoesNotRebuildTheQueue() {
+        let body = pumpBody()
+        #expect(!body.isEmpty, "pump() not found — this test's parser needs updating, not deleting")
         #expect(
             !body.contains("pending ="),
             """

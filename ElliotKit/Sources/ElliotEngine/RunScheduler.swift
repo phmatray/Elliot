@@ -268,10 +268,24 @@ public actor RunScheduler: RunLaunching {
         // had just cancelled. Both callers fire on their own schedule — a run
         // finishing while the user drags a card is the ordinary case.
         for runID in pending {
-            // Gone while we awaited — cancelled, drained, or claimed by a pump
-            // that re-entered here. Not ours to decide on any more.
+            // Already gone before we even read it — nothing to do, and no store
+            // round trip worth spending. Purely a shortcut: the guard that
+            // matters is the one below, after the suspension.
             guard pending.contains(runID) else { continue }
-            guard let run = try? await store.run(id: runID), run.state == .queued else {
+            // ⛔ `pending.contains` is re-checked *after* the await, and that
+            // position is the whole point. `drain` and `cancel` both take their
+            // id out of `pending` synchronously and only then suspend to mark the
+            // row `.cancelled`, so a pump whose `store.run` read landed inside
+            // that window comes back holding a stale `.queued` value. Deciding on
+            // it spawns a `claude` for a run the user just discarded — and
+            // `start` then saves `.running` over the `.cancelled` row, so the
+            // cancellation disappears as well. For `merge-pr` that is a merge to
+            // `main` after being told to stop. Checking containment only *before*
+            // the read cannot see any of it.
+            guard let run = try? await store.run(id: runID),
+                  pending.contains(runID),
+                  run.state == .queued
+            else {
                 pending.removeAll { $0 == runID }
                 lastRefusals.removeValue(forKey: runID)
                 continue
@@ -371,23 +385,34 @@ public actor RunScheduler: RunLaunching {
         updated.startedAt = Date()
         inFlight[run.id] = updated
 
-        guard let repo = try? await store.repo(id: run.repoID) else {
+        // Read with `do`/`catch` rather than `try?`, because the two ways this can
+        // fail need different words. `try?` collapses "no such row" and "the read
+        // threw" into one nil, and under the `skillRun.repoID` foreign key
+        // (`onDelete: .cascade`) the *missing row* case cannot happen: such a run
+        // cannot be inserted, and deleting a repository deletes its runs. So a
+        // single message naming the row as absent would describe, to the operator,
+        // the one cause that is impossible — while the cause that did occur went
+        // unrecorded anywhere.
+        var loadedRepo: Repo?
+        var repoReadError: Error?
+        do {
+            loadedRepo = try await store.repo(id: run.repoID)
+        } catch {
+            repoReadError = error
+        }
+
+        guard let repo = loadedRepo else {
             // Nothing will ever call `finish` for this run, so the claim has to
             // be released here or the slot leaks for the life of the process.
             inFlight[run.id] = nil
             // And the row must reach a terminal state: `pump` has already taken
             // it out of `pending`, so a `.queued` row nothing holds is a run
             // that has silently disappeared until the next launch sweep.
-            //
-            // ⚠️ Not reachable by a *missing* repository row: `skillRun.repoID`
-            // carries a foreign key onto `repo` (`onDelete: .cascade`), so such a
-            // run cannot be inserted and deleting a repository deletes its runs.
-            // What reaches here is a read that *threw* — `try?` collapses that
-            // into the same branch — which is exactly the case worth failing
-            // loudly rather than returning from in silence.
             updated.state = .failed
             updated.endedAt = Date()
-            updated.resultText = "The repository this run belongs to no longer exists."
+            updated.resultText = repoReadError.map {
+                "Elliot could not read this run's repository: \($0.localizedDescription)"
+            } ?? "The repository this run belongs to no longer exists."
             try? await store.saveRun(updated)
             continuation.yield(.runFinished(
                 runID: run.id, cardID: run.cardID, state: .failed, outcome: nil
