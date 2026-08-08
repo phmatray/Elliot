@@ -124,7 +124,7 @@ jobs:
     # ⚠️ This literal and `ci.yml`'s must stay equal, and the parity step below is what enforces it
     # rather than this sentence. Changing one without the other is the silent failure the header
     # describes.
-    runs-on: macos-26
+    runs-on: macos-15
     # Was 30 while this job compiled the package. It now runs two string comparisons, so a run that
     # takes minutes is a hung runner rather than a slow build, and the bound should say so.
     timeout-minutes: 10
