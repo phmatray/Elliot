@@ -204,18 +204,6 @@ public struct GHRepoSummary: Codable, Sendable, Hashable {
         self.isEmpty = isEmpty
     }
 
-    public init(from decoder: any Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        nameWithOwner = try c.decode(String.self, forKey: .nameWithOwner)
-        visibility = try c.decode(String.self, forKey: .visibility)
-        defaultBranchRef = try c.decodeIfPresent(GHRepoInfo.BranchRef.self, forKey: .defaultBranchRef)
-        isFork = try c.decodeIfPresent(Bool.self, forKey: .isFork) ?? false
-        isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
-        url = try c.decodeIfPresent(String.self, forKey: .url)
-        primaryLanguage = try c.decodeIfPresent(GHLanguage.self, forKey: .primaryLanguage)
-        isEmpty = try c.decodeIfPresent(Bool.self, forKey: .isEmpty) ?? false
-    }
-
     public var defaultBranch: String { defaultBranchRef?.name ?? "main" }
     public var repoVisibility: RepoVisibility { RepoVisibility(ghVisibility: visibility) }
     public var name: String { String(nameWithOwner.split(separator: "/").last ?? "") }

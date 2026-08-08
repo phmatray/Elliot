@@ -118,14 +118,23 @@ struct GHRepoSummaryLanguageTests {
         #expect(!decoded.isCode)
     }
 
-    /// `isEmpty` must default, because every existing call site constructs a
-    /// summary without it.
-    @Test("An older payload without isEmpty still decodes")
-    func missingIsEmptyDefaults() throws {
-        let json = """
-            {"nameWithOwner":"phmatray/Foo","visibility":"PUBLIC","isFork":false,"isArchived":false}
-            """
-        let decoded = try JSONDecoder().decode(GHRepoSummary.self, from: Data(json.utf8))
-        #expect(!decoded.isEmpty)
+    /// The `--json` list is pinned, so a payload missing one of these means the
+    /// request changed underneath us. `isFork == false` would then put every
+    /// fork back in scope — the exact defect measured in the Python tooling,
+    /// where `isFork` is requested and never read. Throwing is the loud
+    /// failure; defaulting is the silent one, and this subsystem exists to
+    /// refuse the silent one.
+    @Test("A payload missing a scope field is refused, not defaulted")
+    func missingScopeFieldThrows() {
+        let payloads = [
+            #"{"nameWithOwner":"p/F","visibility":"PUBLIC","isArchived":false,"isEmpty":false}"#,
+            #"{"nameWithOwner":"p/F","visibility":"PUBLIC","isFork":false,"isEmpty":false}"#,
+            #"{"nameWithOwner":"p/F","visibility":"PUBLIC","isFork":false,"isArchived":false}"#,
+        ]
+        for json in payloads {
+            #expect(throws: DecodingError.self) {
+                try JSONDecoder().decode(GHRepoSummary.self, from: Data(json.utf8))
+            }
+        }
     }
 }
