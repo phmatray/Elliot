@@ -177,6 +177,104 @@ struct SlashCommandBuilderTests {
         #expect(prompt == #"/ai-migration-kit:merge-pr 279 --follow-up "real one""#)
     }
 
+    // MARK: - The labels the card asked for
+
+    /// The common path must not move. Every other test in this file constructs
+    /// `.createIssue(idea:)` without labels and asserts the string this skill
+    /// has always been sent; they are unedited, so they say the same thing from
+    /// a second direction. This one says it on purpose, against a literal.
+    @Test("A card with no labels produces exactly the prompt it produced before")
+    func noLabelsIsUnchanged() {
+        for strategy in PromptStrategy.allCases {
+            let without = SlashCommandBuilder.prompt(
+                for: .createIssue(idea: "Add a dark mode toggle."), strategy: strategy
+            )
+            let empty = SlashCommandBuilder.prompt(
+                for: .createIssue(idea: "Add a dark mode toggle.", labels: []), strategy: strategy
+            )
+            #expect(without == empty)
+            #expect(!without.contains("--label"), "\(strategy) emitted a flag for no labels")
+        }
+        #expect(
+            SlashCommandBuilder.prompt(for: .createIssue(idea: "Add a dark mode toggle."))
+                == "/ai-migration-kit:create-issue Add a dark mode toggle."
+        )
+    }
+
+    @Test("create-issue carries one flag per label, after the idea")
+    func createIssueCarriesLabels() {
+        let prompt = SlashCommandBuilder.prompt(
+            for: .createIssue(idea: "Add a dark mode toggle.", labels: ["bug", "documentation"])
+        )
+        #expect(prompt == #"/ai-migration-kit:create-issue Add a dark mode toggle. --label "bug" --label "documentation""#)
+    }
+
+    /// The same sanitiser as `--follow-up`, because it is the same hazard: the
+    /// quotes are structural in the argv the skill parses, so one inside the
+    /// payload would close the flag early and leave the rest as stray text.
+    @Test("Quotes and backslashes in a label are escaped exactly as a follow-up's are")
+    func labelQuotesAreEscaped() {
+        let prompt = SlashCommandBuilder.prompt(
+            for: .createIssue(idea: "Ship it", labels: [#"needs "review""#, #"C:\path\"#])
+        )
+        #expect(prompt == #"/ai-migration-kit:create-issue Ship it --label "needs \"review\"" --label "C:\\path\\""#)
+        // Four unescaped quotes: two flags' worth of delimiters, and nothing else.
+        #expect(countUnescapedQuotes(in: prompt) == 4)
+    }
+
+    @Test("Blank labels are dropped rather than emitted as empty flags")
+    func blankLabelsAreDropped() {
+        let prompt = SlashCommandBuilder.prompt(
+            for: .createIssue(idea: "Ship it", labels: ["", "   ", "\n", "bug"])
+        )
+        #expect(prompt == #"/ai-migration-kit:create-issue Ship it --label "bug""#)
+    }
+
+    /// `.naturalLanguage` exists so the slash form can be abandoned in one line
+    /// if the CLI ever stops expanding it. A fallback that silently dropped the
+    /// labels would file differently-labelled issues from the same card
+    /// depending on a strategy nobody chose per-card.
+    @Test("The natural-language fallback names the labels too", arguments: nastyTitles)
+    func naturalLanguageKeepsTheLabels(label: String) {
+        let prompt = SlashCommandBuilder.prompt(
+            for: .createIssue(idea: "Add a dark mode toggle.", labels: [label]),
+            strategy: .naturalLanguage
+        )
+        #expect(prompt.contains("label"), "the labels vanished from \"\(prompt)\"")
+        #expect(!prompt.contains("\n"), "newline survived in \"\(prompt)\"")
+        #expect(!prompt.contains("  "), "double space survived in \"\(prompt)\"")
+    }
+
+    @Test("A prompt carrying labels is still a single line", arguments: nastyTitles)
+    func labelledPromptsAreSingleLine(label: String) {
+        for strategy in PromptStrategy.allCases {
+            let prompt = SlashCommandBuilder.prompt(
+                for: .createIssue(idea: "A story\nover two lines", labels: [label, "bug"]),
+                strategy: strategy
+            )
+            #expect(!prompt.contains("\n"), "newline survived in \"\(prompt)\"")
+            #expect(!prompt.contains("\t"), "tab survived in \"\(prompt)\"")
+            #expect(!prompt.contains("  "), "double space survived in \"\(prompt)\"")
+        }
+    }
+
+    /// Labels change nothing about the other two skills, and the invariant that
+    /// matters most in this file is the one they carry. Stated here rather than
+    /// assumed, because `--label` is the first thing ever appended to a prompt
+    /// that is not `merge-pr`'s.
+    @Test(
+        "Labels on a card do not disturb the implement-issue first digit run",
+        arguments: [4, 47, 171, 1234]
+    )
+    func labelsDoNotDisturbTheIssueNumber(issue: Int) {
+        for strategy in PromptStrategy.allCases {
+            let prompt = SlashCommandBuilder.prompt(
+                for: .implementIssue(issueNumber: issue), strategy: strategy
+            )
+            #expect(firstDigitRun(of: prompt) == issue)
+        }
+    }
+
     // MARK: - Metadata used by the scheduler
 
     @Test("Each action reports the skill and target the scheduler keys on")

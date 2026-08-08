@@ -38,10 +38,19 @@ public struct NewCardWindow: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    CardFieldsEditor(draft: $draft)
+                    CardFieldsEditor(
+                        draft: $draft,
+                        repositoryLabels: repoID.map { model.labels(for: $0) } ?? .notAsked
+                    )
                 }
                 .padding(18)
             }
+            // The sheet shares `CardFieldsEditor`, so it shows the same label
+            // picker — and therefore has to fill the same list, or it would
+            // offer nothing and say the repository has none. `add()` carries
+            // what is ticked through to the card; a control here that did not
+            // would be the discarding editor `Kind` exists to prevent.
+            .task(id: repoID) { if let repoID { await model.loadLabels(for: repoID) } }
 
             Divider()
 
@@ -66,7 +75,8 @@ public struct NewCardWindow: View {
         guard let repoID else { return }
         Task {
             await model.createCard(
-                repoID: repoID, title: draft.title, story: draft.story, body: draft.body
+                repoID: repoID, title: draft.title, story: draft.story, body: draft.body,
+                labels: draft.labels
             )
             dismiss()
         }
@@ -130,7 +140,25 @@ struct MergeConfirmation: View {
                 Button("Merge PR \(pr)") {
                     Task { await model.confirmMerge(cardID: pending.cardID, followUps: cleaned) }
                 }
-                .keyboardShortcut(.defaultAction)
+                // ⛔ No `.keyboardShortcut(.defaultAction)`, and its absence is
+                // load-bearing — see `DefaultAction`, which lists this control
+                // among the ones deliberately denied one.
+                //
+                // It carried one until it was measured against the panel it
+                // actually renders in. `PanelLayout.headerRegions` returns
+                // `[.mergeConfirmation]` and only *then* checks `isEditing`, so
+                // this confirmation deliberately survives edit mode; on a card
+                // imported from a pull request that closes no issue —
+                // `issueNumber == nil`, so "Edit story" shows; `prNumber != nil`,
+                // so a merge can be armed — Return had two claimants on screen
+                // at once and resolved between saving an edit and merging to a
+                // default branch on github.com, with nothing in the code
+                // deciding.
+                //
+                // The fix is not to scope Return better. The one act in this
+                // product that cannot be taken back must be reached by pressing
+                // it, which is the same argument `AnalysisPanelView` makes for
+                // its Start button one panel over.
                 .tint(Palette.irreversible)
             }
         }

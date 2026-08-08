@@ -297,7 +297,7 @@ struct RunLogRowTests {
 
     @Test("A run that said nothing has no claim side")
     func emptyProseIsNoClaim() {
-        var run = claimingRun(.closedUnmerged)
+        var run = claimingRun(.closedUnmerged(number: nil, url: nil, branch: nil))
         run.resultText = "   \n "
         #expect(RunVerdict.of(run).itSaid == nil)
         run.resultText = nil
@@ -312,10 +312,10 @@ struct RunLogRowTests {
             (.noIssueCreated(reason: "already covered by #12"), "No issue — already covered by #12"),
             (.prOpen(number: 72, url: "u", isDraft: true, branch: "feat/72-x"), "Draft PR 72 on feat/72-x"),
             (.prOpen(number: 72, url: "u", isDraft: false, branch: "feat/72-x"), "PR 72 on feat/72-x"),
-            (.merged(commitSHA: "0123456789abcdef"), "Merged as 0123456"),
-            (.merged(commitSHA: nil), "Merged"),
+            (.merged(commitSHA: "0123456789abcdef", number: nil, url: nil, branch: nil), "Merged as 0123456"),
+            (.merged(commitSHA: nil, number: nil, url: nil, branch: nil), "Merged"),
             (.notMerged(reason: "CI is red"), "Not merged — CI is red"),
-            (.closedUnmerged, "Closed without merging"),
+            (.closedUnmerged(number: nil, url: nil, branch: nil), "Closed without merging"),
             (.unverified(reason: "no PR in the log"), "Unverified — no PR in the log"),
         ]
         for (outcome, expected) in cases {

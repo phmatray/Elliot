@@ -19,6 +19,11 @@ public struct CardDraft: Sendable, Hashable {
     public var criteria: [String]
     public var note: String
 
+    /// The labels this card asks its issue to carry, in the order they were
+    /// chosen. Never part of `isValid`: a card with no labels is a perfectly
+    /// good card, and it is the common one.
+    public var labels: [String]
+
     public init(
         title: String = "",
         isStory: Bool = true,
@@ -26,7 +31,8 @@ public struct CardDraft: Sendable, Hashable {
         want: String = "",
         benefit: String = "",
         criteria: [String] = [""],
-        note: String = ""
+        note: String = "",
+        labels: [String] = []
     ) {
         self.title = title
         self.isStory = isStory
@@ -35,6 +41,7 @@ public struct CardDraft: Sendable, Hashable {
         self.benefit = benefit
         self.criteria = criteria.isEmpty ? [""] : criteria
         self.note = note
+        self.labels = labels
     }
 
     /// Seeds a draft from an existing card. The story fields keep their
@@ -49,7 +56,8 @@ public struct CardDraft: Sendable, Hashable {
             want: story?.want ?? "",
             benefit: story?.benefit ?? "",
             criteria: story?.acceptanceCriteria ?? [],
-            note: card.body
+            note: card.body,
+            labels: card.labels
         )
     }
 
@@ -111,6 +119,34 @@ public struct CardDraft: Sendable, Hashable {
         guard criteria.indices.contains(index) else { return }
         criteria.remove(at: index)
         if criteria.isEmpty { criteria = [""] }
+    }
+
+    /// Adds a label the card does not ask for yet, or takes one off.
+    ///
+    /// A mutation on the draft rather than set arithmetic inside the picker's
+    /// closure, for the reason the rest of this type exists: `swift test` cannot
+    /// see a SwiftUI body, so a rule written there is a rule nothing can hold.
+    ///
+    /// Case-insensitive, because GitHub is — it refuses a second casing of a
+    /// label that exists. A toggle that read `Bug` and `bug` as two labels would
+    /// let one card ask for both, draw two chips for one label, and send
+    /// `--label "Bug" --label "bug"` to a skill that can only apply one.
+    ///
+    /// Appends rather than sorting: the order is the writer's, and a list that
+    /// reshuffled itself as you clicked would read as something going wrong.
+    public mutating func toggleLabel(_ name: String) {
+        let wanted = name.trimmed()
+        guard !wanted.isEmpty else { return }
+        if let existing = labels.firstIndex(where: { $0.lowercased() == wanted.lowercased() }) {
+            labels.remove(at: existing)
+        } else {
+            labels.append(wanted)
+        }
+    }
+
+    /// Whether the card already asks for this label, under any casing.
+    public func asksFor(_ name: String) -> Bool {
+        labels.contains { $0.lowercased() == name.trimmed().lowercased() }
     }
 
     /// The story this draft produces, blank criteria dropped. `nil` in note mode.

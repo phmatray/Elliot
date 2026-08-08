@@ -27,6 +27,13 @@ public final class AppModel {
     public private(set) var runsByCard: [UUID: [SkillRun]] = [:]
     public private(set) var globalChecks: [CheckResult] = []
     public private(set) var repoChecks: [UUID: [CheckResult]] = [:]
+
+    /// What the card editor may claim about each repository's labels.
+    ///
+    /// Absent means *nobody has asked yet*, which `labels(for:)` reports as
+    /// `.unavailable` — a third silence that is honestly the same as the second
+    /// one: nothing has been established. The editor asks on open.
+    private var repoLabels: [UUID: RepositoryLabels] = [:]
     public private(set) var status: String = "Starting…"
     public private(set) var isReady = false
     public private(set) var isImporting = false
@@ -105,6 +112,14 @@ public final class AppModel {
     /// sentence beside the board. Zero means every row read, which is why a
     /// healthy board says nothing.
     public private(set) var unreadableRepoCount = 0
+
+    /// What the launch-time artefact sweep removed, once it has finished.
+    ///
+    /// `nil` until then, and that is not the same as `SweepReport()`: "no sweep
+    /// has finished" is a fact about this launch, "a sweep found nothing" is a
+    /// fact about the directories. Only the second is worth rendering, and only
+    /// the second is what `SweepReport.sentence` speaks for.
+    public private(set) var artifactSweep: SweepReport?
 
     /// Which of the board's four screens is the true one.
     ///
@@ -576,6 +591,36 @@ public final class AppModel {
                 ? "Ready."
                 : "Ready — recovered \(summary.orphanedRuns == 1 ? "1 interrupted run" : "\(summary.orphanedRuns) interrupted runs")."
 
+            // Housekeeping: bound `runs/`, `screenshots/` and `analyses/`, which
+            // nothing else has ever removed a file from.
+            //
+            // *After* the reconciler, and that is the load-bearing half of the
+            // placement: the runs it has just marked failed are exactly the ones
+            // whose logs stop being protected, and the ones it re-queued are the
+            // ones whose logs start being. Reading the runs table ahead of it
+            // would read it one state behind reality.
+            //
+            // Detached, because nothing on screen waits for it: it walks three
+            // directories and unlinks files, to bound something nobody is looking
+            // at. A failure inside cannot reach start-up either — `sweep()` does
+            // not throw, by construction.
+            //
+            // ⛔ The result is *recorded*, never written into `status`. Appending
+            // to that line was the first attempt and it is unfixable by
+            // placement: this task shares the main actor with `start()`, so it
+            // resumes at whichever suspension comes next — which is
+            // `importIfNeeded`'s `await importer.importRepo(repo)`, whose very
+            // next statement assigns `status`. The sentence was overwritten
+            // within milliseconds, every time, and left no trace. `status` is a
+            // single narration owned by whoever spoke last; a fact that has to
+            // survive belongs in a field of its own, and the status bar renders
+            // it from there.
+            let sweeper = ArtifactSweeper(store: store)
+            Task { [weak self] in
+                let report = await sweeper.sweep()
+                self?.artifactSweep = report
+            }
+
             // The first import is kicked from here, and the order above is
             // load-bearing — do not reshuffle it without reading this (#120).
             //
@@ -804,7 +849,16 @@ public final class AppModel {
 
     // MARK: - Observation
 
-    private func observe(store: BoardStore) {
+    /// Internal rather than `private` so a test can start the **real**
+    /// observation instead of a four-line replica of it.
+    ///
+    /// `reorder`'s cross-column guard reads `cards`, and `cards` has exactly one
+    /// writer: the pump below. A suite that re-implemented it would be asserting
+    /// against its own copy — the trap that makes a measurement describe its
+    /// rendering rather than its subject. Everything started here is
+    /// store-backed, so it costs a test no network, no clock and no process.
+    /// `shutdown()` cancels all of it. See `ReorderGlueTests`.
+    func observe(store: BoardStore) {
         observeMoveAudits(store: store)
         let cardObservation = store.observeCards()
         observationTasks.append(Task { [weak self] in
@@ -1281,10 +1335,12 @@ public final class AppModel {
     }
 
     public func createCard(
-        repoID: UUID, title: String, story: UserStory?, body: String
+        repoID: UUID, title: String, story: UserStory?, body: String, labels: [String] = []
     ) async {
         guard let board else { return }
-        _ = try? await board.createCard(repoID: repoID, title: title, body: body, story: story)
+        _ = try? await board.createCard(
+            repoID: repoID, title: title, body: body, story: story, labels: labels
+        )
     }
 
     public func deleteCard(id: UUID) async {
@@ -1303,7 +1359,8 @@ public final class AppModel {
         }
         do {
             try await board.updateCard(
-                id: id, title: draft.title, body: draft.body, story: draft.story
+                id: id, title: draft.title, body: draft.body, story: draft.story,
+                labels: draft.labels
             )
             return true
         } catch {
@@ -1519,6 +1576,38 @@ public final class AppModel {
         prStatuses[card.id]?.resolved(now: Date(), currentHeadOid: nil)
     }
 
+    // MARK: - The labels a repository has
+
+    /// What is currently known about `repoID`'s labels.
+    ///
+    /// `.notAsked` until a lookup has actually run — **not** `.unavailable`,
+    /// which is a claim that `gh` was asked and did not answer. It read
+    /// `.unavailable` until code review caught it, and the cost was the editor
+    /// asserting *"gh did not answer for this repository"* for the whole
+    /// duration of every healthy lookup, and for ever on a board whose
+    /// `toolConfig` is still nil.
+    public func labels(for repoID: UUID) -> RepositoryLabels {
+        repoLabels[repoID] ?? .notAsked
+    }
+
+    /// Reads a repository's labels through `gh`, for the card editor's picker.
+    ///
+    /// One `gh label list` per open, not per keystroke, and it does **not**
+    /// cache a failure as an answer — `RepositoryLabels(ghAnswer:)` maps a
+    /// throw to `.unavailable`, so the next open asks again rather than
+    /// remembering that the network was down once.
+    ///
+    /// Nothing here refuses anything. A card may ask for a label this call
+    /// could not confirm; the editor marks it, and the card keeps recording
+    /// what someone asked for. That is criterion 6, and it is why this is a
+    /// read and not a validator.
+    public func loadLabels(for repoID: UUID) async {
+        guard let toolConfig, let repo = repos.first(where: { $0.id == repoID }) else { return }
+        let gh = GHClient(config: toolConfig)
+        let answer = try? await gh.labels(repo: repo.nameWithOwner)
+        repoLabels[repoID] = RepositoryLabels(ghAnswer: answer)
+    }
+
     // MARK: - Repos
 
     public func addRepo(path: String) async {
@@ -1656,6 +1745,13 @@ public final class AppModel {
     /// fix that failed quietly reads exactly like one that worked, which is the
     /// failure mode this page exists to remove.
     public func apply(_ fix: RepoFix) async {
+        // The one destructive fix on this page goes through the confirmation.
+        // Gating here rather than at the button covers every caller of
+        // `.forget`, and leaves the row's button untouched.
+        if case .forget(let repoID) = fix {
+            await requestForget(repoID: repoID, origin: .repositories)
+            return
+        }
         guard let registry else { return }
         let outcome = await registry.apply(fix, layout: layout)
         status = outcome.detail
@@ -1806,8 +1902,93 @@ public final class AppModel {
         try? await store?.saveRepo(repo)
     }
 
-    public func removeRepo(id: UUID) async {
-        try? await store?.deleteRepo(id: id)
+    /// A forget waiting for an answer.
+    ///
+    /// One optional rather than a per-screen flag: both screens present the same
+    /// dialog from this, so a second one cannot appear with different words.
+    public struct ForgetRequest: Identifiable, Sendable, Hashable {
+        /// Which button asked, and therefore which deleter runs on confirm.
+        /// Preflight deletes through the store; the Repositories page goes back
+        /// through `RepoRegistryService` so it keeps its outcome sentence and
+        /// its row refresh. The *confirmation* is what had to exist once.
+        public enum Origin: Sendable, Hashable { case preflight, repositories }
+
+        public let id: UUID
+        public let displayName: String
+        public let path: String
+        public let impact: ForgetImpact
+        public let origin: Origin
+
+        public var prompt: ForgetPrompt {
+            ForgetPrompt(impact: impact, displayName: displayName, path: path)
+        }
+    }
+
+    public private(set) var forgetRequest: ForgetRequest?
+
+    /// Counts what would go, then asks. Nothing is deleted here.
+    ///
+    /// A failure to count refuses the whole act rather than falling through to a
+    /// dialog with no numbers in it: a gate that fails open is not a gate, and a
+    /// vague warning is what this replaced.
+    public func requestForget(repoID: UUID, origin: ForgetRequest.Origin) async {
+        guard let store, let repo = repos.first(where: { $0.id == repoID }) else { return }
+        do {
+            let impact = try await store.forgetImpact(repoID: repoID)
+            forgetRequest = ForgetRequest(
+                id: repoID, displayName: repo.displayName, path: repo.path,
+                impact: impact, origin: origin)
+        } catch {
+            status = "Could not work out what forgetting \(repo.displayName) would delete: "
+                + error.localizedDescription
+        }
+    }
+
+    public func cancelForget() {
+        forgetRequest = nil
+    }
+
+    /// Takes the request rather than reading `forgetRequest`, and that is
+    /// load-bearing, not a style choice.
+    ///
+    /// SwiftUI clears `isPresented` **synchronously** as it dismisses the
+    /// dialog, and the Forget button's action can only be `Task { … }` because
+    /// this is `async`. So the modifier's `set:` — which treats a dismissal as a
+    /// cancel — always runs first, and a no-argument version reading
+    /// `forgetRequest` would find it nil and return at its guard: the dialog
+    /// would close, the status bar would stay quiet, and nothing would be
+    /// deleted. The button would look like it worked. Handing the value in is
+    /// the same fix as `presenting:` one layer up (#9).
+    public func confirmForget(_ request: ForgetRequest) async {
+        // Idempotent: the dismissal usually cleared it already, but a
+        // programmatic confirm must not leave a stale prompt behind.
+        forgetRequest = nil
+        switch request.origin {
+        case .preflight:
+            guard let store else {
+                status = "Could not forget \(request.displayName): the board is not open yet."
+                return
+            }
+            do {
+                try await store.deleteRepo(id: request.id)
+                status = "Forgot \(request.displayName). The clone on disk is untouched."
+            } catch {
+                // `try?` here would report a completed forget over a registration
+                // that survived — the failure mode `apply(_:)` exists to avoid.
+                status = "Could not forget \(request.displayName): "
+                    + error.localizedDescription
+            }
+        case .repositories:
+            guard let registry else {
+                status = "Could not forget \(request.displayName): the repository "
+                    + "registry is not ready."
+                return
+            }
+            let outcome = await registry.apply(.forget(repoID: request.id), layout: layout)
+            status = outcome.detail
+            await refreshRepoRows()
+            lastFixOutcome = FixOutcome(detail: outcome.detail, succeeded: outcome.succeeded)
+        }
     }
 
     public func refreshRepoChecks(using service: PreflightService? = nil) async {
@@ -2202,6 +2383,23 @@ public final class AppModel {
     /// `Scripts/fake-gh.sh` so no real `gh` is involved.
     func testOnlyAttachImporter(_ importer: GitHubImportService) {
         self.importer = importer
+    }
+
+    /// Puts a real board behind the model without `start()`.
+    ///
+    /// Every seam above deliberately leaves `board` nil so a seeded model cannot
+    /// write. `reorder` is the one rule that cannot be proved under that
+    /// arrangement: its first line is `guard let board`, so with no board it
+    /// returns before deciding anything, and the assertion would pass for a
+    /// method whose body never ran.
+    ///
+    /// What needs proving is not the arithmetic — `CardReorderTests` owns that,
+    /// purely — but the *glue* #49's criterion 2 is about: a cross-column drop
+    /// performs the column move first, and a refused one places nothing. That
+    /// step sits between two tested ends and had no test of its own, which is
+    /// the same gap `CaretAnchorTests` was written to close one layer up.
+    func testOnlyAttachBoard(_ board: BoardService) {
+        self.board = board
     }
 
     /// Puts an analysis service behind the model without `start()`.

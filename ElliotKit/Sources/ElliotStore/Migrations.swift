@@ -152,6 +152,39 @@ enum Migrations {
             }
         }
 
+        // v9, additive: the labels a card asks its issue to carry.
+        //
+        // NOT NULL with a `'[]'` default, where v2's `visibility` and v7's
+        // `angle` are both nullable — and the difference is not a style choice.
+        // Those two are `Optional` on `Card`, so a NULL decodes as "nothing was
+        // said". `labels` is a non-optional `[String]`, and Swift's synthesised
+        // decoder does not fall back to a property's default value: a NULL
+        // column would throw `keyNotFound` on **every card written before this
+        // migration**, which presents as a board that opens onto nothing and
+        // blames the store rather than as a migration that went wrong.
+        // `MigrationsTests` inserts a v8 card and reads it back for exactly
+        // that reason.
+        //
+        // Text holding JSON, like `extraAllowedTools` and `permissionDenials`
+        // before it — GRDB encodes a `[String]` that way for free, and a
+        // separate `cardLabel` table would buy ordering and referential
+        // integrity this does not want: the order is the writer's, and the
+        // whole point of the field is that it may name a label the repository
+        // does **not** have.
+        //
+        // No backfill, deliberately, and it is the one place this differs from
+        // v7. The angle could be recovered because `storyProposal` had recorded
+        // it since v4; nothing anywhere has ever recorded which labels an
+        // existing card wanted. Deriving them now — from the card's angle, from
+        // the words in its title — would be the invisible guess this feature
+        // exists to replace, written into the database where nobody would ever
+        // see it happen.
+        migrator.registerMigration("v9_cardLabels") { db in
+            try db.alter(table: "card") { t in
+                t.add(column: "labels", .text).notNull().defaults(to: "[]")
+            }
+        }
+
         return migrator
     }
 

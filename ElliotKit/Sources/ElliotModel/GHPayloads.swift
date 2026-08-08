@@ -95,8 +95,12 @@ public struct GHPullRequest: Codable, Sendable, Hashable {
     /// `commitSHA` is `nil` because `gh pr list` does not carry it; the merge
     /// commit is something only `GHMergeStatus` knows.
     public var verifiedOutcome: VerifiedOutcome {
-        if isMerged { return .merged(commitSHA: nil) }
-        if isClosedUnmerged { return .closedUnmerged }
+        if isMerged {
+            return .merged(commitSHA: nil, number: number, url: url, branch: headRefName)
+        }
+        if isClosedUnmerged {
+            return .closedUnmerged(number: number, url: url, branch: headRefName)
+        }
         return .prOpen(number: number, url: url, isDraft: isDraft, branch: headRefName)
     }
 }
