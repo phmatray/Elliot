@@ -67,16 +67,24 @@ permissions:
 # ### The runs that measured it (#133)
 #
 # Everything above this line is an argument, and an argument is what #133 refused to accept: the
-# behaviour is a runtime one, so reading these five lines cannot show that they work. It was measured
+# behaviour is a runtime one, so reading the three lines below cannot show that they work. It was measured
 # instead, before and against the block, on one branch:
 #
-#   • without it — `feat/21-ci-build-and-test` on 2026-08-06, while the block was not yet in the file
-#     (verified at `c6fea2e` and `e2c64e8`): run 31120918379 was superseded 53 s in and went on
-#     building for another 686 s. Three superseded pairs that day, and in every one the earlier run
-#     finished.
-#   • with it — the same branch a day later, the block present at `546eb00`: run 31178879876 was
-#     superseded 101 s in by 31178996284 and ended `cancelled` 19 s after that push; the run that
-#     superseded it completed in 199 s.
+#   • without it — `feat/21-ci-build-and-test` on 2026-08-06, while the block was in neither the
+#     superseded run's file nor the superseding one's (verified absent at `e2c64e8` and `2a40142`):
+#     run 31120918379 was superseded 53 s after it was created, *before it had even started*, then
+#     started anyway 1 m 43 s later and built for 583 s. Three superseded pairs that day; in every one
+#     the earlier run finished.
+#   • with it — the same branch a day later, the block present at both `546eb00` and `efb9831`:
+#     run 31178879876 was superseded 101 s in by 31178996284 and ended `cancelled` 19 s after that
+#     push, 116 s into a job that would have taken about 175 s.
+#
+# That last one leaves a hole worth closing: nothing in it proves *concurrency* did the cancelling
+# rather than somebody clicking the button. So it was repeated on #133's own pull request, where the
+# only actor was a push. Run 31251218170 was 35 s into its build when a second push created run
+# 31251321243 at 09:46:48; 31251218170 ended `cancelled` at 09:47:04, sixteen seconds later, and
+# 31251321243 ran the full 243 s to green. Both workflows in this repository stood down together —
+# `swift-floor`'s run on the same commit was cancelled in the same moment.
 #
 # Two pull requests do not cancel each other, measured the same way rather than read off `github.ref`:
 # four cross-branch pairs had jobs genuinely in flight together — `fix/145` (22:38:03–22:41:55) beside
@@ -89,8 +97,9 @@ permissions:
 # knowing before branch protection goes on (#21, Task 3) — it is still off today.
 #
 # ⛔ The `main` half is NOT measured. No two `push` runs on `main` have ever overlapped — the four
-# since the block landed are 8 to 13 minutes apart — so the expression evaluating false has never
-# actually been exercised, only reasoned about. The first pair of merges inside ~4 minutes settles it:
+# since the block landed are 12 to 13 minutes apart and each takes 150–250 s — so the expression
+# evaluating false has never been exercised, only reasoned about. The first pair of merges closer
+# together than one run's duration settles it:
 # `gh run list --workflow=ci.yml --event=push --json conclusion,createdAt` should show two completions
 # and no `cancelled`.
 concurrency:
