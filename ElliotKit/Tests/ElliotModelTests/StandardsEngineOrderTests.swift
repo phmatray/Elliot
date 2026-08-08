@@ -117,6 +117,7 @@ struct StandardsEngineOrderTests {
     @Test("assess returns one finding per axis, always")
     func assessCoversEveryAxis() {
         let a = StandardsEngine.assess(
+            nameWithOwner: "phmatray/Foo",
             repo: .observed(repo(), probe), measurement: emptyMeasurement,
             exemptions: exemptions([]), now: then, freshness: .default)
         #expect(a.findings.count == Standard.allCases.count)
@@ -130,6 +131,7 @@ struct StandardsEngineOrderTests {
     @Test("A violating finding carries the evidence its predicate looked for")
     func violatingFindingCarriesEvidence() {
         let a = StandardsEngine.assess(
+            nameWithOwner: "phmatray/Foo",
             repo: .observed(repo(), probe), measurement: emptyMeasurement,
             exemptions: exemptions([]), now: then, freshness: .default)
         guard let editorconfig = a.findings.first(where: { $0.standard == .editorconfig }) else {

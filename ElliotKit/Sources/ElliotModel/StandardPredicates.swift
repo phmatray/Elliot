@@ -198,10 +198,19 @@ public enum StandardPredicates {
             // the same fact as "no live workflow", so this must not read as a
             // violation nobody could actually see. The read succeeded (this is
             // not `requestFailed`); the content just could not be interpreted.
+            //
+            // Names the files, and carries the same per-file evidence the
+            // `anyDead` branch does. "Could not be interpreted" is only
+            // actionable if the reader knows which file to open — and the fix
+            // here is a better scanner or a corrected workflow, so whoever picks
+            // it up needs to see the candidates.
+            let unreadable = workflows.keys.sorted()
             return StandardOutcome(
                 verdict: .unmeasured(
-                    .unreadableContent("no workflow's on: trigger could be located")),
-                provenances: provenances
+                    .unreadableContent(
+                        "no on: trigger could be located in \(unreadable.joined(separator: ", "))")),
+                provenances: provenances,
+                evidence: unreadable.map { Evidence(path: $0, exists: true) }
             )
         }
     }

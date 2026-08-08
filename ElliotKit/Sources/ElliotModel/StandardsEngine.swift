@@ -84,16 +84,17 @@ public enum StandardsEngine {
     /// returns the existing card for a known key, and a card archived in Done
     /// six months ago is what it would return.
     ///
-    /// `repo` rather than `finding.nameWithOwner`: `finding.nameWithOwner` is
-    /// `""` whenever the universe read that produced it was not `.observed`
-    /// (see `assess`, above), and a finding in that state never reaches here —
-    /// `producesCard` is false for every verdict an unreadable universe can
-    /// produce. `repo` is the concrete value a caller already resolved to build
-    /// the finding in the first place, so the key is keyed on the one value
-    /// that is never the empty placeholder. Nothing asserts
-    /// `repo.nameWithOwner == finding.nameWithOwner`, though — a caller that
-    /// zips a finding from one repository with a summary from another mis-keys
-    /// the card silently. Pass the pair this finding was actually produced from.
+    /// ⚠️ Nothing asserts `repo.nameWithOwner == finding.nameWithOwner`. A caller
+    /// that zips a finding from one repository with a summary from another
+    /// mis-keys the card, silently and irreversibly — the key is what
+    /// `BoardService.createCard` deduplicates on. Pass the pair this finding was
+    /// actually produced from.
+    ///
+    /// (`repo` supplies the identity rather than the finding for no defensive
+    /// reason any more: `assess` now takes `nameWithOwner` as a parameter, so a
+    /// finding's name is never the empty placeholder it used to fall back to.
+    /// The two are interchangeable when the caller passes a matching pair, which
+    /// is the only thing this function can be given honestly.)
     public static func cardSeed(
         for finding: StandardFinding, repo: GHRepoSummary, epoch: Date
     ) -> StandardCardSeed? {
@@ -173,26 +174,26 @@ public enum StandardsEngine {
     /// for — `assess` gathers verdicts, it does not decide when an axis last
     /// turned violating. Filling it in is the next task's job, not a guess
     /// made here.
+    ///
+    /// **`nameWithOwner` is a parameter, not something derived from `repo`.**
+    /// It used to be read out of the universe observation, falling back to `""`
+    /// when that observation was `.unavailable` — which gave every finding an
+    /// empty name and an id of the form `"#editorconfig"`, so findings from two
+    /// unreachable repositories collided id-for-id. At 343 repositories, where
+    /// rate-limit failures are routine, that is reachable rather than
+    /// theoretical, and `StandardFinding` is `Identifiable`.
+    ///
+    /// The caller already knows the identity before it ever calls `gh` — that is
+    /// how the call got scoped. An identifier should be a parameter, never a
+    /// byproduct of a read that may have failed.
     public static func assess(
+        nameWithOwner: String,
         repo: Reading<GHRepoSummary>,
         measurement: RepoMeasurement,
         exemptions: Reading<StandardsFile>,
         now: Date,
         freshness: FreshnessPolicy = .default
     ) -> RepoStandardsAssessment {
-        // A label, not a judgement, so it does not need `.value(freshAt:policy:)`
-        // — a stale-but-observed universe still names the repository its
-        // findings are about; the staleness itself is what each finding
-        // underneath reports through `.unmeasured(.universeStale)`. Reading the
-        // case directly here also avoids a second freshness check on top of the
-        // one every `verdict` call below already performs for itself.
-        let nameWithOwner: String
-        if case .observed(let summary, _) = repo {
-            nameWithOwner = summary.nameWithOwner
-        } else {
-            nameWithOwner = ""
-        }
-
         let findings = Standard.allCases.map { standard -> StandardFinding in
             let outcome = verdict(
                 for: standard, repo: repo, measurement: measurement,

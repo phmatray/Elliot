@@ -239,4 +239,28 @@ struct StandardPredicatesTests {
             .topics, repo: repo(), measurement: m, now: then, freshness: .default)
         #expect(outcome.provenances == [topicProbe])
     }
+
+    /// Workflows that exist and whose `on:` block this scanner cannot locate.
+    /// "I could not read it" is not "it has no trigger": read as a violation it
+    /// would file a card, and on this board a card is an agent sent at a
+    /// repository whose CI may be perfectly fine. It must also name the files —
+    /// the fix is a better scanner or a corrected workflow, and neither is
+    /// actionable without knowing which file to open.
+    @Test("Workflows nobody can parse are unmeasured, and they are named")
+    func unparseableWorkflowsAreUnmeasuredAndNamed() {
+        let m = measurement(workflows: .observed([
+            ".github/workflows/ci.yml": "jobs:\n  build:\n    runs-on: ubuntu-latest\n",
+            ".github/workflows/release.yml": "# no trigger block at all\n",
+        ], probe))
+        let outcome = StandardPredicates.evaluate(
+            .ciJudgeable, repo: repo(), measurement: m, now: then, freshness: .default)
+
+        guard case .unmeasured(.unreadableContent(let detail)) = outcome.verdict else {
+            Issue.record("got \(outcome.verdict)"); return
+        }
+        #expect(detail.contains(".github/workflows/ci.yml"))
+        #expect(detail.contains(".github/workflows/release.yml"))
+        #expect(outcome.evidence.map(\.path).sorted()
+                == [".github/workflows/ci.yml", ".github/workflows/release.yml"])
+    }
 }

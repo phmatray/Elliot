@@ -91,7 +91,10 @@ public enum Standard: String, Codable, CaseIterable, Sendable, Hashable {
             deliberately — none at all for the company's private repositories, \
             which are commercial products. A permissive licence there gives the \
             product away, so "has a licence" is a violation in that one case and \
-            compliance everywhere else.
+            compliance everywhere else. This axis reads only the identifier \
+            GitHub reports: it does not open the file, so the copyright holder, \
+            the year and any local amendment are outside it, and it says nothing \
+            about whether a dependency's licence is compatible with this one.
             """
         }
     }
