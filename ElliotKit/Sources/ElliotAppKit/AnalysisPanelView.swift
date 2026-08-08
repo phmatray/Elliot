@@ -514,6 +514,16 @@ struct AnalysisPanelView: View {
                 // The claimant here spawns up to eight unattended runs, so it is
                 // the one that must not be reachable by a key pressed anywhere
                 // in the window.
+                //
+                // ⚠️ This ⛔ is about **Start**, not about the panel. The panel
+                // does carry a default action — `ProposalEditor`'s Save, which
+                // commits text the reader typed and is sanctioned by
+                // `DefaultAction.claimants`. CLAUDE.md read this comment as
+                // "the analysis panel carries no `.defaultAction`" and stated it
+                // that way, which was false, and false in the direction that
+                // made the Return problem look already solved. The rule and its
+                // gate now live in `DefaultAction` / `DefaultActionTests`
+                // rather than in a comment two files away from what it governs.
                 .disabled(model.analysisAngles.isEmpty || model.analysisRefusal != nil)
                 // The one genuinely armed control on this screen — it starts N
                 // unattended runs — and it was the only one with no tint, while
