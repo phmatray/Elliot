@@ -246,6 +246,7 @@ git commit -m "feat(model): carry why a fact is missing, and how old it is"
 - Modify: `ElliotKit/Sources/ElliotProcess/GHClient.swift:73-82`
 - Test: `ElliotKit/Tests/ElliotModelTests/GHPayloadsTests.swift` *(append)*
 - Test: `ElliotKit/Tests/ElliotProcessTests/GHClientFieldsTests.swift`
+- Modify: `Fixtures/gh/repo-list.json` (add `isEmpty` and `primaryLanguage` to all three entries)
 
 **Interfaces:**
 - Consumes: nothing.
@@ -305,15 +306,24 @@ struct GHRepoSummaryLanguageTests {
         #expect(!decoded.isCode)
     }
 
-    /// `isEmpty` must default, because every existing call site constructs a
-    /// summary without it.
-    @Test("An older payload without isEmpty still decodes")
-    func missingIsEmptyDefaults() throws {
-        let json = """
-            {"nameWithOwner":"phmatray/Foo","visibility":"PUBLIC","isFork":false,"isArchived":false}
-            """
-        let decoded = try JSONDecoder().decode(GHRepoSummary.self, from: Data(json.utf8))
-        #expect(!decoded.isEmpty)
+    /// The `--json` list is pinned, so a payload missing one of these means the
+    /// request changed underneath us. `isFork == false` would then put every
+    /// fork back in scope — the exact defect measured in the Python tooling,
+    /// where `isFork` is requested and never read. Throwing is the loud
+    /// failure; defaulting is the silent one, and this subsystem exists to
+    /// refuse the silent one.
+    @Test("A payload missing a scope field is refused, not defaulted")
+    func missingScopeFieldThrows() {
+        let payloads = [
+            #"{"nameWithOwner":"p/F","visibility":"PUBLIC","isArchived":false,"isEmpty":false}"#,
+            #"{"nameWithOwner":"p/F","visibility":"PUBLIC","isFork":false,"isEmpty":false}"#,
+            #"{"nameWithOwner":"p/F","visibility":"PUBLIC","isFork":false,"isArchived":false}"#,
+        ]
+        for json in payloads {
+            #expect(throws: DecodingError.self) {
+                try JSONDecoder().decode(GHRepoSummary.self, from: Data(json.utf8))
+            }
+        }
     }
 }
 ```
@@ -379,22 +389,25 @@ and to the initialiser, last, both defaulted:
         primaryLanguage: GHLanguage? = nil, isEmpty: Bool = false
 ```
 
-with the assignments, plus an explicit decoder default so an older payload
-without `isEmpty` still decodes:
+with the assignments. No hand-written `init(from:)` is needed — the synthesised
+one already decodes a non-optional `Bool` with `decode`, which throws on an
+absent field, and that is the behaviour we want. **Do not write a decoder that
+softens `isFork`, `isArchived` or `isEmpty` to `decodeIfPresent … ?? false`:**
+`isFork == false` means "not a fork" means *in scope*, so a field that quietly
+goes missing would put every fork back in range of a sweep. That is the defect
+measured in the Python tooling, where `isFork` is requested and never read and
+`add_editorconfig.py --commit` would write into ten forks.
 
-```swift
-    public init(from decoder: any Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        nameWithOwner = try c.decode(String.self, forKey: .nameWithOwner)
-        visibility = try c.decode(String.self, forKey: .visibility)
-        defaultBranchRef = try c.decodeIfPresent(GHRepoInfo.BranchRef.self, forKey: .defaultBranchRef)
-        isFork = try c.decodeIfPresent(Bool.self, forKey: .isFork) ?? false
-        isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
-        url = try c.decodeIfPresent(String.self, forKey: .url)
-        primaryLanguage = try c.decodeIfPresent(GHLanguage.self, forKey: .primaryLanguage)
-        isEmpty = try c.decodeIfPresent(Bool.self, forKey: .isEmpty) ?? false
-    }
-```
+`primaryLanguage` is `GHLanguage?` and `url` is `String?`, so both decode absent
+without help. The memberwise initialiser keeps its defaults — those are for the
+call sites that construct a summary in tests, not for decoding.
+
+⚠️ **`Fixtures/gh/repo-list.json` must gain the two new fields on all three
+entries** (`isEmpty: false`, and a `primaryLanguage` — `{"name":"C#"}` for
+`TaLibStandard` and `ValueOf`, `{"name":"Swift"}` for `Elliot`). It is a capture
+of what `gh` returns, and the request now names eight fields; a capture that
+names six has stopped standing in for the real thing. `GHRepoSummaryTests` and
+`GHPayloadDecodingTests` read it.
 
 Then the accessor:
 
