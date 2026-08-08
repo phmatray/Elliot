@@ -13,15 +13,24 @@ public struct RepositoriesView: View {
     public init() {}
 
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
 
     /// Collapsed by default: on a healthy portfolio the report is two hundred
     /// lines saying "up to date", and the sentence above it is the answer.
     @State private var isReportExpanded = false
 
     public var body: some View {
+        @Bindable var model = model
+
         Group {
             if model.isReady {
-                List {
+                // Selectable, and the selection lives on `AppModel` rather than
+                // in `@State` here: the menu item that carries ⌘↩ is in
+                // `ElliotApp`'s `Commands`, which is not a view hierarchy and
+                // cannot read another view's state. Selection also buys
+                // arrow-key movement between rows for free on macOS, which is
+                // half of criterion 4.
+                List(selection: $model.selectedRepoRowID) {
                     ForEach(sections, id: \.owner) { section in
                         Section(section.owner) {
                             ForEach(section.rows) { row in
@@ -335,9 +344,13 @@ public struct RepositoriesView: View {
 
             Spacer(minLength: 8)
 
-            // One button per legal fix, and nothing here deletes: `RepoFix` has
-            // no `.delete` case, deliberately.
             VStack(alignment: .trailing, spacing: 4) {
+                // Above the fixes, because it is the only one of these buttons
+                // that is not a repair — see `RepoRowBoardAction`.
+                boardButton(row)
+
+                // One button per legal fix, and nothing here deletes: `RepoFix`
+                // has no `.delete` case, deliberately.
                 ForEach(row.fixes, id: \.self) { fix in
                     Button(fix.label) { Task { await model.apply(fix) } }
                         .controlSize(.small)
@@ -347,6 +360,83 @@ public struct RepositoriesView: View {
             }
         }
         .padding(.vertical, 4)
+        // So the double-click below lands on the whole row, including the gap
+        // the `Spacer` opens between the text and the buttons.
+        .contentShape(Rectangle())
+        // `simultaneousGesture` rather than `.onTapGesture(count: 2)`: the
+        // latter competes with the `List`'s own click handling for the row, and
+        // what is wanted here is both — the double-click selects the row *and*
+        // opens its board, which is what makes the selection the menu item
+        // reads agree with the window that just came forward.
+        .simultaneousGesture(TapGesture(count: 2).onEnded { openBoard(row) })
+        .contextMenu {
+            // Conditional content rather than a conditionally-applied modifier:
+            // switching the modifier on and off would change the row's view
+            // identity for a menu.
+            if case .open = row.boardAction {
+                Button("Open board") { openBoard(row) }
+            }
+        }
+    }
+
+    /// The board action, as a button — or as nothing at all.
+    ///
+    /// Exhaustive over `RepoRowBoardAction` with no `default:`, for the reason
+    /// `icon`/`tint`/`verdict` are: a fourth case must fail to compile here so
+    /// someone decides what the row offers, instead of inheriting silence.
+    @ViewBuilder
+    private func boardButton(_ row: RepoRow) -> some View {
+        switch row.boardAction {
+        case .open:
+            Button("Open board") { openBoard(row) }
+                .controlSize(.small)
+                // Deliberately **not** `.disabled(model.isReconciling)`, unlike
+                // every button below it. A sweep in flight is a reason not to
+                // *repair* a repository — two writers on one checkout — and no
+                // reason whatsoever to refuse to show its cards.
+                .help(Self.boardHelp(row) ?? "")
+        case .registerFirst, .unavailable:
+            // Nothing. `.registerFirst` is already served by the `Register` fix
+            // the row carries in the `ForEach` above, and offering both would
+            // name an act that cannot work yet (criterion 3). `.unavailable`
+            // has nowhere to go.
+            EmptyView()
+        }
+    }
+
+    /// The one closure the button, the double-click and the context menu share.
+    ///
+    /// Three entry points, one act — factored so they cannot drift, which is
+    /// the failure mode this repository has paid for elsewhere (three
+    /// hand-written switches over `VerifiedOutcome`, #135).
+    ///
+    /// The window is raised only when the selection actually happened:
+    /// `showBoard` refuses a registration that has been forgotten since the
+    /// sweep, and bringing an unchanged board forward would answer the click
+    /// with a confident-looking no-op.
+    private func openBoard(_ row: RepoRow) {
+        guard case .open(let repoID) = row.boardAction, model.showBoard(repoID: repoID) else {
+            return
+        }
+        openWindow(id: "board")
+    }
+
+    /// Why pressing **Open board** is worth it, in the row's own name.
+    ///
+    /// `nonisolated static` for the reason `verdict`, `boardLine` and the rest
+    /// are: what the page *says* is assertable, and `ElliotAppKitTests` reads
+    /// exactly this string.
+    ///
+    /// It spells out `owner/name` rather than the `displayName` the row's title
+    /// uses, and that is the feature rather than a detail: the board's picker
+    /// lists last path components, in which `phmatray/Elliot` and
+    /// `Atypical-Consulting/Elliot` are the same word. Dropping the owner here
+    /// would restate the ambiguity this action exists to remove.
+    ///
+    /// `nil` for the other two actions — no board action, nothing to explain.
+    nonisolated static func boardHelp(_ row: RepoRow) -> String? {
+        guard case .open = row.boardAction else { return nil }
+        return "Show \(row.nameWithOwner ?? row.id)'s cards on the board."
     }
 
     /// The last path component of `owner/name` — the name a person uses.

@@ -106,4 +106,54 @@ struct RepositoriesBoardActionTests {
 
         #expect(model.selectedRowBoardAction == .registerFirst)
     }
+
+    // MARK: - What the row says
+
+    /// `nonisolated static` for the reason `verdict`/`icon`/`tint` and
+    /// `boardLine` are: what the page *says* is assertable by `swift test`,
+    /// where the row sits on screen still is not. This is the whole of Task 3's
+    /// testable surface, and the honest limit of it — the button's existence and
+    /// its position are Task 5's to check by looking.
+    ///
+    /// It names the repository **with its owner**, which is the feature: the
+    /// board's picker shows `displayName`, the last path component, so
+    /// `phmatray/Elliot` and `Atypical-Consulting/Elliot` read alike there. A
+    /// help string that dropped the owner would reintroduce exactly the
+    /// ambiguity #143 exists to remove.
+    @Test("The board help names the repository with its owner, for a row that has one")
+    func boardHelpNamesTheRepository() {
+        let help = RepositoriesView.boardHelp(row(repo("Elliot")))
+        #expect(help == "Show o/Elliot's cards on the board.")
+    }
+
+    /// Criterion 3, said in the vocabulary: a row that must be registered first
+    /// offers no board help at all, because it has no board action to explain.
+    @Test("A row that must be registered first has no board help")
+    func registerFirstRowHasNoBoardHelp() {
+        let fresh = RepoRow(
+            id: "o/Fresh", nameWithOwner: "o/Fresh", path: "/tmp/Fresh",
+            issue: .notRegistered, detail: "/tmp/Fresh",
+            fixes: [.register(path: "/tmp/Fresh")])
+        #expect(fresh.boardAction == .registerFirst)
+        #expect(RepositoriesView.boardHelp(fresh) == nil)
+    }
+
+    @Test("A row with nowhere to go has no board help either")
+    func unavailableRowHasNoBoardHelp() {
+        let absent = RepoRow(
+            id: "o/Absent", nameWithOwner: "o/Absent", issue: .notCloned,
+            detail: "On GitHub, no clone.",
+            fixes: [.clone(nameWithOwner: "o/Absent", into: "/tmp/Absent")])
+        #expect(absent.boardAction == .unavailable)
+        #expect(RepositoriesView.boardHelp(absent) == nil)
+    }
+
+    /// A row can reach the page with `nameWithOwner` nil — `RepoRow`'s
+    /// initialiser defaults it — so the help falls back to the id rather than
+    /// rendering the word "nil" at a reader.
+    @Test("A row with no nameWithOwner falls back to its id rather than interpolating nil")
+    func boardHelpFallsBackToTheID() {
+        let odd = RepoRow(id: "o/Odd", repoID: UUID(), issue: .ok)
+        #expect(RepositoriesView.boardHelp(odd) == "Show o/Odd's cards on the board.")
+    }
 }
