@@ -968,6 +968,17 @@ public struct RepoTree: Codable, Sendable, Hashable {
     /// GitHub's own `truncated`.
     public var isTruncated: Bool
 
+    /// Spelled out, because the synthesised keys would name the *storage* rather
+    /// than the thing stored. A later plan persists measurements as JSON, so
+    /// `storage` would become a key in a stored format and a rename of the
+    /// property — the obvious tidy-up once the public vocabulary is `paths` —
+    /// would silently stop decoding everything already written. Named now, while
+    /// there is nothing on disk to migrate.
+    private enum CodingKeys: String, CodingKey {
+        case storage = "paths"
+        case isTruncated = "truncated"
+    }
+
     public init(paths: Set<String>, truncated: Bool) {
         self.storage = paths
         self.isTruncated = truncated
