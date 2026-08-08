@@ -63,6 +63,36 @@ permissions:
 # `cancel-in-progress` is scoped to pull requests on purpose. On `main` every run is the only run that
 # will ever measure that commit, and cancelling it would leave a squash-merge unverified — which is
 # the hole this workflow exists to close, reopened for the sake of a few minutes.
+#
+# ### The runs that measured it (#133)
+#
+# Everything above this line is an argument, and an argument is what #133 refused to accept: the
+# behaviour is a runtime one, so reading these five lines cannot show that they work. It was measured
+# instead, before and against the block, on one branch:
+#
+#   • without it — `feat/21-ci-build-and-test` on 2026-08-06, while the block was not yet in the file
+#     (verified at `c6fea2e` and `e2c64e8`): run 31120918379 was superseded 53 s in and went on
+#     building for another 686 s. Three superseded pairs that day, and in every one the earlier run
+#     finished.
+#   • with it — the same branch a day later, the block present at `546eb00`: run 31178879876 was
+#     superseded 101 s in by 31178996284 and ended `cancelled` 19 s after that push; the run that
+#     superseded it completed in 199 s.
+#
+# Two pull requests do not cancel each other, measured the same way rather than read off `github.ref`:
+# four cross-branch pairs had jobs genuinely in flight together — `fix/145` (22:38:03–22:41:55) beside
+# `feat/132` (22:41:43–22:45:47) on 2026-08-07 — and all four pairs completed.
+#
+# ⚠️ A cancelled run reads as **red**, not as absent. `statusCheckRollup.state` for a commit whose only
+# checks are `cancelled` is `FAILURE` — measured on `546eb00`. That is right, because the superseded
+# commit is not the one being merged, but two things follow: anything judging a pull request from an
+# older sha will call it failed, and a *required* check that ends `cancelled` is not a pass. Worth
+# knowing before branch protection goes on (#21, Task 3) — it is still off today.
+#
+# ⛔ The `main` half is NOT measured. No two `push` runs on `main` have ever overlapped — the four
+# since the block landed are 8 to 13 minutes apart — so the expression evaluating false has never
+# actually been exercised, only reasoned about. The first pair of merges inside ~4 minutes settles it:
+# `gh run list --workflow=ci.yml --event=push --json conclusion,createdAt` should show two completions
+# and no `cancelled`.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
