@@ -29,6 +29,22 @@
 # The composite claim is exactly #116's, and it is unweakened: *the declared floor is real, and this
 # package builds and tests on it.* What changed is that it is paid for once.
 #
+# ### What it cost, measured both sides (#187, criterion 3)
+#
+# Four sample pairs before — #102's own runs `31178996220`/`31178996284`, plus three pull requests
+# from 2026-08-08 — against this change's own run after:
+#
+#     before   floor 2m21–3m58   +   build-and-test 2m42–3m00   =   6–7 job-min   =   60–70 billed
+#     after    floor 0m09        +   build-and-test 2m38        =   4 job-min     =   40 billed
+#
+# After-runs: `31255937877` (floor, 9s) and `31255937885` (build-and-test, 2m38s, reporting
+# `1418 tests in 158 suites` — the same suite, unchanged). **20–30 fewer billed macOS minutes per
+# pull request, a third to two fifths.** The run ids are written down because GitHub drops the logs
+# at 90 days and this file's own history is the argument for not leaving a measurement only there.
+#
+# ⚠️ A job bills rounded **up to the whole minute**, ×10 for private macOS, which is why a 9-second
+# job still costs one billed minute and why the saving is not the 3m49 of wall clock it looks like.
+#
 # ⚠️ The join between the two jobs is the image, so the image is **asserted, not assumed** — see the
 # parity step below. Two files agreeing by comment is precisely the arrangement #116 is about. The
 # dangerous direction is the quiet one: if `ci.yml` moved to an *older* image its own compile would
@@ -124,7 +140,7 @@ jobs:
     # ⚠️ This literal and `ci.yml`'s must stay equal, and the parity step below is what enforces it
     # rather than this sentence. Changing one without the other is the silent failure the header
     # describes.
-    runs-on: macos-15
+    runs-on: macos-26
     # Was 30 while this job compiled the package. It now runs two string comparisons, so a run that
     # takes minutes is a hung runner rather than a slow build, and the bound should say so.
     timeout-minutes: 10
@@ -140,6 +156,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # ✅ **This gate has been seen to fail, on a runner, by name** — #187 Task 4, because a gate
+      # nobody has watched fail is a gate nobody has tested. Probe: point this job at `macos-15` and
+      # push (run `31256151345`). It went red in 13 seconds with
+      #
+      #     declared floor : 6.3.1  (major.minor 6.3)
+      #     runner toolchain: 6.1.2  (major.minor 6.1)
+      #     ##[error]The runner's Swift is OLDER than the declared floor (6.1.2 < 6.3.1).
+      #
+      # 6.1.2 is the toolchain #116 measured as unable to build this package at all, so the probe
+      # exercised the real thing: a named refusal instead of an inference error deep in a SwiftUI
+      # target. ⚠️ Note 6.1.2 is what `swift` resolves to *by default* on that image — not a
+      # contradiction of the "macos-15 tops out at 6.2.4" figure in `CLAUDE.md`, which is about the
+      # newest Xcode installed there rather than the selected one. Re-run the probe the same way; it
+      # is cheap now precisely because this job no longer builds.
       - name: The runner's toolchain against the floor Package.swift declares
         run: |
           # ⚠️ `set +e`, and it is the whole reason the diagnostics below can ever print. GitHub
@@ -230,6 +260,15 @@ jobs:
       # would fail loudly (measured in #116: every 6.2.x builds this package and cannot compile the
       # tests). If it moved to a NEWER one, everything would stay green while nothing exercised the
       # declared floor — green, silent, and wrong. That is the case this step exists for.
+      #
+      # Verification status, stated precisely because the two halves were established differently:
+      # the **pass** path ran on a real `macos-26` runner (`31255937877`) and printed both images, so
+      # the parsing is runner-verified; the **failure** paths were exercised locally against the real
+      # files — a drifted copy (`macos-26` vs `macos-15` → exit 1, named) and an absent `ci.yml`
+      # (→ exit 1, named). Both machines run bash 3.2, and everything after the parsing is a string
+      # comparison. What has *not* happened is watching this step go red on a runner; that costs a
+      # push with the two images deliberately parted, and it was judged not worth ~20 billed minutes
+      # on a change whose subject is billed minutes. Do it if you touch the parsing.
       - name: The image ci.yml compiles on is the image asserted above
         run: |
           # Same two reasons as the step above, and they apply verbatim: `set +e` because GitHub runs
