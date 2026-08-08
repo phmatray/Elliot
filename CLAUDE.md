@@ -287,6 +287,31 @@ and then read the window's accessibility tree — the column captions, the toolb
 all carry labels, so "did the board survive" is a text diff rather than a squint. When in doubt,
 build the same check from `main` and compare.
 
+⚠️ **Do not make a tool fail by prepending a shim to `PATH` before `open`: the injection arrives and
+still loses, silently.** `LoginShellEnvironment.capture()` runs `/bin/zsh -lic` and keeps *that*
+shell's environment — the whole point, since a Finder launch sees only `/usr/bin:/bin:/usr/sbin:/sbin`.
+The injected directory is **not stripped**; it survives the capture and loses on *order*, which is what
+makes this false negative convincing. Measured 2026-08-08 (#188), `--env PATH=/tmp/shim:$PATH` on the
+command above with a `/tmp/shim/gh` that logs its argv and exits 1: `ps eww` showed the app really did
+carry `/tmp/shim` **first**, so the injection arrived; the captured `PATH` still held it, at **index 26
+of 47**; `ToolLocator.locate("gh")` returned `/opt/homebrew/bin/gh` (`foundVia: PATH (/bin/zsh -lic)`,
+index 9); the shim's log stayed **empty**; the board read `Ready.`, no banner. A login shell runs its
+own rc files, and any that re-prepend their own bin directory push every inherited entry below them.
+**The margin is this machine's, not a constant** — #183 measured the same trap at 12 entries, not 17 —
+and where nothing re-prepends, the shim stays at index 0 and wins. It is the sixth member of the
+family *Things that bite* catalogues below, and like the other five it never says *no*.
+
+**What does say so is Preflight**, which is the screen to read before trusting a pass: its `gh` row
+prints the resolved path (`/opt/homebrew/bin/gh — gh version …`, never `/tmp/shim/gh`) and *Login shell
+environment* prints `Captured via /bin/zsh -lic — 47 PATH entries` — or `.warn`s *"Could not read the
+login shell"*, which is the one case where the shim really is stripped, because both `-lic` and `-lc`
+failed and `capture()` fell back to a built-in `PATH`. **Instead:** from a test, point
+`ToolConfig.ghPath` at `Scripts/fake-gh.sh` — the seam *Testing discipline* describes below, no
+production change; from a launched app, cause a *genuine* failure, e.g. an owner handle that does not
+exist (`gh repo list phmatray-does-not-exist-9f3a` → *"the owner handle … was not recognized as either
+a GitHub user or an organization"*, exit 1), which is what #183 did and is stronger evidence than a
+simulated one.
+
 **Since #155 the *agent* can look too: `board_screenshot`.** Elliot renders its own window with
 `NSView.cacheDisplay` and hands back a PNG as an MCP image block, so no permission is involved and
 nothing has to be frontmost — measured, on a window with `isVisible == false` in an app that was not
@@ -804,7 +829,9 @@ Two invariants carry most of the weight:
 - **PATH is captured, never inherited.** Launched from the Finder the app sees only
   `/usr/bin:/bin:/usr/sbin:/sbin`. `LoginShellEnvironment.capture()` gets the real environment and
   `ToolLocator` finds `claude`/`gh`/`git`; anything spawning a tool must go through `ToolConfig`. Testing
-  preflight means launching from the Finder, not from a terminal or Xcode.
+  preflight means launching from the Finder, not from a terminal or Xcode. The consequence, measured in
+  #188 and written up beside the launch recipe above: prepending a shim to `PATH` before `open` does not
+  make that shim win.
 - **A registered repo path must be the main checkout, never a linked worktree** — `merge-pr` tears down
   the PR's worktree and cannot do so from inside it. `GitClient.isMainCheckout` enforces this in Preflight.
 - **The app is not sandboxed** (Hardened Runtime on, ad-hoc signed, not notarised). Child processes
