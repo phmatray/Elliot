@@ -158,6 +158,16 @@ public actor RunScheduler: RunLaunching {
             continuation.yield(
                 .runFinished(runID: runID, cardID: run.cardID, state: .cancelled, outcome: nil))
         }
+        // Emptying `pending` above is not enough, because this method suspends on
+        // every row it cancels. A `launch` landing in one of those windows puts
+        // its id back on the queue, and the `pump` it calls reads a row this loop
+        // has not reached yet — still `.queued`, so admission legitimately holds
+        // it. The row is then cancelled underneath it, leaving a `.cancelled` run
+        // sitting in the queue for the board to offer again. Discarding what this
+        // drain cleared is the postcondition the caller was promised.
+        let discarded = Set(cleared)
+        pending.removeAll { discarded.contains($0) }
+        lastRefusals = lastRefusals.filter { pending.contains($0.key) }
         await publishQueue()
         return cleared.count
     }
@@ -251,21 +261,36 @@ public actor RunScheduler: RunLaunching {
         // every pending run and is deliberately synchronous; a SQL aggregate in
         // there would turn draining a queue of twenty into twenty queries.
         let overBudget = await isOverDailyCeiling()
-        var stillPending: [UUID] = []
-        var refusals: [UUID: QueueRefusal] = [:]
+        // The snapshot decides the *order* to consider; the queue itself is
+        // edited in place below. `pending = stillPending` at the end of this
+        // method is what dropped a run that `launch` appended while this pump
+        // was suspended in `store.run(id:)`, and what resurrected one `drain`
+        // had just cancelled. Both callers fire on their own schedule — a run
+        // finishing while the user drags a card is the ordinary case.
         for runID in pending {
-            guard let run = try? await store.run(id: runID), run.state == .queued else { continue }
+            // Gone while we awaited — cancelled, drained, or claimed by a pump
+            // that re-entered here. Not ours to decide on any more.
+            guard pending.contains(runID) else { continue }
+            guard let run = try? await store.run(id: runID), run.state == .queued else {
+                pending.removeAll { $0 == runID }
+                lastRefusals.removeValue(forKey: runID)
+                continue
+            }
             // The ceiling holds runs rather than cancelling them: tomorrow, or a
             // raised ceiling, releases the same queue untouched.
             if let why = refusal(for: run, overBudget: overBudget) {
-                stillPending.append(runID)
-                refusals[runID] = why
+                lastRefusals[runID] = why
             } else {
+                // Removed *before* `start` suspends, so a re-entering pump
+                // cannot pick the same id off the queue.
+                pending.removeAll { $0 == runID }
+                lastRefusals.removeValue(forKey: runID)
                 await start(run)
             }
         }
-        pending = stillPending
-        lastRefusals = refusals
+        // Only reasons for runs still queued survive: a stale entry would
+        // outlive its run and be read back by `queueSnapshot`.
+        lastRefusals = lastRefusals.filter { pending.contains($0.key) }
         await publishQueue()
     }
 
