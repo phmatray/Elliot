@@ -1900,10 +1900,35 @@ because it cannot be judged. `evaluate` therefore returns the evidence alongside
 the verdict:
 
 ```swift
+/// A verdict, together with what was consulted to reach it.
+///
+/// One type rather than a tuple, because both halves are load-bearing and both
+/// were originally missing: `provenances` is what `StandardFinding.observationLag`
+/// reduces over, so a short list silently under-reports a verdict's age, and
+/// `evidence` is what makes the finding judgeable at all.
+///
+/// The rule for both fields is the same and it is honesty: list **what was
+/// actually consulted**, never everything that was available. A fork returns at
+/// the scope step without reading the exemptions file, so its outcome must not
+/// claim it did.
+public struct StandardOutcome: Sendable, Hashable {
+    public var verdict: StandardVerdict
+    public var provenances: [Provenance]
+    public var evidence: [Evidence]
+
+    public init(
+        verdict: StandardVerdict, provenances: [Provenance], evidence: [Evidence] = []
+    ) {
+        self.verdict = verdict
+        self.provenances = provenances
+        self.evidence = evidence
+    }
+}
+
     public static func evaluate(
         _ standard: Standard, repo: GHRepoSummary, measurement: RepoMeasurement,
         now: Date, freshness: FreshnessPolicy
-    ) -> (verdict: StandardVerdict, evidence: [Evidence])
+    ) -> StandardOutcome
 ```
 
 Cite a path **only when the axis actually looked at one**, and say truthfully
