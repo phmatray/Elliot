@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1429 tests in 161 suites**, 5 of 5 samples on
-  `fix/179-concurrent-pumps` on 2026-08-08 off `main` at `27e370f`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**PLACEHOLDER tests in PLACEHOLDER suites**, 5 of 5 samples on
+  `fix/179-concurrent-pumps` on 2026-08-08 off `main` at `1c58799`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -49,6 +49,18 @@
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
     your own untouched run and compare against *that*, never against this line.
+  - ✅ **Landing #189 both shapes appeared at once and the attribution is exact — the first entry
+    here that can say that.** The line read 1418 in 158 off `da876d7`; `main` at `27e370f`, three
+    squashes later, **measures 1418 in 158** — so the value was right and the stamp was behind, the
+    #138 shape for the fourth time. And `git merge-base --is-ancestor origin/main HEAD` held at the
+    ready-flip, i.e. `main` did not move for the whole life of the branch, which is the #145 shape
+    and the rarer one. Both together mean the +18/+0 is this branch's own with nothing mixed in.
+    ⚠️ The baseline that proves it was taken from a **separate worktree at `27e370f`**, not by
+    subtraction — the branch's own untouched run had been spoiled when an edit landed mid-build
+    (`error: input file … was modified during the build`, which aborts rather than measuring). The
+    arithmetic *was* checked afterwards and agrees to the test: 19 added `@Test` lines less one that
+    is a rename of `onlyRefinesOk`, so 18 new, and 1418 + 18 = 1436. That order is the whole of the
+    ⛔ bullet below — the sum was checked **against** the run, never in place of it.
   - ✅ **Second time it did not drift, landing #138 — and this one separates the two halves of the
     line cleanly.** The branch's untouched baseline measured **1328 in 149**, the line's exact value,
     off `main` at `2494882`; the line said `dc5c2ce`, which is `2494882`'s parent. So the *value* was
@@ -78,8 +90,11 @@
       1418 in 158 off `da876d7`, and 1418 in 158 is exactly what this branch's untouched baseline
       measured — off `27e370f`, two squashes later, because #227 and #229 added no test between them.
       So a reader who trusted the stamp would have gone looking for a drift that did not exist, and
-      one who trusted the value would have been right by luck. `main` then did not move for the life
-      of the branch, so the whole +10/+3 is this branch's own three suites with nothing mixed in.
+      one who trusted the value would have been right by luck. `main` had not moved for the life of
+      the branch **at the ready-flip**, so the +10/+3 measured there was this branch's own three
+      suites with nothing mixed in — and then it was overtaken between the ready-flip and the merge,
+      by #189, which is the #138 entry's other half arriving in this branch too. The value above is
+      therefore a merged one and the +10/+3 is no longer readable off it.
       **The transferable part is that the two halves fail independently**: the value is wrong when
       `main` gains tests, the stamp is wrong when `main` gains anything at all, and the stamp is the
       cheaper one to keep true because it does not need a run to update. It then drifted once more
@@ -461,7 +476,11 @@ above within seconds.
   criteria into a manual checklist, which #41 then had to undo.
 - Launched from the Finder the process sees only `/usr/bin:/bin:/usr/sbin:/sbin` — the login-shell
   environment is **captured**, never inherited (`LoginShellEnvironment.capture()`), and `claude`/`gh`/`git`
-  are located through `ToolLocator`. Anything spawning a tool must go through `ToolConfig`.
+  are located through `ToolLocator`. Anything spawning a tool must go through `ToolConfig`. The
+  consequence this sentence had never drawn: a `PATH` shim prepended before `open` therefore does not
+  make that shim *win*, and nothing errors — the injected directory reaches the app and survives the
+  capture, it just loses on order. `CLAUDE.md`, "**Do not make a tool fail by prepending a shim to
+  `PATH`**", has the measurement (#188).
 - A registered repo path must be the **main checkout**, never a linked worktree (`merge-pr` tears down the
   PR's worktree and cannot do so from inside it) — `GitClient.isMainCheckout` enforces this in Preflight.
 - **The app is not sandboxed** (Hardened Runtime on, ad-hoc signed rather than notarised): child processes

@@ -206,8 +206,17 @@ public struct RepoRegistryService: Sendable {
         return RepoFixOutcome(succeeded: true, detail: "Registered \(repo.nameWithOwner).")
     }
 
-    /// Refines the rows the reconciler called `.ok` with what git says about
-    /// each clone. Every other row is returned exactly as it arrived.
+    /// Refines the rows that have a clone to ask about — `RepoIssue.isProbeable`,
+    /// which is `.ok` and, since #189, `.notChecked` — with what git says about
+    /// each. Every other row is returned exactly as it arrived.
+    ///
+    /// ⚠️ This said "the rows the reconciler called `.ok`" until #189, and the
+    /// widening makes an outage *more* expensive rather than less: with every
+    /// owner unlisted, every row is now probeable, so a page that used to paint
+    /// at once instead runs a real `git fetch` per clone, eight at a time, each
+    /// bounded only by `GitClient`'s 30-second timeout. That cost buys the local
+    /// half of the answer, which is the trade #189 asked for — but it is a trade,
+    /// and the 8-in-flight window it is paid through is unchanged by design.
     ///
     /// Eight in flight, matching `repo-audit/repo_sync.py`. One row costs up to
     /// six `git` invocations — two for `isMainCheckout`, then `symbolic-ref`,
@@ -244,13 +253,54 @@ public struct RepoRegistryService: Sendable {
     }
 
     private func refine(_ row: RepoRow) async -> RepoRow {
-        guard row.issue == .ok, let path = row.path else { return row }
-        let issue = await classify(path: path)
+        // `isProbeable` rather than `== .ok || == .notChecked`: which rows have
+        // a clone to ask about is stated once, on the enum, so the next verdict
+        // added has to answer the question instead of inheriting an answer from
+        // a chain nobody extended (#189).
+        guard row.issue.isProbeable, let path = row.path else { return row }
+        let observed = await classify(path: path)
+        let issue = row.issue.refined(by: observed)
         var refined = row
         refined.issue = issue
-        refined.detail = Self.explain(issue, path: path)
+        refined.detail = Self.detail(observed: observed, refining: row, path: path)
+        // Unchanged, and correct as it stands rather than by accident: the only
+        // fix a probe ever offers is `.pull`, and `.notChecked` is not
+        // `isBehind`, so a row whose listing failed is offered nothing unless
+        // git itself found it strictly behind. That case *is* legitimate —
+        // `--ff-only` against an already-configured upstream is git alone and
+        // never touches the `gh` that failed. `Register` cannot appear here at
+        // all: this line replaces the row's fixes rather than adding to them.
         refined.fixes = issue.isBehind ? [.pull(path: path)] : []
         return refined
+    }
+
+    /// The sentence a probed row carries: what git saw, then — when the row's
+    /// *listing* verdict is part of the answer — the sentence that records why
+    /// nothing was known about the repository.
+    ///
+    /// `explain` is handed a git verdict and a path. It cannot know which
+    /// owner's listing failed or why, and the reconciler's sentence is the only
+    /// place that is recorded, so overwriting it would leave the row saying
+    /// nothing about the outage at all. Nor is dropping git's half right: a
+    /// clean clone whose verdict correctly stays `.notChecked` would then look
+    /// identical to one the probe never touched, in what is the *majority* case
+    /// during an outage. Criterion 2 asks for both, so both are said, git first.
+    ///
+    /// `isProbeable && != .ok` rather than `== .notChecked`, so this is derived
+    /// from the same rule rather than being a third literal list of which
+    /// verdicts compose: any probeable verdict that is not `.ok` reached this
+    /// row from the reconciler and carries a sentence of its own worth keeping.
+    ///
+    /// It is handed the **observation**, not the composed verdict, and that is
+    /// load-bearing in the arm where `.notChecked` survives: there the composed
+    /// verdict *is* `.notChecked`, which `explain` has no case for, so it would
+    /// fall to the `default:` arm and render the row's own path as its sentence.
+    /// The observation is what git actually saw — "Up to date." — which is the
+    /// half worth reporting. Where git overruled, the two are the same value and
+    /// this is exactly the behaviour an `.ok` row has always had.
+    private static func detail(observed: RepoIssue, refining row: RepoRow, path: String) -> String {
+        guard row.issue.isProbeable, row.issue != .ok else { return explain(observed, path: path) }
+        return "\(explain(observed, path: path)) \(row.detail)"
     }
 
     /// One clone's git state. Ordered most-blocking first: the first answer wins,
