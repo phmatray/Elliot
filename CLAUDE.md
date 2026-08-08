@@ -295,6 +295,25 @@ never reaches. The toolbar is a named conflict hot-spot in this repo, so that bl
 where changes land. `not_included` names all of it in every reply — **read it before concluding that
 something failed to appear**, and use the accessibility tree above for anything in the toolbar.
 
+⛔ **It photographs an open window; it cannot open one — so on a fresh launch an agent can look at
+the board and at nothing else.** `AppKitWindowCapture.isOpen` is `isVisible || isMiniaturized`, and
+that is deliberate (a closed scene stays in `NSApp.windows` and photographing its stale hierarchy is
+the defect the check exists to stop). But every other scene — Archive, Preflight, Repositories,
+Operations, Up next, New story — opens only from the View menu or a button, i.e. from a **click**,
+and the measurements below say an agent has no click. Measured 2026-08-08 (#162) against a freshly
+launched, seeded scratch instance:
+
+| call | reply |
+|---|---|
+| `board_screenshot window=archive` | `window_not_open` · *"The window "archive" exists but is not open."* · hint: **"Open right now: board."** |
+| `board_screenshot window=board` | `is_visible: true`, `source: live`, 1510×925 |
+
+So "since #155 the agent can look too" is true of the **board**, and of any other window only once a
+human has opened it. Plan an on-screen pass for a secondary window as *needing a person*, rather than
+discovering it after building the bundle and seeding a store. The refusal is at least honest — it
+names the two cases apart and lists what is open — which is the one thing this file's false-negative
+family never does.
+
 ⚠️ **A long `ELLIOT_HOME` silently costs you the MCP socket.** `sun_path` is capped at 104 bytes on
 macOS, so a scratch home under a deep path makes `startIPC` fail; the app runs fine, and Preflight
 says so under *MCP socket*. Keep the check store short — `/tmp/elliot-check` is short on purpose.
@@ -322,8 +341,8 @@ from #75 to #89 carried some version of *"opening a `Window` scene needs the app
 automation driver refuses"*, and it was never true. A background `openWindow` does open the window; it
 just lands off-screen because the app is not frontmost. The trap is the enumeration, not the window:
 **list all of a pid's windows, never only the ones reporting `is_on_screen`.** Measured on a running
-build, when `ElliotApp.swift` declared six `Window` scenes (it declares five since #151 retired the
-Analysis one), two of them open:
+build, when `ElliotApp.swift` declared six `Window` scenes (**seven today** — counted 2026-08-08 in
+#162: board, Repositories, Operations, Up next, Preflight, Archive, New story), two of them open:
 
 ```
 id=2737  on_screen=False  820x720 @ (454,215)  title='Preflight'
@@ -579,6 +598,11 @@ Accessibility. An interactive Terminal that has been granted the box is a differ
 the one a spawned agent runs under; the claim was probably true where it was written and does not
 transfer. **The grant belongs to whoever is asking — measure it in the session you are in, not from
 this file.**
+
+Re-measured in a separate session on the same day (#162): all five answers identical, plus
+`osascript … to click at {x, y}` → `-25200`. Two sessions is not a guarantee about the next one — the
+sentence above still stands — but it does mean an agent should *plan* for no grant rather than
+discover it, which is what #162 did after building a bundle and seeding a store.
 
 The one thing that still works with no grant at all is **`board_screenshot`** (#155), because Elliot
 renders its own hierarchy in-process. Aiming it at a scratch instance rather than the everyday board

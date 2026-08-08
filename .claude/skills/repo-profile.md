@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1439 tests in 162 suites**, 5 of 5 samples on
-  `feat/167-artefact-retention` on 2026-08-08 off `main` at `da876d7`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1450 tests in 162 suites**, 5 of 5 samples on
+  `feat/167-artefact-retention` on 2026-08-08 off `main` at `0552096`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -65,6 +65,14 @@
       arithmetic (1342 + #211/#217's own +32/+5 over the shared base) matched the run exactly, which
       is worth recording only because it was checked **after** the run rather than used in place of
       one.
+    - **Landing #162 both halves showed up again in one branch, and the stamp was the wrong half.**
+      The line read 1407 in 158 off `b0d121a`, and 1407 in 158 is exactly what this branch's
+      untouched baseline measured — off `da876d7`, one squash later, because #215 added no test. So
+      the *value* survived a commit the stamp did not name: the #138 shape, third time. Then `main`
+      did not move for the whole life of the branch (`git merge-base HEAD origin/main` == `da876d7`
+      at the ready-flip), which is the #145 shape and the rarer one — so the whole of the +11/+0 is
+      this branch's own tests and there is no drift mixed in at all. Both halves of the entry, one
+      branch, no arithmetic needed: 11 new `@Test`s, 11 more in the run.
   - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
     branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
     hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
@@ -93,6 +101,17 @@
       branch's own +33/+3 with nothing left over. Same caveat as #217 below — the sum was checked
       **after** the runs, never in place of them, and it is only predictable because the two sides
       touched disjoint suites.
+    - **Landing #225 the branch argued `main` had not moved, and `main` moved before it landed.** Its
+      body says so in as many words — *"`main` did not move for the life of the branch, so
+      `git log HEAD..origin/main` is empty and the tested tree *is* the merged tree"* — and that was
+      true when it was written. #229 landed while the pull request sat open, so the claim expired
+      without anything touching the branch, and the honest 1439 in 162 met a `main` at 1418 in 158.
+      Two honest numbers again, and `git merge` had no way to choose. ⚠️ **A PR body that reasons
+      from `main` not having moved is dated the moment it is posted** — the reasoning does not
+      survive the interval, which is the whole of this entry stated one file over. Resolved as
+      #217 prescribes: a literal `PLACEHOLDER`, then five samples. The merged tree measures
+      **1450 in 162**, which is `main`'s 1418 plus this branch's own +32/+4 over the shared base
+      `da876d7` with nothing left over — checked after the runs, never in place of them.
     - **Landing #217 the conflict was two honest numbers, and the merged value was the exact sum.**
       Both sides measured off `2494882` and both were right when written — #209's 1358 in 153 and
       this branch's 1330 in 150 — so `git merge` had no way to choose and the line came through as a
