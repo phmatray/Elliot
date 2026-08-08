@@ -32,7 +32,7 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**PLACEHOLDER tests in PLACEHOLDER suites**, 5 of 5 samples on
+- **Full test:** `cd ElliotKit && swift test` (**1440 tests in 160 suites**, 5 of 5 samples on
   `feat/143-open-board-from-repo-row` on 2026-08-08 off `main` at `27e370f`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
@@ -59,7 +59,10 @@
     this line (1418 in 158, also off `da876d7`) met this branch's honest 1429 in 160. Two branches,
     one base commit, both right, and `git merge` with no way to choose: the #217 shape, arriving in
     the entry that had just finished claiming immunity from it. Resolved as #217 prescribes — literal
-    `PLACEHOLDER`, overwritten by the run — and the merged value is in the line above.
+    `PLACEHOLDER`, overwritten by the run — and the merged value is in the line above, which is
+    1418 plus this branch's own +22/+2 with nothing left over. ⚠️ That sum was checked **after** the
+    five runs, never in place of them; it is only predictable because the two branches touched
+    disjoint suites, and the ⛔ bullet below exists because a predicted 1177 once met a measured 1161.
     **The transferable half is not "measure again"; it is that an interval you have already closed
     can reopen.** "`main` never moved" is a statement about a window that is still open while you
     write it, so it is never a property of the branch — only ever a reading taken at one instant. The
