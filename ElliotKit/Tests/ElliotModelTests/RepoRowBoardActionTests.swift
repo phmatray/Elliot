@@ -122,11 +122,16 @@ struct RepoRowBoardActionTests {
         let rows = RepoReconciler.rows(
             listing: GitHubListing(
                 repos: [
-                    gh("phmatray/Koine"),                              // registered, ok
-                    gh("phmatray/Ducky"),                              // on disk, unregistered
-                    gh("phmatray/Filament"),                           // no clone at all
-                    gh("phmatray/castle-core", fork: true),            // out of scope
-                    gh("Atypical-Consulting/alpha", "PUBLIC"),         // misplaced below
+                    // registered and ok
+                    gh("phmatray/Koine"),
+                    // on disk, unregistered
+                    gh("phmatray/Ducky"),
+                    // no clone at all
+                    gh("phmatray/Filament"),
+                    // out of scope
+                    gh("phmatray/castle-core", fork: true),
+                    // cloned under the wrong visibility, below
+                    gh("Atypical-Consulting/alpha", "PUBLIC"),
                 ],
                 failures: [OwnerListingFailure(owner: "nobody", reason: "gh exited 1: no network")]),
             disk: [

@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1407 tests in 158 suites**, 5 of 5 samples on
-  `feat/132-persist-panel-width` on 2026-08-08 off `main` at `b0d121a`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1429 tests in 160 suites**, 5 of 5 samples on
+  `feat/143-open-board-from-repo-row` on 2026-08-08 off `main` at `da876d7`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -49,6 +49,14 @@
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
     your own untouched run and compare against *that*, never against this line.
+  - ✅ **Landing #143 the drift was zero, for the `#145` reason: `main` never moved.**
+    `git rev-list --count HEAD..origin/main` was **0** at the ready-flip — `origin/main` was still
+    `da876d7`, the commit this branch was cut from — so there was nothing to merge and the whole
+    +22/+2 is this branch's own two suites (`RepoRowBoardActionTests` 7,
+    `RepositoriesBoardActionTests` 15) with nothing else mixed in. The previous entry's *value* was
+    right and its *commit* was one behind (it said `b0d121a`, whose child `da876d7` added no test),
+    which is the #138 shape a third time. Worth one line only because it is the entry's own thesis
+    inverted: the number is honest when the interval is short, and here the interval was empty.
   - ✅ **Second time it did not drift, landing #138 — and this one separates the two halves of the
     line cleanly.** The branch's untouched baseline measured **1328 in 149**, the line's exact value,
     off `main` at `2494882`; the line said `dc5c2ce`, which is `2494882`'s parent. So the *value* was
