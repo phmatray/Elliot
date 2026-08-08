@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1407 tests in 158 suites**, 5 of 5 samples on
-  `feat/132-persist-panel-width` on 2026-08-08 off `main` at `b0d121a`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1451 tests in 164 suites**, 5 of 5 samples on
+  `feat/171-card-labels` on 2026-08-08 off `main` at `da876d7`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -86,6 +86,15 @@
       advice taken twice over — 15 runs, of which **14 kept their output** and were green; the 15th
       printed no summary and its output had already been discarded by the command that took it, so
       it is unclassified rather than green. A sample you did not keep is not a sample you can cite.
+    - **Landing #171 both halves held, and the interval is the whole reason.** The branch's own
+      untouched baseline measured **1407 in 158** off `da876d7` — the value this line already
+      claimed, taken from the commit *after* the one it named (`b0d121a` is `da876d7`'s parent, so
+      #215 landed adding no test). Then `git merge-base HEAD origin/main` was still `da876d7` at the
+      ready-flip: **`main` did not move for the length of the branch**, so the whole +44/+6 is this
+      branch's own and nothing is unattributed drift. That is the #209 condition, and it remains the
+      *one* condition under which a number written here survives to be read — not a reason to skip
+      taking your own baseline, which is what caught the value being right and the stamp being stale
+      in the same reading.
     - **Landing #215 the value was right and the commit was one behind — the #138 shape again.** The
       line read 1374 in 155 off `941888c`, and 1374 in 155 is exactly what `main` measures at
       `b0d121a`, one squash later: #216 added no test, so the *value* survived a commit the stamp did
