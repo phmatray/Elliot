@@ -479,6 +479,27 @@ then render "Repository blocked — see Preflight", which is the state you want 
 because no transition can spawn an agent from it. Leave **To Do** and **In Progress** empty if you
 want to exercise the "arrows skip empty columns" rule.
 
+⛔ **That sentence was false from the day it was written until #249, and it is the most expensive
+false claim this file has carried** — it invited a verification pass to leave an armed board on
+screen. `evaluateMove` consulted `from != to`, `allowSideEffects`, `repoIsEnabled` and `activeRunID`;
+`isBlocking` was read by four *views* and by no rule, so a card in a repository drawn as blocked
+dragged perfectly well and spawned `claude -p` at `bypassPermissions` inside the broken checkout.
+Two other documents asserted the same gate — `PreflightService.isBlocking`'s doc comment ("whether a
+repo's cards can be dragged at all") and `labelsCheck`, which was made a *warning* rather than a
+failure on the strength of it. **Three assertions, no implementation.**
+
+It is true now: `Repo.preflight` carries the verdict, `BoardService.proposeMove` reads it off the row
+it already loads, and `evaluateMove` refuses with `MoveBlock.repoBlocked`. Held by `BlockedRepoTests`,
+verified by deleting the guard and watching six checks go red.
+
+⚠️ **What is still *not* true is the unmeasured case.** `PreflightState.notChecked` does **not** block,
+deliberately — blocking would freeze the board for the first seconds of every launch, and permanently
+whenever a rate-limited `gh label list` stops the sweep finishing. So a seeded board is safe only
+**once its repositories have actually been swept**; between launch and the first sweep every
+repository is `notChecked` and every transition is live. The lesson generalises past this bug: a
+two-valued answer to a three-valued question is how the gap hid for as long as it did —
+`isBlocking([])` is `false`, so "nobody looked" and "it passed" were the same value.
+
 ### Board transitions
 
 | From → To | What happens |

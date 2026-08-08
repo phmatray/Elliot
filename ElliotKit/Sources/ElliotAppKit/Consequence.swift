@@ -96,6 +96,11 @@ struct Consequence {
         case .missingIssueNumber: "No issue yet — file it in To Do first."
         case .missingPRNumber: "No pull request yet — implement it first."
         case .repoDisabled: "This repository is switched off in Preflight."
+        // Deliberately not the same sentence as `.repoDisabled`. One is a switch
+        // the reader threw and un-throws; this is a diagnosis Elliot made and
+        // the repair is elsewhere. Collapsing them would send someone to look
+        // for a switch that is already on.
+        case .repoBlocked: "Preflight is failing here — repair it before moving cards."
         case .runAlreadyInFlight: "A run is already working on this card."
         }
     }

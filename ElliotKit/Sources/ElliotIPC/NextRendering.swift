@@ -18,6 +18,10 @@ public enum MoveBlockText {
         case .missingIssueNumber: "The card has no issue number."
         case .missingPRNumber: "The card has no pull request number."
         case .repoDisabled: "That repository is disabled in Elliot."
+        case .repoBlocked:
+            "Elliot's Preflight checks are failing for that repository, so no card in it "
+                + "can be moved. Moving one would start an unattended run inside a checkout "
+                + "Elliot has already diagnosed as broken."
         case .runAlreadyInFlight(let runID): "A run (\(runID)) is already working on this card."
         }
     }
@@ -35,6 +39,14 @@ public enum MoveBlockText {
             "Wait for it to finish: board_await_run holds until it does."
         case .repoDisabled:
             "Enable the repository in Elliot's Preflight screen."
+        case .repoBlocked:
+            // Names the screen rather than a tool, because there is no tool: the
+            // remedies are things like re-registering the main checkout or
+            // committing a repo profile, which happen outside Elliot. Saying
+            // "run Preflight again" would be worse than saying nothing — it
+            // suggests the reading is stale when the usual case is that it is
+            // correct.
+            "Open Elliot's Preflight screen to see which check is failing, and repair it there."
         case .sameColumn, .emptyIdea:
             nil
         }
