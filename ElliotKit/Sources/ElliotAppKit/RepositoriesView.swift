@@ -294,6 +294,13 @@ public struct RepositoriesView: View {
 
     private func repoRow(_ row: RepoRow) -> some View {
         HStack(alignment: .top, spacing: 10) {
+            // The double-click lives on *this* half of the row, never the whole
+            // of it. A gesture on the row fires for taps on its descendants
+            // too, so a row-wide one made double-clicking `Forget` or
+            // `Move to …` run that repair **and** yank the window to the board
+            // — `CLAUDE.md` records the same shape costing this project a
+            // deselect that closed the panel being read.
+            HStack(alignment: .top, spacing: 10) {
             Image(systemName: Self.icon(row.issue))
                 .font(.system(size: 11))
                 .foregroundStyle(Self.tint(row.issue))
@@ -355,6 +362,23 @@ public struct RepositoriesView: View {
             }
 
             Spacer(minLength: 8)
+            }
+            .contentShape(Rectangle())
+            // `simultaneousGesture` rather than `.onTapGesture(count: 2)`: the
+            // latter competes with the `List`'s own click handling for the row,
+            // and what is wanted is both — select *and* open.
+            //
+            // The selection is written here rather than left to the `List`
+            // recognising alongside, because ⌘↩ afterwards acts on
+            // `selectedRepoRowID`: if the list did not also select, the
+            // keyboard would re-scope the board to the row selected *before*
+            // this one. Writing it makes the two agree by construction instead
+            // of by a coincidence this branch could not actuate to measure.
+            .simultaneousGesture(
+                TapGesture(count: 2).onEnded {
+                    model.selectedRepoRowID = row.id
+                    openBoard(row.boardAction)
+                })
 
             VStack(alignment: .trailing, spacing: 4) {
                 // Above the fixes, because it is the only one of these buttons
@@ -372,21 +396,16 @@ public struct RepositoriesView: View {
             }
         }
         .padding(.vertical, 4)
-        // So the double-click below lands on the whole row, including the gap
-        // the `Spacer` opens between the text and the buttons.
-        .contentShape(Rectangle())
-        // `simultaneousGesture` rather than `.onTapGesture(count: 2)`: the
-        // latter competes with the `List`'s own click handling for the row, and
-        // what is wanted here is both — the double-click selects the row *and*
-        // opens its board, which is what makes the selection the menu item
-        // reads agree with the window that just came forward.
-        .simultaneousGesture(TapGesture(count: 2).onEnded { openBoard(row.boardAction) })
         .contextMenu {
             // Conditional content rather than a conditionally-applied modifier:
             // switching the modifier on and off would change the row's view
             // identity for a menu.
             if case .open = row.boardAction {
-                Button("Open board") { openBoard(row.boardAction) }
+                Button("Open board") {
+                    // Selects for the same reason the double-click does.
+                    model.selectedRepoRowID = row.id
+                    openBoard(row.boardAction)
+                }
             }
         }
     }
@@ -419,21 +438,19 @@ public struct RepositoriesView: View {
     /// The one implementation the button, the double-click, the context menu
     /// and ↩ all share.
     ///
-    /// Four entry points, one act — factored so they cannot drift, which is the
-    /// failure mode this repository has paid for elsewhere (three hand-written
-    /// switches over `VerifiedOutcome`, #135). It takes the *action* rather than
-    /// the row because ↩ acts on `model.selectedRowBoardAction`, which is a
-    /// selection and not a row in hand; a row-shaped parameter would have made
-    /// the keyboard path a second copy.
+    /// The *judgement* — unwrap `.open`, check the registration still exists,
+    /// explain the refusal — is `AppModel.showBoard(_:)`, so ⌘↩ in `ElliotApp`
+    /// asks the same question rather than repeating it across a module
+    /// boundary. What is left here is the one line that genuinely cannot move:
+    /// `openWindow` is an environment value and the model has no environment.
     ///
-    /// The window is raised only when the selection actually happened:
-    /// `showBoard` refuses a registration forgotten since the sweep, and
-    /// bringing an unchanged board forward would answer the act with a
+    /// The window is raised only when the scoping actually happened, so a
+    /// refused hop does not answer with a board that did not change — a
     /// confident-looking no-op. Returning whether it acted is what lets
     /// `onKeyPress` say `.ignored` and leave ↩ to whatever else wants it.
     @discardableResult
     private func openBoard(_ action: RepoRowBoardAction) -> Bool {
-        guard case .open(let repoID) = action, model.showBoard(repoID: repoID) else { return false }
+        guard model.showBoard(action) else { return false }
         openWindow(id: "board")
         return true
     }

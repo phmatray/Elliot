@@ -56,6 +56,84 @@ struct RepositoriesBoardActionTests {
         #expect(model.selectedRepoID == elliot.id, "a refused hop must not clear the current scope")
     }
 
+    /// Code review, finding 2: returning `false` into a caller whose only option
+    /// is to do nothing leaves a visible button that silently does nothing —
+    /// indistinguishable from one that worked, which is the defect `FixOutcome`
+    /// exists to prevent one screen over. The refusal has to be *said*.
+    @Test("A refused hop says so where the button is, rather than failing silently")
+    func aRefusedHopIsReported() {
+        let model = AppModel()
+        model.testOnlySeed(repos: [repo("Elliot")], cards: [])
+        #expect(model.lastFixOutcome == nil)
+
+        #expect(model.showBoard(repoID: UUID()) == false)
+
+        #expect(model.lastFixOutcome?.succeeded == false)
+        #expect(model.lastFixOutcome?.detail.contains("no longer registered") == true)
+    }
+
+    @Test("A hop that works reports nothing — a clean pass does not advertise itself")
+    func aWorkingHopIsQuiet() {
+        let model = AppModel()
+        let elliot = repo("Elliot")
+        model.testOnlySeed(repos: [elliot], cards: [])
+
+        #expect(model.showBoard(repoID: elliot.id))
+        #expect(model.lastFixOutcome == nil)
+    }
+
+    // MARK: - The action-shaped overload the five entry points share
+
+    /// Code review, finding 3: ⌘↩ lives in `ElliotApp`, a different module from
+    /// the view, so it cannot call the view's private `openBoard`. The unwrap
+    /// therefore has to be on the model or it is copied — and a copy is what
+    /// this whole feature argues against.
+    @Test("Showing the board from an open action scopes the board")
+    func showBoardFromAnOpenAction() {
+        let model = AppModel()
+        let koine = repo("Koine")
+        model.testOnlySeed(repos: [koine], cards: [])
+
+        #expect(model.showBoard(.open(repoID: koine.id)))
+        #expect(model.selectedRepoID == koine.id)
+    }
+
+    @Test("Showing the board from a non-open action does nothing and reports nothing")
+    func showBoardFromANonOpenAction() {
+        let model = AppModel()
+        let koine = repo("Koine")
+        model.testOnlySeed(repos: [koine], cards: [])
+        model.selectedRepoID = koine.id
+
+        #expect(model.showBoard(.registerFirst) == false)
+        #expect(model.showBoard(.unavailable) == false)
+        #expect(model.selectedRepoID == koine.id)
+        // Not a refusal to explain: nothing was named, so there is nothing to
+        // say. Only a *registration that vanished* earns the sentence above.
+        #expect(model.lastFixOutcome == nil)
+    }
+
+    @Test("The menu item's enablement follows the selected row's action")
+    func canOpenBoardFollowsTheSelection() {
+        let model = AppModel()
+        let koine = repo("Koine")
+        model.testOnlySeedRepoBoard(rows: [
+            row(koine),
+            RepoRow(
+                id: "o/Fresh", nameWithOwner: "o/Fresh", path: "/tmp/Fresh",
+                issue: .notRegistered, detail: "/tmp/Fresh",
+                fixes: [.register(path: "/tmp/Fresh")]),
+        ])
+
+        #expect(model.canOpenBoardForSelectedRow == false, "nothing selected")
+
+        model.selectedRepoRowID = "o/Fresh"
+        #expect(model.canOpenBoardForSelectedRow == false, "register-first")
+
+        model.selectedRepoRowID = koine.nameWithOwner
+        #expect(model.canOpenBoardForSelectedRow)
+    }
+
     // MARK: - selectedRowBoardAction
 
     @Test("With no row selected there is nothing to open")

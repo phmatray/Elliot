@@ -683,9 +683,44 @@ public final class AppModel {
     /// raise a window when there is something to raise it for.
     @discardableResult
     public func showBoard(repoID: UUID) -> Bool {
-        guard repos.contains(where: { $0.id == repoID }) else { return false }
+        guard repos.contains(where: { $0.id == repoID }) else {
+            // Said out loud, in the page's own outcome line, rather than
+            // returning `false` into a caller that can only do nothing with it.
+            // A visible button that silently does nothing is indistinguishable
+            // from one that worked — which is the exact defect `FixOutcome`
+            // was introduced to fix, one screen over.
+            lastFixOutcome = FixOutcome(
+                detail: "That repository is no longer registered, so it has no board. "
+                    + "The list is from an earlier sweep — Refresh to see what is there now.",
+                succeeded: false)
+            return false
+        }
         selectedRepoID = repoID
         return true
+    }
+
+    /// The same act, from a row's board action rather than a bare id.
+    ///
+    /// The unwrap lives here and not at each call site because there are four
+    /// of them — the row's button, its double-click, its context menu, and ↩ —
+    /// plus ⌘↩ in `ElliotApp`'s `Commands`, which is in a different **module**
+    /// and so cannot reuse a private method in the view. That last one is why
+    /// this is on the model: it is the only place all five can share.
+    @discardableResult
+    public func showBoard(_ action: RepoRowBoardAction) -> Bool {
+        guard case .open(let repoID) = action else { return false }
+        return showBoard(repoID: repoID)
+    }
+
+    /// Whether the selected row can open the board.
+    ///
+    /// Derived from `selectedRowBoardAction`, so the menu item's enablement and
+    /// its action still ask one question — it exists only because `ElliotApp`
+    /// cannot name `RepoRowBoardAction` (it depends on `ElliotAppKit` and
+    /// nothing else) and so cannot pattern-match the case itself.
+    public var canOpenBoardForSelectedRow: Bool {
+        if case .open = selectedRowBoardAction { return true }
+        return false
     }
 
     /// The Repositories list's selection, by `RepoRow.id` — `"owner/name"`.

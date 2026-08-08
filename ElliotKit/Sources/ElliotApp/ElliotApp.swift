@@ -278,14 +278,17 @@ private struct OpenBoardMenuItem: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        // The judgement is `AppModel`'s, not this item's: unwrapping the action
+        // and checking the registration still exists is the same act the row's
+        // button performs, and this target cannot reuse the view's private
+        // method. Repeating it here would make ⌘↩ a fifth copy of a decision
+        // the feature exists to hold in one place.
         Button("Open Board for Selected Repository") {
-            guard case .open(let repoID) = model.selectedRowBoardAction,
-                model.showBoard(repoID: repoID)
-            else { return }
+            guard model.showBoard(model.selectedRowBoardAction) else { return }
             openWindow(id: "board")
         }
         .keyboardShortcut(.return, modifiers: .command)
-        .disabled({ if case .open = model.selectedRowBoardAction { false } else { true } }())
+        .disabled(!model.canOpenBoardForSelectedRow)
     }
 }
 
