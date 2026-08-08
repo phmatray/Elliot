@@ -70,7 +70,8 @@ struct RepositoriesVocabularyTests {
     /// same addition visible *here*, where the word and symbol get checked.
     private static let everyIssue: [RepoIssue] = [
         .ok, .notCloned, .notRegistered, .missing, .misplaced(expected: "/R/x"),
-        .unlisted, .outOfScope(.fork), .outOfScope(.archived), .outOfScope(.otherRoot),
+        .unlisted, .outOfScope(.fork), .outOfScope(.archived), .outOfScope(.empty),
+        .outOfScope(.otherRoot),
         .behind(by: 3), .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable("no HEAD"),
     ]
 
