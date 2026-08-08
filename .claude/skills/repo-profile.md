@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1418 tests in 158 suites**, 5 of 5 samples on
-  `fix/162-archive-search-verified` on 2026-08-08 off `main` at `da876d7`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1428 tests in 161 suites**, 5 of 5 samples on
+  `fix/179-concurrent-pumps` on 2026-08-08 off `main` at `27e370f`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -73,6 +73,16 @@
       at the ready-flip), which is the #145 shape and the rarer one — so the whole of the +11/+0 is
       this branch's own tests and there is no drift mixed in at all. Both halves of the entry, one
       branch, no arithmetic needed: 11 new `@Test`s, 11 more in the run.
+    - **Landing #179 the value was right and the stamp was two squashes behind — the #138 shape a
+      fourth time, and by now that is the *usual* outcome rather than a surprise.** The line read
+      1418 in 158 off `da876d7`, and 1418 in 158 is exactly what this branch's untouched baseline
+      measured — off `27e370f`, two squashes later, because #227 and #229 added no test between them.
+      So a reader who trusted the stamp would have gone looking for a drift that did not exist, and
+      one who trusted the value would have been right by luck. `main` then did not move for the life
+      of the branch, so the whole +10/+3 is this branch's own three suites with nothing mixed in.
+      **The transferable part is that the two halves fail independently**: the value is wrong when
+      `main` gains tests, the stamp is wrong when `main` gains anything at all, and the stamp is the
+      cheaper one to keep true because it does not need a run to update.
   - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
     branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
     hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
