@@ -1210,7 +1210,12 @@ trap rather than a preference:
 
 - Scan line by line, 1-indexed, keeping the line number for every refusal.
 - Strip a `#` comment only when the `#` is at line start or preceded by a space —
-  a `#` inside a URL such as `…/issues/61#comment` must survive.
+  a `#` inside a URL such as `…/issues/61#comment` must survive. **Ship a test for
+  this**, not just correct code: a named trap with no test is a trap that returns.
+- **Refuse a duplicate key at the top level, not just inside an exemption item.**
+  Last-wins on a duplicated `repo:` would let a file name a different repository
+  from the one whose reviewer approved it — which is exactly what the
+  `refusesForeignRepo` test exists to prevent, defeated one line lower.
 - `>` starts a folded scalar: consume the following lines that are indented
   deeper than the key, join with a single space, trim.
 - `version` must be exactly `1`; anything else refuses with
