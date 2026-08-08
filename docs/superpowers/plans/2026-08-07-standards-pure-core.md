@@ -2132,10 +2132,36 @@ Add `StandardCardSeed` to `StandardVerdict.swift` and `cardSeed` to
     ) -> StandardCardSeed?
 ```
 
-The story is built from the axis, not from prose: `role` is `"maintainer"`,
-`want` restates the axis's expectation, `benefit` restates why the axis exists,
-and the acceptance criteria are the expectation plus "the standards sweep reports
-this repository compliant". The body carries `standard.rubric`, the
+The story is built from the axis, not from prose: `role` is `"maintainer"`, and
+`want` restates the axis's expectation.
+
+⚠️ **`benefit` is NOT `standard.rubric`.** The rubric is a *description of the
+axis*, several sentences long, and half of it says what the axis leaves alone.
+Dropped into the `benefit` slot it renders through `UserStory.narrative` as "…so
+that The repository carries an `.editorconfig` at its root, so an editor picks
+up… This axis measures presence only: it does not read the file…" — a capital
+mid-sentence, a "so…so" collision, and scope caveats standing in for a reason. It
+satisfies `isComplete`, which only checks for non-empty, and reads like nothing a
+person would write.
+
+Add a `Standard.benefit` instead: one clause per axis, written to follow the words
+"so that".
+
+| Axis | `benefit` |
+|---|---|
+| `editorconfig` | every editor applies the house conventions without anyone configuring it |
+| `dependencyAutomation` | dependency updates arrive as reviewable pull requests instead of piling up unseen |
+| `ciJudgeable` | a pull request can be judged before it is merged |
+| `topics` | this repository can be found again by family rather than by name |
+| `licence` | what others may do with this code is stated rather than assumed |
+
+**The acceptance criteria must not restate the `want`.** Two, and both checkable:
+
+1. the expectation, tied to the command that would verify it — e.g.
+   `"`.editorconfig` is present at the root — `gh api …/git/trees/dev?recursive=1`"`;
+2. `"the standards sweep reports this repository compliant on <Standard.title>"`.
+
+A criterion identical to the `want` verifies nothing; it just says the wish twice. The body carries `standard.rubric`, the
 expected/actual pair, every `Provenance.command`, and the observation's age.
 
 - [ ] **Step 4: Run it to verify it passes**
