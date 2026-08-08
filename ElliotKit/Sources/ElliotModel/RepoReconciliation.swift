@@ -97,6 +97,29 @@ public enum RepoFix: Sendable, Hashable {
     }
 }
 
+/// What a row can do about the **board**, as opposed to about itself.
+///
+/// Its own vocabulary rather than a sixth `RepoFix` case, and each mismatch is
+/// load-bearing rather than a matter of taste. `RepoFix` is *"the one thing a
+/// row's button does"* and every case repairs the repository's state — opening
+/// a window repairs nothing. Its buttons route through
+/// `AppModel.apply(_ fix:)`, which calls `RepoRegistryService` and then re-reads
+/// GitHub, the disk and the store; navigation would trigger a portfolio-wide
+/// sweep. They carry `.disabled(model.isReconciling)`, which is right for a
+/// repair and absurd for "show me the cards". And `RepoReconciler` is pure by
+/// design so that "this directory is misplaced" is provable; teaching it to
+/// emit a navigation affordance would couple *what is wrong here* to *where can
+/// I go from here*.
+public enum RepoRowBoardAction: Sendable, Hashable {
+    /// Registered — Elliot drives this checkout and the board can be scoped to it.
+    case open(repoID: UUID)
+    /// On disk, not registered. `RepoFix.register` is the way in; offering both
+    /// would name an act that cannot work yet.
+    case registerFirst
+    /// Neither: not cloned, out of scope, or nothing to go to.
+    case unavailable
+}
+
 public struct RepoRow: Identifiable, Sendable, Hashable {
     public var id: String
     public var nameWithOwner: String?
@@ -155,6 +178,36 @@ public struct RepoRow: Identifiable, Sendable, Hashable {
             .behind, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable:
             return true
         }
+    }
+
+    /// Whether this row can send the reader to the board, and how.
+    ///
+    /// **Registration is the gate — not `issue == .ok`, and that is the
+    /// decision.** A `.missing` row (registered, nothing on disk), an
+    /// `.unlisted` one (registered, GitHub did not list it) and a registered
+    /// `.outOfScope(.otherRoot)` one all still have cards on the board, and
+    /// those are exactly the rows a person is looking at when they want to see
+    /// them. Gating on `.ok` would refuse the reader at precisely the moment
+    /// the question got interesting.
+    ///
+    /// Note it is `repoID`, deliberately, and not `showsBoardFigures` above:
+    /// those two answer different questions. A registered fork is denied
+    /// *figures* because harmonising it is not our business — but its cards
+    /// exist, and refusing to show them would be that judgement leaking into
+    /// navigation.
+    ///
+    /// `.registerFirst` is read from the row's own `fixes` rather than from
+    /// `repoID == nil`. The two would usually agree; reading `fixes` is what
+    /// makes "offers Register first" an assertion about **the button the row
+    /// actually carries** instead of a second, independent guess at when one
+    /// exists — a `.notChecked` row, for instance, is unregistered and
+    /// deliberately carries no `Register` at all.
+    public var boardAction: RepoRowBoardAction {
+        if let repoID { return .open(repoID: repoID) }
+        let offersRegister = fixes.contains {
+            if case .register = $0 { return true } else { return false }
+        }
+        return offersRegister ? .registerFirst : .unavailable
     }
 }
 
