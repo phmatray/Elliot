@@ -1897,7 +1897,18 @@ commented order: meta-repository → company-private → `TeX`/`Roff` → defaul
 - [ ] **Step 4: Run it to verify it passes**
 
 Run: `cd ElliotKit && swift test --filter StandardPredicatesTests`
-Expected: PASS, 16 tests.
+Expected: PASS, 15 tests.
+
+⚠️ **`RepoMeasurement.dependencyConfig` is read by no wave-1 predicate**, and
+that is correct rather than an omission: the arbitration made
+`dependencyAutomation` a presence check over the tree, and judging the
+config's *contents* belongs to the sweep that writes it. Do not invent a use
+for the field to make it feel earned.
+
+The consequence is for plan 2, not for you, but record it: **the collector
+must not fetch that file.** One `gh api …/contents` per repository, for
+something nothing reads, is 343 calls against a 5000/h budget the sweep
+already strains.
 Run: `cd ElliotKit && swift test`
 Expected: the whole suite green. Sample it five times — one green run does not
 clear a suite, and a defect failing 53 % of the time once reached `main` past 21
