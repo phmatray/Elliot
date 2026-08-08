@@ -49,6 +49,11 @@ struct StandardCardSeedTests {
         // card, so the agent that picks it up does not have to re-derive them.
         #expect(seed.body.contains("gh api"))
         #expect(seed.body.contains("an .editorconfig at the root"))
+        // A criterion identical to the wish verifies nothing: the first
+        // criterion must be the expectation tied to the command that checks
+        // it, not the `want` repeated back.
+        #expect(seed.story.acceptanceCriteria.first != seed.story.want)
+        #expect(seed.story.acceptanceCriteria.first?.contains("gh api") == true)
     }
 
     /// The same sweep must not file twice; a LATER recurrence must be filable.

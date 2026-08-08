@@ -22,6 +22,29 @@ public enum Standard: String, Codable, CaseIterable, Sendable, Hashable {
         }
     }
 
+    /// One clause, written to follow the words "so that" — the reason a
+    /// `UserStory`'s `benefit` exists. Kept separate from `rubric`: the rubric
+    /// is a multi-sentence description of the axis, half of which is what it
+    /// deliberately leaves alone, and a `benefit` built from it renders through
+    /// `UserStory.narrative` as "so that The repository carries…", a capital
+    /// letter mid-sentence and a scope caveat standing in for a reason. This is
+    /// the short answer to "why does this axis exist" that the rubric never
+    /// tries to be.
+    public var benefit: String {
+        switch self {
+        case .editorconfig:
+            "every editor applies the house conventions without anyone configuring it"
+        case .dependencyAutomation:
+            "dependency updates arrive as reviewable pull requests instead of piling up unseen"
+        case .ciJudgeable:
+            "a pull request can be judged before it is merged"
+        case .topics:
+            "this repository can be found again by family rather than by name"
+        case .licence:
+            "what others may do with this code is stated rather than assumed"
+        }
+    }
+
     /// What this axis measures, in the words that go on the card — and what it
     /// leaves alone, which is the half that keeps five axes from reporting the
     /// same list.

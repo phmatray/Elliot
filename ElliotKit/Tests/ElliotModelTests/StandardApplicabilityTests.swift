@@ -72,12 +72,17 @@ struct StandardApplicabilityTests {
 
     /// Every rubric must say what it leaves alone as well as what it checks —
     /// without the second half five axes drift into "the repo looks tidy" and
-    /// report the same list.
-    @Test("Every axis has a title and a rubric")
+    /// report the same list. `benefit` is the short "why", checked separately
+    /// so a sixth axis cannot ship with a rubric and no reason: a `benefit`
+    /// built from the rubric is exactly the bug this test would otherwise miss
+    /// (a non-empty string that says nothing on its own).
+    @Test("Every axis has a title, a rubric and a benefit")
     func everyAxisIsDescribed() {
         for s in Standard.allCases {
             #expect(!s.title.isEmpty, "\(s)")
             #expect(s.rubric.count > 80, "\(s) rubric is too thin to judge against")
+            #expect(!s.benefit.trimmed().isEmpty, "\(s) has no benefit")
+            #expect(s.benefit.count < 200, "\(s) benefit reads like a rubric, not a clause")
         }
     }
 }

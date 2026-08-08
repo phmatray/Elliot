@@ -90,7 +90,10 @@ public enum StandardsEngine {
     /// `producesCard` is false for every verdict an unreadable universe can
     /// produce. `repo` is the concrete value a caller already resolved to build
     /// the finding in the first place, so the key is keyed on the one value
-    /// that is never the empty placeholder.
+    /// that is never the empty placeholder. Nothing asserts
+    /// `repo.nameWithOwner == finding.nameWithOwner`, though — a caller that
+    /// zips a finding from one repository with a summary from another mis-keys
+    /// the card silently. Pass the pair this finding was actually produced from.
     public static func cardSeed(
         for finding: StandardFinding, repo: GHRepoSummary, epoch: Date
     ) -> StandardCardSeed? {
@@ -101,17 +104,26 @@ public enum StandardsEngine {
         let standard = finding.standard
         let key = "standard:\(repo.nameWithOwner):\(standard.rawValue):\(epoch.timeIntervalSince1970)"
 
-        // The axis, not prose: `want` restates the expectation, `benefit`
-        // restates why the axis exists — the rubric is the only place that
-        // sentence lives — and the acceptance criteria are that expectation
-        // plus the sweep's own re-check.
+        // The command that actually established this fact: the predicate's own
+        // read, appended last in `verdict()` (step 3), after the universe listing
+        // and the exemptions read that precede it in `provenances`. Re-running it
+        // is how the first criterion below is checked rather than merely restated.
+        let verifyingCommand = finding.provenances.last?.command
+
+        // The axis, not prose: `want` restates the expectation, `benefit` is the
+        // one-clause reason the axis exists (not `rubric` — a multi-sentence
+        // description of what the axis checks and what it leaves alone reads as
+        // "so that The repository carries…" once `UserStory.narrative` is done
+        // with it). The acceptance criteria are that expectation tied to the
+        // command that verifies it, plus the sweep's own re-check — neither is
+        // the `want` repeated back, which would verify nothing.
         let story = UserStory(
             role: "maintainer",
             want: violation.expected,
-            benefit: standard.rubric,
+            benefit: standard.benefit,
             acceptanceCriteria: [
-                violation.expected,
-                "the standards sweep reports this repository compliant",
+                verifyingCommand.map { "\(violation.expected) — `\($0)`" } ?? violation.expected,
+                "the standards sweep reports this repository compliant on \(standard.title)",
             ])
 
         var lines = [
