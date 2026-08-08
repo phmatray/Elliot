@@ -285,8 +285,9 @@ anywhere but on a contributor's own machine.
 even less on its own than it used to.** The floor job ran `swift build` *and* `swift build
 --build-tests` until 2026-08-08; both came out, because `ci.yml`'s `swift test` compiles the same
 targets on the same image, so a pull request was compiling the whole package **twice on two runners**
-— 60–70 billed macOS minutes, now 40 (measured, criterion 3; the arithmetic and the run ids live in
-`swift-floor.yml`'s header). So:
+— 60–70 billed macOS minutes, now 40–50, a **saving of 20–30** (measured, criterion 3; the
+arithmetic and the run ids live in `swift-floor.yml`'s header, which also says why the saving is the
+honest figure to quote and the total is not). So:
 
 - `floor` green = the runner's Swift **is** the declared floor, and `ci.yml` runs on that image. It
   compiles nothing, and it never did execute a `@Test`.

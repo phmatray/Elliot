@@ -75,8 +75,10 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
     ran `swift build` *and* `swift build --build-tests` until 2026-08-08, which meant every pull
     request compiled the **whole package twice on two `macos-26` runners** — not just the test
     targets, which is what the issue title said and what its own comments understated. Measured
-    before and after: **60–70 → 40 billed macOS minutes** per pull request (33–43%), floor
-    2m21–3m58 → **9s**,
+    before and after: **60–70 → 40–50 billed macOS minutes** per pull request, floor
+    2m21–3m58 → **8–9s**, ⚠️ and the figure to quote is the **saving** — 20–30 billed minutes,
+    entirely this job's own 3–4 → 1 — because `build-and-test` is untouched and its cold compile
+    still crosses a billed-minute boundary run to run (2m38, then 3m03),
     with `1418 tests in 158 suites` unchanged either side. The arithmetic, the run ids and the
     argument are in `swift-floor.yml`'s header, which is the durable copy — GitHub drops the logs at
     90 days.

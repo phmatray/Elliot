@@ -35,14 +35,20 @@
 # from 2026-08-08 — against this change's own run after:
 #
 #     before   floor 2m21–3m58   +   build-and-test 2m42–3m00   =   6–7 job-min   =   60–70 billed
-#     after    floor 0m09        +   build-and-test 2m38        =   4 job-min     =   40 billed
+#     after    floor 0m08–0m09   +   build-and-test 2m38–3m03   =   4–5 job-min   =   40–50 billed
 #
-# After-runs: `31255937877` (floor, 9s) and `31255937885` (build-and-test, 2m38s, reporting
-# `1418 tests in 158 suites` — the same suite, unchanged). **20–30 fewer billed macOS minutes per
-# pull request: 33–43%.** (Stated as a percentage on purpose — the saving pairs 60→40 and 70→40, so
-# "a third to two fifths" rounds the top end down and cannot be re-derived from the table.) The run
-# ids are written down because GitHub drops the logs at 90 days, and this file's own history is the
-# argument for not leaving a measurement only there.
+# After-runs: `31255937877` (floor, 9s) with `31255937885` (2m38s), and `31256911867` (floor, 8s)
+# with `31256911881` (3m03s) — both reporting `1418 tests in 158 suites`, the same suite, unchanged.
+#
+# ⚠️ **Quote the saving, not the total.** The total still swings a whole billed minute because
+# `build-and-test` is unchanged and its cold compile varies (2m38 vs 3m03 crosses a minute boundary).
+# The **saving is exactly this job's own reduction — 3–4 billed job-minutes down to 1, so 20–30
+# billed macOS minutes a pull request** — and that is robust precisely because nothing else moved. A
+# first draft here recorded a flat "40 billed" from a single after-run and called the cost
+# "constant"; the second after-run made it 50. One sample cannot see variance it happens to miss.
+#
+# The run ids are written down because GitHub drops the logs at 90 days, and this file's own history
+# is the argument for not leaving a measurement only there.
 #
 # ⚠️ A job bills rounded **up to the whole minute**, ×10 for private macOS, which is why a 9-second
 # job still costs one billed minute and why the saving is not the 3m49 of wall clock it looks like.
