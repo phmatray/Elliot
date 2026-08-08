@@ -46,6 +46,10 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # TEMPORARY — #133 measurement only, reverted before this pull request is marked ready. Two
+  # back-to-back dispatches put two runs in one concurrency group under an event that is not
+  # `pull_request`, which is the only way to exercise the expression's false branch on demand.
+  workflow_dispatch:
 
 # This job reads the repository and nothing else. Stating that here rather than inheriting it means a
 # later change to the repository or organisation default cannot silently hand `GITHUB_TOKEN` write
