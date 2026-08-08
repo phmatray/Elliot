@@ -695,6 +695,16 @@ struct StandardApplicabilityTests {
                 == .notApplicable(.metaRepository))
     }
 
+    /// A repository the Python README sweeps skip is not thereby a
+    /// non-project. `phmatray/AAA` is an active .NET library, and its name was
+    /// carried into this list by inheritance rather than by judgement.
+    @Test("A real library is not a meta-repository")
+    func libraryIsNotMeta() {
+        for s in Standard.allCases {
+            #expect(s.applicability(to: summary("phmatray/AAA")) == .applies, "\(s)")
+        }
+    }
+
     /// Every rubric must say what it leaves alone as well as what it checks —
     /// without the second half five axes drift into "the repo looks tidy" and
     /// report the same list.
@@ -810,8 +820,18 @@ public enum Applicability: Sendable, Hashable {
 }
 
 public extension Standard {
-    /// `<owner>/.github` and the profile repository: infrastructure, not projects.
-    static let metaRepositoryNames: Set<String> = [".github", "AAA"]
+    /// `<owner>/.github`: infrastructure carrying an account's community-health
+    /// files, not a project anyone ships.
+    ///
+    /// ⛔ Keep this to repositories that are genuinely not projects. It used to
+    /// also carry `"AAA"`, inherited from the Python sweeps' `NOISE_EXACT` — but
+    /// there the name means "do not rewrite its README", which is a different
+    /// judgement. `phmatray/AAA` is an active .NET library (a fluent
+    /// Arrange-Act-Assert test builder) and belongs under every axis. Excluding a
+    /// real project here drops it from all five silently and records the reason
+    /// nowhere; `.elliot/standards.yml` exemptions exist for that, and they
+    /// demand a reason.
+    static let metaRepositoryNames: Set<String> = [".github"]
 
     /// Scope, decided in code and in a fixed order.
     ///
