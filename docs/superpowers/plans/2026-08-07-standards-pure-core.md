@@ -1361,8 +1361,15 @@ public struct StandardFinding: Identifiable, Sendable, Hashable {
 }
 ```
 
-⚠️ **Give `Violation`, `StandardFinding` and `RepoStandardsAssessment` an explicit
-`public init`**, matching the one `RepoMeasurement` already has in task 5. A public
+⚠️ **`StandardCardSeed` ships here too**, with the shape task 10 specifies and its
+own `public init`. This task's `RepoStandardsAssessment` has a `seeds` field and
+this plan never declared its element type — a field cannot exist without one, and
+the alternative was blocking task 7 on a type task 10 already fully describes.
+Task 10 therefore adds only `StandardsEngine.cardSeed`.
+
+⚠️ **Give `Violation`, `StandardFinding`, `RepoStandardsAssessment` and
+`StandardCardSeed` an explicit `public init`**, matching the one `RepoMeasurement`
+already has in task 5. A public
 struct's memberwise initialiser is **internal**, which is invisible here — the tests
 use `@testable import` — and becomes a compile error the moment `StandardsService`
 is written, because plan 2 puts it in `ElliotEngine`, another module. This is not
@@ -1934,9 +1941,14 @@ every case, so topics moves from 21 to 38 by design, not by regression."
 ### Task 10: The card seed
 
 **Files:**
-- Modify: `ElliotKit/Sources/ElliotModel/StandardVerdict.swift`
 - Modify: `ElliotKit/Sources/ElliotModel/StandardsEngine.swift`
 - Test: `ElliotKit/Tests/ElliotModelTests/StandardCardSeedTests.swift`
+
+⚠️ **`StandardCardSeed` already exists** — it shipped in task 7, with exactly the
+shape below and an explicit `public init`. Task 7's `RepoStandardsAssessment.seeds`
+needed a type and this plan had not given one, so it was written there rather than
+leaving a field with no declared element. `StandardVerdict.swift` therefore needs
+no change in this task: the only new work is `StandardsEngine.cardSeed`.
 
 **Interfaces:**
 - Consumes: tasks 4, 7, 9.
