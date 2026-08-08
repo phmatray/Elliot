@@ -30,9 +30,24 @@ public enum EscapeRoute: Equatable, Sendable, CaseIterable {
     ///
     /// ⚠️ **Not a no-op, and the reason it is a case rather than `nil`.** The
     /// board returns `.ignored` from `onKeyPress` so the press falls through to
-    /// whatever else wants it — a sheet, a text field, the window. A route that
-    /// reported "handled, did nothing" would swallow Escape from an open sheet
-    /// and leave the reader with no way out of it.
+    /// the responder chain. A route that reported "handled, did nothing" would
+    /// claim Escape for something that did not use it.
+    ///
+    /// What is down that chain is an inline editor and then the window, not a
+    /// modal. **This app has no sheets at all** — zero `.sheet(` in the package,
+    /// measured; the one `confirmationDialog` (`ForgetConfirmation`) is applied
+    /// by Preflight and Repositories and never by the board, and the things that
+    /// read like sheets are a `Window` scene (`NewCardWindow`) or inline panel
+    /// regions (`MergeConfirmation`, `ProposalEditor`). The concrete claimant is
+    /// `ProposalEditor`'s own `.onExitCommand`, which states the stake exactly:
+    /// *"Without it the key would fall through to the window, which is the wrong
+    /// thing to close while a row is open."*
+    ///
+    /// This paragraph blamed a sheet until #261, one commit after it was
+    /// written. The conclusion did not change and the reason did — which is the
+    /// #186 shape, where four comments went on reasoning from a premise that had
+    /// been retired. A wrong reason is worse than none: the next person weighs a
+    /// decision against it.
     case ignored
 
     /// What the next press of Escape does.
@@ -50,6 +65,22 @@ public enum EscapeRoute: Equatable, Sendable, CaseIterable {
     /// would also be wrong in the other direction — a panel the reader opened
     /// from the toolbar, holding text they typed, is not transient in the way a
     /// selection is.
+    ///
+    /// ⛔ **An armed merge is absent for a stronger reason: Escape cannot reach
+    /// one today, and giving it one here would be new behaviour wearing the
+    /// clothes of a description.** `pendingFollowUps` is dismissed only by the
+    /// Cancel button in `MergeConfirmation`, whose Merge is *deliberately*
+    /// denied `.keyboardShortcut(.defaultAction)` (#247) because the one act
+    /// that cannot be taken back must be reached by pressing it. Whether Escape
+    /// should cancel an armed merge is a question nobody has answered; this
+    /// route does not answer it by accident.
+    ///
+    /// ⚠️ **What `.deselectCard` costs is preserved here, not decided.** Clearing
+    /// the selection tears down `DetailPanelView` and its `@State` `CardEditor`
+    /// with it, so an unsaved edit is discarded with no confirmation — today's
+    /// behaviour, unchanged by this rule. If a later route puts "cancel the
+    /// edit" ahead of "clear the selection", it is *changing* that rather than
+    /// keeping it, and should say so.
     public static func next(consoleIsOpen: Bool, hasSelectedCard: Bool) -> EscapeRoute {
         if consoleIsOpen { return .foldConsole }
         if hasSelectedCard { return .deselectCard }

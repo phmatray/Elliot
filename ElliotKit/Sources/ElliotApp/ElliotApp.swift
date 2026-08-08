@@ -180,9 +180,15 @@ struct ElliotApp: App {
 
             // No Escape key equivalent here on purpose. A menu shortcut is
             // matched before the responder chain, so it would take Escape
-            // from whichever sheet is open and deselect behind it instead
-            // of closing it. The board handles Escape itself, where it can
-            // only fire while the board has focus.
+            // from whatever is focused and deselect behind it instead. The
+            // board handles Escape itself, where it can only fire while the
+            // board has focus, and `EscapeRoute` states the order.
+            //
+            // The decision is unchanged since it was written; its example is
+            // not. It named "whichever sheet is open", and this package has
+            // no sheets — zero `.sheet(`, measured in #261. The live claimant
+            // is `ProposalEditor`'s `.onExitCommand`, an inline editor inside
+            // this very window, which a menu shortcut would indeed rob.
             Button("Deselect") { model.selectedCardID = nil }
                 .disabled(model.selectedCard == nil)
         }

@@ -27,7 +27,12 @@ struct EscapeRouteTests {
     }
 
     /// ⚠️ The property the whole route is worth nothing without: with nothing to
-    /// dismiss the press is handed on, so a sheet can still close on Escape.
+    /// dismiss the press is handed on, so the responder chain still sees it.
+    ///
+    /// This comment said "so a sheet can still close" until #261, and there is
+    /// no sheet in this package to close — zero `.sheet(`, measured. What is
+    /// actually down the chain is an inline editor's own `.onExitCommand` and
+    /// then the window.
     @Test("Nothing to dismiss means the key is handed on, not swallowed")
     func anEmptyBoardHandsTheKeyOn() {
         let route = EscapeRoute.next(consoleIsOpen: false, hasSelectedCard: false)
@@ -35,8 +40,8 @@ struct EscapeRouteTests {
         #expect(
             !route.isHandled,
             """
-            reporting an empty board's Escape as handled swallows the key from whatever else \
-            wanted it — a sheet with no other way out
+            reporting an empty board's Escape as handled claims the key for a route that did \
+            not use it, and takes it from the responder chain below
             """
         )
     }
