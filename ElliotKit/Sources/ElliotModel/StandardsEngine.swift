@@ -57,14 +57,19 @@ public enum StandardsEngine {
             }
         }
 
-        // 3. Only now the measurement, and its evidence — the whole point of
-        //    `evaluate` returning a tuple rather than a bare verdict: a
-        //    finding that cites nothing cannot be judged.
-        let outcome = StandardPredicates.evaluate(
+        // 3. Only now the measurement, and everything it rested on — the whole
+        //    point of `evaluate` returning a `StandardOutcome` rather than a
+        //    bare verdict: a finding that cites nothing cannot be judged, and
+        //    `observationLag` reduces over `provenances`, so a predicate's own
+        //    reads must join the list this function already started rather
+        //    than replace it.
+        let measured = StandardPredicates.evaluate(
             standard, repo: summary, measurement: measurement,
             now: now, freshness: freshness)
         return StandardOutcome(
-            verdict: outcome.verdict, provenances: provenances, evidence: outcome.evidence)
+            verdict: measured.verdict,
+            provenances: provenances + measured.provenances,
+            evidence: measured.evidence)
     }
 
     /// Every axis, for one repository, under one clock reading.

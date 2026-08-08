@@ -33,6 +33,10 @@ public enum Unmeasured: Codable, Sendable, Hashable, Error {
     /// the rest because it invalidates *scope*, not one axis.
     case universeStale(age: TimeInterval)
     case universeUnreadable(String)
+    /// Read successfully, and not interpretable — a workflow whose `on:` block
+    /// cannot be located, say. Distinct from `requestFailed` because the network
+    /// did its job: the fix is a better reader or a corrected file, never a retry.
+    case unreadableContent(String)
 }
 
 /// How old an observation may be and still answer a question.

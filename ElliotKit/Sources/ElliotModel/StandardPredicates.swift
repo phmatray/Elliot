@@ -10,7 +10,7 @@ import Foundation
 /// 21 → 38), that is by design, not a regression. See the plan's arbitration
 /// table for the rejected alternatives and why each lost.
 ///
-/// Two rules hold for every axis in this file:
+/// Three rules hold for every axis in this file:
 /// 1. Every read of a `Reading` goes through `value(freshAt:policy:)` and
 ///    exits `.unmeasured` on failure. There is no `?? []` anywhere here — a
 ///    rate limit must never read as "no files found", which would be
@@ -19,6 +19,11 @@ import Foundation
 ///    `paths(withPrefix:)` answer `nil` rather than `false` when the tree was
 ///    truncated, and that `nil` exits here as `.unmeasured(.treeTruncated)`,
 ///    never as "not found".
+/// 3. Every `Reading` a predicate consults is reported in the returned
+///    `StandardOutcome.provenances` — the same rule `StandardsEngine.verdict`
+///    already follows one layer up, for the same reason: a verdict resting
+///    on a day-old tree must not read as fresh because the repository
+///    listing next to it was read a minute ago.
 public enum StandardPredicates {
 
     public static func evaluate(
@@ -27,7 +32,7 @@ public enum StandardPredicates {
         measurement: RepoMeasurement,
         now: Date,
         freshness: FreshnessPolicy
-    ) -> (verdict: StandardVerdict, evidence: [Evidence]) {
+    ) -> StandardOutcome {
         switch standard {
         case .editorconfig:
             return editorconfigVerdict(measurement: measurement, now: now, freshness: freshness)
@@ -50,25 +55,29 @@ public enum StandardPredicates {
     /// sweep's first pass.
     private static func editorconfigVerdict(
         measurement: RepoMeasurement, now: Date, freshness: FreshnessPolicy
-    ) -> (verdict: StandardVerdict, evidence: [Evidence]) {
+    ) -> StandardOutcome {
+        let provenances = [measurement.tree.provenance]
         switch measurement.tree.value(freshAt: now, policy: freshness) {
         case .failure(let why):
-            return (.unmeasured(why), [])
+            return StandardOutcome(verdict: .unmeasured(why), provenances: provenances)
         case .success(let tree):
             guard let present = tree.contains(".editorconfig") else {
-                return (.unmeasured(.treeTruncated), [])
+                return StandardOutcome(verdict: .unmeasured(.treeTruncated), provenances: provenances)
             }
             if present {
-                return (.compliant(detail: ".editorconfig present at the root"), [])
+                return StandardOutcome(
+                    verdict: .compliant(detail: ".editorconfig present at the root"),
+                    provenances: provenances)
             }
-            return (
-                .violating(
+            return StandardOutcome(
+                verdict: .violating(
                     Violation(
                         summary: "No .editorconfig at the repository root",
                         expected: ".editorconfig",
                         actual: "absent",
                         fixHint: "add_editorconfig.py --only <repo> --commit")),
-                [Evidence(path: ".editorconfig", exists: false)]
+                provenances: provenances,
+                evidence: [Evidence(path: ".editorconfig", exists: false)]
             )
         }
     }
@@ -89,10 +98,11 @@ public enum StandardPredicates {
     /// sweep's job, not this axis's.
     private static func dependencyAutomationVerdict(
         measurement: RepoMeasurement, now: Date, freshness: FreshnessPolicy
-    ) -> (verdict: StandardVerdict, evidence: [Evidence]) {
+    ) -> StandardOutcome {
+        let provenances = [measurement.tree.provenance]
         switch measurement.tree.value(freshAt: now, policy: freshness) {
         case .failure(let why):
-            return (.unmeasured(why), [])
+            return StandardOutcome(verdict: .unmeasured(why), provenances: provenances)
         case .success(let tree):
             // The tree's `truncated` flag is one fact for the whole listing, so a
             // miss on any candidate while truncated means every other miss is
@@ -105,20 +115,22 @@ public enum StandardPredicates {
                     continue
                 }
                 if found {
-                    return (.compliant(detail: "\(path) present"), [])
+                    return StandardOutcome(
+                        verdict: .compliant(detail: "\(path) present"), provenances: provenances)
                 }
             }
             if sawUnknownMiss {
-                return (.unmeasured(.treeTruncated), [])
+                return StandardOutcome(verdict: .unmeasured(.treeTruncated), provenances: provenances)
             }
-            return (
-                .violating(
+            return StandardOutcome(
+                verdict: .violating(
                     Violation(
                         summary: "No dependency-automation config found",
                         expected: "renovate.json (or one of its siblings) or a dependabot config",
                         actual: "none of the six candidate paths are present",
                         fixHint: "renovate_v2.py deploy --only <repo> --commit")),
-                [Evidence(path: "renovate.json", exists: false)]
+                provenances: provenances,
+                evidence: [Evidence(path: "renovate.json", exists: false)]
             )
         }
     }
@@ -136,20 +148,21 @@ public enum StandardPredicates {
     /// it is `.unmeasured`, never `.violating`.
     private static func ciJudgeableVerdict(
         repo: GHRepoSummary, measurement: RepoMeasurement, now: Date, freshness: FreshnessPolicy
-    ) -> (verdict: StandardVerdict, evidence: [Evidence]) {
+    ) -> StandardOutcome {
+        let provenances = [measurement.workflows.provenance]
         switch measurement.workflows.value(freshAt: now, policy: freshness) {
         case .failure(let why):
-            return (.unmeasured(why), [])
+            return StandardOutcome(verdict: .unmeasured(why), provenances: provenances)
         case .success(let workflows):
             if workflows.isEmpty {
-                return (
-                    .violating(
+                return StandardOutcome(
+                    verdict: .violating(
                         Violation(
                             summary: "No workflow in the repository",
                             expected: "a workflow triggering on pull_request toward \(repo.defaultBranch)",
                             actual: "no workflows at all",
                             fixHint: nil)),
-                    []
+                    provenances: provenances
                 )
             }
 
@@ -162,28 +175,33 @@ public enum StandardPredicates {
             }
 
             if anyLive {
-                return (
-                    .compliant(
-                        detail: "a workflow triggers on pull requests toward \(repo.defaultBranch)"), []
+                return StandardOutcome(
+                    verdict: .compliant(
+                        detail: "a workflow triggers on pull requests toward \(repo.defaultBranch)"),
+                    provenances: provenances
                 )
             }
             if anyDead {
                 let evidence = workflows.keys.sorted().map { Evidence(path: $0, exists: true) }
-                return (
-                    .violating(
+                return StandardOutcome(
+                    verdict: .violating(
                         Violation(
                             summary: "No workflow triggers on a pull request toward \(repo.defaultBranch)",
                             expected: "pull_request unfiltered, or filtered to include \(repo.defaultBranch)",
                             actual: "filtered away from \(repo.defaultBranch), or no pull_request trigger",
                             fixHint: nil)),
-                    evidence
+                    provenances: provenances,
+                    evidence: evidence
                 )
             }
             // Every workflow's `on:` block was unreadable by this scanner — not
             // the same fact as "no live workflow", so this must not read as a
-            // violation nobody could actually see.
-            return (
-                .unmeasured(.requestFailed("no workflow's on: trigger could be located")), []
+            // violation nobody could actually see. The read succeeded (this is
+            // not `requestFailed`); the content just could not be interpreted.
+            return StandardOutcome(
+                verdict: .unmeasured(
+                    .unreadableContent("no workflow's on: trigger could be located")),
+                provenances: provenances
             )
         }
     }
@@ -354,26 +372,29 @@ public enum StandardPredicates {
     /// 21 / 29 / 38) precisely because none of them applies this exclusion.
     private static func topicsVerdict(
         measurement: RepoMeasurement, now: Date, freshness: FreshnessPolicy
-    ) -> (verdict: StandardVerdict, evidence: [Evidence]) {
+    ) -> StandardOutcome {
+        let provenances = [measurement.topics.provenance]
         switch measurement.topics.value(freshAt: now, policy: freshness) {
         case .failure(let why):
-            return (.unmeasured(why), [])
+            return StandardOutcome(verdict: .unmeasured(why), provenances: provenances)
         case .success(let topics):
             let remaining = Set(topics).subtracting(ubiquitousTopics)
             if !remaining.isEmpty {
-                return (.compliant(detail: "carries \(remaining.sorted().joined(separator: ", "))"), [])
+                return StandardOutcome(
+                    verdict: .compliant(detail: "carries \(remaining.sorted().joined(separator: ", "))"),
+                    provenances: provenances)
             }
             // No file backs this axis — GitHub topics are metadata, not a path
             // in the tree — so a violation here cites nothing rather than
             // inventing one.
-            return (
-                .violating(
+            return StandardOutcome(
+                verdict: .violating(
                     Violation(
                         summary: "No topic beyond dotnet/csharp",
                         expected: "at least one topic besides dotnet and csharp",
                         actual: topics.isEmpty ? "no topics" : topics.sorted().joined(separator: ", "),
                         fixHint: nil)),
-                []
+                provenances: provenances
             )
         }
     }
@@ -382,10 +403,11 @@ public enum StandardPredicates {
 
     private static func licenceVerdict(
         repo: GHRepoSummary, measurement: RepoMeasurement, now: Date, freshness: FreshnessPolicy
-    ) -> (verdict: StandardVerdict, evidence: [Evidence]) {
+    ) -> StandardOutcome {
+        let provenances = [measurement.licenceSPDX.provenance]
         switch measurement.licenceSPDX.value(freshAt: now, policy: freshness) {
         case .failure(let why):
-            return (.unmeasured(why), [])
+            return StandardOutcome(verdict: .unmeasured(why), provenances: provenances)
         case .success(let spdx):
             // GitHub returns an SPDX id, not a path — `LICENSE` would be a
             // guess at a filename nobody confirmed, so this axis, like
@@ -393,29 +415,31 @@ public enum StandardPredicates {
             switch LicencePolicy.expected(for: repo) {
             case .unlicensed:
                 if spdx == nil {
-                    return (.compliant(detail: "no licence, as expected"), [])
+                    return StandardOutcome(
+                        verdict: .compliant(detail: "no licence, as expected"), provenances: provenances)
                 }
-                return (
-                    .violating(
+                return StandardOutcome(
+                    verdict: .violating(
                         Violation(
                             summary: "A licence is present on a repository that must carry none",
                             expected: "no licence",
                             actual: spdx ?? "",
                             fixHint: "this is a commercial product; a permissive licence gives it away")),
-                    []
+                    provenances: provenances
                 )
             case .spdx(let expected):
                 if spdx == expected {
-                    return (.compliant(detail: "licensed \(expected)"), [])
+                    return StandardOutcome(
+                        verdict: .compliant(detail: "licensed \(expected)"), provenances: provenances)
                 }
-                return (
-                    .violating(
+                return StandardOutcome(
+                    verdict: .violating(
                         Violation(
                             summary: "Licence does not match what this repository should carry",
                             expected: expected,
                             actual: spdx ?? "none",
                             fixHint: nil)),
-                    []
+                    provenances: provenances
                 )
             }
         }

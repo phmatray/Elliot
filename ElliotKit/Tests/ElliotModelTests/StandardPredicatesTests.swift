@@ -30,10 +30,10 @@ struct StandardPredicatesTests {
             topics: topics, licenceSPDX: licence)
     }
 
-    // `StandardPredicates.evaluate` returns `(verdict: StandardVerdict, evidence:
-    // [Evidence])` — the widening `StandardsEngine.swift` already documents ("which
-    // stops compiling once `evaluate` returns a tuple"). This helper takes just the
-    // verdict half for the 15 tests below that don't care about citations.
+    // `StandardPredicates.evaluate` returns a `StandardOutcome` (verdict +
+    // evidence + provenances) — the widening `StandardsEngine.swift` already
+    // documents. This helper takes just the verdict field for the tests below
+    // that don't care about citations or provenance.
     private func verdict(_ s: Standard, _ r: GHRepoSummary, _ m: RepoMeasurement) -> StandardVerdict {
         StandardPredicates.evaluate(s, repo: r, measurement: m, now: then, freshness: .default).verdict
     }
@@ -209,5 +209,34 @@ struct StandardPredicatesTests {
             .topics, repo: repo(), measurement: measurement(topics: .observed(["dotnet"], probe)),
             now: then, freshness: .default)
         #expect(topicsOutcome.evidence.isEmpty)
+    }
+
+    // MARK: provenance
+
+    /// `observationLag` reduces over this list, so a verdict resting on a
+    /// 20-hour-old tree must not report the age of the freshest thing nearby.
+    @Test("A verdict reports the age of what it actually read")
+    func reportsTheReadItPerformed() {
+        let old = Provenance(command: "gh api …/git/trees", observedAt: then.addingTimeInterval(-20 * 3600))
+        let m = measurement(tree: .observed(RepoTree(paths: [], truncated: false), old))
+        let outcome = StandardPredicates.evaluate(
+            .editorconfig, repo: repo(), measurement: m, now: then, freshness: .default)
+        #expect(outcome.provenances == [old])
+    }
+
+    /// The topics axis never opens the tree, so it must not claim to have.
+    @Test("An axis claims only the readings it opened")
+    func claimsOnlyWhatItOpened() {
+        let treeProbe = Provenance(command: "gh api …/git/trees", observedAt: then)
+        let topicProbe = Provenance(command: "gh api …/topics", observedAt: then)
+        let m = RepoMeasurement(
+            tree: .observed(RepoTree(paths: [], truncated: false), treeProbe),
+            workflows: .observed([:], treeProbe),
+            dependencyConfig: .observed(nil, treeProbe),
+            topics: .observed(["blazor"], topicProbe),
+            licenceSPDX: .observed(nil, treeProbe))
+        let outcome = StandardPredicates.evaluate(
+            .topics, repo: repo(), measurement: m, now: then, freshness: .default)
+        #expect(outcome.provenances == [topicProbe])
     }
 }

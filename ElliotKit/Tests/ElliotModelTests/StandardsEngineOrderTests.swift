@@ -144,6 +144,13 @@ struct StandardsEngineOrderTests {
     /// `observationLag` reduces over this array, so a step whose read really
     /// happened must appear in it. Recording only the repository's provenance
     /// reports a one-minute lag for a verdict that rested on day-old exemptions.
+    ///
+    /// Three, not two: the repository listing, the exemptions file — and,
+    /// since this is `.editorconfig` and the exemption step found nothing
+    /// active, the tree the predicate itself went on to read. Fixed
+    /// alongside `StandardPredicates` reporting its own reads: this count
+    /// used to be 2 because the predicate's provenance vanished, which is
+    /// the exact defect `observationLag` exists to catch.
     @Test("A verdict records the exemptions read it actually performed")
     func recordsExemptionsProvenance() {
         let old = Provenance(
@@ -153,7 +160,7 @@ struct StandardsEngineOrderTests {
             measurement: emptyMeasurement,
             exemptions: .observed(StandardsFile(version: 1, repo: nil, exemptions: []), old),
             now: then, freshness: .default)
-        #expect(outcome.provenances.count == 2)
+        #expect(outcome.provenances.count == 3)
         #expect(outcome.provenances.contains { $0.observedAt == old.observedAt })
     }
 
