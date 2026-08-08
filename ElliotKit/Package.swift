@@ -32,10 +32,19 @@
 // reason is this issue's own purpose rather than caution. A tools-version is enforced by SwiftPM at
 // *manifest parse*, before a source file is read: its job here is to turn a mysterious failure into
 // a named one. The failure a 6.2 contributor would actually hit is the test one — `swift test` is
-// this repository's only verification gate, there is no build-and-test CI to catch it for them, and
-// CLAUDE.md tells them to run it. Declaring 6.2 would let them build, then hand them a type-check
+// this repository's verification gate, CLAUDE.md tells them to run it, and since #21 `ci.yml` runs
+// it on every pull request as well. Declaring 6.2 would let them build, then hand them a type-check
 // timeout inside a macro expansion: exactly the mystery this floor exists to prevent, one target
 // over.
+//
+// ⚠️ That CI exists now does **not** retire this argument — it moves where the mystery would be met,
+// not whether it is one. A red check arrives minutes later, on a runner the contributor cannot
+// inspect, carrying the same unreadable "unable to type-check this expression in reasonable time";
+// the refusal here arrives before a source file is read and names the version. `ci.yml` answers
+// whether the suite passes; this line answers why you cannot run it at all, and only the second one
+// is any use to someone whose toolchain is four releases short. This paragraph reasoned from "there
+// is no build-and-test CI to catch it for them" until #186 — the same rot as the 6.1 claim this
+// header opens with: a premise that was true when written, and that nothing ever re-checked.
 //
 // **The patch component is deliberate and load-bearing — do not round this to `6.3`.** It said `6.3`
 // for one commit, and that was wrong twice over: SwiftPM resolves `6.3` as **6.3.0**, and the
