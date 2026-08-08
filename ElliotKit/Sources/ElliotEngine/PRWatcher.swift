@@ -109,8 +109,25 @@ public actor PRWatcher {
     /// Internal rather than private so the tests can drive one sighting at a
     /// time, the way `tick()` is.
     func reconcile(card: Card, against prs: [GHPullRequest]) async -> Bool {
-        let match: GHPullRequest? = if let number = card.prNumber {
-            prs.first { $0.number == number }
+        // The recorded pull request wins: it is the one this card is about, and
+        // re-matching by issue could pull a finished card onto an unrelated
+        // later pull request.
+        //
+        // The exception is a pull request closed *without merging* while the
+        // card is still in flight. That is not the end of the story — someone
+        // opens a replacement for the same issue — and since #139 the abandoned
+        // number gets written onto the card so the panel can link to it. Match
+        // on the number alone and that write would pin the card to a dead pull
+        // request for ever, invisible to `PRMatcher`, never leaving In Progress.
+        // Buying the panel a link at the cost of the card is not a trade worth
+        // making; `bestMatch` prefers the most recent, so the replacement wins.
+        let recorded = card.prNumber.flatMap { number in prs.first { $0.number == number } }
+        let match: GHPullRequest? = if card.prNumber != nil {
+            if recorded?.isClosedUnmerged == true, card.column != .done, let issue = card.issueNumber {
+                PRMatcher.bestMatch(among: prs, issue: issue) ?? recorded
+            } else {
+                recorded
+            }
         } else if let issue = card.issueNumber {
             PRMatcher.bestMatch(among: prs, issue: issue)
         } else {

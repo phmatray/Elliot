@@ -13,15 +13,24 @@ public struct RepositoriesView: View {
     public init() {}
 
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
 
     /// Collapsed by default: on a healthy portfolio the report is two hundred
     /// lines saying "up to date", and the sentence above it is the answer.
     @State private var isReportExpanded = false
 
     public var body: some View {
+        @Bindable var model = model
+
         Group {
             if model.isReady {
-                List {
+                // Selectable, and the selection lives on `AppModel` rather than
+                // in `@State` here: the menu item that carries ⌘↩ is in
+                // `ElliotApp`'s `Commands`, which is not a view hierarchy and
+                // cannot read another view's state. Selection also buys
+                // arrow-key movement between rows for free on macOS, which is
+                // half of criterion 4.
+                List(selection: $model.selectedRepoRowID) {
                     ForEach(sections, id: \.owner) { section in
                         Section(section.owner) {
                             ForEach(section.rows) { row in
@@ -31,6 +40,18 @@ public struct RepositoriesView: View {
                     }
                 }
                 .listStyle(.inset)
+                // ↩ on the focused list, alongside the menu item's ⌘↩. The
+                // menu item is what makes the shortcut *discoverable*; this is
+                // the gesture a person reaches for without being told, and it
+                // is the same act through the same method.
+                //
+                // `.ignored` rather than swallowing the key when there is
+                // nothing to open: ↩ belongs to whatever else wants it, and a
+                // handled-but-silent Return is the "confident-looking no-op"
+                // this file keeps refusing to ship.
+                .onKeyPress(.return) {
+                    openBoard(model.selectedRowBoardAction) ? .handled : .ignored
+                }
             } else {
                 ContentUnavailableView(
                     "Still starting", systemImage: "hourglass",
@@ -65,6 +86,7 @@ public struct RepositoriesView: View {
                 await model.refreshRepoTallies()
             }
         }
+        .forgetConfirmation(model: model, on: .repositories)
     }
 
     // MARK: - Header
@@ -273,6 +295,13 @@ public struct RepositoriesView: View {
 
     private func repoRow(_ row: RepoRow) -> some View {
         HStack(alignment: .top, spacing: 10) {
+            // The double-click lives on *this* half of the row, never the whole
+            // of it. A gesture on the row fires for taps on its descendants
+            // too, so a row-wide one made double-clicking `Forget` or
+            // `Move to …` run that repair **and** yank the window to the board
+            // — `CLAUDE.md` records the same shape costing this project a
+            // deselect that closed the panel being read.
+            HStack(alignment: .top, spacing: 10) {
             Image(systemName: Self.icon(row.issue))
                 .font(.system(size: 11))
                 .foregroundStyle(Self.tint(row.issue))
@@ -334,19 +363,115 @@ public struct RepositoriesView: View {
             }
 
             Spacer(minLength: 8)
+            }
+            .contentShape(Rectangle())
+            // `simultaneousGesture` rather than `.onTapGesture(count: 2)`: the
+            // latter competes with the `List`'s own click handling for the row,
+            // and what is wanted is both — select *and* open.
+            //
+            // The selection is written here rather than left to the `List`
+            // recognising alongside, because ⌘↩ afterwards acts on
+            // `selectedRepoRowID`: if the list did not also select, the
+            // keyboard would re-scope the board to the row selected *before*
+            // this one. Writing it makes the two agree by construction instead
+            // of by a coincidence this branch could not actuate to measure.
+            .simultaneousGesture(
+                TapGesture(count: 2).onEnded {
+                    model.selectedRepoRowID = row.id
+                    openBoard(row.boardAction)
+                })
 
-            // One button per legal fix, and nothing here deletes: `RepoFix` has
-            // no `.delete` case, deliberately.
             VStack(alignment: .trailing, spacing: 4) {
+                // Above the fixes, because it is the only one of these buttons
+                // that is not a repair — see `RepoRowBoardAction`.
+                boardButton(row)
+
+                // One button per legal fix, and nothing here deletes: `RepoFix`
+                // has no `.delete` case, deliberately.
                 ForEach(row.fixes, id: \.self) { fix in
                     Button(fix.label) { Task { await model.apply(fix) } }
                         .controlSize(.small)
                         .disabled(model.isReconciling)
-                        .help(explain(fix))
+                        .help(explain(fix, in: row))
                 }
             }
         }
         .padding(.vertical, 4)
+        .contextMenu {
+            // Conditional content rather than a conditionally-applied modifier:
+            // switching the modifier on and off would change the row's view
+            // identity for a menu.
+            if case .open = row.boardAction {
+                Button("Open board") {
+                    // Selects for the same reason the double-click does.
+                    model.selectedRepoRowID = row.id
+                    openBoard(row.boardAction)
+                }
+            }
+        }
+    }
+
+    /// The board action, as a button — or as nothing at all.
+    ///
+    /// Exhaustive over `RepoRowBoardAction` with no `default:`, for the reason
+    /// `icon`/`tint`/`verdict` are: a fourth case must fail to compile here so
+    /// someone decides what the row offers, instead of inheriting silence.
+    @ViewBuilder
+    private func boardButton(_ row: RepoRow) -> some View {
+        switch row.boardAction {
+        case .open:
+            Button("Open board") { openBoard(row.boardAction) }
+                .controlSize(.small)
+                // Deliberately **not** `.disabled(model.isReconciling)`, unlike
+                // every button below it. A sweep in flight is a reason not to
+                // *repair* a repository — two writers on one checkout — and no
+                // reason whatsoever to refuse to show its cards.
+                .help(Self.boardHelp(row) ?? "")
+        case .registerFirst, .unavailable:
+            // Nothing. `.registerFirst` is already served by the `Register` fix
+            // the row carries in the `ForEach` above, and offering both would
+            // name an act that cannot work yet (criterion 3). `.unavailable`
+            // has nowhere to go.
+            EmptyView()
+        }
+    }
+
+    /// The one implementation the button, the double-click, the context menu
+    /// and ↩ all share.
+    ///
+    /// The *judgement* — unwrap `.open`, check the registration still exists,
+    /// explain the refusal — is `AppModel.showBoard(_:)`, so ⌘↩ in `ElliotApp`
+    /// asks the same question rather than repeating it across a module
+    /// boundary. What is left here is the one line that genuinely cannot move:
+    /// `openWindow` is an environment value and the model has no environment.
+    ///
+    /// The window is raised only when the scoping actually happened, so a
+    /// refused hop does not answer with a board that did not change — a
+    /// confident-looking no-op. Returning whether it acted is what lets
+    /// `onKeyPress` say `.ignored` and leave ↩ to whatever else wants it.
+    @discardableResult
+    private func openBoard(_ action: RepoRowBoardAction) -> Bool {
+        guard model.showBoard(action) else { return false }
+        openWindow(id: "board")
+        return true
+    }
+
+    /// Why pressing **Open board** is worth it, in the row's own name.
+    ///
+    /// `nonisolated static` for the reason `verdict`, `boardLine` and the rest
+    /// are: what the page *says* is assertable, and `ElliotAppKitTests` reads
+    /// exactly this string.
+    ///
+    /// It spells out `owner/name` rather than the `displayName` the row's title
+    /// uses, and that is the feature rather than a detail: the board's picker
+    /// lists last path components, in which `phmatray/Elliot` and
+    /// `Atypical-Consulting/Elliot` are the same word. Dropping the owner here
+    /// would restate the ambiguity this action exists to remove.
+    ///
+    /// `nil` for the other two actions — no board action, nothing to explain.
+    nonisolated static func boardHelp(_ row: RepoRow) -> String? {
+        guard case .open = row.boardAction else { return nil }
+        return "Show \(row.nameWithOwner ?? row.id)'s cards on the board."
     }
 
     /// The last path component of `owner/name` — the name a person uses.
@@ -354,7 +479,10 @@ public struct RepositoriesView: View {
         String(nameWithOwner.split(separator: "/").last ?? Substring(nameWithOwner))
     }
 
-    private func explain(_ fix: RepoFix) -> String {
+    /// `RepoFix.forget` carries only a `repoID`, so the row supplies the name —
+    /// the same expression the row's title uses, so the tooltip and the heading
+    /// above it cannot name different things.
+    private func explain(_ fix: RepoFix, in row: RepoRow) -> String {
         switch fix {
         case .clone(let nameWithOwner, let into):
             "Clone \(nameWithOwner) into \(into)."
@@ -363,11 +491,17 @@ public struct RepositoriesView: View {
         case .register(let path):
             "Let Elliot drive the checkout at \(path)."
         case .forget:
-            "Remove the registration and this repository's cards. The clone on disk is untouched."
+            Self.explainForget(displayName: row.nameWithOwner.map(displayName) ?? row.id)
         case .pull(let path):
             "Fast-forward \(path) to its upstream. Never merges, never rebases, and refuses outright "
                 + "if anything there is uncommitted."
         }
+    }
+
+    /// The forget tooltip is `ForgetPrompt`'s, not this file's: the two screens
+    /// had already drifted here, one naming cards and the other naming nothing.
+    nonisolated static func explainForget(displayName: String) -> String {
+        ForgetPrompt.tooltip(displayName: displayName)
     }
 
     // MARK: - Status vocabulary

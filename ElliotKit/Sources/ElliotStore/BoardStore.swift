@@ -96,6 +96,32 @@ public final class BoardStore: Sendable {
         _ = try await requireWriter().write { db in try Repo.deleteOne(db, key: id.databaseKey) }
     }
 
+    /// What `deleteRepo` would destroy, counted in one read.
+    ///
+    /// One transaction, so the four numbers are one snapshot rather than four
+    /// readings a write could slip between. Built from the **same** private
+    /// filters the list queries use — `cardFilter`, `runFilter`, `proposalQuery`
+    /// — so "this repository's runs" has one definition and the count cannot
+    /// disagree with the rows it describes.
+    ///
+    /// `prStatus`, `dismissedExternal` and `moveAudit` cascade too and are
+    /// deliberately not counted: they are readings derived from this work, not
+    /// work. The confirmation names them as a clause.
+    public func forgetImpact(repoID: UUID) async throws -> ForgetImpact {
+        try await reader.read { db in
+            let cards = try Self.cardFilter(repoID: repoID, column: nil).fetchCount(db)
+            let runs = try Self.runFilter(cardID: nil, repoID: repoID).fetchCount(db)
+            let analyses = try Analysis
+                .filter(Analysis.Columns.repoID == repoID.databaseKey)
+                .fetchCount(db)
+            let proposals = try Self
+                .proposalQuery(analysisID: nil, repoID: repoID, status: nil)
+                .fetchCount(db)
+            return ForgetImpact(
+                cards: cards, runs: runs, analyses: analyses, proposals: proposals)
+        }
+    }
+
     public func repos() async throws -> [Repo] {
         try await reader.read { db in
             try Repo.order(SQLColumn("displayName")).fetchAll(db)

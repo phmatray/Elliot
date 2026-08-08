@@ -66,13 +66,36 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
     one from the other is the mistake #116 is about.
 - **CI here is two workflows, and they answer different questions.**
   `.github/workflows/swift-floor.yml` (#116) asserts the runner's toolchain against the floor
-  `Package.swift` declares and builds on it; `.github/workflows/ci.yml` (#21) runs `swift build` then
-  `swift test`. ⚠️ **`swift build --build-tests` is not `swift test`** — the floor job compiles the
-  eight test targets and executes no `@Test`, so a green `swift-floor` is not a suite that passed.
-  **Branch protection is still off**, so both checks are advisory: `gh api
-  repos/phmatray/Elliot/branches/main/protection` returns 404 `Branch not protected`, and a red check
-  does not block a merge. "Wait for green CI" now returns a real verdict; it still does not stop
-  anything.
+  `Package.swift` declares, and asserts that `ci.yml` runs on that same image;
+  `.github/workflows/ci.yml` (#21) runs `swift build` then `swift test`. ⚠️ **`swift build
+  --build-tests` is not `swift test`** — `--build-tests` compiles the eight test targets and executes
+  no `@Test`, so "compiles on the floor" and "the suite passed" are two claims. That distinction is
+  #116's whole subject and it does not depend on how the jobs are arranged.
+  - **Since #187 the floor job compiles nothing, and the two claims are established one each.** It
+    ran `swift build` *and* `swift build --build-tests` until 2026-08-08, which meant every pull
+    request compiled the **whole package twice on two `macos-26` runners** — not just the test
+    targets, which is what the issue title said and what its own comments understated. Measured
+    before and after: **60–70 → 40–50 billed macOS minutes** per pull request, floor
+    2m21–3m58 → **8–9s**, ⚠️ and the figure to quote is the **saving** — 20–30 billed minutes,
+    entirely this job's own 3–4 → 1 — because `build-and-test` is untouched and its cold compile
+    still crosses a billed-minute boundary run to run (2m38, then 3m03),
+    with `1418 tests in 158 suites` unchanged either side. The arithmetic, the run ids and the
+    argument are in `swift-floor.yml`'s header, which is the durable copy — GitHub drops the logs at
+    90 days.
+  - ⛔ **So `ci.yml`'s `swift test` now carries the floor guarantee too.** Delete it, filter it, or
+    move `ci.yml` to another image and #116's claim quietly stops being exercised. Four ways for that
+    to happen are enforced by `swift-floor.yml`'s second step, which fails by name: the two
+    `runs-on:` labels parting, `swift test` disappearing from `ci.yml`, `ci.yml` selecting its own
+    toolchain (`setup-xcode`, `DEVELOPER_DIR`), and `ci.yml` filtering itself out with `paths:`.
+    What is **not** covered is a label that means two different images across a GitHub rollout, and a
+    job-level `if:` that grep cannot tell from a step-level one. Those are gaps, not impossibilities
+    — an earlier draft of this bullet said the `swift test` half "cannot be" enforced, which was
+    wrong the moment it was written (the grep that now enforces it is three lines) and is exactly the
+    kind of sentence that stops the next person closing a hole.
+  - **Branch protection is still off**, so both checks are advisory: `gh api
+    repos/phmatray/Elliot/branches/main/protection` returns 404 `Branch not protected`, and a red check
+    does not block a merge. "Wait for green CI" now returns a real verdict; it still does not stop
+    anything.
   - ⚠️ **A conflicted pull request fires no `pull_request` workflow at all — and it fails by silence,
     not by saying so.** Measured in #140: after `main` moved, GitHub created **zero** runs for the
     head SHA for 25 minutes, `check-runs` returned `total_count: 0`, a close/reopen produced nothing,
@@ -460,7 +483,7 @@ want to exercise the "arrows skip empty columns" rule.
 
 | From → To | What happens |
 |---|---|
-| Backlog → To Do | `/ai-migration-kit:create-issue <story>` — fills in the issue number |
+| Backlog → To Do | `/ai-migration-kit:create-issue <story>` (+ repeatable `--label`) — fills in the issue number |
 | To Do → In Progress | `/ai-migration-kit:implement-issue <n>` — fills in the PR number and branch |
 | In Progress → In Review | *no skill* — a system move, when `PRWatcher` sees the PR go ready |
 | In Review → Done | `/ai-migration-kit:merge-pr <pr>` (+ repeatable `--follow-up`) |
@@ -469,6 +492,34 @@ want to exercise the "arrows skip empty columns" rule.
 The backlog holds **user stories** (`role` / `want` / `benefit` + acceptance criteria as separate
 fields), not loose prose. A card is editable up to the moment it carries an issue number; after that
 `updateCard` refuses rather than letting card and issue drift.
+
+**A card also names the GitHub labels its issue should carry** (#171), chosen from the repository's
+own list through `gh label list`, pre-filled from the analysis lens for the three that honestly imply
+one (`bugs → bug`, `features → enhancement`, `docsAndDX → documentation`; the other five suggest
+nothing rather than guessing). Empty is the common path and emits no flag at all — pinned byte for
+byte, because the whole of `create-issue`'s existing behaviour rides on it.
+
+⛔ **`--label` is an instruction to a reader, not a flag to a parser — do not describe it as one.**
+Measured against ai-migration-kit 1.9.0 while landing #171: `merge-pr`'s SKILL.md carries an
+*Arguments* section naming `--follow-up "<idea>"` as optional and repeatable, and **`create-issue`
+carries no such section at all** — it says only *"pull the idea(s) from the user's request"* and then
+**chooses labels itself**, reading the live set and picking one per axis from the profile's taxonomy.
+Every `--label` inside that skill is its own `gh issue create` call, not an input it parses. So an
+agent will very likely honour the suffix and nothing obliges it to, which is exactly why the card is
+the record of the *intent* and `gh` remains the record of the *outcome*. The durable fix is an
+*Arguments* section in `create-issue`, in another repository; a second channel invented here would
+just be a second way for the two to disagree.
+
+⚠️ **A non-optional field added to `Card` breaks `openReadOnly`'s whole reason for existing, and the
+compiler will not say so.** Swift's synthesised decoder **ignores a property's default value** — it
+emits `decode(_:forKey:)`, not `decodeIfPresent` — so `public var labels: [String] = []` throws
+`keyNotFound` on every card in a database that predates the column. `BoardStore.openReadOnly`
+*deliberately* accepts a database older than the code reading it, so the MCP helper keeps answering
+between a new bundle landing and the app next launching, and that tolerance is written for added
+columns *which are supposed to read as absent*. `OlderDatabaseTests` caught it on the first full run;
+the fix is `@DefaultsToEmpty` (`ElliotModel/DefaultsToEmpty.swift`), a wrapper whose one job is to
+turn the synthesised call into `decodeIfPresent`. **A new non-optional field on a persisted model
+needs it, or an `Optional`.**
 
 ### The two panels
 
@@ -503,10 +554,27 @@ and the value the Start button is disabled by. It used to be a `.disabled(…)` 
 #151 removed that (a toggle you cannot switch off is worse than one that opens onto an explanation)
 and very nearly removed the gate with it.
 
-⛔ **The analysis panel carries no `.keyboardShortcut(.defaultAction)`.** It did as a `Window` scene,
-where Return was scoped to it. As a sibling in the board window it would share Return with
-`DetailPanelView`'s Save, with nothing in the code deciding between them — and the claimant here
+⛔ **The analysis panel's *Start* button carries no `.keyboardShortcut(.defaultAction)`.** It did as a
+`Window` scene, where Return was scoped to it. As a sibling in the board window it would share Return
+with `DetailPanelView`'s Save, with nothing in the code deciding between them — and the claimant here
 spawns up to eight unattended runs.
+
+⚠️ **This said "the analysis *panel* carries no `.defaultAction`" until #247, and that was false** —
+`ProposalEditor`'s Save has one, and always did. The error mattered in the direction it pointed: it
+made the Return problem read as already solved, while two claimants that **co-reside by design** sat
+on the same card. `PanelLayout.headerRegions` returns `[.mergeConfirmation]` and only *then* runs
+`guard !isEditing else { return regions }`, so on a card imported from a pull request that closes no
+issue — `issueNumber == nil` shows "Edit story", `prNumber != nil` arms a merge — Return resolved
+between saving an edit and **merging to a default branch on github.com**. `swift test` cannot press a
+key, so nothing failed and nothing could have.
+
+Since #247 the rule lives in code with a gate: **`.keyboardShortcut(.defaultAction)` may be claimed
+only by a control that commits text the reader has typed.** `DefaultAction` (`ElliotAppKit`) lists the
+three sanctioned claimants and the two deliberately denied; `DefaultActionTests` reads the source,
+attributes every claim to its button's label, and fails naming the file when one is unsanctioned,
+miscounted, in the wrong file, or unattributable. `Merge PR` lost its claim outright rather than being
+scoped better — the one act that cannot be taken back must be reached by pressing it. Verified by
+reintroducing the defect and watching all four checks go red.
 
 Opening the analysis panel scrolls the board to its leading edge
 (`BoardFraming.offsetX(from:boardWidth:)`), because a panel the reader just asked for that lands
@@ -673,6 +741,59 @@ Claude Code handles it, aborts the turn, kills its Bash process tree, runs Sessi
 Runs default to `--permission-mode bypassPermissions`; `permissionMode` is a per-repo column if you want
 to tighten one.
 
+### Artefact retention
+
+`runs/`, `screenshots/` and `analyses/` are bounded since #167, by one pure rule applied once per
+launch. **Keep everything younger than 14 days; past that keep newest-first until 512 MB per
+directory and delete the rest** (`ArtifactRetention`, `ElliotModel`). The ceiling budgets the
+*remainder past the horizon*, not the directory total — young files are kept unconditionally and are
+not counted against it, so the honest bound is "a fortnight of writing, plus 512 MB".
+
+`ArtifactSweeper` (`ElliotEngine`, an `actor`) lists, asks and unlinks; it decides nothing.
+`AppModel.start()` runs it in a detached `Task` after the reconciler's sweep — the runs that sweep
+just marked failed are exactly the ones whose logs stop being protected, so reading the table ahead
+of it reads it one state behind.
+
+⛔ **The result is recorded on `artifactSweep`, never written into `status`, and the status bar
+renders a figure from there.** Appending to `status` was the first attempt and it is unfixable by
+placement: the task shares the main actor with `start()`, so it resumes at the next suspension —
+which is `importIfNeeded`'s `await importer.importRepo(repo)`, whose very next statement assigns
+`status`. The sentence was destroyed within milliseconds on every launch that had one, and nothing
+else read the report, so it left no trace. `status` is a single narration owned by whoever spoke
+last; a fact that has to survive needs a field of its own. Code review caught this after the
+placement comment had already claimed to prevent it — **a comment asserting a race is closed is not
+a measurement that it is.**
+
+⛔ **Protection is a string comparison between two paths built by different code, so both sides go
+through `StoreLocation.canonicalPath`.** `FileManager`'s enumerator returns **symlink-resolved** URLs
+and `runLogURL` does not; on macOS `/tmp` is a symlink to `/private/tmp`, and `/tmp/elliot-check` is
+the scratch home this very file recommends. Measured while writing #167: `/var/folders/…` in, `/private/var/folders/…`
+out. Compare raw and the membership test silently stops matching, and the sweep deletes the log of a
+run still in flight — **failing open**, with nothing on screen. Same family as the false negatives
+this file already collects: nothing says *no*.
+
+⛔ **No protected set, no sweep.** The tempting `?? []` on a failed read of the runs table turns "I
+could not find out which runs are live" into "no run is live". A failure to read the board is a
+reason not to touch the disk.
+
+Verified on the shipped build, not inferred: a copy of the real `runs/` (754 files, 73 MB, all
+written within three days) went in and **754 came out** — the intended answer, since a retention rule
+whose first run deletes something gets reverted. Then, on the same binary with **no constant
+patched**, eight aged copies stacked past the ceiling: 6 032 files in, **872 removed**, leaving
+536,375,870 bytes against the 536,870,912 ceiling, and the status bar read `872 pruned`. A clean home
+in the same build shows no such figure at all — both directions of the conditional looked at, because
+a new element in that strip is a layout change and `swift test` cannot see one.
+
+⚠️ Driving the horizon to zero is *not* what proved it deletes; ageing real copies past the shipped
+horizon and ceiling did, which is the stronger claim — a patched binary proves things about a binary
+nobody ships. Note also that the numbers move between runs because the source directory is live: the
+same experiment an hour earlier removed 523 files, because `runs/` had grown from 73.1 to 78.3 MB in
+between. **The invariant to check is remaining ≤ ceiling, never the file count.**
+
+The cut lands mid-copy because the rule cuts at the **file** that would overflow, and the files
+inside one copy share an mtime — which is the path tie-break earning its place on real data rather
+than in a unit test.
+
 ## Testing discipline
 
 `swift test` must be **deterministic and always-terminating**. Three rules keep it that way; breaking any
@@ -771,6 +892,15 @@ Two invariants carry most of the weight:
   too, a signal after a checkout is ambiguous — wipe first, and only call it the intermittent abort
   once it survives a clean build. Named failing tests after a checkout: same order. Wipe, then look at
   your change.
+
+  ⚠️ **A `git checkout` is not the only trigger — #171 hit it twice in a row with no checkout at
+  all.** Adding an associated value to an existing enum case (`TriggerAction.createIssue` gaining
+  `labels`) produced two consecutive signal 11s with no failing test named, in a worktree whose
+  `.build` had never seen another commit. `rm -rf ElliotKit/.build` cleared it and four samples ran
+  clean. So the rule is about **the shape of a type changing under objects that were not recompiled**,
+  which a checkout is merely the commonest cause of; a same-branch edit to an enum's payload, a
+  struct's stored properties, or a function's signature can do it on its own. The tell is unchanged —
+  a failure that could not have happened — and so is the remedy.
 - **A `ScrollView` that can scroll swallows taps a disabled one passes through.** The board's
   deselect-on-background-click fired by bubbling out of a column's empty space, and that only worked
   while five columns fit the window and scrolling was off. The detail panel widens the row past the

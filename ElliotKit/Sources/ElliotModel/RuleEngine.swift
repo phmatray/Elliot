@@ -4,7 +4,12 @@ import Foundation
 public enum TriggerAction: Equatable, Sendable, Hashable {
     /// `create-issue` reads free text and infers scope from it, so the idea is
     /// one string — normally a user story's narrative and acceptance criteria.
-    case createIssue(idea: String)
+    ///
+    /// `labels` is what the *card* asked for, and it is the one thing here the
+    /// skill would otherwise decide for itself. Defaulted to none, the way
+    /// `createCard(angle:)` is: an empty list is the common path and produces
+    /// the prompt this skill has always been sent, byte for byte.
+    case createIssue(idea: String, labels: [String] = [])
     case implementIssue(issueNumber: Int)
     case mergePR(prNumber: Int, followUps: [String])
 }
@@ -112,7 +117,12 @@ public func evaluateMove(
         guard !card.hasIncompleteStory else { return .blocked(.incompleteStory) }
         let idea = card.ideaText
         guard !idea.isEmpty else { return .blocked(.emptyIdea) }
-        return .action(.createIssue(idea: idea))
+        // Whatever the card says, unfiltered. Whether the repository still has
+        // a label is not knowable here — this function is pure, and `gh` is the
+        // only thing that could answer — so the card's request travels intact
+        // and the skill drops what it cannot apply. Quietly stripping one on
+        // the way past would lose the request without telling anyone.
+        return .action(.createIssue(idea: idea, labels: card.labels))
 
     case (.todo, .inProgress):
         guard let issue = card.issueNumber else { return .blocked(.missingIssueNumber) }

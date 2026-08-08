@@ -76,3 +76,103 @@ public enum LabelPolicy {
         return required.filter { !have.contains($0.name.lowercased()) }
     }
 }
+
+/// What the card editor knows about the labels a repository actually has.
+///
+/// Two cases, and keeping them apart is the whole reason this is a type rather
+/// than a `[String]`. `.known([])` is a **finding** — this repository has no
+/// labels, so every label a card asks for is one it does not have. `.unavailable`
+/// is the *absence of a finding*: `gh` was not reachable, or is not
+/// authenticated, and nothing has been established about anything.
+///
+/// Collapsing them is a defect this codebase has already priced twice — in
+/// `GHClient.labels`, which throws rather than answering `[]` for the same
+/// reason, and in `PreflightService.labelsCheck`, whose comment states the duty
+/// plainly: *a failure to ask is not a finding about the answer*. Here the cost
+/// would be a card painted red on a laptop that is merely offline, and a picker
+/// silently claiming a repository has no labels on no evidence at all.
+///
+/// Pure, so `ElliotAppKit`'s job is one call and one mapping rather than a rule.
+public enum RepositoryLabels: Sendable, Hashable {
+    /// `gh` answered, and this is what it said.
+    case known([String])
+    /// `gh` was asked and did not answer. **Not** the same as an empty
+    /// repository.
+    case unavailable
+    /// Nobody has asked yet — the request is in flight, or the editor has not
+    /// opened, or there is no `gh` to run.
+    ///
+    /// The **third** silence, and it was folded into `.unavailable` until code
+    /// review caught it on this type's own branch. That cost a sentence which
+    /// asserts a call that never happened — *"gh did not answer for this
+    /// repository"* — printed for the whole duration of every healthy
+    /// `gh label list`, and permanently on a board still starting up. This type
+    /// exists to keep silences apart; the fix for a third one is a third case,
+    /// not a reused sentence.
+    case notAsked
+
+    /// From what `gh` answered, `nil` meaning it was asked and did not answer.
+    ///
+    /// ⚠️ `nil` here is specifically the `try?` of a call that **ran**. Never
+    /// construct this for a call nobody made — that is `.notAsked`, and the
+    /// difference is a claim about `gh` that would not be true.
+    public init(ghAnswer: [String]?) {
+        self = ghAnswer.map(RepositoryLabels.known) ?? .unavailable
+    }
+
+    /// Whether anything at all has been established. The editor needs this to
+    /// explain *which* silence the reader is looking at.
+    public var isKnown: Bool {
+        if case .known = self { return true }
+        return false
+    }
+
+    /// The labels the picker may offer, in the repository's own order.
+    ///
+    /// Empty under `.unavailable` — offering a remembered list would let a card
+    /// ask for a label nobody has confirmed still exists, which is the failure
+    /// mode approach A was rejected for.
+    public var offerable: [String] {
+        switch self {
+        case .known(let names): names
+        case .unavailable, .notAsked: []
+        }
+    }
+
+    /// Whether this repository is **known not to have** `name`.
+    ///
+    /// Case-insensitive, for `LabelPolicy.missing`'s reason: GitHub refuses a
+    /// second casing of a label that exists, so `Bug` and `bug` are one label
+    /// and reporting either as absent would misname a label that is right there.
+    ///
+    /// Always `false` under `.unavailable`. Accusation requires evidence.
+    public func isMissing(_ name: String) -> Bool {
+        switch self {
+        case .known(let names):
+            let have = Set(names.map { $0.lowercased() })
+            return !have.contains(name.trimmed().lowercased())
+        case .unavailable, .notAsked:
+            return false
+        }
+    }
+
+    /// The sentence the editor prints under an empty picker, or `nil` when
+    /// there is a list to show instead.
+    ///
+    /// **Three silences, three sentences, and never one borrowed for another.**
+    /// The repository has nothing; `gh` was asked and did not answer; nobody has
+    /// asked yet. Only the middle one is a finding about `gh`, and saying it for
+    /// the other two would be a confident wrong answer — which this codebase
+    /// treats as worse than an error, and which the two-case version of this
+    /// property printed for the entire duration of every successful lookup.
+    public var explanation: String? {
+        switch self {
+        case .known(let names):
+            names.isEmpty ? "This repository has no labels yet." : nil
+        case .unavailable:
+            "Could not be established: gh did not answer for this repository."
+        case .notAsked:
+            "Reading this repository's labels…"
+        }
+    }
+}
