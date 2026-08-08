@@ -244,13 +244,40 @@ public struct RepoRegistryService: Sendable {
     }
 
     private func refine(_ row: RepoRow) async -> RepoRow {
-        guard row.issue == .ok, let path = row.path else { return row }
-        let issue = await classify(path: path)
+        // `isProbeable` rather than `== .ok || == .notChecked`: which rows have
+        // a clone to ask about is stated once, on the enum, so the next verdict
+        // added has to answer the question instead of inheriting an answer from
+        // a chain nobody extended (#189).
+        guard row.issue.isProbeable, let path = row.path else { return row }
+        let issue = row.issue.refined(by: await classify(path: path))
         var refined = row
         refined.issue = issue
-        refined.detail = Self.explain(issue, path: path)
+        refined.detail = Self.detail(for: issue, refining: row, path: path)
+        // Unchanged, and correct as it stands rather than by accident: the only
+        // fix a probe ever offers is `.pull`, and `.notChecked` is not
+        // `isBehind`, so a row whose listing failed is offered nothing unless
+        // git itself found it strictly behind. That case *is* legitimate —
+        // `--ff-only` against an already-configured upstream is git alone and
+        // never touches the `gh` that failed. `Register` cannot appear here at
+        // all: this line replaces the row's fixes rather than adding to them.
         refined.fixes = issue.isBehind ? [.pull(path: path)] : []
         return refined
+    }
+
+    /// The sentence a probed row carries, which is `explain`'s except where the
+    /// row's *listing* verdict is part of the answer.
+    ///
+    /// `explain` is handed a git verdict and a path. It cannot know which
+    /// owner's listing failed or why, and the reconciler's sentence is the only
+    /// place that is recorded — so overwriting it unconditionally would leave a
+    /// `.notChecked` row saying nothing but its own path, and a row git
+    /// overruled saying nothing about the outage at all. That is criterion 2:
+    /// the git state **refines** the row, it does not replace the fact that
+    /// GitHub was never asked.
+    private static func detail(for issue: RepoIssue, refining row: RepoRow, path: String) -> String {
+        guard row.issue == .notChecked else { return explain(issue, path: path) }
+        guard issue != .notChecked else { return row.detail }
+        return "\(explain(issue, path: path)) \(row.detail)"
     }
 
     /// One clone's git state. Ordered most-blocking first: the first answer wins,
