@@ -95,10 +95,11 @@
 #
 # ### Why this is still not merged into `ci.yml`
 #
-# This section used to answer a different question, and the answer expired. It read: "There is no
-# `.github/workflows/ci.yml` on `main`; it is #21, in flight on #102" — an argument that the two
-# *could not yet* be joined, never that they *should not* be. #102 landed on 2026-08-07 and took the
-# premise with it (#187, criterion 4).
+# This section used to be a status report: "There is no `.github/workflows/ci.yml` on `main`; it is
+# #21, in flight on #102" — an argument that the two *could not yet* be joined, never that they
+# *should not* be. #102 landed on 2026-08-07 and took the premise with it, and **#186 retired the
+# report** the day after. What follows is the argument that outlives it (#187, criterion 4), because
+# a status report ages in a way an argument does not.
 #
 # The reason that survives is the **trigger**, and it has nothing to do with builds. This workflow is
 # `pull_request`-only so a toolchain drift can never leave `main` red; `ci.yml` carries
@@ -107,6 +108,11 @@
 # step — a conditional guarding this repository's never-red-`main` rule, whose reason would live only
 # in a comment. Measured in #187, merging them saves roughly 10 further billed minutes on top of what
 # the split below already saves. That is not a good trade.
+#
+# The division of labour itself is stated once, above, under *Two jobs establish that* — and so is the
+# `--build-tests`-is-not-`swift test` argument. Neither is restated here; a fourth copy is the failure
+# mode this whole file is about. `.claude/skills/repo-profile.md` § *CI gates* carries the same split
+# as a table; keep the two in step.
 name: swift-floor
 
 # Pull requests only, deliberately. A drift failure is a prompt to re-measure, and it must not land on
