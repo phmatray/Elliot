@@ -100,6 +100,34 @@ public enum RepoIssue: Sendable, Hashable {
             return false
         }
     }
+
+    /// What a git observation does to this verdict. Pure, total, and the whole
+    /// of the decision — there is no second copy of it at a renderer.
+    ///
+    /// The two arguments answer *different questions*, which is why one has to
+    /// be composed with the other rather than chosen between: `self` is what the
+    /// listing established (or failed to establish), `observed` is what `git`
+    /// saw on the disk. A row that is not probeable never asked git anything, so
+    /// it keeps what it had and `observed` is discarded.
+    ///
+    /// ⛔ **`.notChecked` refined by `.ok` stays `.notChecked`, and that arm is
+    /// the reason this function exists.** A clean, attached, up-to-date clone
+    /// whose owner was never listed is *still* not checked: "clean and up to
+    /// date" is a claim about a clone, and the row's open question is about the
+    /// repository. Collapsing the pair to `.ok` would render a non-measurement
+    /// as a pass — the exact defect #148 removed one layer up, restored here by
+    /// a single `return observed`.
+    ///
+    /// Every *other* observation wins, and needs no case of its own: dirty,
+    /// detached, diverged, ahead, no remote, unreadable and behind are each a
+    /// fact `git` established locally, which is precisely what an outage does
+    /// not take away. `.unreadable("fetch failed")` is the likely one during an
+    /// outage, and it is still the better answer — it says what was tried.
+    public func refined(by observed: RepoIssue) -> RepoIssue {
+        guard isProbeable else { return self }
+        guard self == .notChecked else { return observed }
+        return observed == .ok ? .notChecked : observed
+    }
 }
 
 /// The one thing a row's button does. Nothing here deletes.

@@ -259,4 +259,65 @@ struct RepoReconcilerTests {
         ]
         #expect(observed.allSatisfy { !$0.isProbeable })
     }
+
+    // MARK: - How the two verdicts compose (#189)
+
+    /// Today's behaviour for `.ok`, restated as the function rather than as the
+    /// assignment it used to be. It is the control for everything below: if this
+    /// stopped holding, the widening would have changed the case it was not
+    /// about.
+    @Test("A row the reconciler called ok takes whatever git saw")
+    func okTakesTheObservation() {
+        #expect(RepoIssue.ok.refined(by: .dirty) == .dirty)
+        #expect(RepoIssue.ok.refined(by: .behind(by: 2)) == .behind(by: 2))
+        #expect(RepoIssue.ok.refined(by: .ok) == .ok)
+        #expect(RepoIssue.ok.refined(by: .outOfScope(.otherRoot)) == .outOfScope(.otherRoot))
+    }
+
+    /// The recovery this issue is for: every one of these is a fact `git`
+    /// established on the local disk, and not one of them needed the listing
+    /// that failed.
+    @Test("An actionable git state wins over a listing that never arrived")
+    func anObservationBeatsNotChecked() {
+        #expect(RepoIssue.notChecked.refined(by: .dirty) == .dirty)
+        #expect(RepoIssue.notChecked.refined(by: .detached) == .detached)
+        #expect(RepoIssue.notChecked.refined(by: .diverged) == .diverged)
+        #expect(RepoIssue.notChecked.refined(by: .ahead) == .ahead)
+        #expect(RepoIssue.notChecked.refined(by: .noRemote) == .noRemote)
+        #expect(RepoIssue.notChecked.refined(by: .behind(by: 4)) == .behind(by: 4))
+        #expect(RepoIssue.notChecked.refined(by: .outOfScope(.otherRoot)) == .outOfScope(.otherRoot))
+    }
+
+    /// A `fetch` failing during an outage is the *likely* case, not an exotic
+    /// one — and `.unreadable("fetch failed")` is more informative than
+    /// `.notChecked`, because it is something that was observed rather than
+    /// something that was not asked.
+    @Test("An unreadable clone is an observation, and says what could not be read")
+    func unreadableIsAnObservation() {
+        #expect(RepoIssue.notChecked.refined(by: .unreadable("fetch failed")) == .unreadable("fetch failed"))
+    }
+
+    /// ⛔ The load-bearing one. Clean, attached and up to date is not a verdict
+    /// about a repository whose remote was never reached; collapsing this pair
+    /// to `.ok` is #148's defect restored, one layer down.
+    @Test("A clean clone whose owner was never listed is still not checked")
+    func cleanDoesNotBecomeOk() {
+        #expect(RepoIssue.notChecked.refined(by: .ok) == .notChecked)
+        #expect(RepoIssue.notChecked.refined(by: .ok) != .ok)
+    }
+
+    /// A row with no clone never asked git anything, so there is no observation
+    /// to weigh — and this is what stops the widening leaking into the four
+    /// verdicts that have no clone at all.
+    @Test("A row that is not probeable keeps its verdict whatever it is handed")
+    func unprobeableRowsAreUntouched() {
+        let unprobeable: [RepoIssue] = [
+            .notCloned, .missing, .misplaced(expected: "/R/x"), .unlisted, .notRegistered,
+            .outOfScope(.fork), .outOfScope(.archived), .outOfScope(.otherRoot),
+        ]
+        for issue in unprobeable {
+            #expect(issue.refined(by: .dirty) == issue)
+            #expect(issue.refined(by: .ok) == issue)
+        }
+    }
 }
