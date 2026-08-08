@@ -726,7 +726,16 @@ public final class AppModel {
 
     // MARK: - Observation
 
-    private func observe(store: BoardStore) {
+    /// Internal rather than `private` so a test can start the **real**
+    /// observation instead of a four-line replica of it.
+    ///
+    /// `reorder`'s cross-column guard reads `cards`, and `cards` has exactly one
+    /// writer: the pump below. A suite that re-implemented it would be asserting
+    /// against its own copy — the trap that makes a measurement describe its
+    /// rendering rather than its subject. Everything started here is
+    /// store-backed, so it costs a test no network, no clock and no process.
+    /// `shutdown()` cancels all of it. See `ReorderGlueTests`.
+    func observe(store: BoardStore) {
         observeMoveAudits(store: store)
         let cardObservation = store.observeCards()
         observationTasks.append(Task { [weak self] in
@@ -2216,6 +2225,23 @@ public final class AppModel {
     /// `Scripts/fake-gh.sh` so no real `gh` is involved.
     func testOnlyAttachImporter(_ importer: GitHubImportService) {
         self.importer = importer
+    }
+
+    /// Puts a real board behind the model without `start()`.
+    ///
+    /// Every seam above deliberately leaves `board` nil so a seeded model cannot
+    /// write. `reorder` is the one rule that cannot be proved under that
+    /// arrangement: its first line is `guard let board`, so with no board it
+    /// returns before deciding anything, and the assertion would pass for a
+    /// method whose body never ran.
+    ///
+    /// What needs proving is not the arithmetic — `CardReorderTests` owns that,
+    /// purely — but the *glue* #49's criterion 2 is about: a cross-column drop
+    /// performs the column move first, and a refused one places nothing. That
+    /// step sits between two tested ends and had no test of its own, which is
+    /// the same gap `CaretAnchorTests` was written to close one layer up.
+    func testOnlyAttachBoard(_ board: BoardService) {
+        self.board = board
     }
 
     /// Puts an analysis service behind the model without `start()`.
