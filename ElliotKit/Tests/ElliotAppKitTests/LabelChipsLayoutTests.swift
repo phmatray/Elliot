@@ -91,6 +91,7 @@ struct LabelChipsLayoutTests {
             ("a repository that answered", .known(["bug", "documentation"]), ["bug"]),
             ("a repository with no labels", .known([]), ["bug"]),
             ("a repository nobody could reach", .unavailable, ["bug"]),
+            ("a repository nobody has asked about yet", .notAsked, ["bug"]),
             ("nothing chosen yet", .known(["bug"]), []),
         ]
         for (name, repositoryLabels, chosen) in states {

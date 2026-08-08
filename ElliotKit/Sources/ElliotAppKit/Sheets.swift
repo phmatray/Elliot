@@ -40,7 +40,7 @@ public struct NewCardWindow: View {
 
                     CardFieldsEditor(
                         draft: $draft,
-                        repositoryLabels: repoID.map { model.labels(for: $0) } ?? .unavailable
+                        repositoryLabels: repoID.map { model.labels(for: $0) } ?? .notAsked
                     )
                 }
                 .padding(18)

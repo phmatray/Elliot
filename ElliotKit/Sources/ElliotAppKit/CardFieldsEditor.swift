@@ -36,10 +36,11 @@ struct CardFieldsEditor: View {
     /// Defaulted, so the card sheet and the detail inspector are unchanged.
     var kind: Kind = .card
     /// What the repository actually has, when anyone has managed to ask.
-    /// Defaulted to `.unavailable` so a caller that cannot ask — or has not yet
-    /// — shows the card's own labels under an explanation rather than an empty
-    /// list presented as a finding.
-    var repositoryLabels: RepositoryLabels = .unavailable
+    ///
+    /// Defaulted to `.notAsked` rather than `.unavailable`: a caller that has
+    /// not supplied a list has not established that `gh` failed, and the
+    /// default must not put words in its mouth.
+    var repositoryLabels: RepositoryLabels = .notAsked
 
     /// One answer to "is this a story", read by every site that asks.
     ///

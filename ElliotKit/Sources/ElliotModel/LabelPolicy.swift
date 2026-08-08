@@ -96,11 +96,26 @@ public enum LabelPolicy {
 public enum RepositoryLabels: Sendable, Hashable {
     /// `gh` answered, and this is what it said.
     case known([String])
-    /// `gh` did not answer. **Not** the same as an empty repository.
+    /// `gh` was asked and did not answer. **Not** the same as an empty
+    /// repository.
     case unavailable
+    /// Nobody has asked yet — the request is in flight, or the editor has not
+    /// opened, or there is no `gh` to run.
+    ///
+    /// The **third** silence, and it was folded into `.unavailable` until code
+    /// review caught it on this type's own branch. That cost a sentence which
+    /// asserts a call that never happened — *"gh did not answer for this
+    /// repository"* — printed for the whole duration of every healthy
+    /// `gh label list`, and permanently on a board still starting up. This type
+    /// exists to keep silences apart; the fix for a third one is a third case,
+    /// not a reused sentence.
+    case notAsked
 
-    /// From what `gh` answered, `nil` meaning it did not answer at all — the
-    /// shape `try? await gh.labels(repo:)` produces.
+    /// From what `gh` answered, `nil` meaning it was asked and did not answer.
+    ///
+    /// ⚠️ `nil` here is specifically the `try?` of a call that **ran**. Never
+    /// construct this for a call nobody made — that is `.notAsked`, and the
+    /// difference is a claim about `gh` that would not be true.
     public init(ghAnswer: [String]?) {
         self = ghAnswer.map(RepositoryLabels.known) ?? .unavailable
     }
@@ -120,7 +135,7 @@ public enum RepositoryLabels: Sendable, Hashable {
     public var offerable: [String] {
         switch self {
         case .known(let names): names
-        case .unavailable: []
+        case .unavailable, .notAsked: []
         }
     }
 
@@ -136,7 +151,7 @@ public enum RepositoryLabels: Sendable, Hashable {
         case .known(let names):
             let have = Set(names.map { $0.lowercased() })
             return !have.contains(name.trimmed().lowercased())
-        case .unavailable:
+        case .unavailable, .notAsked:
             return false
         }
     }
@@ -144,14 +159,20 @@ public enum RepositoryLabels: Sendable, Hashable {
     /// The sentence the editor prints under an empty picker, or `nil` when
     /// there is a list to show instead.
     ///
-    /// Two silences, two sentences, and never the same one: one says the
-    /// repository has nothing, the other says nobody could find out.
+    /// **Three silences, three sentences, and never one borrowed for another.**
+    /// The repository has nothing; `gh` was asked and did not answer; nobody has
+    /// asked yet. Only the middle one is a finding about `gh`, and saying it for
+    /// the other two would be a confident wrong answer — which this codebase
+    /// treats as worse than an error, and which the two-case version of this
+    /// property printed for the entire duration of every successful lookup.
     public var explanation: String? {
         switch self {
         case .known(let names):
             names.isEmpty ? "This repository has no labels yet." : nil
         case .unavailable:
             "Could not be established: gh did not answer for this repository."
+        case .notAsked:
+            "Reading this repository's labels…"
         }
     }
 }

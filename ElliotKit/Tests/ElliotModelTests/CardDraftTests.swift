@@ -376,6 +376,32 @@ struct RepositoryLabelsTests {
         #expect(!unknown.isKnown, "and it says which case it is, so the editor can explain itself")
         #expect(RepositoryLabels.known([]).isKnown)
     }
+
+    /// The **third** silence, added after code review found the first two being
+    /// made to cover for it. Nothing has been asked: no list, no accusation,
+    /// and — the half that actually broke — no sentence claiming `gh` failed.
+    @Test("A repository nobody has asked about accuses nothing either")
+    func notAskedAccusesNothing() {
+        let pending = RepositoryLabels.notAsked
+        #expect(pending.offerable == [])
+        #expect(!pending.isMissing("bug"))
+        #expect(!pending.isKnown)
+    }
+
+    /// ⛔ The regression this case exists for: `.notAsked` printing
+    /// `.unavailable`'s sentence is a claim about a call that never ran, and it
+    /// showed for the whole duration of every healthy `gh label list`.
+    @Test("Not having asked never borrows the sentence for gh having failed")
+    func notAskedDoesNotClaimGHFailed() {
+        let pending = try! #require(RepositoryLabels.notAsked.explanation)
+        let failed = try! #require(RepositoryLabels.unavailable.explanation)
+        let empty = try! #require(RepositoryLabels.known([]).explanation)
+
+        #expect(pending != failed)
+        #expect(pending != empty)
+        #expect(!pending.lowercased().contains("gh"), "it names a tool it never ran: \(pending)")
+        #expect(failed.lowercased().contains("gh"))
+    }
 }
 
 @Suite("Turning gh's answer into what the editor may claim")
@@ -397,6 +423,10 @@ struct RepositoryLabelsFromGHTests {
     func noAnswerIsUnavailable() {
         #expect(RepositoryLabels(ghAnswer: nil) == .unavailable)
         #expect(RepositoryLabels(ghAnswer: nil) != .known([]))
+        #expect(
+            RepositoryLabels(ghAnswer: nil) != .notAsked,
+            "this initialiser is for a call that ran; a call nobody made is .notAsked"
+        )
     }
 
     /// The editor has to say *why* it is offering nothing, and the two reasons

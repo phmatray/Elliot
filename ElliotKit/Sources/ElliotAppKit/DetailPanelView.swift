@@ -80,6 +80,24 @@ struct DetailPanelView: View {
                 paneRow(card)
             }
         }
+        // ⛔ On the **panel**, not on `editorBody` — which is where it was, and
+        // that was wrong in the one place criterion 6 is about. `CardEditor.begin`
+        // refuses a card carrying an issue number, so a filed card can never
+        // reach edit mode, so the load never ran for it: `labels(for:)` stayed
+        // unestablished, `isMissing` was unconditionally false, and the chips
+        // that exist to *mark* a label the repository lacks drew it as an
+        // ordinary one. Worse, it was intermittent — the mark appeared only if
+        // the reader happened to have opened the editor on some other, unfiled
+        // card in the same repository earlier in the session.
+        //
+        // One `gh label list` per repository per selection, which is the same
+        // budget Preflight already spends and far less than the panel's own
+        // reads. Deliberately **not** skipped when a list is already held: this
+        // codebase's recurring defect is serving a remembered answer as a
+        // current one, and a label created since — by Preflight's own
+        // `createLabels` button, one screen over — would otherwise go on reading
+        // as missing.
+        .task(id: card.repoID) { await model.loadLabels(for: card.repoID) }
         .background(Color(nsColor: .windowBackgroundColor), in: outline)
         .overlay {
             outline.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
@@ -388,12 +406,6 @@ struct DetailPanelView: View {
         }
         // Square: the actions row below owns the bottom of the panel.
         .clipShape(Rectangle())
-        // On open, not on every keystroke, and not at launch: one
-        // `gh label list` for the repository whose card is being edited. It
-        // fails silently into `.unavailable`, which the picker explains — an
-        // editor that refused to open because a network call did not come back
-        // would make a card uneditable offline.
-        .task(id: card.repoID) { await model.loadLabels(for: card.repoID) }
     }
 
     private func editorActions(_ card: Card) -> some View {

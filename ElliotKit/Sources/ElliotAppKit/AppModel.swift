@@ -1455,11 +1455,14 @@ public final class AppModel {
 
     /// What is currently known about `repoID`'s labels.
     ///
-    /// `.unavailable` until something has been established, which is the honest
-    /// answer for "nobody asked yet" as much as for "gh did not answer": the
-    /// editor must not present either as *this repository has no labels*.
+    /// `.notAsked` until a lookup has actually run — **not** `.unavailable`,
+    /// which is a claim that `gh` was asked and did not answer. It read
+    /// `.unavailable` until code review caught it, and the cost was the editor
+    /// asserting *"gh did not answer for this repository"* for the whole
+    /// duration of every healthy lookup, and for ever on a board whose
+    /// `toolConfig` is still nil.
     public func labels(for repoID: UUID) -> RepositoryLabels {
-        repoLabels[repoID] ?? .unavailable
+        repoLabels[repoID] ?? .notAsked
     }
 
     /// Reads a repository's labels through `gh`, for the card editor's picker.
