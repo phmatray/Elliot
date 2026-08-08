@@ -73,12 +73,25 @@ public struct ShippingLog: Sendable, Equatable {
     /// A rule and not a view's arithmetic: which day is trustworthy is a claim
     /// about the data, and `ShipDayHeader` renders whatever it is handed.
     ///
-    /// ⚠️ It answers "may be short", never "is short". A last page that happens
-    /// to end exactly on a day boundary leaves a whole day marked as partial,
-    /// which understates what is known and is the safe direction — the failure
-    /// this exists to prevent is a header stating a number it cannot support.
+    /// ⚠️ It answers "may be short", never "is short". A page that happens to
+    /// end exactly on a day boundary leaves a whole day marked as partial, which
+    /// understates what is known and is the safe direction — the failure this
+    /// exists to prevent is a header stating a number it cannot support. Being
+    /// exact instead means a per-day `GROUP BY` in SQL, and that is not the
+    /// cheap fix it looks: these buckets are `calendar.startOfDay` in the
+    /// *reader's* calendar, which SQLite cannot reproduce for an arbitrary
+    /// timezone. A count that disagreed with the header it sits on would be a
+    /// worse defect than a `+`.
+    ///
+    /// ⛔ **`olderCount == 0` is load-bearing, not defensive.** Under a horizon
+    /// `days.last` is the oldest day *inside* it — provably whole — while the
+    /// cards whose count is genuinely unknown are folded into `olderCount` and
+    /// are not in `days` at all. The board's `doneLog()` is exactly such a log,
+    /// so without this a caller would be handed a confidently wrong day. The
+    /// value therefore checks itself rather than trusting a precondition its
+    /// signature cannot express.
     public func partialDay(moreToLoad: Bool) -> Date? {
-        guard moreToLoad else { return nil }
+        guard moreToLoad, olderCount == 0 else { return nil }
         return days.last?.start
     }
 }

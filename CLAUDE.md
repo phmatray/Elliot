@@ -341,8 +341,8 @@ from #75 to #89 carried some version of *"opening a `Window` scene needs the app
 automation driver refuses"*, and it was never true. A background `openWindow` does open the window; it
 just lands off-screen because the app is not frontmost. The trap is the enumeration, not the window:
 **list all of a pid's windows, never only the ones reporting `is_on_screen`.** Measured on a running
-build, when `ElliotApp.swift` declared six `Window` scenes (it declares five since #151 retired the
-Analysis one), two of them open:
+build, when `ElliotApp.swift` declared six `Window` scenes (**seven today** — counted 2026-08-08 in
+#162: board, Repositories, Operations, Up next, Preflight, Archive, New story), two of them open:
 
 ```
 id=2737  on_screen=False  820x720 @ (454,215)  title='Preflight'

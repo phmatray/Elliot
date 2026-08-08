@@ -160,7 +160,14 @@ struct ArchiveTests {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
 
-        let all = dayOf(30, daysAgo: 3, calendar: calendar) + dayOf(9, daysAgo: 5, calendar: calendar)
+        // Ordered the way `doneCards` returns rows — `columnEnteredAt DESC`.
+        // The first version of this test appended `dayOf(...) + dayOf(...)`
+        // unsorted, which is oldest-first *within* each day and an order the
+        // store never produces; it passed only because `shippingLog` re-sorts
+        // each bucket, so it proved nothing about the DESC-prefix assumption
+        // `partialDay` rests on entirely.
+        let all = (dayOf(30, daysAgo: 3, calendar: calendar) + dayOf(9, daysAgo: 5, calendar: calendar))
+            .sorted { $0.columnEnteredAt > $1.columnEnteredAt }
         var state = ArchiveState()
         state.append(all, total: all.count)
 
@@ -168,5 +175,59 @@ struct ArchiveTests {
         #expect(!state.canLoadMore)
         #expect(log.partialDay(moreToLoad: state.canLoadMore) == nil)
         #expect(log.days.map(\.cards.count) == [30, 9])
+    }
+
+    // MARK: - The rows the archive actually draws
+
+    /// ⛔ The step this suite was missing, and the one that matters most.
+    ///
+    /// Everything either side of it was pinned — `partialDay` in
+    /// `ElliotModelTests`, `countText` and the caption in `ShipDayHeaderTests` —
+    /// while the predicate joining them lived inline in a `body` where nothing
+    /// could reach it. Code review proved the gap by mutation: inverting the
+    /// flag so every *whole* day is marked and the cut one is not left the whole
+    /// suite green. That is the seam `CaretAnchorTests` describes, in a window
+    /// this pass established an agent cannot photograph — so no other check
+    /// would have caught it either.
+    @Test("The cut flag lands on the day the boundary cut, and on no other")
+    func rowsMarkOnlyTheCutDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+
+        let all = (dayOf(30, daysAgo: 3, calendar: calendar) + dayOf(9, daysAgo: 5, calendar: calendar))
+            .sorted { $0.columnEnteredAt > $1.columnEnteredAt }
+        var state = ArchiveState()
+        state.append(Array(all.prefix(ArchiveState.pageSize)), total: all.count)
+
+        // Asserted through `map` rather than `rows[0].partial`: swift-testing
+        // expands the subexpression on failure, and a `ShipDayRow` carries its
+        // whole day, so the bare subscript prints all 25 cards.
+        #expect(state.dayRows(now: epoch, calendar: calendar).map(\.partial) == [true])
+
+        // Page two brings the rest in: the older day appears, and the cut moves
+        // to it rather than staying put.
+        state.append(Array(all.dropFirst(ArchiveState.pageSize)), total: all.count)
+        let full = state.dayRows(now: epoch, calendar: calendar)
+        #expect(full.map(\.day.cards.count) == [30, 9])
+        #expect(full.allSatisfy { !$0.partial })
+    }
+
+    /// The middle of three days is never the cut one — the flag is not simply
+    /// "the day with the fewest rows", which a two-day fixture cannot tell apart.
+    @Test("Only the oldest loaded day carries the flag, never one above it")
+    func onlyTheOldestLoadedDayIsFlagged() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+
+        let all = (dayOf(4, daysAgo: 2, calendar: calendar)
+            + dayOf(2, daysAgo: 4, calendar: calendar)
+            + dayOf(6, daysAgo: 6, calendar: calendar))
+            .sorted { $0.columnEnteredAt > $1.columnEnteredAt }
+        var state = ArchiveState()
+        state.append(Array(all.prefix(8)), total: all.count)
+
+        let rows = state.dayRows(now: epoch, calendar: calendar)
+        #expect(rows.map(\.day.cards.count) == [4, 2, 2])
+        #expect(rows.map(\.partial) == [false, false, true])
     }
 }
