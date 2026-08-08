@@ -127,8 +127,19 @@ struct WindowCaptureTests {
         // Only `Window(…, id: "…")` scene declarations — not the `openWindow(id:)`
         // call sites, which name the same ids and would make the assertion pass
         // by counting the buttons instead of the scenes.
+        //
+        // ⚠️ **`contains("Window(")` did not do that**, because `openWindow(`
+        // contains `Window(`. It went unnoticed while every `openWindow` id was
+        // also a declared scene, so both readings agreed; the console's first
+        // wave is what makes them diverge. Measured on this file with the
+        // Preflight *scene* deleted and its menu item left behind: the loose
+        // reading still reports `preflight` as declared, so this test stays
+        // green while `knownWindows` names a scene that is gone — the exact
+        // stale-list failure the comment above says it prevents. A scene
+        // declaration starts its line; a call site never does.
         var declared: Set<String> = []
-        for line in text.split(separator: "\n") where line.contains("Window(") {
+        for line in text.split(separator: "\n")
+        where line.trimmingCharacters(in: .whitespaces).hasPrefix("Window(") {
             guard let idRange = line.range(of: "id: \"") else { continue }
             let rest = line[idRange.upperBound...]
             guard let end = rest.firstIndex(of: "\"") else { continue }
@@ -319,19 +330,23 @@ struct WindowCaptureTests {
 
     @Test("A capture reports the window it photographed, not the one it was asked for")
     func capturedFieldsDescribeTheWindow() async throws {
-        let window = makeWindow(id: "operations", title: "Operations")
+        // Any window that is not the board serves; this said `operations` until
+        // that screen became a `ConsoleFace` and its scene was deleted, at which
+        // point the capture correctly refused an id it no longer knows. The
+        // claim under test is about the *fields*, not about which screen.
+        let window = makeWindow(id: "preflight", title: "Preflight")
         window.layoutIfNeeded()
 
         let capture = AppKitWindowCapture(windows: { [window] })
         guard case .success(let dto) = await capture.capture(
-            window: "operations", maxInlineBytes: 8 * 1024 * 1024
+            window: "preflight", maxInlineBytes: 8 * 1024 * 1024
         ) else {
             Issue.record("expected a capture")
             return
         }
 
-        #expect(dto.window == "operations")
-        #expect(dto.title == "Operations")
+        #expect(dto.window == "preflight")
+        #expect(dto.title == "Preflight")
         #expect(dto.width > 0)
         #expect(dto.height > 0)
         #expect(dto.scale >= 1)

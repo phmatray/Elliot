@@ -109,21 +109,16 @@ struct ElliotApp: App {
         }
         .defaultSize(width: 900, height: 700)
 
-        // What the machine is doing, what it will do next, and what it costs.
-        // The board answers "what work exists"; nothing answered the other two,
-        // and the four windows were peers with no home among them.
-        Window("Operations", id: "operations") {
-            NavigationStack { OperationsView() }.environment(model)
-        }
-        .defaultSize(width: 720, height: 780)
-
-        // Its own window for now. It is the first band of the Operations
-        // screen (#69) and will be composed into it there; landing it alone
-        // means the ranking is on screen and usable before that screen exists.
-        Window("Up next", id: "nextSteps") {
-            NavigationStack { NextStepsView() }.environment(model)
-        }
-        .defaultSize(width: 520, height: 640)
+        // Operations and Up next were windows here until the console landed.
+        // They are `ConsoleFace` cases now, unfolded above the status bar in
+        // *this* window, and the figures in that status bar are their doors.
+        //
+        // The reason is the one #151 gave for retiring the Analysis window: a
+        // window for a screen that reports on the board covered the board it
+        // reported on, and the reader had to place it themselves. It is also
+        // what makes them reachable at all — #232 measured that every window but
+        // this one answers `board_screenshot` with `window_not_open`, because
+        // opening one takes a click and an agent has no click.
 
         Window("Preflight", id: "preflight") {
             NavigationStack { PreflightView() }.environment(model)
@@ -256,9 +251,17 @@ struct ElliotApp: App {
             }
             .disabled(!model.showingAnalysisPanel)
 
+            // How tall the console is, is the reader's call, exactly as the two
+            // panel widths are. Title and act both from the model for the reason
+            // spelled out on the pair above: which height is "the other one" is
+            // a judgement about the designed pair, and this target cannot import
+            // `ElliotModel` to consult it.
+            Button(model.consoleHeightToggleTitle) { model.toggleConsoleHeight() }
+                .disabled(!model.console.isOpen)
+
             Divider()
 
-            OpenWindowButtons()
+            OpenWindowButtons(model: model)
         }
     }
 }
@@ -314,16 +317,29 @@ private struct OpenBoardMenuItem: View {
     }
 }
 
-/// The three auxiliary windows, as menu items.
+/// The auxiliary screens, as menu items.
 ///
-/// A `View` rather than three inline buttons because `openWindow` is an
-/// environment value, and `Commands` is not a view hierarchy that can read one.
+/// A `View` rather than inline buttons because `openWindow` is an environment
+/// value, and `Commands` is not a view hierarchy that can read one.
+///
+/// ⚠️ **Two kinds of item now sit here, and they are not interchangeable.** The
+/// console faces call `showConsoleFace`, which is a *destination*: a menu item
+/// named "Operations" that closed Operations because it happened to be open
+/// would do the opposite of what it says on every second use. The doors in the
+/// status bar are the toggles, because a door carries the figure that makes a
+/// toggle read as one. The remaining `openWindow` items are screens whose scenes
+/// have not moved yet.
+///
+/// The model is **passed in, never read from the environment**, for the reason
+/// `NewStoryMenuItem` records: `@Environment(AppModel.self)` in a `Commands`
+/// tree compiles, passes every test, and kills the app at launch (#64, #84).
 private struct OpenWindowButtons: View {
+    let model: AppModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Button("Operations") { openWindow(id: "operations") }
-        Button("Up Next") { openWindow(id: "nextSteps") }
+        Button("Operations") { model.showConsoleFace(.operations) }
+        Button("Up Next") { model.showConsoleFace(.nextSteps) }
         // No Analysis entry: it is not a window any more (#151). Show/Hide
         // Analysis lives with the other View items, beside Show/Hide Details.
         Button("Repositories") { openWindow(id: "repositories") }

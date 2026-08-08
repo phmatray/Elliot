@@ -39,7 +39,10 @@ public struct OperationsView: View {
             }
             .padding(16)
         }
-        .navigationTitle("Operations")
+        // No `.navigationTitle`: this is a console face now, and a title set
+        // here propagates to the *board window* and renames it — measured, and
+        // not stopped by a nested NavigationStack nor by an ancestor re-asserting
+        // the board's own. The console header names the screen.
     }
 
     // MARK: - Preflight
