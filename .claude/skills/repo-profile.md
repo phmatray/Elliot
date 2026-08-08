@@ -288,9 +288,11 @@ targets on the same image, so a pull request was compiling the whole package **t
 
 ⛔ **`ci.yml`'s `swift test` is now load-bearing for the floor claim, not only for test coverage.**
 Removing it, narrowing it with a filter, or moving `ci.yml` to a different image retires #116's
-guarantee. The image half is enforced rather than requested — `floor`'s second step reads both
-`runs-on:` lines and fails by name when they part — but the `swift test` half rests on nobody
-deleting it.
+guarantee. `floor`'s second step enforces four of those rather than requesting them, failing by name:
+the two `runs-on:` labels parting, `swift test` vanishing from `ci.yml`, `ci.yml` selecting its own
+toolchain (`setup-xcode`, `DEVELOPER_DIR`), and `ci.yml` filtering itself out with `paths:`. Two gaps
+remain and are written down rather than glossed: a runner label can mean different images either side
+of a GitHub rollout, and a job-level `if:` is not distinguishable from a step-level one by grep.
 
 ⚠️ **Branch protection on `main` is still off, so both checks are advisory.** Measured 2026-08-06:
 `gh api repos/phmatray/Elliot/branches/main/protection` returns **404 `Branch not protected`** — not

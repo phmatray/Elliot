@@ -39,8 +39,10 @@
 #
 # After-runs: `31255937877` (floor, 9s) and `31255937885` (build-and-test, 2m38s, reporting
 # `1418 tests in 158 suites` — the same suite, unchanged). **20–30 fewer billed macOS minutes per
-# pull request, a third to two fifths.** The run ids are written down because GitHub drops the logs
-# at 90 days and this file's own history is the argument for not leaving a measurement only there.
+# pull request: 33–43%.** (Stated as a percentage on purpose — the saving pairs 60→40 and 70→40, so
+# "a third to two fifths" rounds the top end down and cannot be re-derived from the table.) The run
+# ids are written down because GitHub drops the logs at 90 days, and this file's own history is the
+# argument for not leaving a measurement only there.
 #
 # ⚠️ A job bills rounded **up to the whole minute**, ×10 for private macOS, which is why a 9-second
 # job still costs one billed minute and why the saving is not the 3m49 of wall clock it looks like.
@@ -141,17 +143,18 @@ jobs:
     # rather than this sentence. Changing one without the other is the silent failure the header
     # describes.
     runs-on: macos-26
-    # Was 30 while this job compiled the package. It now runs two string comparisons, so a run that
-    # takes minutes is a hung runner rather than a slow build, and the bound should say so.
-    timeout-minutes: 10
+    # Was 30 while this job compiled the package. It now runs a handful of string comparisons — 9
+    # seconds, measured — so a run that takes minutes is a hung runner rather than a slow build, and
+    # the bound should say so. 3 rather than 10 because the bound is also a spending cap: a hung
+    # macOS runner bills its timeout ×10, and 10 minutes would be 100 billed minutes, several times
+    # the saving this whole change buys. `cancel-in-progress` does not reap a hang — nothing
+    # supersedes it — so this number is the only thing that does.
+    timeout-minutes: 3
 
     # ⛔ Nothing to cache here any more, and that is structural rather than a decision left open: as
-    # of #187 this job compiles nothing. When it did, caching was refused on purpose, and the reason
-    # travelled with the compile to `ci.yml`, which is not cached either — a cache-hit run proves
-    # nothing about whether *this* toolchain builds this package from source, and it would prove it
-    # silently. `CLAUDE.md` records what stale build objects do here: wrong values, link errors, a
-    # SIGBUS charged to an innocent pull request, and a confident bisect that convicted an innocent
-    # commit, all cleared by `rm -rf .build`. Do not reintroduce a cache in either file.
+    # of #187 this job compiles nothing. The no-cache argument has moved to `ci.yml`, beside the
+    # build it now protects — a warning is only useful in the file where someone would be tempted,
+    # and that stopped being this one.
 
     steps:
       - uses: actions/checkout@v7
@@ -210,7 +213,9 @@ jobs:
 
           echo "declared floor : $declared  (major.minor $d_mm)"
           echo "runner toolchain: $runner  (major.minor $r_mm)"
-          echo "declared floor \`$declared\`, runner \`$runner\`" >> "$GITHUB_STEP_SUMMARY"
+          # A list item, not a bare line: the next step appends a second one, and consecutive plain
+          # lines render as a single run-on paragraph in GitHub-flavoured markdown.
+          echo "- declared floor \`$declared\`, runner \`$runner\`" >> "$GITHUB_STEP_SUMMARY"
 
           # BELOW the floor, at FULL precision — see "The two comparisons are at different
           # precisions" above. `sort -V` and not string order: 6.10 sorts below 6.9 lexically, and
@@ -269,18 +274,22 @@ jobs:
       # comparison. What has *not* happened is watching this step go red on a runner; that costs a
       # push with the two images deliberately parted, and it was judged not worth ~20 billed minutes
       # on a change whose subject is billed minutes. Do it if you touch the parsing.
-      - name: The image ci.yml compiles on is the image asserted above
+      - name: ci.yml still compiles this package, on this image
         run: |
-          # Same two reasons as the step above, and they apply verbatim: `set +e` because GitHub runs
-          # this as `bash -e {0}` and `set` cannot clear `errexit`, so without it the diagnostics
-          # below never print; and no `| head -1` anywhere, because with `pipefail` on a producer
-          # that takes SIGPIPE fails the pipeline at a rate set by process scheduling.
+          # `set +e` and the absence of `| head -1` are load-bearing here for the same two reasons
+          # they are load-bearing above; the argument is written out once, over that step, and this
+          # is a reference to it rather than a second copy of it. (Each `run:` is its own shell, so
+          # the two `set` lines cannot be shared — only the reasoning can.)
           set +e
           set -uo pipefail
 
-          floor_all=$(sed -n 's|^ *runs-on: *\([A-Za-z0-9._-]*\).*|\1|p' .github/workflows/swift-floor.yml)
+          # A quoted scalar is valid YAML and identical in meaning, so tolerate quotes rather than
+          # failing on `runs-on: "macos-26"` with a message about ci.yml being deleted.
+          read_images() { sed -n 's|^ *runs-on: *["'\'']\{0,1\}\([A-Za-z0-9._-]\{1,\}\)["'\'']\{0,1\} *$|\1|p' "$1"; }
+
+          floor_all=$(read_images .github/workflows/swift-floor.yml)
+          ci_all=$(read_images .github/workflows/ci.yml)
           floor_image=${floor_all%%$'\n'*}
-          ci_all=$(sed -n 's|^ *runs-on: *\([A-Za-z0-9._-]*\).*|\1|p' .github/workflows/ci.yml)
           ci_image=${ci_all%%$'\n'*}
 
           # An unparsed image must never read as a pass, for the same reason an unparsed version must
@@ -291,6 +300,23 @@ jobs:
             echo "swift-floor.yml -> '${floor_image:-<none>}'   ci.yml -> '${ci_image:-<none>}'"
             echo "If ci.yml was renamed or removed, then nothing compiles the declared floor any more"
             echo "and this job must not pass: give it back its own build step, or fix the path here."
+            echo "If the value is an expression (\${{ matrix.os }}) this check cannot read it, and"
+            echo "the honest fix is to compare something else — not to widen this pattern until it"
+            echo "matches text it cannot evaluate."
+            exit 1
+          fi
+
+          # ⚠️ Taking the FIRST `runs-on:` silently compares the wrong job the moment either file has
+          # two. That is not hypothetical — a `lint` job added above `build-and-test` would do it —
+          # and the dangerous direction is a second *macOS* job declared first, which would compare a
+          # job that is not the one compiling. So the single-job assumption is asserted, not relied on.
+          floor_n=$(printf '%s\n' "$floor_all" | grep -c .)
+          ci_n=$(printf '%s\n' "$ci_all" | grep -c .)
+          if [ "$floor_n" != 1 ] || [ "$ci_n" != 1 ]; then
+            echo "::error::This check assumes one job per workflow, and that has stopped being true."
+            echo "swift-floor.yml declares $floor_n 'runs-on:' lines, ci.yml declares $ci_n."
+            echo "It compares the first of each, so it would now be comparing a job that may not be"
+            echo "the one running 'swift test'. Name the job explicitly here before adding another."
             exit 1
           fi
 
@@ -309,6 +335,37 @@ jobs:
             exit 1
           fi
 
-          echo "✓ Both workflows run on $ci_image, so ci.yml's 'swift test' compiles the eight test"
-          echo "  targets on the toolchain asserted above."
-          echo "floor image \`$floor_image\` == ci image \`$ci_image\`" >> "$GITHUB_STEP_SUMMARY"
+          # The image is only half of it. This job's claim is that ci.yml compiles this package on
+          # that image, and there are two cheap ways for that to stop being true without anyone
+          # touching `runs-on:`. Both are grep-able, so neither is left to a comment asking for care.
+          if ! grep -q 'swift test' .github/workflows/ci.yml; then
+            echo "::error::ci.yml no longer runs 'swift test', so nothing compiles the eight test targets."
+            echo "Since #187 that command carries the floor guarantee as well as the test coverage:"
+            echo "'swift build' alone certified 6.2 and was wrong by four releases (#116)."
+            exit 1
+          fi
+          if grep -qE 'setup-xcode|DEVELOPER_DIR|xcode-select' .github/workflows/ci.yml; then
+            echo "::error::ci.yml selects its own toolchain, so the image no longer implies the version."
+            echo "This job asserted Swift on $floor_image; ci.yml would compile on whatever it selects,"
+            echo "and the two could differ while both files still read '$ci_image'."
+            echo "Assert the version inside that job instead of inferring it from the runner label."
+            exit 1
+          fi
+          if grep -qE '^ *paths(-ignore)?:' .github/workflows/ci.yml; then
+            echo "::error::ci.yml filters on changed paths, so it can be skipped on a pull request."
+            echo "On a run where it is skipped, nothing compiles and this job would still go green"
+            echo "claiming the floor was exercised. If you want that filter, give this job the same"
+            echo "one, or stop it claiming what ci.yml did."
+            exit 1
+          fi
+
+          # ⚠️ What is established, stated exactly, because the previous wording claimed more than it
+          # checked: both workflows *declare* the same runner label, ci.yml *contains* a `swift test`
+          # and does not override the toolchain or filter itself out. What is still assumed is that a
+          # label means one image at one moment — two runs can straddle a GitHub image rollout — and
+          # that ci.yml's job was not skipped by a job-level `if:`, which grep cannot tell from a
+          # step-level one. Read this job green as "the floor is asserted and nothing has quietly
+          # decoupled ci.yml from it", never as "the test targets compiled": that is ci.yml's own
+          # check to report, and it reports it.
+          echo "✓ Both workflows declare $ci_image, and ci.yml still runs 'swift test' on it."
+          echo "- floor image \`$floor_image\` == ci image \`$ci_image\`, ci.yml runs \`swift test\`" >> "$GITHUB_STEP_SUMMARY"

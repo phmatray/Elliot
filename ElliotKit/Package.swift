@@ -32,10 +32,17 @@
 // reason is this issue's own purpose rather than caution. A tools-version is enforced by SwiftPM at
 // *manifest parse*, before a source file is read: its job here is to turn a mysterious failure into
 // a named one. The failure a 6.2 contributor would actually hit is the test one — `swift test` is
-// this repository's only verification gate, there is no build-and-test CI to catch it for them, and
-// CLAUDE.md tells them to run it. Declaring 6.2 would let them build, then hand them a type-check
-// timeout inside a macro expansion: exactly the mystery this floor exists to prevent, one target
-// over.
+// this repository's only verification gate and CLAUDE.md tells them to run it. Declaring 6.2 would
+// let them build, then hand them a type-check timeout inside a macro expansion: exactly the mystery
+// this floor exists to prevent, one target over.
+//
+// ⚠️ This paragraph said "there is no build-and-test CI to catch it for them" until #187, and that
+// clause has been false since #21 landed `.github/workflows/ci.yml`. It does not weaken the
+// conclusion — CI catches a 6.2 contributor only *after* they push, and this line's job is to refuse
+// at manifest parse on their own machine — but it was one more durable copy of this repository's CI
+// story, and #116 is entirely about copies that rot. `ci.yml`'s header names the three files kept in
+// step with the toolchain argument and this manifest is one of them, which is precisely why a stale
+// CI clause sitting in it went unnoticed through #21, #102, #116 and #187's own Task 5.
 //
 // **The patch component is deliberate and load-bearing — do not round this to `6.3`.** It said `6.3`
 // for one commit, and that was wrong twice over: SwiftPM resolves `6.3` as **6.3.0**, and the

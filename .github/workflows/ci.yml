@@ -109,6 +109,17 @@ jobs:
     # stuck test. Bound it so a recurrence goes red instead of sitting in the queue.
     timeout-minutes: 20
 
+    # ⛔ **Deliberately NOT cached, and since #187 this is the only file where that warning belongs.**
+    # It lived in `swift-floor.yml`, which is where the compile used to be; the compile is here now
+    # and the argument came with it. This is the job with a ~2m40 cold build and every incentive to
+    # add `actions/cache` on `ElliotKit/.build` — so, explicitly: do not. A cache-hit run would
+    # certify the declared floor from objects a *previous* toolchain produced, silently, and since
+    # #187 this job is what establishes that the floor compiles at all. `CLAUDE.md` records what
+    # stale build objects do here — wrong values, a link error, a SIGBUS charged to an innocent pull
+    # request, and a confident bisect that convicted an innocent commit — all cleared by
+    # `rm -rf .build`. The `concurrency` block above is the honest way to spend fewer minutes, and
+    # #187 was the other one.
+
     steps:
       - uses: actions/checkout@v7
 

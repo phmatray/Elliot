@@ -75,14 +75,21 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
     ran `swift build` *and* `swift build --build-tests` until 2026-08-08, which meant every pull
     request compiled the **whole package twice on two `macos-26` runners** — not just the test
     targets, which is what the issue title said and what its own comments understated. Measured
-    before and after: **60–70 → 40 billed macOS minutes** per pull request, floor 3m45–3m58 → **9s**,
+    before and after: **60–70 → 40 billed macOS minutes** per pull request (33–43%), floor
+    2m21–3m58 → **9s**,
     with `1418 tests in 158 suites` unchanged either side. The arithmetic, the run ids and the
     argument are in `swift-floor.yml`'s header, which is the durable copy — GitHub drops the logs at
     90 days.
   - ⛔ **So `ci.yml`'s `swift test` now carries the floor guarantee too.** Delete it, filter it, or
-    move `ci.yml` to another image and #116's claim quietly stops being exercised. The image half is
-    enforced (floor's second step compares both `runs-on:` lines and fails by name); the `swift test`
-    half is not, and cannot be.
+    move `ci.yml` to another image and #116's claim quietly stops being exercised. Four ways for that
+    to happen are enforced by `swift-floor.yml`'s second step, which fails by name: the two
+    `runs-on:` labels parting, `swift test` disappearing from `ci.yml`, `ci.yml` selecting its own
+    toolchain (`setup-xcode`, `DEVELOPER_DIR`), and `ci.yml` filtering itself out with `paths:`.
+    What is **not** covered is a label that means two different images across a GitHub rollout, and a
+    job-level `if:` that grep cannot tell from a step-level one. Those are gaps, not impossibilities
+    — an earlier draft of this bullet said the `swift test` half "cannot be" enforced, which was
+    wrong the moment it was written (the grep that now enforces it is three lines) and is exactly the
+    kind of sentence that stops the next person closing a hole.
   - **Branch protection is still off**, so both checks are advisory: `gh api
     repos/phmatray/Elliot/branches/main/protection` returns 404 `Branch not protected`, and a red check
     does not block a merge. "Wait for green CI" now returns a real verdict; it still does not stop
