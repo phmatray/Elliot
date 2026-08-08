@@ -307,4 +307,57 @@ struct SchedulerConcurrentPumpTests {
             #expect(counts["blocked"] == nil)
         }
     }
+
+    /// `start` now claims the run in `inFlight` *before* its first `await`
+    /// (AC 2), so every early return out of `start` has to give that claim back.
+    /// A leaked claim is permanent: nothing clears `inFlight` for a run that
+    /// never reaches `finish`, so one failed spawn would cost a writer slot for
+    /// the life of the process — and `refusal(for:)` counts `inFlight` against
+    /// every later run, so the queue would quietly admit one fewer run for ever.
+    ///
+    /// ⚠️ The sibling early return — `guard let repo = try? await store.repo(…)`
+    /// — is deliberately *not* tested by a missing repository row, because that
+    /// state is unreachable through the store. `skillRun.repoID` carries a
+    /// foreign key onto `repo` (`Migrations.swift`, `onDelete: .cascade`), so a
+    /// run referencing an absent repository cannot be inserted (`SQLite error
+    /// 19: FOREIGN KEY constraint failed`) and deleting a repository deletes its
+    /// runs with it. That branch is reachable only when the read itself
+    /// *throws* — `try?` collapses a thrown error and a nil row into one path —
+    /// which no seam here can provoke. It releases the claim and fails the run
+    /// on the same grounds as this test; it is just not the case that can be
+    /// driven from outside.
+    @Test("A run whose spawn fails gives its slot back")
+    func aFailedSpawnReleasesTheClaim() async throws {
+        let store = try BoardStore.inMemory()
+        let home = TestHome.scratch("failed-spawn")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        // The repository path exists, so the only reason the spawn can fail is
+        // the one under test: there is no `claude` at that path.
+        let config = ToolConfig(
+            claudePath: "/nonexistent/claude", ghPath: "/usr/bin/true",
+            gitPath: "/usr/bin/true", environment: ["PATH": "/usr/bin:/bin"]
+        )
+        let scheduler = RunScheduler(
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config))
+        )
+        let repo = Repo(
+            path: home.path, nameWithOwner: "phmatray/Elliot",
+            defaultBranch: "main", displayName: "Elliot"
+        )
+        try await store.saveRepo(repo)
+        let id = try await seedRun(store, repo.id, "doomed", kind: .createIssue)
+
+        await scheduler.launch(runID: id)
+
+        // Terminal, and recorded — not left `.queued` for the next launch sweep
+        // to rediscover. `pump` has already taken it out of `pending`.
+        #expect(try await store.run(id: id)?.state == .failed)
+        #expect(try await store.run(id: id)?.endedAt != nil)
+        #expect(try await store.nonTerminalRuns().isEmpty)
+        #expect(await scheduler.queueSnapshot().isEmpty)
+        // The claim, given back.
+        #expect(await scheduler.activeRunCount == 0)
+        #expect(await scheduler.occupancy == (writers: 0, analyses: 0))
+    }
 }

@@ -375,6 +375,23 @@ public actor RunScheduler: RunLaunching {
             // Nothing will ever call `finish` for this run, so the claim has to
             // be released here or the slot leaks for the life of the process.
             inFlight[run.id] = nil
+            // And the row must reach a terminal state: `pump` has already taken
+            // it out of `pending`, so a `.queued` row nothing holds is a run
+            // that has silently disappeared until the next launch sweep.
+            //
+            // ⚠️ Not reachable by a *missing* repository row: `skillRun.repoID`
+            // carries a foreign key onto `repo` (`onDelete: .cascade`), so such a
+            // run cannot be inserted and deleting a repository deletes its runs.
+            // What reaches here is a read that *threw* — `try?` collapses that
+            // into the same branch — which is exactly the case worth failing
+            // loudly rather than returning from in silence.
+            updated.state = .failed
+            updated.endedAt = Date()
+            updated.resultText = "The repository this run belongs to no longer exists."
+            try? await store.saveRun(updated)
+            continuation.yield(.runFinished(
+                runID: run.id, cardID: run.cardID, state: .failed, outcome: nil
+            ))
             return
         }
 
@@ -410,7 +427,9 @@ public actor RunScheduler: RunLaunching {
             // clear it.
             treeBaselines[run.id] = nil
             // Same reason as the repo guard above: `finish` is never reached
-            // from here, so the claim must be given back explicitly.
+            // from here, so the claim must be given back explicitly. Verified as
+            // a gate: removing this line fails `aFailedSpawnReleasesTheClaim` on
+            // both `activeRunCount` and `occupancy`.
             inFlight[run.id] = nil
             updated.state = .failed
             updated.endedAt = Date()
