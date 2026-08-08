@@ -117,4 +117,119 @@ struct SchedulerConcurrentPumpTests {
             }
         }
     }
+
+    /// A scheduler that really spawns, against the fake `claude`, recording one
+    /// line per child in `spawnLog`.
+    ///
+    /// The repository path is a directory that genuinely exists. `Process` sets
+    /// the child's working directory on the spawn, so a `path` pointing at
+    /// nothing makes `ClaudeRun.start` throw — the run would be marked `.failed`
+    /// without ever spawning, and a double-spawn test would then read an empty
+    /// log and "pass" for the one reason it must not.
+    ///
+    /// `PATH` is set for the same class of reason: `ToolConfig.environment`
+    /// *replaces* the child's environment rather than extending it, and the
+    /// fake's spawn-log block shells out to `head`.
+    func spawningScheduler(
+        spawnLog: String, cap: Int
+    ) async throws -> (RunScheduler, BoardStore, Repo, URL) {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let home = TestHome.scratch("concurrent-pump")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: root.appendingPathComponent("Scripts/fake-claude.sh").path,
+            ghPath: "/usr/bin/true", gitPath: "/usr/bin/true",
+            environment: [
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "FAKE_CLAUDE_SPAWN_LOG": spawnLog,
+                "FAKE_CLAUDE_FIXTURE": root
+                    .appendingPathComponent("Fixtures/stream-json/create-issue-success.ndjson").path,
+            ]
+        )
+        let repo = Repo(
+            path: home.path, nameWithOwner: "phmatray/Elliot",
+            defaultBranch: "main", displayName: "Elliot"
+        )
+        try await store.saveRepo(repo)
+        let scheduler = RunScheduler(
+            store: store, toolConfig: config,
+            verifier: Verifier(gh: .init(config: config)),
+            limits: SchedulerLimits(maxConcurrent: cap, maxConcurrentAnalyses: cap)
+        )
+        return (scheduler, store, repo, home)
+    }
+
+    /// One line per spawn, grouped by the prompt that identifies the run.
+    func spawnCounts(_ path: String) -> [String: Int] {
+        let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        return text.split(separator: "\n", omittingEmptySubsequences: true)
+            .reduce(into: [:]) { counts, line in counts[String(line), default: 0] += 1 }
+    }
+
+    /// Seeds a queued run, with a card, in `repoID`. The prompt doubles as the
+    /// run's name in the spawn log.
+    func seedRun(
+        _ store: BoardStore, _ repoID: UUID, _ prompt: String, kind: SkillKind = .implementIssue
+    ) async throws -> UUID {
+        let card = Card(
+            repoID: repoID, title: prompt,
+            columnEnteredAt: now, createdAt: now, updatedAt: now
+        )
+        try await store.saveCard(card)
+        let run = SkillRun(
+            cardID: card.id, repoID: repoID, kind: kind, prompt: prompt, cwd: "/tmp",
+            logPath: FileManager.default.temporaryDirectory
+                .appendingPathComponent("log-\(UUID().uuidString)").path,
+            stderrPath: "/tmp/b", createdAt: now
+        )
+        try await store.saveRun(run)
+        return run.id
+    }
+
+    /// Waits, bounded and on a fact, for every one of `ids` to reach a terminal
+    /// state in the store. No sleep, no duration asserted.
+    func awaitTerminal(_ store: BoardStore, _ ids: [UUID]) async throws {
+        try await withTimeout(.seconds(20)) {
+            while true {
+                var allDone = true
+                for id in ids where try await store.run(id: id)?.state.isActive != false {
+                    allDone = false
+                }
+                if allDone { return }
+                await Task.yield()
+            }
+        }
+    }
+
+    @Test("Two pumps considering the same run spawn it once, not twice")
+    func aRunIsSpawnedExactlyOnce() async throws {
+        // Ten iterations rather than forty: each one spawns real children.
+        for _ in 0..<10 {
+            let log = FileManager.default.temporaryDirectory
+                .appendingPathComponent("spawn-\(UUID().uuidString).log").path
+            defer { try? FileManager.default.removeItem(atPath: log) }
+            let (scheduler, store, repo, home) = try await spawningScheduler(spawnLog: log, cap: 8)
+            defer { try? FileManager.default.removeItem(at: home) }
+
+            var ids: [UUID] = []
+            for index in 0..<3 {
+                ids.append(try await seedRun(store, repo.id, "run \(index)"))
+            }
+
+            // Concurrent launches, so several pumps hold the same queue.
+            await withTaskGroup(of: Void.self) { group in
+                for id in ids { group.addTask { await scheduler.launch(runID: id) } }
+            }
+            try await awaitTerminal(store, ids)
+
+            let counts = spawnCounts(log)
+            for index in 0..<3 {
+                #expect(counts["run \(index)"] == 1)
+            }
+        }
+    }
 }

@@ -356,11 +356,27 @@ public actor RunScheduler: RunLaunching {
     // MARK: - Running
 
     private func start(_ run: SkillRun) async {
-        guard let repo = try? await store.repo(id: run.repoID) else { return }
-
+        // ⛔ This guard and the assignment four lines down must stay adjacent
+        // and await-free. That adjacency is the mutual exclusion: the actor
+        // guarantees one job at a time, not one job to completion, and every
+        // `await` below hands the actor to another pump. Until this claim moved
+        // up here it happened *after* the spawn, so two pumps both saw the run
+        // as startable and both spawned a `claude` for it — for `merge-pr`,
+        // two agents each merging to `main` and deleting the same branch.
+        // Measured before the move: 2 and 3 spawns of the same run, in 5 of 5
+        // samples. `RunSchedulerShapeTests` fails if it drifts back down.
+        guard inFlight[run.id] == nil else { return }
         var updated = run
         updated.state = .running
         updated.startedAt = Date()
+        inFlight[run.id] = updated
+
+        guard let repo = try? await store.repo(id: run.repoID) else {
+            // Nothing will ever call `finish` for this run, so the claim has to
+            // be released here or the slot leaks for the life of the process.
+            inFlight[run.id] = nil
+            return
+        }
 
         let invocation = ClaudeInvocation(
             runID: run.id,
@@ -393,6 +409,9 @@ public actor RunScheduler: RunLaunching {
             // `finish` is never reached from here, so nothing else would ever
             // clear it.
             treeBaselines[run.id] = nil
+            // Same reason as the repo guard above: `finish` is never reached
+            // from here, so the claim must be given back explicitly.
+            inFlight[run.id] = nil
             updated.state = .failed
             updated.endedAt = Date()
             updated.resultText = error.localizedDescription
@@ -405,6 +424,9 @@ public actor RunScheduler: RunLaunching {
 
         try? await store.saveRun(updated)
         live[run.id] = claudeRun
+        // Refreshes the claim made at the top of this method with `argv`; it is
+        // no longer what *makes* the claim. Moving it back down re-opens the
+        // double spawn.
         inFlight[run.id] = updated
         continuation.yield(.runStarted(runID: run.id, cardID: run.cardID))
 
