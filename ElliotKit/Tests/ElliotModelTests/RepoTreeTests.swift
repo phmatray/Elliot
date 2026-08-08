@@ -49,4 +49,18 @@ struct RepoTreeTests {
             truncated: false)
         #expect(t.paths(withPrefix: ".github/workflows/")?.count == 2)
     }
+
+    /// The keys are part of a format a later plan persists, so they are pinned
+    /// here rather than left to whatever the property happens to be called.
+    @Test("A tree encodes under the names of the things, not the storage")
+    func encodesUnderStableKeys() throws {
+        let data = try JSONEncoder().encode(RepoTree(paths: ["README.md"], truncated: true))
+        let object = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object.keys.sorted() == ["paths", "truncated"])
+
+        let back = try JSONDecoder().decode(RepoTree.self, from: data)
+        #expect(back.contains("README.md") == true)
+        #expect(back.isTruncated)
+    }
 }
