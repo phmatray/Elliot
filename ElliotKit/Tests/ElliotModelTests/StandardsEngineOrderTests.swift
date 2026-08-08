@@ -122,6 +122,25 @@ struct StandardsEngineOrderTests {
         #expect(a.findings.count == Standard.allCases.count)
     }
 
+    /// Task 8 left every finding's `evidence` empty because the stub
+    /// predicate had none to give. Now that `StandardPredicates.evaluate`
+    /// returns evidence alongside its verdict, a violating finding must carry
+    /// the citation that predicate looked for — the whole point of the
+    /// widening `verdict` threads through `assess`.
+    @Test("A violating finding carries the evidence its predicate looked for")
+    func violatingFindingCarriesEvidence() {
+        let a = StandardsEngine.assess(
+            repo: .observed(repo(), probe), measurement: emptyMeasurement,
+            exemptions: exemptions([]), now: then, freshness: .default)
+        guard let editorconfig = a.findings.first(where: { $0.standard == .editorconfig }) else {
+            Issue.record("no editorconfig finding"); return
+        }
+        guard case .violating = editorconfig.verdict else {
+            Issue.record("expected violating, got \(editorconfig.verdict)"); return
+        }
+        #expect(editorconfig.evidence == [Evidence(path: ".editorconfig", exists: false)])
+    }
+
     /// `observationLag` reduces over this array, so a step whose read really
     /// happened must appear in it. Recording only the repository's provenance
     /// reports a one-minute lag for a verdict that rested on day-old exemptions.

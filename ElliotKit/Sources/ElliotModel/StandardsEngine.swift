@@ -57,12 +57,14 @@ public enum StandardsEngine {
             }
         }
 
-        // 3. Only now the measurement. The stub predicate has no evidence of its
-        //    own to give yet — task 9 fills that in.
-        let measured = StandardPredicates.evaluate(
+        // 3. Only now the measurement, and its evidence — the whole point of
+        //    `evaluate` returning a tuple rather than a bare verdict: a
+        //    finding that cites nothing cannot be judged.
+        let outcome = StandardPredicates.evaluate(
             standard, repo: summary, measurement: measurement,
             now: now, freshness: freshness)
-        return StandardOutcome(verdict: measured, provenances: provenances)
+        return StandardOutcome(
+            verdict: outcome.verdict, provenances: provenances, evidence: outcome.evidence)
     }
 
     /// Every axis, for one repository, under one clock reading.
