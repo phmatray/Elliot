@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1429 tests in 160 suites**, 5 of 5 samples on
-  `feat/143-open-board-from-repo-row` on 2026-08-08 off `main` at `da876d7`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**PLACEHOLDER tests in PLACEHOLDER suites**, 5 of 5 samples on
+  `feat/143-open-board-from-repo-row` on 2026-08-08 off `main` at `27e370f`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -49,14 +49,22 @@
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
     your own untouched run and compare against *that*, never against this line.
-  - ✅ **Landing #143 the drift was zero, for the `#145` reason: `main` never moved.**
-    `git rev-list --count HEAD..origin/main` was **0** at the ready-flip — `origin/main` was still
-    `da876d7`, the commit this branch was cut from — so there was nothing to merge and the whole
-    +22/+2 is this branch's own two suites (`RepoRowBoardActionTests` 7,
-    `RepositoriesBoardActionTests` 15) with nothing else mixed in. The previous entry's *value* was
-    right and its *commit* was one behind (it said `b0d121a`, whose child `da876d7` added no test),
-    which is the #138 shape a third time. Worth one line only because it is the entry's own thesis
-    inverted: the number is honest when the interval is short, and here the interval was empty.
+  - ⚠️ **Landing #143 the zero-drift claim was written, was true, and was false four hours later —
+    and the sentence that falsified it was the *same line* in a sibling branch.** At the ready-flip
+    `git rev-list --count HEAD..origin/main` really was **0**: `origin/main` was still `da876d7`, the
+    commit this branch was cut from, so the whole +22/+2 was this branch's own two suites
+    (`RepoRowBoardActionTests` 7, `RepositoriesBoardActionTests` 15) with nothing else mixed in, and
+    the bullet said so in the `#145` vocabulary. Then two squashes landed while the PR waited — #229
+    and #227 — and #229 **is** `fix/162-archive-search-verified`, whose own honest measurement of
+    this line (1418 in 158, also off `da876d7`) met this branch's honest 1429 in 160. Two branches,
+    one base commit, both right, and `git merge` with no way to choose: the #217 shape, arriving in
+    the entry that had just finished claiming immunity from it. Resolved as #217 prescribes — literal
+    `PLACEHOLDER`, overwritten by the run — and the merged value is in the line above.
+    **The transferable half is not "measure again"; it is that an interval you have already closed
+    can reopen.** "`main` never moved" is a statement about a window that is still open while you
+    write it, so it is never a property of the branch — only ever a reading taken at one instant. The
+    `#145` and `#209` entries are the same claim held by luck rather than by anything either author
+    did, and this bullet is what they look like when the luck runs out.
   - ✅ **Second time it did not drift, landing #138 — and this one separates the two halves of the
     line cleanly.** The branch's untouched baseline measured **1328 in 149**, the line's exact value,
     off `main` at `2494882`; the line said `dc5c2ce`, which is `2494882`'s parent. So the *value* was
@@ -73,6 +81,14 @@
       arithmetic (1342 + #211/#217's own +32/+5 over the shared base) matched the run exactly, which
       is worth recording only because it was checked **after** the run rather than used in place of
       one.
+    - **Landing #162 both halves showed up again in one branch, and the stamp was the wrong half.**
+      The line read 1407 in 158 off `b0d121a`, and 1407 in 158 is exactly what this branch's
+      untouched baseline measured — off `da876d7`, one squash later, because #215 added no test. So
+      the *value* survived a commit the stamp did not name: the #138 shape, third time. Then `main`
+      did not move for the whole life of the branch (`git merge-base HEAD origin/main` == `da876d7`
+      at the ready-flip), which is the #145 shape and the rarer one — so the whole of the +11/+0 is
+      this branch's own tests and there is no drift mixed in at all. Both halves of the entry, one
+      branch, no arithmetic needed: 11 new `@Test`s, 11 more in the run.
   - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
     branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
     hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
