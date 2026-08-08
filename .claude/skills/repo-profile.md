@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1436 tests in 158 suites**, 5 of 5 samples on
-  `feat/187-compile-tests-once` on 2026-08-08 off `main` at `1c58799`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1594 tests in 179 suites**, 5 of 5 samples on
+  `fix/249-blocked-repo-refuses-a-move` on 2026-08-08 off `main` at `f245ca9`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -61,6 +61,25 @@
     arithmetic *was* checked afterwards and agrees to the test: 19 added `@Test` lines less one that
     is a rename of `onlyRefinesOk`, so 18 new, and 1418 + 18 = 1436. That order is the whole of the
     ⛔ bullet below — the sum was checked **against** the run, never in place of it.
+  - ⚠️ **Landing #143 the zero-drift claim was written, was true, and was false four hours later —
+    and the sentence that falsified it was the *same line* in a sibling branch.** At the ready-flip
+    `git rev-list --count HEAD..origin/main` really was **0**: `origin/main` was still `da876d7`, the
+    commit this branch was cut from, so the whole +22/+2 was this branch's own two suites
+    (`RepoRowBoardActionTests` 7, `RepositoriesBoardActionTests` 15) with nothing else mixed in, and
+    the bullet said so in the `#145` vocabulary. Then two squashes landed while the PR waited — #229
+    and #227 — and #229 **is** `fix/162-archive-search-verified`, whose own honest measurement of
+    this line (1418 in 158, also off `da876d7`) met this branch's honest 1429 in 160. Two branches,
+    one base commit, both right, and `git merge` with no way to choose: the #217 shape, arriving in
+    the entry that had just finished claiming immunity from it. Resolved as #217 prescribes — literal
+    `PLACEHOLDER`, overwritten by the run — and the merged value is in the line above, which is
+    1418 plus this branch's own +22/+2 with nothing left over. ⚠️ That sum was checked **after** the
+    five runs, never in place of them; it is only predictable because the two branches touched
+    disjoint suites, and the ⛔ bullet below exists because a predicted 1177 once met a measured 1161.
+    **The transferable half is not "measure again"; it is that an interval you have already closed
+    can reopen.** "`main` never moved" is a statement about a window that is still open while you
+    write it, so it is never a property of the branch — only ever a reading taken at one instant. The
+    `#145` and `#209` entries are the same claim held by luck rather than by anything either author
+    did, and this bullet is what they look like when the luck runs out.
   - ✅ **Second time it did not drift, landing #138 — and this one separates the two halves of the
     line cleanly.** The branch's untouched baseline measured **1328 in 149**, the line's exact value,
     off `main` at `2494882`; the line said `dc5c2ce`, which is `2494882`'s parent. So the *value* was
@@ -92,6 +111,22 @@
       the value is honest *and* nothing drifted underneath it. This branch touches two workflow
       files and three prose files, so a re-measurement here could only ever change the stamp, which
       is the #182 case as well. Both of those entries in one branch, and it cost one `swift test`.
+    - **Landing #179 the value was right and the stamp was two squashes behind — the #138 shape a
+      fourth time, and by now that is the *usual* outcome rather than a surprise.** The line read
+      1418 in 158 off `da876d7`, and 1418 in 158 is exactly what this branch's untouched baseline
+      measured — off `27e370f`, two squashes later, because #227 and #229 added no test between them.
+      So a reader who trusted the stamp would have gone looking for a drift that did not exist, and
+      one who trusted the value would have been right by luck. `main` had not moved for the life of
+      the branch **at the ready-flip**, so the +10/+3 measured there was this branch's own three
+      suites with nothing mixed in — and then it was overtaken between the ready-flip and the merge,
+      by #189, which is the #138 entry's other half arriving in this branch too. The value above is
+      therefore a merged one and the +10/+3 is no longer readable off it.
+      **The transferable part is that the two halves fail independently**: the value is wrong when
+      `main` gains tests, the stamp is wrong when `main` gains anything at all, and the stamp is the
+      cheaper one to keep true because it does not need a run to update. It then drifted once more
+      *inside* the same pull request — 1428 → 1429 — because the code-review pass added a test after
+      the line was written, which is the ⛔ bullet below arriving on schedule: the number was taken
+      from the run both times, never from adding one to the previous value.
   - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
     branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
     hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
@@ -113,6 +148,15 @@
       advice taken twice over — 15 runs, of which **14 kept their output** and were green; the 15th
       printed no summary and its output had already been discarded by the command that took it, so
       it is unclassified rather than green. A sample you did not keep is not a sample you can cite.
+    - **Landing #171 both halves held, and the interval is the whole reason.** The branch's own
+      untouched baseline measured **1407 in 158** off `da876d7` — the value this line already
+      claimed, taken from the commit *after* the one it named (`b0d121a` is `da876d7`'s parent, so
+      #215 landed adding no test). Then `git merge-base HEAD origin/main` was still `da876d7` at the
+      ready-flip: **`main` did not move for the length of the branch**, so the whole +44/+6 is this
+      branch's own and nothing is unattributed drift. That is the #209 condition, and it remains the
+      *one* condition under which a number written here survives to be read — not a reason to skip
+      taking your own baseline, which is what caught the value being right and the stamp being stale
+      in the same reading.
     - **Landing #215 the value was right and the commit was one behind — the #138 shape again.** The
       line read 1374 in 155 off `941888c`, and 1374 in 155 is exactly what `main` measures at
       `b0d121a`, one squash later: #216 added no test, so the *value* survived a commit the stamp did
@@ -120,6 +164,17 @@
       branch's own +33/+3 with nothing left over. Same caveat as #217 below — the sum was checked
       **after** the runs, never in place of them, and it is only predictable because the two sides
       touched disjoint suites.
+    - **Landing #225 the branch argued `main` had not moved, and `main` moved before it landed.** Its
+      body says so in as many words — *"`main` did not move for the life of the branch, so
+      `git log HEAD..origin/main` is empty and the tested tree *is* the merged tree"* — and that was
+      true when it was written. #229 landed while the pull request sat open, so the claim expired
+      without anything touching the branch, and the honest 1439 in 162 met a `main` at 1418 in 158.
+      Two honest numbers again, and `git merge` had no way to choose. ⚠️ **A PR body that reasons
+      from `main` not having moved is dated the moment it is posted** — the reasoning does not
+      survive the interval, which is the whole of this entry stated one file over. Resolved as
+      #217 prescribes: a literal `PLACEHOLDER`, then five samples. The merged tree measures
+      **1450 in 162**, which is `main`'s 1418 plus this branch's own +32/+4 over the shared base
+      `da876d7` with nothing left over — checked after the runs, never in place of them.
     - **Landing #217 the conflict was two honest numbers, and the merged value was the exact sum.**
       Both sides measured off `2494882` and both were right when written — #209's 1358 in 153 and
       this branch's 1330 in 150 — so `git merge` had no way to choose and the line came through as a
@@ -129,6 +184,20 @@
       touched disjoint suites, and the ⛔ bullet below exists because a predicted 1177 once met a
       measured 1161. Resolve this conflict with a literal `PLACEHOLDER` and let `swift test`
       overwrite it; that is the whole procedure, and it costs one run.
+    - **Landing #139 the line was right, and the reason is worth more than the number.** It read
+      1328 in 149 off `dc5c2ce`, and `main` had since advanced to `2494882` — a *different* commit,
+      which is the trap. I measured `2494882` itself in a throwaway worktree rather than assume:
+      still **1328 in 149**. So the line had survived a move it was never re-measured against, and
+      the branch's whole delta — 13 tests, 0 suites — is its own. Second time this entry records no
+      drift (the first was #174). Written twice on purpose: 1339 after the plan's five samples, then
+      1341 after code review added two more. The second number is the one that shipped, which is the
+      ⛔ bullet below working — the count is whatever the last run printed, not what you meant to add.
+      - ⚠️ The first draft of this bullet said the branch measured "off the same commit" as the
+        previous line. It did not, and code review caught it. `dc5c2ce` was the *previous author's*
+        baseline; `git merge-base HEAD origin/main` said `2494882`. The counts coinciding is what
+        made the wrong sentence look right — **check `git merge-base`, do not infer your baseline
+        from the line you are replacing**, or this entry starts recording drift against commits
+        nobody measured.
     - **Landing #177 the branch's own number was stale before anyone read it** — it wrote 1244 in 141
       off `0902c10`, and the merged tree measured **1281 in 144** off `206c029`, five of five samples.
       The branch gained no commit between the two runs, so the whole 37 is `main` moving underneath
@@ -156,6 +225,15 @@
       Nothing about the branch changed between the two runs. That is this entry's thesis with the
       interval stretched far enough to be unmistakable: the number measures **when you looked**,
       not what you wrote.
+    - **Landing #49's Task 3 the delta was entirely the branch's own — the rare case, recorded as
+      rare.** 1328/149 → 1332/150 is exactly the four tests and one suite this branch adds. The
+      arithmetic closes without re-running `main` only because of *which branch* the previous stamp
+      names: `fix/147-proposal-editor-card-draft` is the branch that squashed into `2494882`, this
+      branch's base, so its 1328 is that commit's count measured a squash early.
+      ⚠️ **`dc5c2ce` is that branch's base, not `2494882`** — they are two distinct commits
+      (`git rev-parse 2494882^`), and a first draft of this bullet called them the same one. That is
+      the entry's own thesis biting the person writing it: the branch name and the base commit answer
+      different questions, and only the branch name licenses the shortcut taken here.
     - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
       to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
       authors each measured honestly, each counted from the last number they could see, and the
@@ -175,6 +253,14 @@
       its own tests existed, so 40 of its 46 were unrecorded drift and only 6 were the branch's own.
       A correction here is rarely evidence that the previous author miscounted; it is mostly the
       interval since they looked.
+    - **Landing #167 the drift was zero again, and the arithmetic closed exactly.** `main` did not
+      move for the whole life of the branch — `git log HEAD..origin/main` was **empty** at the
+      ready-flip, so the tested tree *was* the merged tree and the merge was a no-op. The previous
+      value, 1407 in 158 off `da876d7`, was still true; the delta of +32 and +4 is this branch's four
+      suites and nothing else (10 + 7 + 8 + 7). Worth recording only because the intermediate number
+      was **1438**, and the +1 came from the code-review pass replacing one test with two — so even a
+      branch with zero drift from `main` moved its own count after the baseline was taken. Re-measure
+      after the review, not only after the merge.
     - **Landing #145 the drift was zero and every test of the delta is the branch's own** — the rare
       complement to the bullet above, and worth recording because the entry is otherwise a list of
       the opposite. `git merge-base HEAD origin/main` was `2494882`, i.e. **`main` had not moved at
@@ -409,14 +495,26 @@ above within seconds.
     card into **Done** without moving one there through the board, which would merge a real pull
     request. Checkpoint the WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) before and after, or a still-open
     instance will silently checkpoint your row away.
-  - **Drive it with `cua-driver`**, which reads the tree and clicks by element index without bringing
-    the app to the front. Re-snapshot before every click: element indices are per-snapshot.
-  - **Or just look, since #155: `board_screenshot` over MCP.** Elliot renders its own window in
-    process, so there is no TCC grant to hold and nothing has to be frontmost. ⚠️ It cannot draw
+  - **Start by just looking, since #155: `board_screenshot` over MCP.** Elliot renders its own window
+    in process, so there is no TCC grant to hold and nothing has to be frontmost — which is why it is
+    first here rather than a fallback. ⚠️ It cannot draw
     sheets, popovers **or the toolbar's controls** — the last one is measured, not theoretical, and
     the toolbar is a conflict hot-spot in the table above. Every reply lists what it left out in
     `not_included`; read that before believing something is missing. Keep `ELLIOT_HOME` short or the
     unix socket exceeds `sun_path`'s 104 bytes and the helper reports a running app as absent.
+  - **Which grants *you* hold is a two-line answer** — `AXIsProcessTrusted()` and
+    `CGPreflightScreenCaptureAccess()`, neither of which prompts. `CLAUDE.md` § *Looking and touching
+    are two different grants* has those probes, the ancestry walk that names the identity they speak
+    for, and the measured table of what each channel answers. `Scripts/list-windows.swift` enumerates
+    windows on geometry alone, which survives without Screen Recording.
+  - ⚠️ **`cua-driver` is the last resort, not the first — it has held neither grant every time it has
+    been measured** (`cua-driver permissions status --json`, re-confirmed 2026-08-07), and without
+    Accessibility it reports `unverifiable` rather than failing. ⛔ **Your own shell's grants do not
+    help it**: the daemon is *its own responsible process* (`"bundle_id": "com.trycua.driver"`,
+    `"responsible_ppid": 1`), so no ancestry of yours changes what it can do — granting your terminal
+    Accessibility and concluding "then cua-driver will work for me" buys a run of silent no-ops. When
+    it *is* granted it reads the tree and clicks by element index without bringing the app to the
+    front; re-snapshot before every click, since element indices are per-snapshot.
   - **What this actually caught, on #79, with 730 tests green and `swift build` clean:** the framing
     scroll was a no-op — `onChange` ran inside the update that changed the selection, so it scrolled
     the row that existed *before* the panel was inserted and clamped to zero. It was invisible in four

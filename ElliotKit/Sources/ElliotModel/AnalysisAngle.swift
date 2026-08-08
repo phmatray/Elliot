@@ -43,6 +43,33 @@ public enum AnalysisAngle: String, Codable, CaseIterable, Sendable, Hashable {
         }
     }
 
+    /// The GitHub label this lens suggests, when it has an honest one — the
+    /// value the editor pre-ticks on a card an analysis produced.
+    ///
+    /// A **visible pre-fill, never a rule.** What it produces is ordinary card
+    /// data sitting in the editor where a human can see it and take it off; a
+    /// map applied silently on the way to `create-issue` would be the guess
+    /// dressed as a decision this whole feature exists to replace.
+    ///
+    /// `nil` for five of the eight, and that is the load-bearing half. A quick
+    /// win is a claim about *effort*, tech debt and tests are claims about
+    /// *where* the work is, and a UX finding is as often a defect as a request
+    /// — none of them names a kind of issue, so none of them gets a label.
+    /// Answering "enhancement" for all of them would put a chosen-looking label
+    /// on five lenses' worth of cards that nobody chose.
+    ///
+    /// Every name here must be one `LabelPolicy` requires, or the pre-fill
+    /// arrives already marked as a label the repository does not have.
+    /// `CardLabelsTests` holds that.
+    public var suggestedLabel: String? {
+        switch self {
+        case .bugs: "bug"
+        case .features: "enhancement"
+        case .docsAndDX: "documentation"
+        case .quickWins, .techDebt, .tests, .uxAndUI, .bestPractices: nil
+        }
+    }
+
     public var briefing: String {
         switch self {
         case .bugs:

@@ -158,6 +158,16 @@ public actor RunScheduler: RunLaunching {
             continuation.yield(
                 .runFinished(runID: runID, cardID: run.cardID, state: .cancelled, outcome: nil))
         }
+        // Emptying `pending` above is not enough, because this method suspends on
+        // every row it cancels. A `launch` landing in one of those windows puts
+        // its id back on the queue, and the `pump` it calls reads a row this loop
+        // has not reached yet — still `.queued`, so admission legitimately holds
+        // it. The row is then cancelled underneath it, leaving a `.cancelled` run
+        // sitting in the queue for the board to offer again. Discarding what this
+        // drain cleared is the postcondition the caller was promised.
+        let discarded = Set(cleared)
+        pending.removeAll { discarded.contains($0) }
+        lastRefusals = lastRefusals.filter { pending.contains($0.key) }
         await publishQueue()
         return cleared.count
     }
@@ -251,21 +261,50 @@ public actor RunScheduler: RunLaunching {
         // every pending run and is deliberately synchronous; a SQL aggregate in
         // there would turn draining a queue of twenty into twenty queries.
         let overBudget = await isOverDailyCeiling()
-        var stillPending: [UUID] = []
-        var refusals: [UUID: QueueRefusal] = [:]
+        // The snapshot decides the *order* to consider; the queue itself is
+        // edited in place below. `pending = stillPending` at the end of this
+        // method is what dropped a run that `launch` appended while this pump
+        // was suspended in `store.run(id:)`, and what resurrected one `drain`
+        // had just cancelled. Both callers fire on their own schedule — a run
+        // finishing while the user drags a card is the ordinary case.
         for runID in pending {
-            guard let run = try? await store.run(id: runID), run.state == .queued else { continue }
+            // Already gone before we even read it — nothing to do, and no store
+            // round trip worth spending. Purely a shortcut: the guard that
+            // matters is the one below, after the suspension.
+            guard pending.contains(runID) else { continue }
+            // ⛔ `pending.contains` is re-checked *after* the await, and that
+            // position is the whole point. `drain` and `cancel` both take their
+            // id out of `pending` synchronously and only then suspend to mark the
+            // row `.cancelled`, so a pump whose `store.run` read landed inside
+            // that window comes back holding a stale `.queued` value. Deciding on
+            // it spawns a `claude` for a run the user just discarded — and
+            // `start` then saves `.running` over the `.cancelled` row, so the
+            // cancellation disappears as well. For `merge-pr` that is a merge to
+            // `main` after being told to stop. Checking containment only *before*
+            // the read cannot see any of it.
+            guard let run = try? await store.run(id: runID),
+                  pending.contains(runID),
+                  run.state == .queued
+            else {
+                pending.removeAll { $0 == runID }
+                lastRefusals.removeValue(forKey: runID)
+                continue
+            }
             // The ceiling holds runs rather than cancelling them: tomorrow, or a
             // raised ceiling, releases the same queue untouched.
             if let why = refusal(for: run, overBudget: overBudget) {
-                stillPending.append(runID)
-                refusals[runID] = why
+                lastRefusals[runID] = why
             } else {
+                // Removed *before* `start` suspends, so a re-entering pump
+                // cannot pick the same id off the queue.
+                pending.removeAll { $0 == runID }
+                lastRefusals.removeValue(forKey: runID)
                 await start(run)
             }
         }
-        pending = stillPending
-        lastRefusals = refusals
+        // Only reasons for runs still queued survive: a stale entry would
+        // outlive its run and be read back by `queueSnapshot`.
+        lastRefusals = lastRefusals.filter { pending.contains($0.key) }
         await publishQueue()
     }
 
@@ -331,11 +370,55 @@ public actor RunScheduler: RunLaunching {
     // MARK: - Running
 
     private func start(_ run: SkillRun) async {
-        guard let repo = try? await store.repo(id: run.repoID) else { return }
-
+        // ⛔ This guard and the assignment four lines down must stay adjacent
+        // and await-free. That adjacency is the mutual exclusion: the actor
+        // guarantees one job at a time, not one job to completion, and every
+        // `await` below hands the actor to another pump. Until this claim moved
+        // up here it happened *after* the spawn, so two pumps both saw the run
+        // as startable and both spawned a `claude` for it — for `merge-pr`,
+        // two agents each merging to `main` and deleting the same branch.
+        // Measured before the move: 2 and 3 spawns of the same run, in 5 of 5
+        // samples. `RunSchedulerShapeTests` fails if it drifts back down.
+        guard inFlight[run.id] == nil else { return }
         var updated = run
         updated.state = .running
         updated.startedAt = Date()
+        inFlight[run.id] = updated
+
+        // Read with `do`/`catch` rather than `try?`, because the two ways this can
+        // fail need different words. `try?` collapses "no such row" and "the read
+        // threw" into one nil, and under the `skillRun.repoID` foreign key
+        // (`onDelete: .cascade`) the *missing row* case cannot happen: such a run
+        // cannot be inserted, and deleting a repository deletes its runs. So a
+        // single message naming the row as absent would describe, to the operator,
+        // the one cause that is impossible — while the cause that did occur went
+        // unrecorded anywhere.
+        var loadedRepo: Repo?
+        var repoReadError: Error?
+        do {
+            loadedRepo = try await store.repo(id: run.repoID)
+        } catch {
+            repoReadError = error
+        }
+
+        guard let repo = loadedRepo else {
+            // Nothing will ever call `finish` for this run, so the claim has to
+            // be released here or the slot leaks for the life of the process.
+            inFlight[run.id] = nil
+            // And the row must reach a terminal state: `pump` has already taken
+            // it out of `pending`, so a `.queued` row nothing holds is a run
+            // that has silently disappeared until the next launch sweep.
+            updated.state = .failed
+            updated.endedAt = Date()
+            updated.resultText = repoReadError.map {
+                "Elliot could not read this run's repository: \($0.localizedDescription)"
+            } ?? "The repository this run belongs to no longer exists."
+            try? await store.saveRun(updated)
+            continuation.yield(.runFinished(
+                runID: run.id, cardID: run.cardID, state: .failed, outcome: nil
+            ))
+            return
+        }
 
         let invocation = ClaudeInvocation(
             runID: run.id,
@@ -368,6 +451,11 @@ public actor RunScheduler: RunLaunching {
             // `finish` is never reached from here, so nothing else would ever
             // clear it.
             treeBaselines[run.id] = nil
+            // Same reason as the repo guard above: `finish` is never reached
+            // from here, so the claim must be given back explicitly. Verified as
+            // a gate: removing this line fails `aFailedSpawnReleasesTheClaim` on
+            // both `activeRunCount` and `occupancy`.
+            inFlight[run.id] = nil
             updated.state = .failed
             updated.endedAt = Date()
             updated.resultText = error.localizedDescription
@@ -380,6 +468,9 @@ public actor RunScheduler: RunLaunching {
 
         try? await store.saveRun(updated)
         live[run.id] = claudeRun
+        // Refreshes the claim made at the top of this method with `argv`; it is
+        // no longer what *makes* the claim. Moving it back down re-opens the
+        // double spawn.
         inFlight[run.id] = updated
         continuation.yield(.runStarted(runID: run.id, cardID: run.cardID))
 
