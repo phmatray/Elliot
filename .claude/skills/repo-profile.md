@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1575 tests in 175 suites**, 5 of 5 samples on
-  `feat/143-open-board-from-repo-row` on 2026-08-08 off `main` at `9be51c9`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1586 tests in 178 suites**, 5 of 5 samples on
+  `fix/179-concurrent-pumps` on 2026-08-08 off `main` at `b04e204`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -111,6 +111,22 @@
       the value is honest *and* nothing drifted underneath it. This branch touches two workflow
       files and three prose files, so a re-measurement here could only ever change the stamp, which
       is the #182 case as well. Both of those entries in one branch, and it cost one `swift test`.
+    - **Landing #179 the value was right and the stamp was two squashes behind — the #138 shape a
+      fourth time, and by now that is the *usual* outcome rather than a surprise.** The line read
+      1418 in 158 off `da876d7`, and 1418 in 158 is exactly what this branch's untouched baseline
+      measured — off `27e370f`, two squashes later, because #227 and #229 added no test between them.
+      So a reader who trusted the stamp would have gone looking for a drift that did not exist, and
+      one who trusted the value would have been right by luck. `main` had not moved for the life of
+      the branch **at the ready-flip**, so the +10/+3 measured there was this branch's own three
+      suites with nothing mixed in — and then it was overtaken between the ready-flip and the merge,
+      by #189, which is the #138 entry's other half arriving in this branch too. The value above is
+      therefore a merged one and the +10/+3 is no longer readable off it.
+      **The transferable part is that the two halves fail independently**: the value is wrong when
+      `main` gains tests, the stamp is wrong when `main` gains anything at all, and the stamp is the
+      cheaper one to keep true because it does not need a run to update. It then drifted once more
+      *inside* the same pull request — 1428 → 1429 — because the code-review pass added a test after
+      the line was written, which is the ⛔ bullet below arriving on schedule: the number was taken
+      from the run both times, never from adding one to the previous value.
   - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
     branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
     hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
