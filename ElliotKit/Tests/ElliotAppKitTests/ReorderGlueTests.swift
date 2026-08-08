@@ -180,13 +180,31 @@ struct ReorderGlueTests {
             // a property of the code rather than of the test. `reorder` performs
             // the move, then re-reads `cards` to confirm the destination before
             // placing — and `cards`' only writer is the observation pump, which
-            // nothing sequences against the move. Measured 25/25 here and 22/22
-            // in review, idle and under 12-way load; it has never lost.
+            // nothing sequences against the move.
             //
-            // So if this line ever goes red, read it as the scheduling losing a
-            // race, **not** as the placement arithmetic being wrong — that is
-            // `CardReorderTests`, it is pure, and it cannot be affected by
-            // timing. The production consequence is tracked separately, in #205.
+            // Reading it once raced that delivery, and the race is real: measured
+            // 25/25 at authoring, 22/22 in review, and 40/40 again at the merge —
+            // idle and under 12-way load, on two laptops — it still lost the very
+            // first time it ran on the CI runner (#204, run 31260387518). A local
+            // sample says nothing about a machine with a different core count and
+            // scheduler, which is exactly what the gate runs on.
+            //
+            // So wait for the value, bounded, the way the set-up above waits for
+            // the first delivery and for the same reason. The claim is unchanged —
+            // still exactly 150 — it simply no longer depends on winning a race.
+            // `try?` keeps the diagnostics: if the value genuinely never arrives,
+            // the `#expect` below reports what the order actually was, which a
+            // timeout thrown from here would replace with a bare cancellation.
+            //
+            // If this ever goes red anyway, read it as the scheduling losing, not
+            // as the placement arithmetic being wrong — that is `CardReorderTests`,
+            // it is pure, and it cannot be affected by timing. The production
+            // consequence is unchanged and tracked separately, in #205.
+            try? await withTimeout(.seconds(10)) {
+                while try await Self.order(f.store, moving.id) != 150 {
+                    try await Task.sleep(for: .milliseconds(5))
+                }
+            }
             #expect(
                 try await Self.order(f.store, moving.id) == 150,
                 "and it lands where it was dropped: between first(100) and second(200)")
