@@ -32,17 +32,21 @@ extension NotificationCategory {
 
 /// ⌘, — the master switch and one switch per category.
 ///
-/// Writes an encoded `NotificationPreferences` to `UserDefaults`, which is the
-/// same value the policy takes as a parameter. That is what makes "a muted
-/// category posts nothing" a unit test rather than something you verify by
-/// muting a category and waiting an hour for a run to finish.
+/// Reads and writes `AppModel.notificationPreferences`, which is the same value
+/// the policy takes as a parameter. That is what makes "a muted category posts
+/// nothing" a unit test rather than something you verify by muting a category
+/// and waiting an hour for a run to finish.
+///
+/// ⚠️ **No `@State` copy, and no `.onAppear` load (#222).** It held both, which
+/// cost two things. The copy meant this screen reloaded from storage on every
+/// appearance — harmless as a `Settings` scene, lossy the day it becomes
+/// something that can be hidden and re-shown. And the storage was
+/// `UserDefaults.standard`, keyed by bundle identifier, so a scratch
+/// `ELLIOT_HOME` read *and wrote* the operator's real settings.
 public struct NotificationSettingsView: View {
-    @State private var preferences: NotificationPreferences = .default
-    private let defaults: UserDefaults
+    @Environment(AppModel.self) private var model
 
-    public init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
+    public init() {}
 
     public var body: some View {
         Form {
@@ -74,36 +78,28 @@ public struct NotificationSettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 460)
-        .onAppear(perform: load)
     }
+
+    private var preferences: NotificationPreferences { model.notificationPreferences }
 
     private var enabledBinding: Binding<Bool> {
         Binding(
-            get: { preferences.isEnabled },
-            set: { preferences.isEnabled = $0; save() }
+            get: { model.notificationPreferences.isEnabled },
+            set: { model.notificationPreferences.isEnabled = $0 }
         )
     }
 
     private func binding(for category: NotificationCategory) -> Binding<Bool> {
         Binding(
-            get: { !preferences.muted.contains(category) },
+            get: { !model.notificationPreferences.muted.contains(category) },
             set: { allowed in
-                if allowed { preferences.muted.remove(category) } else { preferences.muted.insert(category) }
-                save()
+                // Read, edit, write back through the one setter — never mutate
+                // `model.notificationPreferences.muted` in place, which would be
+                // two writes and two saves for one switch.
+                var updated = model.notificationPreferences
+                if allowed { updated.muted.remove(category) } else { updated.muted.insert(category) }
+                model.notificationPreferences = updated
             }
         )
-    }
-
-    private func load() {
-        guard
-            let data = defaults.data(forKey: NotificationPresenter.preferencesKey),
-            let decoded = try? JSONDecoder().decode(NotificationPreferences.self, from: data)
-        else { return }
-        preferences = decoded
-    }
-
-    private func save() {
-        guard let data = try? JSONEncoder().encode(preferences) else { return }
-        defaults.set(data, forKey: NotificationPresenter.preferencesKey)
     }
 }

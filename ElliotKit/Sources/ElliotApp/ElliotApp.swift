@@ -59,8 +59,17 @@ struct ElliotApp: App {
         }
 
         // ⌘, for free.
+        //
+        // ⚠️ `.environment(model)` is load-bearing since #222. The view reads the
+        // notification preference off `AppModel` now — they live in
+        // `preferences.json`, not `UserDefaults` — and a `Scene` does **not**
+        // inherit another scene's environment. Without this line
+        // `@Environment(AppModel.self)` compiles, passes every test, and traps
+        // at launch with *"No Observable object of type AppModel found"*: the
+        // #64 shape, which `swift test` cannot see because `ElliotApp` is an
+        // `executableTarget` no test can import.
         Settings {
-            NotificationSettingsView()
+            NotificationSettingsView().environment(model)
         }
         // Wide enough for the five columns to sit side by side with the panel
         // shut, which is when seeing every column's consequence at once is the
