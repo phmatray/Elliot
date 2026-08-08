@@ -232,4 +232,79 @@ struct SchedulerConcurrentPumpTests {
             }
         }
     }
+
+    /// AC 3. The two pumps are the real ones named in the story: one from
+    /// `launch`, one from `finish`. A run in a *second* repository is held by a
+    /// synthetic `merge-pr`, so it is blocked for the whole test no matter which
+    /// pump wins — which is what makes "the blocked run is still pending" a
+    /// statement about the queue's bookkeeping rather than about timing.
+    @Test("A pump from launch and a pump from finish neither drop the blocked run nor double-spawn")
+    func launchAndFinishPumpTogether() async throws {
+        for _ in 0..<10 {
+            let log = FileManager.default.temporaryDirectory
+                .appendingPathComponent("spawn-\(UUID().uuidString).log").path
+            defer { try? FileManager.default.removeItem(atPath: log) }
+            let (scheduler, store, repo, home) = try await spawningScheduler(spawnLog: log, cap: 4)
+            defer { try? FileManager.default.removeItem(at: home) }
+
+            // A second repository, permanently occupied by a merge, so the run
+            // parked in it can never be admitted while this test runs.
+            // Its own directory: `repo.path` is UNIQUE in the schema, so this
+            // cannot reuse the first repository's path.
+            let heldPath = home.appendingPathComponent("held", isDirectory: true)
+            try FileManager.default.createDirectory(at: heldPath, withIntermediateDirectories: true)
+            let held = Repo(
+                path: heldPath.path, nameWithOwner: "phmatray/Held",
+                defaultBranch: "main", displayName: "Held"
+            )
+            try await store.saveRepo(held)
+            await scheduler.testOnlyMarkInFlight(
+                SkillRun(
+                    cardID: UUID(), repoID: held.id, kind: .mergePR, prompt: "holder",
+                    cwd: "/tmp", logPath: "/tmp/a", stderrPath: "/tmp/b", createdAt: now
+                )
+            )
+
+            let blocked = try await seedRun(store, held.id, "blocked")
+            let first = try await seedRun(store, repo.id, "first")
+            let second = try await seedRun(store, repo.id, "second")
+
+            await scheduler.launch(runID: blocked)   // parks, `.mergeInFlightInRepo`
+            #expect(await scheduler.queueSnapshot().map(\.runID) == [blocked])
+
+            // `first` runs and will finish on its own, pumping from `finish`;
+            // `second` is launched into that same moment, pumping from `launch`.
+            let finished = Task {
+                try await withTimeout(.seconds(20)) {
+                    for await update in scheduler.updates {
+                        if case .runFinished(let id, _, _, _) = update, id == first { return }
+                    }
+                }
+            }
+            // ⚠️ Concurrently, and that is the whole test. Awaiting the two
+            // launches one after the other cannot produce the overlap AC 3 asks
+            // for: `launch` does not return until its own `pump` has run, so by
+            // the time the second call starts, the first run is already in
+            // `inFlight` and no second pump can consider it. Measured with the
+            // launches sequential, this test was green in 5 of 5 samples against
+            // the unfixed scheduler — it asserted the right properties over a
+            // scenario that could not exhibit the defect.
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await scheduler.launch(runID: first) }
+                group.addTask { await scheduler.launch(runID: second) }
+            }
+            try await finished.value
+
+            try await awaitTerminal(store, [first, second])
+
+            // AC 3, both halves.
+            #expect(await scheduler.queueSnapshot().map(\.runID) == [blocked])
+            #expect(try await store.run(id: blocked)?.state == .queued)
+
+            let counts = spawnCounts(log)
+            #expect(counts["first"] == 1)
+            #expect(counts["second"] == 1)
+            #expect(counts["blocked"] == nil)
+        }
+    }
 }
