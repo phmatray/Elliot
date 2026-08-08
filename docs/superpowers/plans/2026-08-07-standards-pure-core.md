@@ -1636,7 +1636,15 @@ counts are recorded here so a moved number does not read as a regression.
 
 **Files:**
 - Create: `ElliotKit/Sources/ElliotModel/StandardPredicates.swift`
+- Modify: `ElliotKit/Sources/ElliotModel/StandardsEngine.swift` — `verdict` currently
+  ends `return StandardPredicates.evaluate(…)`, which stops compiling once
+  `evaluate` returns a tuple. `verdict` takes `.verdict`; `assess` needs the
+  `.evidence` to build each `StandardFinding`, which is the whole point of the
+  change — a finding that cites nothing cannot be judged.
 - Test: `ElliotKit/Tests/ElliotModelTests/StandardPredicatesTests.swift`
+- Test: `ElliotKit/Tests/ElliotModelTests/StandardsEngineOrderTests.swift` — task 8
+  left `assess`'s findings with empty `evidence` because the stub had none to give.
+  Add one assertion there that a violating finding now carries its citation.
 
 **Interfaces:**
 - Consumes: tasks 1–7.
