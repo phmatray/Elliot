@@ -21,6 +21,24 @@ public struct SweepReport: Sendable, Equatable {
     /// Whether this is worth telling the reader about at all. An empty sweep is
     /// the expected result and must not read as a finding.
     public var isEmpty: Bool { removed == 0 }
+
+    /// What to add to the status line, or `nil` when there is nothing to say.
+    ///
+    /// `nil` rather than an empty string, so the caller has to *decide* rather
+    /// than concatenate: with the constants as shipped this is `nil` on every
+    /// launch for the foreseeable future, and a status line that announced
+    /// "pruned 0 files" every morning would teach the reader to stop reading the
+    /// one line the app uses to say something went wrong.
+    ///
+    /// Both numbers, because a count alone cannot separate 700 empty files from
+    /// 700 MB — which is the whole difference between tidiness and the reason
+    /// this feature exists.
+    public var sentence: String? {
+        guard !isEmpty else { return nil }
+        let files = removed == 1 ? "1 old file" : "\(removed) old files"
+        let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        return "Pruned \(files) (\(size))."
+    }
 }
 
 /// Applies ``ArtifactRetention`` to the directories Elliot writes into.
