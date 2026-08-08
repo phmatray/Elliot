@@ -33,7 +33,7 @@
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
 - **Full test:** `cd ElliotKit && swift test` (**1418 tests in 158 suites**, 5 of 5 samples on
-  `fix/162-archive-search-verified` on 2026-08-08 off `main` at `da876d7`; needs no Xcode,
+  `feat/187-compile-tests-once` on 2026-08-08 off `main` at `27e370f`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -73,6 +73,13 @@
       at the ready-flip), which is the #145 shape and the rarer one — so the whole of the +11/+0 is
       this branch's own tests and there is no drift mixed in at all. Both halves of the entry, one
       branch, no arithmetic needed: 11 new `@Test`s, 11 more in the run.
+    - **Landing #187 only the stamp moved, and the branch ships no Swift at all.** The line read
+      1418 in 158 off `da876d7`; `main` is `27e370f` (#227 added no test), and five of five samples
+      on this branch measure 1418 in 158 there too. `git merge-base HEAD origin/main` was `27e370f`
+      at the ready-flip, so `main` did not move for the branch's whole life — the #145 shape, where
+      the value is honest *and* nothing drifted underneath it. This branch touches two workflow
+      files and three prose files, so a re-measurement here could only ever change the stamp, which
+      is the #182 case as well. Both of those entries in one branch, and it cost one `swift test`.
   - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
     branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
     hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
