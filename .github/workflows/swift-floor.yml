@@ -7,7 +7,33 @@
 # runner that tried failed in under two minutes. A declared floor with nothing exercising it is not a
 # weak guarantee, it is no guarantee — it is a comment that happens to sit in a manifest.
 #
-# So this job does not *read* the floor and reason about it. It builds on it.
+# So the floor is not *read* and reasoned about. It is exercised — by a real compile, on a real
+# runner, on every pull request.
+#
+# ### Two jobs establish that, and this is the cheap half (#187)
+#
+# Until #187 this job compiled the package itself, and so did `ci.yml`'s `build-and-test` — the whole
+# package, cold, on two `macos-26` runners with no shared cache between them. Measured across four
+# pull requests: 60–70 billed macOS minutes each, of which the second compile bought nothing. Note
+# what the duplication actually was, because this file's own comments used to understate it: not just
+# the test targets, but `swift build` as well, in both jobs.
+#
+# The work is now split so that the compile happens once:
+#
+#   • **this job** establishes that the image *is* the floor — the runner's Swift against the version
+#     `Package.swift` declares — and that `ci.yml` runs on that same image. Seconds, no compile.
+#   • **`ci.yml`** establishes that the package compiles and its suite passes there. Its `swift test`
+#     compiles all eight test targets, which is strictly more than the `swift build --build-tests`
+#     that used to live here — that step compiled them and never ran one.
+#
+# The composite claim is exactly #116's, and it is unweakened: *the declared floor is real, and this
+# package builds and tests on it.* What changed is that it is paid for once.
+#
+# ⚠️ The join between the two jobs is the image, so the image is **asserted, not assumed** — see the
+# parity step below. Two files agreeing by comment is precisely the arrangement #116 is about. The
+# dangerous direction is the quiet one: if `ci.yml` moved to an *older* image its own compile would
+# fail loudly, but if it moved to a *newer* one everything would stay green while nothing compiled on
+# the declared floor at all.
 #
 # ### Why it also fails when the runner is NEWER than the floor
 #
@@ -43,12 +69,20 @@
 # toolchain left to exercise. That absence is a decision, not an omission. Under the other outcome
 # this file would carry a `macos-15` build leg to keep the 6.1 claim honest on every pull request.
 #
-# ### Why this is not `ci.yml`
+# ### Why this is still not merged into `ci.yml`
 #
-# There is no `.github/workflows/ci.yml` on `main`; it is #21, in flight on #102. Editing a file that
-# does not exist yet would either collide with that pull request or be unexercisable until it lands —
-# and an unexercised check is the exact thing #116 is about. A separate file runs on the pull request
-# that adds it, which is how Task 5's last step could be verified at all.
+# This section used to answer a different question, and the answer expired. It read: "There is no
+# `.github/workflows/ci.yml` on `main`; it is #21, in flight on #102" — an argument that the two
+# *could not yet* be joined, never that they *should not* be. #102 landed on 2026-08-07 and took the
+# premise with it (#187, criterion 4).
+#
+# The reason that survives is the **trigger**, and it has nothing to do with builds. This workflow is
+# `pull_request`-only so a toolchain drift can never leave `main` red; `ci.yml` carries
+# `push: [main]` deliberately, because a *test* failure on `main` should redden it. Those two want
+# opposite things, and a single workflow can only have both by putting a conditional on the assertion
+# step — a conditional guarding this repository's never-red-`main` rule, whose reason would live only
+# in a comment. Measured in #187, merging them saves roughly 10 further billed minutes on top of what
+# the split below already saves. That is not a good trade.
 name: swift-floor
 
 # Pull requests only, deliberately. A drift failure is a prompt to re-measure, and it must not land on
@@ -60,11 +94,19 @@ on:
 permissions:
   contents: read
 
-# This repository is private and macOS runner minutes bill at 10×, while a cold `swift build` plus
-# `swift build --build-tests` here is ~6 minutes of wall clock — call it 60 billed minutes a run. And
-# `pull_request` includes `synchronize`, so the repo's own `implement-issue` flow, which pushes one
-# commit per plan task, stacks a full run per commit. Superseded runs measure a tree nobody will
-# merge, so cancel them.
+# This repository is private and macOS runner minutes bill at 10×, and `pull_request` includes
+# `synchronize`, so the repo's own `implement-issue` flow — one commit per plan task — stacks a run
+# per commit. Superseded runs measure a tree nobody will merge, so cancel them.
+#
+# ⚠️ Since #187 the minutes argument is mostly `ci.yml`'s rather than this file's: this job compiles
+# nothing and bills one minute, where the pair used to bill 60–70. This block is kept anyway, and not
+# out of symmetry — a bare minute still bills at 10×, and a stack of superseded assertion runs is
+# still noise on a pull request that has none of the usual reason to tolerate it.
+#
+# A bare `true` is correct *here*, unlike in `ci.yml`, and the difference is worth stating because the
+# two blocks otherwise look copy-pasted: this workflow has no `push` trigger, so there is no run whose
+# verdict is the only one a commit will ever get. `ci.yml` scopes its own to `pull_request` for
+# exactly that reason (#133, #227).
 #
 # The failure this avoids is specific, not hygiene: an exhausted macOS allowance makes Actions jobs
 # fail in 3–4 seconds with zero steps — a check that is red for a reason unrelated to the floor and
@@ -78,17 +120,22 @@ jobs:
   floor:
     # Carries Swift 6.3.x, which is the declared floor's major.minor. When this image moves to 6.4 the
     # assertion below goes red on purpose — see "Why it also fails when the runner is NEWER".
+    #
+    # ⚠️ This literal and `ci.yml`'s must stay equal, and the parity step below is what enforces it
+    # rather than this sentence. Changing one without the other is the silent failure the header
+    # describes.
     runs-on: macos-26
-    timeout-minutes: 30
+    # Was 30 while this job compiled the package. It now runs two string comparisons, so a run that
+    # takes minutes is a hung runner rather than a slow build, and the bound should say so.
+    timeout-minutes: 10
 
-    # ⛔ Deliberately NOT cached, though the minutes argue for it. Caching `.build` would make this
-    # job pass on artefacts a *previous* toolchain produced, and the one claim it exists to establish
-    # is that *this* toolchain compiles this package from source. A cache-hit run proves nothing about
-    # the floor, and it would prove it silently. `CLAUDE.md` already records what stale build objects
-    # do here — wrong values, link errors, a SIGBUS charged to an innocent pull request, and a
-    # confident bisect that convicted an innocent commit — all cleared by `rm -rf .build`. Cheap
-    # coverage of the wrong thing is what this whole issue is about. The `concurrency` group above is
-    # the honest way to spend fewer minutes.
+    # ⛔ Nothing to cache here any more, and that is structural rather than a decision left open: as
+    # of #187 this job compiles nothing. When it did, caching was refused on purpose, and the reason
+    # travelled with the compile to `ci.yml`, which is not cached either — a cache-hit run proves
+    # nothing about whether *this* toolchain builds this package from source, and it would prove it
+    # silently. `CLAUDE.md` records what stale build objects do here: wrong values, link errors, a
+    # SIGBUS charged to an innocent pull request, and a confident bisect that convicted an innocent
+    # commit, all cleared by `rm -rf .build`. Do not reintroduce a cache in either file.
 
     steps:
       - uses: actions/checkout@v7
@@ -152,7 +199,8 @@ jobs:
           # 6.2→6.2.4 and 6.3.1→6.3.3, the verdict on this package never moved within a minor — so
           # only a minor drift means the floor has stopped being exercised.
           if [ "$d_mm" = "$r_mm" ]; then
-            echo "✓ The runner is at or within a patch of the declared floor. The build below exercises it."
+            echo "✓ The runner is at or within a patch of the declared floor."
+            echo "  What exercises it is ci.yml's 'swift test', on the image the next step pins to this one."
             exit 0
           fi
           # A whole minor above, then.
@@ -168,20 +216,60 @@ jobs:
           echo "Do not silence this by widening the comparison: a floor nothing builds on is the bug."
           exit 1
 
-      # The assertion above says the toolchain IS the floor. This says the floor WORKS. Neither alone
-      # is the criterion: #116's defect was a declared floor that no build had ever met.
-      - name: Build on the declared floor
-        working-directory: ElliotKit
-        run: swift build
-
-      # `swift build` compiles the library and executable targets only, so it leaves all eight test
-      # targets unmeasured — and that is not a footnote here. Measured in #116: every Swift 6.2.x
-      # builds this package green and *cannot compile the tests*, so a floor checked by `swift build`
-      # alone would have certified 6.2 and been wrong by four releases.
+      # The assertion above says the toolchain IS the floor. Something still has to say the floor
+      # WORKS — #116's defect was a declared floor no build had ever met, and neither half is the
+      # criterion alone. Since #187 that half is `ci.yml`'s `swift test`, which compiles all eight
+      # test targets and then runs them.
       #
-      # `--build-tests` rather than `swift test`: the claim under guard is that the floor can compile
-      # this package, not that the suite passes — that is #21's job, and running the suite twice buys
-      # nothing for the minutes.
-      - name: Compile the test targets on the declared floor
-        working-directory: ElliotKit
-        run: swift build --build-tests
+      # Which leaves this job's assertion covering the floor only if `ci.yml` runs on the image
+      # asserted above. That is a join between two files, and this repository's entire argument is
+      # that a claim nothing exercises is not a guarantee — so it is checked here rather than asked
+      # for in a comment. A string comparison; no build, no toolchain, seconds.
+      #
+      # ⚠️ Note which direction is dangerous. If `ci.yml` moved to an OLDER image, its own compile
+      # would fail loudly (measured in #116: every 6.2.x builds this package and cannot compile the
+      # tests). If it moved to a NEWER one, everything would stay green while nothing exercised the
+      # declared floor — green, silent, and wrong. That is the case this step exists for.
+      - name: The image ci.yml compiles on is the image asserted above
+        run: |
+          # Same two reasons as the step above, and they apply verbatim: `set +e` because GitHub runs
+          # this as `bash -e {0}` and `set` cannot clear `errexit`, so without it the diagnostics
+          # below never print; and no `| head -1` anywhere, because with `pipefail` on a producer
+          # that takes SIGPIPE fails the pipeline at a rate set by process scheduling.
+          set +e
+          set -uo pipefail
+
+          floor_all=$(sed -n 's|^ *runs-on: *\([A-Za-z0-9._-]*\).*|\1|p' .github/workflows/swift-floor.yml)
+          floor_image=${floor_all%%$'\n'*}
+          ci_all=$(sed -n 's|^ *runs-on: *\([A-Za-z0-9._-]*\).*|\1|p' .github/workflows/ci.yml)
+          ci_image=${ci_all%%$'\n'*}
+
+          # An unparsed image must never read as a pass, for the same reason an unparsed version must
+          # not: the failure mode is a green check that compared nothing against nothing. A renamed
+          # or deleted `ci.yml` lands here, and it should — it means nothing is compiling the floor.
+          if [ -z "$floor_image" ] || [ -z "$ci_image" ]; then
+            echo "::error::Could not read a 'runs-on:' image from both workflows."
+            echo "swift-floor.yml -> '${floor_image:-<none>}'   ci.yml -> '${ci_image:-<none>}'"
+            echo "If ci.yml was renamed or removed, then nothing compiles the declared floor any more"
+            echo "and this job must not pass: give it back its own build step, or fix the path here."
+            exit 1
+          fi
+
+          echo "swift-floor.yml (this job) : $floor_image"
+          echo "ci.yml (compiles the tests): $ci_image"
+
+          if [ "$floor_image" != "$ci_image" ]; then
+            echo "::error::The two workflows no longer run on the same image ($floor_image vs $ci_image)."
+            echo "The assertion above measured the toolchain on $floor_image, but the eight test targets"
+            echo "are compiled by ci.yml's 'swift test' on $ci_image. So nothing is exercising the"
+            echo "declared floor, while this job goes on passing — #116 verbatim, by a fourth route."
+            echo "Two ways out, and both are fine:"
+            echo "  1. Put both workflows back on one image, whichever one you meant to move to."
+            echo "  2. Give this job its own 'swift build --build-tests' step again and accept the"
+            echo "     duplicate compile #187 removed — the minutes were the only reason it went."
+            exit 1
+          fi
+
+          echo "✓ Both workflows run on $ci_image, so ci.yml's 'swift test' compiles the eight test"
+          echo "  targets on the toolchain asserted above."
+          echo "floor image \`$floor_image\` == ci image \`$ci_image\`" >> "$GITHUB_STEP_SUMMARY"
