@@ -178,6 +178,14 @@ struct ElliotApp: App {
                 .disabled(model.selectedCard == nil)
         }
 
+        // Going from "this repository wants attention" to its cards is the
+        // Repositories page's other half, and criterion 4 of #143 is the same
+        // position the Card menu above states: an act worth a button is an act
+        // worth a shortcut, and a shortcut with no menu item is invisible.
+        CommandMenu("Repository") {
+            OpenBoardMenuItem(model: model)
+        }
+
         // Everything the toolbar offers, reachable without a pointer and
         // discoverable by reading the menus.
         CommandGroup(after: .toolbar) {
@@ -256,6 +264,31 @@ private struct NewStoryMenuItem: View {
             openWindow(id: "newStory")
         }
         .keyboardShortcut("n")
+    }
+}
+
+/// Open Board for the Selected Repository, as a menu item.
+///
+/// ⚠️ The model is **passed in, never read from the environment**, for the
+/// reason spelled out on `NewStoryMenuItem` above: `@Environment(AppModel.self)`
+/// in a `Commands` tree compiles, passes every test, and kills the app at launch
+/// (#64, #84). This item is the second one written to that shape.
+private struct OpenBoardMenuItem: View {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        // The judgement is `AppModel`'s, not this item's: unwrapping the action
+        // and checking the registration still exists is the same act the row's
+        // button performs, and this target cannot reuse the view's private
+        // method. Repeating it here would make ⌘↩ a fifth copy of a decision
+        // the feature exists to hold in one place.
+        Button("Open Board for Selected Repository") {
+            guard model.showBoard(model.selectedRowBoardAction) else { return }
+            openWindow(id: "board")
+        }
+        .keyboardShortcut(.return, modifiers: .command)
+        .disabled(!model.canOpenBoardForSelectedRow)
     }
 }
 

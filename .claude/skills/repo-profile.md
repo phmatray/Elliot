@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1553 tests in 173 suites**, 5 of 5 samples on
-  `feat/171-card-labels` on 2026-08-08 off `main` at `1165157`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1575 tests in 175 suites**, 5 of 5 samples on
+  `feat/143-open-board-from-repo-row` on 2026-08-08 off `main` at `9be51c9`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -61,6 +61,25 @@
     arithmetic *was* checked afterwards and agrees to the test: 19 added `@Test` lines less one that
     is a rename of `onlyRefinesOk`, so 18 new, and 1418 + 18 = 1436. That order is the whole of the
     ⛔ bullet below — the sum was checked **against** the run, never in place of it.
+  - ⚠️ **Landing #143 the zero-drift claim was written, was true, and was false four hours later —
+    and the sentence that falsified it was the *same line* in a sibling branch.** At the ready-flip
+    `git rev-list --count HEAD..origin/main` really was **0**: `origin/main` was still `da876d7`, the
+    commit this branch was cut from, so the whole +22/+2 was this branch's own two suites
+    (`RepoRowBoardActionTests` 7, `RepositoriesBoardActionTests` 15) with nothing else mixed in, and
+    the bullet said so in the `#145` vocabulary. Then two squashes landed while the PR waited — #229
+    and #227 — and #229 **is** `fix/162-archive-search-verified`, whose own honest measurement of
+    this line (1418 in 158, also off `da876d7`) met this branch's honest 1429 in 160. Two branches,
+    one base commit, both right, and `git merge` with no way to choose: the #217 shape, arriving in
+    the entry that had just finished claiming immunity from it. Resolved as #217 prescribes — literal
+    `PLACEHOLDER`, overwritten by the run — and the merged value is in the line above, which is
+    1418 plus this branch's own +22/+2 with nothing left over. ⚠️ That sum was checked **after** the
+    five runs, never in place of them; it is only predictable because the two branches touched
+    disjoint suites, and the ⛔ bullet below exists because a predicted 1177 once met a measured 1161.
+    **The transferable half is not "measure again"; it is that an interval you have already closed
+    can reopen.** "`main` never moved" is a statement about a window that is still open while you
+    write it, so it is never a property of the branch — only ever a reading taken at one instant. The
+    `#145` and `#209` entries are the same claim held by luck rather than by anything either author
+    did, and this bullet is what they look like when the luck runs out.
   - ✅ **Second time it did not drift, landing #138 — and this one separates the two halves of the
     line cleanly.** The branch's untouched baseline measured **1328 in 149**, the line's exact value,
     off `main` at `2494882`; the line said `dc5c2ce`, which is `2494882`'s parent. So the *value* was

@@ -711,6 +711,84 @@ public final class AppModel {
         selectedCardID = cardID
     }
 
+    // MARK: - Repositories → the board
+
+    /// Scope the board to a repository, and report whether it worked.
+    ///
+    /// Guarded for the same reason `selectRepoFromNotification` above is, and it
+    /// is worth saying which reason: `repoRows` is a snapshot of a sweep, so a
+    /// `forget` applied between that sweep and this click would otherwise point
+    /// the picker at a registration that no longer exists — an empty board under
+    /// a phantom name. On refusal the current selection is left **as it was**
+    /// rather than cleared, because clearing it answers a stale row by silently
+    /// dumping the reader onto the whole portfolio.
+    ///
+    /// It returns whether it selected rather than raising the window itself:
+    /// `openWindow` belongs to a view's environment, and the caller should only
+    /// raise a window when there is something to raise it for.
+    @discardableResult
+    public func showBoard(repoID: UUID) -> Bool {
+        guard repos.contains(where: { $0.id == repoID }) else {
+            // Said out loud, in the page's own outcome line, rather than
+            // returning `false` into a caller that can only do nothing with it.
+            // A visible button that silently does nothing is indistinguishable
+            // from one that worked — which is the exact defect `FixOutcome`
+            // was introduced to fix, one screen over.
+            lastFixOutcome = FixOutcome(
+                detail: "That repository is no longer registered, so it has no board. "
+                    + "The list is from an earlier sweep — Refresh to see what is there now.",
+                succeeded: false)
+            return false
+        }
+        selectedRepoID = repoID
+        return true
+    }
+
+    /// The same act, from a row's board action rather than a bare id.
+    ///
+    /// The unwrap lives here and not at each call site because there are four
+    /// of them — the row's button, its double-click, its context menu, and ↩ —
+    /// plus ⌘↩ in `ElliotApp`'s `Commands`, which is in a different **module**
+    /// and so cannot reuse a private method in the view. That last one is why
+    /// this is on the model: it is the only place all five can share.
+    @discardableResult
+    public func showBoard(_ action: RepoRowBoardAction) -> Bool {
+        guard case .open(let repoID) = action else { return false }
+        return showBoard(repoID: repoID)
+    }
+
+    /// Whether the selected row can open the board.
+    ///
+    /// Derived from `selectedRowBoardAction`, so the menu item's enablement and
+    /// its action still ask one question — it exists only because `ElliotApp`
+    /// cannot name `RepoRowBoardAction` (it depends on `ElliotAppKit` and
+    /// nothing else) and so cannot pattern-match the case itself.
+    public var canOpenBoardForSelectedRow: Bool {
+        if case .open = selectedRowBoardAction { return true }
+        return false
+    }
+
+    /// The Repositories list's selection, by `RepoRow.id` — `"owner/name"`.
+    ///
+    /// On the model rather than in `RepositoriesView`'s `@State` because the
+    /// menu item that gives this act its ⌘↩ lives in `ElliotApp`'s `Commands`,
+    /// which is not a view hierarchy and cannot read another view's state.
+    public var selectedRepoRowID: String?
+
+    /// The board action of whatever row is selected.
+    ///
+    /// Asked once, here, so the menu item's enablement and its action cannot
+    /// disagree — the two used to be the classic pair of independent guesses.
+    /// A selection can outlive its row (it is a string into a list every sweep
+    /// rebuilds), and that case answers `.unavailable` like any other row with
+    /// nowhere to go.
+    public var selectedRowBoardAction: RepoRowBoardAction {
+        guard let id = selectedRepoRowID,
+            let row = repoRows.first(where: { $0.id == id })
+        else { return .unavailable }
+        return row.boardAction
+    }
+
     /// Turns a scheduler update into a `NotificationEvent`, or drops it.
     ///
     /// Re-reads the run from the store rather than trusting the update's own
