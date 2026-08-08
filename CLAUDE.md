@@ -174,6 +174,14 @@ enforces off one laptop. (The wording here has been corrected twice: flatly "no 
 `swift-floor.yml`, then "no build-and-test CI" until #21 added `ci.yml`. A stale claim in this file is
 what #116 was about, and the shape of it recurs.)
 
+#186 is the third correction of that family, and the first to land in *source* rather than here: #102
+fixed this file and the profile but #21's constraints barred it from `Package.swift` and every source
+file, so four comments — including `DrainDuplicationTests`' own header — went on reasoning from the
+retired premise in the interval. ⚠️ Worth knowing before anyone automates the check: its acceptance
+grep for `no CI` also matches `PRStatus.swift`'s "no CI *state*" and `ci.yml`'s hypothetical about a
+repository that merely *looks* like it has none, so a string gate over prose cannot tell a claim from
+a mention — which is why the fix is a habit, not a matcher.
+
 The single behavioural delta is recorded at both ends: `ProcessRunner` gave up its
 `state.withLock { !$0.exited } &&` conjunct in the SIGKILL backstop, since a sink may hold that lock
 across a write to the run's log. It loses nothing — the flag was set inside the termination handler,

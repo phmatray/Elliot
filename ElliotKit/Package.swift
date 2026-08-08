@@ -42,9 +42,9 @@
 // inspect, carrying the same unreadable "unable to type-check this expression in reasonable time";
 // the refusal here arrives before a source file is read and names the version. `ci.yml` answers
 // whether the suite passes; this line answers why you cannot run it at all, and only the second one
-// is any use to someone whose toolchain is four releases short. This paragraph reasoned from "there
-// is no build-and-test CI to catch it for them" until #186 — the same rot as the 6.1 claim this
-// header opens with: a premise that was true when written, and that nothing ever re-checked.
+// is any use to someone whose toolchain is four releases short. Until #186 this paragraph reasoned
+// from CI's absence instead — the same rot as the 6.1 claim this header opens with: a premise that
+// was true the day it was written, and that nothing ever re-checked.
 //
 // **The patch component is deliberate and load-bearing — do not round this to `6.3`.** It said `6.3`
 // for one commit, and that was wrong twice over: SwiftPM resolves `6.3` as **6.3.0**, and the
