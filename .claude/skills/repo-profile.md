@@ -253,13 +253,14 @@
 
 ## CI gates (the exact commands CI fails on — satisfy these locally before ready/merge)
 
-Two workflows, both on `macos-26`, and they answer different questions. Neither replaces running the
-commands locally — branch protection is off, so see the second warning below for what that costs.
+Two workflows, both on `macos-26` — and since #187 that sameness is **asserted rather than assumed**,
+because the floor claim depends on it. They answer different questions. Neither replaces running the
+commands locally — branch protection is off, so see the warning below for what that costs.
 
 | Workflow | Job | Trigger | What it runs | The claim it establishes |
 |---|---|---|---|---|
 | `.github/workflows/ci.yml` (#21) | `build-and-test` | `pull_request` → `main`, `push` → `main` | `swift build`, then `swift test`, from `ElliotKit` | the suite **passes** somewhere other than one laptop |
-| `.github/workflows/swift-floor.yml` (#116) | `floor` | `pull_request` → `main` | asserts the runner's Swift against the floor `Package.swift` declares, then `swift build` and `swift build --build-tests` | the declared floor is real and **compiles** this package |
+| `.github/workflows/swift-floor.yml` (#116, #187) | `floor` | `pull_request` → `main` | asserts the runner's Swift against the floor `Package.swift` declares, then asserts `ci.yml` runs on that same image. **Compiles nothing** — 9 seconds | the declared floor is real, and the job above is what exercises it |
 
 So the gates to satisfy locally before flipping a PR ready are exactly the two commands `ci.yml`
 runs — pass these and you have run what CI runs:
@@ -267,11 +268,29 @@ runs — pass these and you have run what CI runs:
 - `cd ElliotKit && swift build`
 - `cd ElliotKit && swift test`
 
-⚠️ **`swift build --build-tests` is not `swift test`, and the two workflows split precisely there.**
-The floor job compiles the eight test targets and never executes a `@Test`; until `ci.yml` landed, no
-assertion in this repository had ever been *run* anywhere but on a contributor's own machine. Do not
-read a green `swift-floor` check as a suite that passed — that reading is the same shape as the #116
-defect it exists to prevent.
+⚠️ **`swift build --build-tests` is not `swift test`.** This distinction is what #116 is about and it
+stays true whatever the workflows look like: `--build-tests` compiles the eight test targets and
+executes no `@Test`, so "it compiles on the floor" and "the suite passes" are two claims and only one
+of them is about behaviour. Until `ci.yml` landed, no assertion in this repository had ever been *run*
+anywhere but on a contributor's own machine.
+
+⚠️ **What changed in #187 is where each claim is established, and a green `swift-floor` now proves
+even less on its own than it used to.** The floor job ran `swift build` *and* `swift build
+--build-tests` until 2026-08-08; both came out, because `ci.yml`'s `swift test` compiles the same
+targets on the same image, so a pull request was compiling the whole package **twice on two runners**
+— 60–70 billed macOS minutes, now 40 (measured, criterion 3; the arithmetic and the run ids live in
+`swift-floor.yml`'s header). So:
+
+- `floor` green = the runner's Swift **is** the declared floor, and `ci.yml` runs on that image. It
+  compiles nothing, and it never did execute a `@Test`.
+- `build-and-test` green = the package compiles **and** the suite passes, on that same image.
+- Neither alone is #116's criterion; the two together are exactly it.
+
+⛔ **`ci.yml`'s `swift test` is now load-bearing for the floor claim, not only for test coverage.**
+Removing it, narrowing it with a filter, or moving `ci.yml` to a different image retires #116's
+guarantee. The image half is enforced rather than requested — `floor`'s second step reads both
+`runs-on:` lines and fails by name when they part — but the `swift test` half rests on nobody
+deleting it.
 
 ⚠️ **Branch protection on `main` is still off, so both checks are advisory.** Measured 2026-08-06:
 `gh api repos/phmatray/Elliot/branches/main/protection` returns **404 `Branch not protected`** — not
