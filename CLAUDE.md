@@ -713,6 +713,59 @@ Claude Code handles it, aborts the turn, kills its Bash process tree, runs Sessi
 Runs default to `--permission-mode bypassPermissions`; `permissionMode` is a per-repo column if you want
 to tighten one.
 
+### Artefact retention
+
+`runs/`, `screenshots/` and `analyses/` are bounded since #167, by one pure rule applied once per
+launch. **Keep everything younger than 14 days; past that keep newest-first until 512 MB per
+directory and delete the rest** (`ArtifactRetention`, `ElliotModel`). The ceiling budgets the
+*remainder past the horizon*, not the directory total — young files are kept unconditionally and are
+not counted against it, so the honest bound is "a fortnight of writing, plus 512 MB".
+
+`ArtifactSweeper` (`ElliotEngine`, an `actor`) lists, asks and unlinks; it decides nothing.
+`AppModel.start()` runs it in a detached `Task` after the reconciler's sweep — the runs that sweep
+just marked failed are exactly the ones whose logs stop being protected, so reading the table ahead
+of it reads it one state behind.
+
+⛔ **The result is recorded on `artifactSweep`, never written into `status`, and the status bar
+renders a figure from there.** Appending to `status` was the first attempt and it is unfixable by
+placement: the task shares the main actor with `start()`, so it resumes at the next suspension —
+which is `importIfNeeded`'s `await importer.importRepo(repo)`, whose very next statement assigns
+`status`. The sentence was destroyed within milliseconds on every launch that had one, and nothing
+else read the report, so it left no trace. `status` is a single narration owned by whoever spoke
+last; a fact that has to survive needs a field of its own. Code review caught this after the
+placement comment had already claimed to prevent it — **a comment asserting a race is closed is not
+a measurement that it is.**
+
+⛔ **Protection is a string comparison between two paths built by different code, so both sides go
+through `StoreLocation.canonicalPath`.** `FileManager`'s enumerator returns **symlink-resolved** URLs
+and `runLogURL` does not; on macOS `/tmp` is a symlink to `/private/tmp`, and `/tmp/elliot-check` is
+the scratch home this very file recommends. Measured while writing #167: `/var/folders/…` in, `/private/var/folders/…`
+out. Compare raw and the membership test silently stops matching, and the sweep deletes the log of a
+run still in flight — **failing open**, with nothing on screen. Same family as the false negatives
+this file already collects: nothing says *no*.
+
+⛔ **No protected set, no sweep.** The tempting `?? []` on a failed read of the runs table turns "I
+could not find out which runs are live" into "no run is live". A failure to read the board is a
+reason not to touch the disk.
+
+Verified on the shipped build, not inferred: a copy of the real `runs/` (754 files, 73 MB, all
+written within three days) went in and **754 came out** — the intended answer, since a retention rule
+whose first run deletes something gets reverted. Then, on the same binary with **no constant
+patched**, eight aged copies stacked past the ceiling: 6 032 files in, **872 removed**, leaving
+536,375,870 bytes against the 536,870,912 ceiling, and the status bar read `872 pruned`. A clean home
+in the same build shows no such figure at all — both directions of the conditional looked at, because
+a new element in that strip is a layout change and `swift test` cannot see one.
+
+⚠️ Driving the horizon to zero is *not* what proved it deletes; ageing real copies past the shipped
+horizon and ceiling did, which is the stronger claim — a patched binary proves things about a binary
+nobody ships. Note also that the numbers move between runs because the source directory is live: the
+same experiment an hour earlier removed 523 files, because `runs/` had grown from 73.1 to 78.3 MB in
+between. **The invariant to check is remaining ≤ ceiling, never the file count.**
+
+The cut lands mid-copy because the rule cuts at the **file** that would overflow, and the files
+inside one copy share an mtime — which is the path tie-break earning its place on real data rather
+than in a unit test.
+
 ## Testing discipline
 
 `swift test` must be **deterministic and always-terminating**. Three rules keep it that way; breaking any

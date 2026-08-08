@@ -106,6 +106,14 @@ public final class AppModel {
     /// healthy board says nothing.
     public private(set) var unreadableRepoCount = 0
 
+    /// What the launch-time artefact sweep removed, once it has finished.
+    ///
+    /// `nil` until then, and that is not the same as `SweepReport()`: "no sweep
+    /// has finished" is a fact about this launch, "a sweep found nothing" is a
+    /// fact about the directories. Only the second is worth rendering, and only
+    /// the second is what `SweepReport.sentence` speaks for.
+    public private(set) var artifactSweep: SweepReport?
+
     /// Which of the board's four screens is the true one.
     ///
     /// Asked of `ElliotModel` rather than decided here, because the defect this
@@ -575,6 +583,36 @@ public final class AppModel {
             status = summary == .init()
                 ? "Ready."
                 : "Ready — recovered \(summary.orphanedRuns == 1 ? "1 interrupted run" : "\(summary.orphanedRuns) interrupted runs")."
+
+            // Housekeeping: bound `runs/`, `screenshots/` and `analyses/`, which
+            // nothing else has ever removed a file from.
+            //
+            // *After* the reconciler, and that is the load-bearing half of the
+            // placement: the runs it has just marked failed are exactly the ones
+            // whose logs stop being protected, and the ones it re-queued are the
+            // ones whose logs start being. Reading the runs table ahead of it
+            // would read it one state behind reality.
+            //
+            // Detached, because nothing on screen waits for it: it walks three
+            // directories and unlinks files, to bound something nobody is looking
+            // at. A failure inside cannot reach start-up either — `sweep()` does
+            // not throw, by construction.
+            //
+            // ⛔ The result is *recorded*, never written into `status`. Appending
+            // to that line was the first attempt and it is unfixable by
+            // placement: this task shares the main actor with `start()`, so it
+            // resumes at whichever suspension comes next — which is
+            // `importIfNeeded`'s `await importer.importRepo(repo)`, whose very
+            // next statement assigns `status`. The sentence was overwritten
+            // within milliseconds, every time, and left no trace. `status` is a
+            // single narration owned by whoever spoke last; a fact that has to
+            // survive belongs in a field of its own, and the status bar renders
+            // it from there.
+            let sweeper = ArtifactSweeper(store: store)
+            Task { [weak self] in
+                let report = await sweeper.sweep()
+                self?.artifactSweep = report
+            }
 
             // The first import is kicked from here, and the order above is
             // load-bearing — do not reshuffle it without reading this (#120).

@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1473 tests in 162 suites**, 5 of 5 samples on
-  `fix/139-merged-outcome-carries-pr` on 2026-08-08 off `main` at `77045a8`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1509 tests in 167 suites**, 5 of 5 samples on
+  `feat/167-artefact-retention` on 2026-08-08 off `main` at `de3e02f`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -120,6 +120,17 @@
       branch's own +33/+3 with nothing left over. Same caveat as #217 below — the sum was checked
       **after** the runs, never in place of them, and it is only predictable because the two sides
       touched disjoint suites.
+    - **Landing #225 the branch argued `main` had not moved, and `main` moved before it landed.** Its
+      body says so in as many words — *"`main` did not move for the life of the branch, so
+      `git log HEAD..origin/main` is empty and the tested tree *is* the merged tree"* — and that was
+      true when it was written. #229 landed while the pull request sat open, so the claim expired
+      without anything touching the branch, and the honest 1439 in 162 met a `main` at 1418 in 158.
+      Two honest numbers again, and `git merge` had no way to choose. ⚠️ **A PR body that reasons
+      from `main` not having moved is dated the moment it is posted** — the reasoning does not
+      survive the interval, which is the whole of this entry stated one file over. Resolved as
+      #217 prescribes: a literal `PLACEHOLDER`, then five samples. The merged tree measures
+      **1450 in 162**, which is `main`'s 1418 plus this branch's own +32/+4 over the shared base
+      `da876d7` with nothing left over — checked after the runs, never in place of them.
     - **Landing #217 the conflict was two honest numbers, and the merged value was the exact sum.**
       Both sides measured off `2494882` and both were right when written — #209's 1358 in 153 and
       this branch's 1330 in 150 — so `git merge` had no way to choose and the line came through as a
@@ -198,6 +209,14 @@
       its own tests existed, so 40 of its 46 were unrecorded drift and only 6 were the branch's own.
       A correction here is rarely evidence that the previous author miscounted; it is mostly the
       interval since they looked.
+    - **Landing #167 the drift was zero again, and the arithmetic closed exactly.** `main` did not
+      move for the whole life of the branch — `git log HEAD..origin/main` was **empty** at the
+      ready-flip, so the tested tree *was* the merged tree and the merge was a no-op. The previous
+      value, 1407 in 158 off `da876d7`, was still true; the delta of +32 and +4 is this branch's four
+      suites and nothing else (10 + 7 + 8 + 7). Worth recording only because the intermediate number
+      was **1438**, and the +1 came from the code-review pass replacing one test with two — so even a
+      branch with zero drift from `main` moved its own count after the baseline was taken. Re-measure
+      after the review, not only after the merge.
     - **Landing #145 the drift was zero and every test of the delta is the branch's own** — the rare
       complement to the bullet above, and worth recording because the entry is otherwise a list of
       the opposite. `git merge-base HEAD origin/main` was `2494882`, i.e. **`main` had not moved at
