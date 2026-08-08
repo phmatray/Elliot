@@ -580,16 +580,19 @@ same function:
 
 ```swift
         if let why = RepoIssue.OutOfScope.of(remote) {
+            // Bound to a local rather than written inline: Swift allows a
+            // `switch` expression in return, throw and assignment position, not
+            // as a call argument.
+            let detail: String = switch why {
+            case .fork: "A fork — out of scope."
+            case .archived: "Archived on GitHub — out of scope."
+            case .empty: "Empty on GitHub — nothing to measure."
+            case .otherRoot: "Out of scope."
+            }
             return RepoRow(
                 id: name, nameWithOwner: name, path: actual ?? repo?.path, repoID: repo?.id,
                 visibility: remote.repoVisibility,
-                issue: .outOfScope(why),
-                detail: switch why {
-                case .fork: "A fork — out of scope."
-                case .archived: "Archived on GitHub — out of scope."
-                case .empty: "Empty on GitHub — nothing to measure."
-                case .otherRoot: "Out of scope."
-                })
+                issue: .outOfScope(why), detail: detail)
         }
 ```
 
@@ -604,7 +607,10 @@ fork and archived, and now also classifies empty.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add ElliotKit/Sources/ElliotModel/RepoReconciliation.swift ElliotKit/Tests/ElliotModelTests/RepoScopeTests.swift
+git add ElliotKit/Sources/ElliotModel/RepoReconciliation.swift \
+        ElliotKit/Sources/ElliotAppKit/RepositoriesView.swift \
+        ElliotKit/Tests/ElliotModelTests/RepoScopeTests.swift \
+        ElliotKit/Tests/ElliotAppKitTests/RepositoriesVocabularyTests.swift
 git commit -m "feat(model): decide out-of-scope once, for every consumer"
 ```
 
