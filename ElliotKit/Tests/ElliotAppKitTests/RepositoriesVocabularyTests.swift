@@ -71,7 +71,7 @@ struct RepositoriesVocabularyTests {
     private static let everyIssue: [RepoIssue] = [
         .ok, .notCloned, .notRegistered, .missing, .misplaced(expected: "/R/x"),
         .unlisted, .notChecked, .outOfScope(.fork), .outOfScope(.archived),
-        .outOfScope(.otherRoot),
+        .outOfScope(.empty), .outOfScope(.otherRoot),
         .behind(by: 3), .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable("no HEAD"),
     ]
 

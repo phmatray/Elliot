@@ -4,8 +4,12 @@
       "name": "dev"
     },
     "isArchived": false,
+    "isEmpty": false,
     "isFork": false,
     "nameWithOwner": "phmatray/TaLibStandard",
+    "primaryLanguage": {
+      "name": "C#"
+    },
     "url": "https://github.com/phmatray/TaLibStandard",
     "visibility": "PUBLIC"
   },
@@ -14,8 +18,12 @@
       "name": "main"
     },
     "isArchived": false,
+    "isEmpty": false,
     "isFork": false,
     "nameWithOwner": "phmatray/Elliot",
+    "primaryLanguage": {
+      "name": "Swift"
+    },
     "url": "https://github.com/phmatray/Elliot",
     "visibility": "PRIVATE"
   },
@@ -24,8 +32,12 @@
       "name": "dev"
     },
     "isArchived": true,
+    "isEmpty": false,
     "isFork": true,
     "nameWithOwner": "phmatray/ValueOf",
+    "primaryLanguage": {
+      "name": "C#"
+    },
     "url": "https://github.com/phmatray/ValueOf",
     "visibility": "PUBLIC"
   }

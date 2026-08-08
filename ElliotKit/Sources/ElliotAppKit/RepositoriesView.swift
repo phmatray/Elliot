@@ -619,6 +619,7 @@ public struct RepositoriesView: View {
         case .notChecked: "not checked"
         case .outOfScope(.fork): "fork"
         case .outOfScope(.archived): "archived"
+        case .outOfScope(.empty): "empty"
         case .outOfScope(.otherRoot): "out of scope"
         case .behind(let count): "behind by \(count)"
         case .dirty: "dirty"

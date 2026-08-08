@@ -73,7 +73,24 @@ public enum RepoIssue: Sendable, Hashable {
     case noRemote
     case unreadable(String)
 
-    public enum OutOfScope: Sendable, Hashable { case fork, archived, otherRoot }
+    public enum OutOfScope: Sendable, Hashable {
+        case fork, archived, empty, otherRoot
+
+        /// The one place fork / archived / empty is decided, for every consumer.
+        ///
+        /// Order is the rule, not an implementation detail: a fork reports as a
+        /// fork whatever else is true, because that is the answer that decides
+        /// whether anything may be written into it.
+        ///
+        /// `otherRoot` is deliberately absent here — it is a fact about the local
+        /// tree layout, not about the repository, and only the reconciler knows it.
+        public static func of(_ repo: GHRepoSummary) -> OutOfScope? {
+            if repo.isFork { return .fork }
+            if repo.isArchived { return .archived }
+            if repo.isEmpty { return .empty }
+            return nil
+        }
+    }
 
     /// The one verdict a sweep acts on.
     ///
@@ -385,14 +402,19 @@ public enum RepoReconciler {
         // is a different row from one that was never cloned.
         let actual = disk[name].map { "\(layout.root)/\($0.owner)/\($0.visibility.rawValue)/\($0.name)" }
 
-        if remote.isFork || remote.isArchived {
+        if let why = RepoIssue.OutOfScope.of(remote) {
+            let detail: String =
+                switch why {
+                case .fork: "A fork — out of scope."
+                case .archived: "Archived on GitHub — out of scope."
+                case .empty: "Empty on GitHub — nothing to measure."
+                case .otherRoot: "Out of scope."
+                }
             return RepoRow(
                 id: name, nameWithOwner: name, path: actual ?? repo?.path, repoID: repo?.id,
                 visibility: remote.repoVisibility,
-                issue: .outOfScope(remote.isFork ? .fork : .archived),
-                detail: remote.isFork
-                    ? "A fork — out of scope."
-                    : "Archived on GitHub — out of scope.")
+                issue: .outOfScope(why),
+                detail: detail)
         }
 
         guard
