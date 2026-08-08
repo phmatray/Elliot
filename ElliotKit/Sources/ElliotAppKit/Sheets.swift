@@ -38,10 +38,19 @@ public struct NewCardWindow: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    CardFieldsEditor(draft: $draft)
+                    CardFieldsEditor(
+                        draft: $draft,
+                        repositoryLabels: repoID.map { model.labels(for: $0) } ?? .unavailable
+                    )
                 }
                 .padding(18)
             }
+            // The sheet shares `CardFieldsEditor`, so it shows the same label
+            // picker — and therefore has to fill the same list, or it would
+            // offer nothing and say the repository has none. `add()` carries
+            // what is ticked through to the card; a control here that did not
+            // would be the discarding editor `Kind` exists to prevent.
+            .task(id: repoID) { if let repoID { await model.loadLabels(for: repoID) } }
 
             Divider()
 
@@ -66,7 +75,8 @@ public struct NewCardWindow: View {
         guard let repoID else { return }
         Task {
             await model.createCard(
-                repoID: repoID, title: draft.title, story: draft.story, body: draft.body
+                repoID: repoID, title: draft.title, story: draft.story, body: draft.body,
+                labels: draft.labels
             )
             dismiss()
         }

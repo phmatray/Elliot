@@ -251,3 +251,165 @@ struct CardDraftTests {
         #expect(edited.story == proposal.story, "a note has no story to write")
     }
 }
+
+@Suite("A draft's labels")
+struct CardDraftLabelsTests {
+
+    private static let then = Date(timeIntervalSince1970: 1_700_000_000)
+
+    private static func card(labels: [String]) -> Card {
+        Card(
+            repoID: UUID(), title: "Run log", labels: labels,
+            columnEnteredAt: then, createdAt: then, updatedAt: then
+        )
+    }
+
+    @Test("A draft seeded from a card carries that card's labels, in order")
+    func seededFromCard() {
+        let draft = CardDraft(card: Self.card(labels: ["documentation", "bug"]))
+        #expect(draft.labels == ["documentation", "bug"])
+    }
+
+    @Test("A draft written from scratch asks for no labels")
+    func freshDraftHasNone() {
+        #expect(CardDraft().labels == [])
+    }
+
+    /// Labels are never required, and adding one must never *become* a way to
+    /// make an otherwise-fine card unsaveable. The Save gate is the title and
+    /// the story, exactly as before.
+    @Test("Labels do not enter the Save gate, in either direction")
+    func labelsNeverAffectValidity() {
+        var draft = CardDraft(title: "Run log", role: "dev", want: "the log", benefit: "no terminal")
+        #expect(draft.isValid)
+        draft.labels = ["bug"]
+        #expect(draft.isValid)
+        draft.labels = []
+        #expect(draft.isValid)
+
+        draft.title = "  "
+        draft.labels = ["bug"]
+        #expect(!draft.isValid, "a label is not a substitute for a name")
+    }
+
+    /// The mutation lives on the draft rather than in the view's closure so
+    /// `swift test` can hold it — a chip list that appended a duplicate would
+    /// send `--label "bug" --label "bug"` and render two identical chips, and
+    /// nothing in a SwiftUI body can be asserted.
+    @Test("Toggling adds at the end, and toggling again removes")
+    func toggleIsIdempotent() {
+        var draft = CardDraft()
+        draft.toggleLabel("bug")
+        draft.toggleLabel("documentation")
+        #expect(draft.labels == ["bug", "documentation"])
+
+        draft.toggleLabel("bug")
+        #expect(draft.labels == ["documentation"], "toggling an existing label removes it")
+
+        draft.toggleLabel("documentation")
+        #expect(draft.labels == [])
+    }
+
+    /// GitHub refuses a second casing of a label that exists, so `Bug` and
+    /// `bug` are one label. A toggle that treated them as two would let a card
+    /// ask for both and show two chips for one label.
+    @Test("A label already asked for in another casing is the same label")
+    func toggleIsCaseInsensitive() {
+        var draft = CardDraft()
+        draft.toggleLabel("Bug")
+        draft.toggleLabel("bug")
+        #expect(draft.labels == [], "the second toggle removed the first")
+
+        draft.toggleLabel("bug")
+        draft.toggleLabel("BUG")
+        #expect(draft.labels == [])
+    }
+
+    @Test("Blank input is not a label")
+    func blanksAreNotLabels() {
+        var draft = CardDraft()
+        draft.toggleLabel("   ")
+        draft.toggleLabel("")
+        #expect(draft.labels == [])
+    }
+}
+
+@Suite("What the editor knows about a repository's labels")
+struct RepositoryLabelsTests {
+
+    @Test("A repository that answered offers what it has")
+    func knownOffersItsOwn() {
+        let known = RepositoryLabels.known(["bug", "enhancement", "documentation"])
+        #expect(known.offerable == ["bug", "enhancement", "documentation"])
+    }
+
+    @Test("A label the repository does not have is reported missing, whatever its casing")
+    func missingIsNamed() {
+        let known = RepositoryLabels.known(["bug", "Enhancement"])
+        #expect(!known.isMissing("bug"))
+        #expect(!known.isMissing("BUG"), "GitHub refuses a second casing, so this is the same label")
+        #expect(!known.isMissing("enhancement"))
+        #expect(known.isMissing("documentation"))
+    }
+
+    /// A repository really can have no labels, and saying so is a finding the
+    /// card should show. It is the *other* case that must not be confused with
+    /// it — see below.
+    @Test("A repository with no labels is a finding: everything is missing")
+    func emptyIsAFinding() {
+        let known = RepositoryLabels.known([])
+        #expect(known.offerable == [])
+        #expect(known.isMissing("bug"))
+    }
+
+    /// The load-bearing case, and the same duty `labelsCheck` records one
+    /// screen over: **a failure to ask is not a finding about the answer.**
+    /// Marking every label missing here would paint a card full of red on a
+    /// laptop that is merely offline, and offering an empty picker would say
+    /// "this repository has no labels" on no evidence at all.
+    @Test("A repository that could not be reached accuses nothing")
+    func unavailableAccusesNothing() {
+        let unknown = RepositoryLabels.unavailable
+        #expect(unknown.offerable == [])
+        #expect(!unknown.isMissing("bug"))
+        #expect(!unknown.isMissing("something nobody has"))
+        #expect(!unknown.isKnown, "and it says which case it is, so the editor can explain itself")
+        #expect(RepositoryLabels.known([]).isKnown)
+    }
+}
+
+@Suite("Turning gh's answer into what the editor may claim")
+struct RepositoryLabelsFromGHTests {
+
+    @Test("An answer becomes the repository's list, empty answer included")
+    func answerBecomesKnown() {
+        #expect(RepositoryLabels(ghAnswer: ["bug", "documentation"])
+            == .known(["bug", "documentation"]))
+        #expect(RepositoryLabels(ghAnswer: []) == .known([]))
+    }
+
+    /// `GHClient.labels` **throws** rather than answering `[]` when `gh` fails,
+    /// and this is the other end of that decision: no answer maps to
+    /// `.unavailable`, never to a list. Collapsing them here would undo the
+    /// distinction one call up the stack, which is precisely the bug #170's own
+    /// comment describes.
+    @Test("No answer is not an empty list")
+    func noAnswerIsUnavailable() {
+        #expect(RepositoryLabels(ghAnswer: nil) == .unavailable)
+        #expect(RepositoryLabels(ghAnswer: nil) != .known([]))
+    }
+
+    /// The editor has to say *why* it is offering nothing, and the two reasons
+    /// are opposite. Silence under `.unavailable` reads as "this repository has
+    /// no labels" — a confident wrong answer, which this codebase treats as
+    /// worse than an error.
+    @Test("Only the unreachable case explains itself, and it does not claim there are none")
+    func explanationSeparatesTheTwoSilences() {
+        #expect(RepositoryLabels.known(["bug"]).explanation == nil)
+        #expect(RepositoryLabels.known([]).explanation != nil, "no labels is a finding worth saying")
+
+        let excuse = try! #require(RepositoryLabels.unavailable.explanation)
+        #expect(!excuse.isEmpty)
+        #expect(RepositoryLabels.known([]).explanation != excuse, "two silences, two sentences")
+    }
+}

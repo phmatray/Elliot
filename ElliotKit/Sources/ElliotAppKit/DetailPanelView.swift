@@ -73,7 +73,7 @@ struct DetailPanelView: View {
             header(card)
             Divider()
             if editor.isEditing {
-                editorBody
+                editorBody(card)
                 Divider()
                 editorActions(card)
             } else {
@@ -338,6 +338,7 @@ struct DetailPanelView: View {
                 switch which {
                 case .issue:
                     provenance(card)
+                    labels(card)
                     PRStatusBlock(card: card)
                     IssuePane(card: card)
                 case .runs:
@@ -371,10 +372,13 @@ struct DetailPanelView: View {
     /// Editing replaces the body rather than sitting inside a pane: a card is
     /// only editable until it carries an issue number, and while it is being
     /// rewritten there is nothing on GitHub to read beside it.
-    private var editorBody: some View {
+    private func editorBody(_ card: Card) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                CardFieldsEditor(draft: $editor.draft)
+                CardFieldsEditor(
+                    draft: $editor.draft,
+                    repositoryLabels: model.labels(for: card.repoID)
+                )
                 if let saveError {
                     Text(saveError).font(Type.prose).foregroundStyle(Palette.refused)
                 }
@@ -384,6 +388,12 @@ struct DetailPanelView: View {
         }
         // Square: the actions row below owns the bottom of the panel.
         .clipShape(Rectangle())
+        // On open, not on every keystroke, and not at launch: one
+        // `gh label list` for the repository whose card is being edited. It
+        // fails silently into `.unavailable`, which the picker explains — an
+        // editor that refused to open because a network call did not come back
+        // would make a card uneditable offline.
+        .task(id: card.repoID) { await model.loadLabels(for: card.repoID) }
     }
 
     private func editorActions(_ card: Card) -> some View {
@@ -435,6 +445,27 @@ struct DetailPanelView: View {
                         .foregroundStyle(.tertiary)
                         .padding(.top, 2)
                 }
+            }
+        }
+    }
+
+    /// The labels the card asks for, read-only, beside what GitHub already
+    /// holds — because that is the question they answer: *what will this issue
+    /// carry*.
+    ///
+    /// Not removable here. A card's labels obey the same rule as its story:
+    /// correctable in the editor until it is filed, and refused afterwards.
+    /// Once the issue exists, github.com holds the labels and the card is a
+    /// record of what was asked for.
+    @ViewBuilder
+    private func labels(_ card: Card) -> some View {
+        if PanelLayout.showsLabels(card) {
+            VStack(alignment: .leading, spacing: 6) {
+                ConsoleLabel(text: card.issueNumber == nil ? "Labels to apply" : "Labels asked for")
+                LabelChips(
+                    names: card.labels,
+                    isMissing: { model.labels(for: card.repoID).isMissing($0) }
+                )
             }
         }
     }

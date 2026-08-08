@@ -27,6 +27,13 @@ public final class AppModel {
     public private(set) var runsByCard: [UUID: [SkillRun]] = [:]
     public private(set) var globalChecks: [CheckResult] = []
     public private(set) var repoChecks: [UUID: [CheckResult]] = [:]
+
+    /// What the card editor may claim about each repository's labels.
+    ///
+    /// Absent means *nobody has asked yet*, which `labels(for:)` reports as
+    /// `.unavailable` — a third silence that is honestly the same as the second
+    /// one: nothing has been established. The editor asks on open.
+    private var repoLabels: [UUID: RepositoryLabels] = [:]
     public private(set) var status: String = "Starting…"
     public private(set) var isReady = false
     public private(set) var isImporting = false
@@ -1203,10 +1210,12 @@ public final class AppModel {
     }
 
     public func createCard(
-        repoID: UUID, title: String, story: UserStory?, body: String
+        repoID: UUID, title: String, story: UserStory?, body: String, labels: [String] = []
     ) async {
         guard let board else { return }
-        _ = try? await board.createCard(repoID: repoID, title: title, body: body, story: story)
+        _ = try? await board.createCard(
+            repoID: repoID, title: title, body: body, story: story, labels: labels
+        )
     }
 
     public func deleteCard(id: UUID) async {
@@ -1225,7 +1234,8 @@ public final class AppModel {
         }
         do {
             try await board.updateCard(
-                id: id, title: draft.title, body: draft.body, story: draft.story
+                id: id, title: draft.title, body: draft.body, story: draft.story,
+                labels: draft.labels
             )
             return true
         } catch {
@@ -1439,6 +1449,35 @@ public final class AppModel {
         // body, and `PRWatcher` already re-reads whenever the head moves. The
         // age rule still governs.
         prStatuses[card.id]?.resolved(now: Date(), currentHeadOid: nil)
+    }
+
+    // MARK: - The labels a repository has
+
+    /// What is currently known about `repoID`'s labels.
+    ///
+    /// `.unavailable` until something has been established, which is the honest
+    /// answer for "nobody asked yet" as much as for "gh did not answer": the
+    /// editor must not present either as *this repository has no labels*.
+    public func labels(for repoID: UUID) -> RepositoryLabels {
+        repoLabels[repoID] ?? .unavailable
+    }
+
+    /// Reads a repository's labels through `gh`, for the card editor's picker.
+    ///
+    /// One `gh label list` per open, not per keystroke, and it does **not**
+    /// cache a failure as an answer — `RepositoryLabels(ghAnswer:)` maps a
+    /// throw to `.unavailable`, so the next open asks again rather than
+    /// remembering that the network was down once.
+    ///
+    /// Nothing here refuses anything. A card may ask for a label this call
+    /// could not confirm; the editor marks it, and the card keeps recording
+    /// what someone asked for. That is criterion 6, and it is why this is a
+    /// read and not a validator.
+    public func loadLabels(for repoID: UUID) async {
+        guard let toolConfig, let repo = repos.first(where: { $0.id == repoID }) else { return }
+        let gh = GHClient(config: toolConfig)
+        let answer = try? await gh.labels(repo: repo.nameWithOwner)
+        repoLabels[repoID] = RepositoryLabels(ghAnswer: answer)
     }
 
     // MARK: - Repos

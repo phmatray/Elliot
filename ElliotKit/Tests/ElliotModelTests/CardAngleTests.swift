@@ -89,6 +89,52 @@ struct CardLabelsTests {
         #expect(decoded.labels == ["documentation", "bug"])
     }
 
+    /// ⚠️ The one that a plain `public var labels: [String] = []` fails.
+    ///
+    /// Swift's synthesised decoder demands the key regardless of the default,
+    /// and `BoardStore.openReadOnly` accepts a database older than the code
+    /// reading it — so a card written before this column existed has to decode,
+    /// or the MCP helper refuses every read in exactly the window that
+    /// tolerance was built for. `OlderDatabaseTests` catches it end to end;
+    /// this catches it here, where the cause is.
+    @Test("A card encoded before labels existed still decodes, asking for none")
+    func absentLabelsDecodeAsNone() throws {
+        // The same JSON `Card` produced one commit before `labels` was added:
+        // every other key, and no `labels`.
+        var fields = try #require(
+            try JSONSerialization.jsonObject(
+                with: try JSONEncoder().encode(
+                    Card(
+                        repoID: UUID(), title: "Written before labels",
+                        columnEnteredAt: then, createdAt: then, updatedAt: then
+                    )
+                )
+            ) as? [String: Any]
+        )
+        #expect(fields.removeValue(forKey: "labels") != nil, "the fixture must start with the key")
+
+        let older = try JSONSerialization.data(withJSONObject: fields)
+        let decoded = try JSONDecoder().decode(Card.self, from: older)
+        #expect(decoded.labels == [])
+        #expect(decoded.title == "Written before labels")
+    }
+
+    /// The wrapper must be invisible in the encoded form, or adopting it would
+    /// be its own migration: a `{"wrappedValue": […]}` in the column would not
+    /// be readable as the `[String]` every other array field is stored as.
+    @Test("Labels encode as a bare array, exactly as an unwrapped [String] would")
+    func labelsEncodeUnwrapped() throws {
+        let card = Card(
+            repoID: UUID(), title: "Run log", labels: ["bug"],
+            columnEnteredAt: then, createdAt: then, updatedAt: then
+        )
+        let fields = try #require(
+            try JSONSerialization.jsonObject(with: try JSONEncoder().encode(card))
+                as? [String: Any]
+        )
+        #expect(fields["labels"] as? [String] == ["bug"])
+    }
+
     @Test("The three lenses that mean a label say so")
     func lensesWithAnHonestLabel() {
         #expect(AnalysisAngle.bugs.suggestedLabel == "bug")

@@ -45,7 +45,18 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
     /// No colour is stored beside them. The repository owns colours and
     /// `RequiredLabel` carries them for creation; a second copy here would be a
     /// second source of truth with nothing keeping it current.
-    public var labels: [String]
+    ///
+    /// ⚠️ **`@DefaultsToEmpty` is load-bearing, not decoration.** Swift's
+    /// synthesised decoder ignores a property's default value and demands the
+    /// key, so without it a `Card` read from a database that predates the
+    /// `labels` column throws `keyNotFound` — and `BoardStore.openReadOnly`
+    /// *deliberately* accepts a database older than the helper, precisely so
+    /// the board is not blanked between installing a new bundle and the next
+    /// launch of the app. That tolerance is written for added columns, which
+    /// are supposed to read as absent. This is what makes this one do that;
+    /// `OlderDatabaseTests` is what says so, and it caught the version of this
+    /// field that did not.
+    @DefaultsToEmpty public var labels: [String]
 
     public var column: Column
 
