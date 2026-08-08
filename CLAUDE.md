@@ -169,10 +169,19 @@ escalation `ProcessRunner` never got) — and #26 opened a fourth investigation 
 `DrainDuplicationTests` keeps the measurement runnable: it re-derives that comment count and fails
 naming the invariant that is written twice, because **a gate that is not a test is a gate nobody
 re-runs**. Since #21 that argument is stronger rather than weaker — `ci.yml` executes `swift test` on
-every pull request, so a guard shaped as a test is now the *only* kind of guard this repository
-enforces off one laptop. (The wording here has been corrected twice: flatly "no CI" until #116 added
+every pull request, so a guard shaped as a test is enforced on every change rather than only when
+someone remembers to run it. (The wording here has been corrected twice: flatly "no CI" until #116 added
 `swift-floor.yml`, then "no build-and-test CI" until #21 added `ci.yml`. A stale claim in this file is
-what #116 was about, and the shape of it recurs.)
+what #116 was about, and the shape of it recurs. #186 is the third, and the first to land in *source*
+rather than here: #102 fixed this file and the profile, but #21's constraints barred it from
+`Package.swift` and every source file, so four comments — including `DrainDuplicationTests`' own
+header — went on reasoning from the retired premise in the interval. ⚠️ Before anyone automates the
+check: within #186's four scoped paths a `no CI` grep already returns two innocent hits, `PRStatus`'s
+"no CI *state*" and `ci.yml`'s hypothetical about a repository that merely *looks* like it has none;
+unscoped it also returns `Fixtures/issues/issue-79.md` and two `Fixtures/gh/*.json`, which are frozen
+copies of what those issues really said and must **not** be corrected. A string gate over prose can
+tell neither a claim from a mention nor a live claim from a quoted one, which is why the fix here is a
+habit rather than a matcher.)
 
 The single behavioural delta is recorded at both ends: `ProcessRunner` gave up its
 `state.withLock { !$0.exited } &&` conjunct in the SIGKILL backstop, since a sink may hold that lock

@@ -43,12 +43,22 @@
 # toolchain left to exercise. That absence is a decision, not an omission. Under the other outcome
 # this file would carry a `macos-15` build leg to keep the 6.1 claim honest on every pull request.
 #
-# ### Why this is not `ci.yml`
+# ### How this divides with `ci.yml`
 #
-# There is no `.github/workflows/ci.yml` on `main`; it is #21, in flight on #102. Editing a file that
-# does not exist yet would either collide with that pull request or be unexercisable until it lands —
-# and an unexercised check is the exact thing #116 is about. A separate file runs on the pull request
-# that adds it, which is how Task 5's last step could be verified at all.
+# `ci.yml` is on `main` — #21, landed by #102 — so the two files answer different questions rather than
+# one waiting on the other. This one establishes that the floor `Package.swift` declares is still being
+# **exercised**, and that a toolchain on its release train **compiles** the package: it asserts the
+# runner's Swift against that declaration, then builds. (Still being exercised, not "the declared patch
+# was run" — the assertion below deliberately accepts a patch above the floor, and § *The two
+# comparisons are at different precisions* says why.) `ci.yml` establishes the other half: that the
+# suite **passes** somewhere other than one laptop. `.claude/skills/repo-profile.md` § *CI gates*
+# carries the same split as a table; keep the two in step.
+#
+# The `--build-tests`-is-not-`swift test` argument is deliberately NOT restated here. It already lives
+# at the step it governs, below, and `ci.yml`'s own header refuses a fourth copy of it in as many words.
+#
+# This section reported `ci.yml` as "in flight on #102" until #186, which stopped being true the moment
+# that pull request landed — a status report ages in a way an argument does not.
 name: swift-floor
 
 # Pull requests only, deliberately. A drift failure is a prompt to re-measure, and it must not land on
