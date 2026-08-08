@@ -39,7 +39,8 @@ struct StandardsEngineOrderTests {
         let v = StandardsEngine.verdict(
             for: .editorconfig, repo: .observed(repo(), old),
             measurement: emptyMeasurement, exemptions: exemptions([]),
-            now: then, freshness: .default)
+            now: then, freshness: .default
+        ).verdict
         // `.universeStale`, not `.stale`: the distinction is the point. A stale
         // *universe* invalidates scope for every axis at once, which is a
         // different sentence from one axis's observation having aged out.
@@ -55,7 +56,8 @@ struct StandardsEngineOrderTests {
             for: .editorconfig,
             repo: .unavailable(.universeUnreadable("gh exited 1"), probe),
             measurement: emptyMeasurement, exemptions: exemptions([]),
-            now: then, freshness: .default)
+            now: then, freshness: .default
+        ).verdict
         guard case .unmeasured(.universeUnreadable) = v else { Issue.record("got \(v)"); return }
     }
 
@@ -66,7 +68,8 @@ struct StandardsEngineOrderTests {
         let v = StandardsEngine.verdict(
             for: .editorconfig, repo: .observed(repo(fork: true), probe),
             measurement: emptyMeasurement, exemptions: exemptions([]),
-            now: then, freshness: .default)
+            now: then, freshness: .default
+        ).verdict
         #expect(v == .notApplicable(.fork))
     }
 
@@ -81,7 +84,8 @@ struct StandardsEngineOrderTests {
         let v = StandardsEngine.verdict(
             for: .editorconfig, repo: .observed(repo(), probe),
             measurement: emptyMeasurement, exemptions: exemptions([e]),
-            now: then, freshness: .default)
+            now: then, freshness: .default
+        ).verdict
         guard case .exempt = v else { Issue.record("got \(v)"); return }
     }
 
@@ -91,7 +95,8 @@ struct StandardsEngineOrderTests {
             for: .editorconfig, repo: .observed(repo(), probe),
             measurement: emptyMeasurement,
             exemptions: .unavailable(.exemptionsUnreadable("500"), probe),
-            now: then, freshness: .default)
+            now: then, freshness: .default
+        ).verdict
         guard case .unmeasured(.exemptionsUnreadable) = v else { Issue.record("got \(v)"); return }
     }
 
@@ -104,7 +109,8 @@ struct StandardsEngineOrderTests {
         let v = StandardsEngine.verdict(
             for: .editorconfig, repo: .observed(repo(), probe),
             measurement: emptyMeasurement, exemptions: exemptions([e]),
-            now: then, freshness: .default)
+            now: then, freshness: .default
+        ).verdict
         guard case .violating = v else { Issue.record("got \(v)"); return }
     }
 
@@ -114,5 +120,32 @@ struct StandardsEngineOrderTests {
             repo: .observed(repo(), probe), measurement: emptyMeasurement,
             exemptions: exemptions([]), now: then, freshness: .default)
         #expect(a.findings.count == Standard.allCases.count)
+    }
+
+    /// `observationLag` reduces over this array, so a step whose read really
+    /// happened must appear in it. Recording only the repository's provenance
+    /// reports a one-minute lag for a verdict that rested on day-old exemptions.
+    @Test("A verdict records the exemptions read it actually performed")
+    func recordsExemptionsProvenance() {
+        let old = Provenance(
+            command: "gh api …/standards.yml", observedAt: then.addingTimeInterval(-23 * 3600))
+        let outcome = StandardsEngine.verdict(
+            for: .editorconfig, repo: .observed(repo(), probe),
+            measurement: emptyMeasurement,
+            exemptions: .observed(StandardsFile(version: 1, repo: nil, exemptions: []), old),
+            now: then, freshness: .default)
+        #expect(outcome.provenances.count == 2)
+        #expect(outcome.provenances.contains { $0.observedAt == old.observedAt })
+    }
+
+    /// And a step that did NOT happen must not be claimed. A fork returns at
+    /// scope, before the exemptions file is ever read.
+    @Test("An out-of-scope verdict claims no exemptions read")
+    func outOfScopeClaimsNoExemptionsRead() {
+        let outcome = StandardsEngine.verdict(
+            for: .editorconfig, repo: .observed(repo(fork: true), probe),
+            measurement: emptyMeasurement, exemptions: exemptions([]),
+            now: then, freshness: .default)
+        #expect(outcome.provenances == [probe])
     }
 }

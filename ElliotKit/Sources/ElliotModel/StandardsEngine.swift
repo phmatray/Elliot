@@ -7,6 +7,12 @@ import Foundation
 /// test has to be able to drive to a chosen instant.
 public enum StandardsEngine {
 
+    /// `provenances` on the returned outcome accumulates **incrementally, per
+    /// step actually reached** — never every `Reading` in scope. Only this
+    /// function knows which steps ran, so it is the only place honest enough to
+    /// build the list; a caller reconstructing it from the outside (as `assess`
+    /// used to) can only guess, and guessing here is exactly how a fork's
+    /// never-read exemptions file would end up claimed as consulted.
     public static func verdict(
         for standard: Standard,
         repo: Reading<GHRepoSummary>,
@@ -14,37 +20,49 @@ public enum StandardsEngine {
         exemptions: Reading<StandardsFile>,
         now: Date,
         freshness: FreshnessPolicy
-    ) -> StandardVerdict {
+    ) -> StandardOutcome {
         // 0. The universe. It is an observation like everything else — left bare
         //    it decides scope from a listing nobody checked the age of, and a
         //    stale listing produces a perfect green on an amputated denominator.
+        //    Read unconditionally, so its provenance opens the list every path
+        //    shares.
+        var provenances = [repo.provenance]
         let summary: GHRepoSummary
         switch repo.value(freshAt: now, policy: freshness) {
-        case .failure(.stale(let age)): return .unmeasured(.universeStale(age: age))
-        case .failure(let why): return .unmeasured(why)
-        case .success(let value): summary = value
+        case .failure(.stale(let age)):
+            return StandardOutcome(verdict: .unmeasured(.universeStale(age: age)), provenances: provenances)
+        case .failure(let why):
+            return StandardOutcome(verdict: .unmeasured(why), provenances: provenances)
+        case .success(let value):
+            summary = value
         }
 
         // 1. Scope. A fork is a fork whatever else is true, and an out-of-scope
-        //    repository must never reach a predicate that could file into it.
+        //    repository must never reach a predicate that could file into it —
+        //    and must never claim it read the exemptions file it never opened.
         if case .notApplicable(let why) = standard.applicability(to: summary) {
-            return .notApplicable(why)
+            return StandardOutcome(verdict: .notApplicable(why), provenances: provenances)
         }
 
         // 2. Exemptions — but an unreadable file is `unmeasured`, never "none".
+        //    Reached only now, so its provenance joins the list only now.
         switch exemptions.value(freshAt: now, policy: freshness) {
         case .failure(let why):
-            return .unmeasured(why)
+            provenances.append(exemptions.provenance)
+            return StandardOutcome(verdict: .unmeasured(why), provenances: provenances)
         case .success(let file):
+            provenances.append(exemptions.provenance)
             if let e = file.exemptions.first(where: { $0.standard == standard && $0.isActive(at: now) }) {
-                return .exempt(e)
+                return StandardOutcome(verdict: .exempt(e), provenances: provenances)
             }
         }
 
-        // 3. Only now the measurement.
-        return StandardPredicates.evaluate(
+        // 3. Only now the measurement. The stub predicate has no evidence of its
+        //    own to give yet — task 9 fills that in.
+        let measured = StandardPredicates.evaluate(
             standard, repo: summary, measurement: measurement,
             now: now, freshness: freshness)
+        return StandardOutcome(verdict: measured, provenances: provenances)
     }
 
     /// Every axis, for one repository, under one clock reading.
@@ -61,30 +79,30 @@ public enum StandardsEngine {
         now: Date,
         freshness: FreshnessPolicy = .default
     ) -> RepoStandardsAssessment {
+        // A label, not a judgement, so it does not need `.value(freshAt:policy:)`
+        // — a stale-but-observed universe still names the repository its
+        // findings are about; the staleness itself is what each finding
+        // underneath reports through `.unmeasured(.universeStale)`. Reading the
+        // case directly here also avoids a second freshness check on top of the
+        // one every `verdict` call below already performs for itself.
         let nameWithOwner: String
-        switch repo.value(freshAt: now, policy: freshness) {
-        case .success(let summary): nameWithOwner = summary.nameWithOwner
-        case .failure: nameWithOwner = ""
+        if case .observed(let summary, _) = repo {
+            nameWithOwner = summary.nameWithOwner
+        } else {
+            nameWithOwner = ""
         }
 
-        // Step 0 above reads `repo` unconditionally before anything else, so its
-        // provenance is the one observation every finding, whichever way it
-        // lands, actually rests on. Nothing further down (the measurement, the
-        // exemptions file) is consulted on every path — a fork returns before
-        // `exemptions` is ever read — so claiming those here would be exactly
-        // the fabrication `StandardFinding.provenances` exists to rule out.
-        let provenances = [repo.provenance]
-
-        let findings = Standard.allCases.map { standard in
-            StandardFinding(
+        let findings = Standard.allCases.map { standard -> StandardFinding in
+            let outcome = verdict(
+                for: standard, repo: repo, measurement: measurement,
+                exemptions: exemptions, now: now, freshness: freshness)
+            return StandardFinding(
                 id: "\(nameWithOwner)#\(standard.rawValue)",
                 nameWithOwner: nameWithOwner,
                 standard: standard,
-                verdict: verdict(
-                    for: standard, repo: repo, measurement: measurement,
-                    exemptions: exemptions, now: now, freshness: freshness),
-                evidence: [],
-                provenances: provenances,
+                verdict: outcome.verdict,
+                evidence: outcome.evidence,
+                provenances: outcome.provenances,
                 assessedAt: now)
         }
 
