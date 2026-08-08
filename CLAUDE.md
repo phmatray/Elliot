@@ -483,7 +483,7 @@ want to exercise the "arrows skip empty columns" rule.
 
 | From → To | What happens |
 |---|---|
-| Backlog → To Do | `/ai-migration-kit:create-issue <story>` — fills in the issue number |
+| Backlog → To Do | `/ai-migration-kit:create-issue <story>` (+ repeatable `--label`) — fills in the issue number |
 | To Do → In Progress | `/ai-migration-kit:implement-issue <n>` — fills in the PR number and branch |
 | In Progress → In Review | *no skill* — a system move, when `PRWatcher` sees the PR go ready |
 | In Review → Done | `/ai-migration-kit:merge-pr <pr>` (+ repeatable `--follow-up`) |
@@ -492,6 +492,34 @@ want to exercise the "arrows skip empty columns" rule.
 The backlog holds **user stories** (`role` / `want` / `benefit` + acceptance criteria as separate
 fields), not loose prose. A card is editable up to the moment it carries an issue number; after that
 `updateCard` refuses rather than letting card and issue drift.
+
+**A card also names the GitHub labels its issue should carry** (#171), chosen from the repository's
+own list through `gh label list`, pre-filled from the analysis lens for the three that honestly imply
+one (`bugs → bug`, `features → enhancement`, `docsAndDX → documentation`; the other five suggest
+nothing rather than guessing). Empty is the common path and emits no flag at all — pinned byte for
+byte, because the whole of `create-issue`'s existing behaviour rides on it.
+
+⛔ **`--label` is an instruction to a reader, not a flag to a parser — do not describe it as one.**
+Measured against ai-migration-kit 1.9.0 while landing #171: `merge-pr`'s SKILL.md carries an
+*Arguments* section naming `--follow-up "<idea>"` as optional and repeatable, and **`create-issue`
+carries no such section at all** — it says only *"pull the idea(s) from the user's request"* and then
+**chooses labels itself**, reading the live set and picking one per axis from the profile's taxonomy.
+Every `--label` inside that skill is its own `gh issue create` call, not an input it parses. So an
+agent will very likely honour the suffix and nothing obliges it to, which is exactly why the card is
+the record of the *intent* and `gh` remains the record of the *outcome*. The durable fix is an
+*Arguments* section in `create-issue`, in another repository; a second channel invented here would
+just be a second way for the two to disagree.
+
+⚠️ **A non-optional field added to `Card` breaks `openReadOnly`'s whole reason for existing, and the
+compiler will not say so.** Swift's synthesised decoder **ignores a property's default value** — it
+emits `decode(_:forKey:)`, not `decodeIfPresent` — so `public var labels: [String] = []` throws
+`keyNotFound` on every card in a database that predates the column. `BoardStore.openReadOnly`
+*deliberately* accepts a database older than the code reading it, so the MCP helper keeps answering
+between a new bundle landing and the app next launching, and that tolerance is written for added
+columns *which are supposed to read as absent*. `OlderDatabaseTests` caught it on the first full run;
+the fix is `@DefaultsToEmpty` (`ElliotModel/DefaultsToEmpty.swift`), a wrapper whose one job is to
+turn the synthesised call into `decodeIfPresent`. **A new non-optional field on a persisted model
+needs it, or an `Optional`.**
 
 ### The two panels
 
@@ -864,6 +892,15 @@ Two invariants carry most of the weight:
   too, a signal after a checkout is ambiguous — wipe first, and only call it the intermittent abort
   once it survives a clean build. Named failing tests after a checkout: same order. Wipe, then look at
   your change.
+
+  ⚠️ **A `git checkout` is not the only trigger — #171 hit it twice in a row with no checkout at
+  all.** Adding an associated value to an existing enum case (`TriggerAction.createIssue` gaining
+  `labels`) produced two consecutive signal 11s with no failing test named, in a worktree whose
+  `.build` had never seen another commit. `rm -rf ElliotKit/.build` cleared it and four samples ran
+  clean. So the rule is about **the shape of a type changing under objects that were not recompiled**,
+  which a checkout is merely the commonest cause of; a same-branch edit to an enum's payload, a
+  struct's stored properties, or a function's signature can do it on its own. The tell is unchanged —
+  a failure that could not have happened — and so is the remedy.
 - **A `ScrollView` that can scroll swallows taps a disabled one passes through.** The board's
   deselect-on-background-click fired by bubbling out of a column's empty space, and that only worked
   while five columns fit the window and scrolling was off. The detail panel widens the row past the

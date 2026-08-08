@@ -14,15 +14,33 @@ struct CardFieldsEditor: View {
     /// discards what was typed. The pin that makes `.story` safe is not here
     /// but in `CardDraft(proposal:)`, where `swift test` can hold it.
     enum Kind {
-        /// Board label, story/note picker, whichever branch is selected, preview.
+        /// Board label, story/note picker, whichever branch is selected, labels,
+        /// preview.
         case card
-        /// Board label, story fields, preview. No picker, no note.
+        /// Board label, story fields, preview. No picker, no note, no labels.
         case story
+
+        /// Whether this editor may offer GitHub labels.
+        ///
+        /// ⛔ `.story` may not, and for the same reason it has no note field:
+        /// `CardDraft.applied(to:)` writes a `StoryProposal`, which has nowhere
+        /// to keep them. A picker there would take clicks, draw chips and
+        /// discard every one on Save — the failure this whole `Kind` exists to
+        /// prevent, one field later. Named here rather than written as
+        /// `kind == .card` in the body, because `swift test` can read this and
+        /// cannot read a SwiftUI body.
+        var offersLabels: Bool { self == .card }
     }
 
     @Binding var draft: CardDraft
     /// Defaulted, so the card sheet and the detail inspector are unchanged.
     var kind: Kind = .card
+    /// What the repository actually has, when anyone has managed to ask.
+    ///
+    /// Defaulted to `.notAsked` rather than `.unavailable`: a caller that has
+    /// not supplied a list has not established that `gh` failed, and the
+    /// default must not put words in its mouth.
+    var repositoryLabels: RepositoryLabels = .notAsked
 
     /// One answer to "is this a story", read by every site that asks.
     ///
@@ -70,6 +88,8 @@ struct CardFieldsEditor: View {
                 }
             }
 
+            if kind.offersLabels { labelField }
+
             // Only once the story is complete. `role` is seeded with
             // "developer", so a narrative exists from the first keystroke and
             // this box used to open on "As a developer, I want ." — a broken
@@ -96,6 +116,60 @@ struct CardFieldsEditor: View {
         // `CardDraft(proposal:)`, which pins it; this is what keeps the next
         // caller from having to know that.
         .onAppear { if kind == .story { draft.isStory = true } }
+    }
+
+    // MARK: - Labels
+
+    /// The labels this card will ask `create-issue` to apply.
+    ///
+    /// Chosen from the repository's own list rather than typed: a typo would
+    /// become a label the repository does not have, `create-issue` would drop
+    /// it with a note nobody reads, and the card would go on displaying it — a
+    /// card that lies, which is the failure this feature exists to prevent.
+    ///
+    /// What is *already* on the card is always shown, even under
+    /// `.unavailable`, and even when the repository no longer has it. The card
+    /// records what someone asked for; the mark says the repository disagrees.
+    private var labelField: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ConsoleLabel(text: "Labels")
+
+            if draft.labels.isEmpty {
+                Text("None — create-issue will choose.")
+                    .font(Type.prose)
+                    .foregroundStyle(.secondary)
+            } else {
+                LabelChips(
+                    names: draft.labels,
+                    isMissing: { repositoryLabels.isMissing($0) },
+                    onRemove: { draft.toggleLabel($0) }
+                )
+            }
+
+            // Only what the card has not already asked for: an "Add" menu whose
+            // entries silently *remove* the label you tap is a control that
+            // does the opposite of its title.
+            let addable = repositoryLabels.offerable.filter { !draft.asksFor($0) }
+            if !addable.isEmpty {
+                Menu {
+                    ForEach(addable, id: \.self) { name in
+                        Button(name) { draft.toggleLabel(name) }
+                    }
+                } label: {
+                    Label("Add label", systemImage: "plus")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .controlSize(.small)
+            } else if let explanation = repositoryLabels.explanation {
+                // Two silences, two sentences — `RepositoryLabels` decides
+                // which, because "this repository has none" and "nobody could
+                // ask" must never render as the same empty menu.
+                Text(explanation)
+                    .font(Type.prose)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var storyFields: some View {

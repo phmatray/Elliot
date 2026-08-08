@@ -90,10 +90,39 @@ public enum SlashCommandBuilder {
         guard let name = action.kind.slashName else { return naturalPrompt(for: action) }
 
         switch action {
-        case .createIssue(let idea):
+        case .createIssue(let idea, let labels):
             // Free text; the skill infers scope from it. Flattened because the
             // whole prompt is one argv element and one logical line.
-            return "\(name) \(idea.collapsedToSingleLine())"
+            //
+            // The flags go *after* the idea and never before it: the idea is
+            // free text the skill reads to the end of, so a flag in front of it
+            // would be swallowed as part of what the issue is about.
+            //
+            // ⚠️ **`--label` is not a contract `create-issue` publishes, and
+            // `--follow-up` is** — measured against ai-migration-kit 1.9.0 while
+            // landing #171, and worth knowing before trusting it. `merge-pr`'s
+            // SKILL.md has an *Arguments* section naming
+            // `--follow-up "<idea>"` as optional and repeatable; `create-issue`
+            // has no such section, says only "pull the idea(s) from the user's
+            // request", and **chooses labels itself** — read the live set, pick
+            // one per axis from the profile's taxonomy. Every `--label` in that
+            // skill is its own `gh issue create` call, not an input it parses.
+            //
+            // So this suffix is an instruction to a reader, not a flag to a
+            // parser: an agent that sees it will very likely honour it, and
+            // nothing obliges it to. That is why the card is the record — the
+            // board now *shows* the intent whatever the skill does — and why
+            // the acceptance check is the filed issue's labels read back
+            // through `gh`, never the run's closing prose. The durable fix is
+            // an *Arguments* section in `create-issue`, which lives in another
+            // repository; it is filed as a follow-up rather than worked around
+            // here, because inventing a second channel for it would be a second
+            // way for the two to disagree.
+            //
+            // What *is* established here: the flags reach the child process
+            // intact, in one argv element, quotes and all
+            // (`ClaudeRunnerTests.labelsReachTheArgv`).
+            return "\(name) \(idea.collapsedToSingleLine())\(flags("--label", labels))"
 
         case .implementIssue(let n):
             // The skill resolves its argument with `grep -oE '[0-9]+' | head -1`.
@@ -102,22 +131,22 @@ public enum SlashCommandBuilder {
             return "\(name) \(n)"
 
         case .mergePR(let pr, let followUps):
-            // The skill parses `--follow-up "<idea>"` out of the text, so quotes
-            // are structural here and must be escaped inside the payload.
-            let tail = followUps
-                .map(sanitizeFollowUp)
-                .filter { !$0.isEmpty }
-                .map { #" --follow-up "\#($0)""# }
-                .joined()
-            return "\(name) \(pr)\(tail)"
+            return "\(name) \(pr)\(flags("--follow-up", followUps))"
         }
     }
 
     private static func naturalPrompt(for action: TriggerAction) -> String {
         switch action {
-        case .createIssue(let idea):
-            return "Use the create-issue skill to file a GitHub issue for this user story: "
+        case .createIssue(let idea, let labels):
+            var s = "Use the create-issue skill to file a GitHub issue for this user story: "
                 + idea.collapsedToSingleLine()
+            // Named here too, so the fallback files the same issue the slash
+            // form would. A strategy nobody chose per-card silently dropping
+            // the one thing the card was allowed to decide is exactly the
+            // divergence `.naturalLanguage` exists to be a *drop-in* for.
+            let wanted = quoted(labels)
+            if !wanted.isEmpty { s += " Apply these labels to it: \(wanted)." }
+            return s
 
         case .implementIssue(let n):
             return "Use the implement-issue skill on issue \(n): execute its implementation "
@@ -125,11 +154,7 @@ public enum SlashCommandBuilder {
 
         case .mergePR(let pr, let followUps):
             var s = "Use the merge-pr skill to land pull request \(pr)."
-            let items = followUps
-                .map(sanitizeFollowUp)
-                .filter { !$0.isEmpty }
-                .map { #""\#($0)""# }
-                .joined(separator: ", ")
+            let items = quoted(followUps)
             if !items.isEmpty {
                 s += " File these follow-ups after merging: \(items)."
             }
@@ -137,11 +162,43 @@ public enum SlashCommandBuilder {
         }
     }
 
-    /// Makes a follow-up safe to sit inside `--follow-up "…"`.
-    private static func sanitizeFollowUp(_ s: String) -> String {
-        s.collapsedToSingleLine()
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+    // MARK: - Repeatable quoted arguments
+
+    /// A repeatable `--<flag> "<value>"` tail, one per non-blank value, or the
+    /// empty string when there are none.
+    ///
+    /// Written once because there are now two of these — `--follow-up` and
+    /// `--label` — and they are the same hazard with different names: the
+    /// quotes are structural in the argv the skill parses, so an unescaped one
+    /// in the payload closes the flag early and leaves the rest as stray text
+    /// the skill reads as something else. A second copy would be a second place
+    /// for that escaping to be got wrong.
+    ///
+    /// Empty in, empty out — so a card that named no labels produces the prompt
+    /// this skill has always been sent, byte for byte.
+    private static func flags(_ flag: String, _ values: [String]) -> String {
+        sanitized(values).map { " \(flag) \"\($0)\"" }.joined()
+    }
+
+    /// The same values as a comma-separated quoted list, for the prose form.
+    private static func quoted(_ values: [String]) -> String {
+        sanitized(values).map { #""\#($0)""# }.joined(separator: ", ")
+    }
+
+    /// Flattened, escaped, and blanks dropped — an empty flag would ask the
+    /// skill to apply a label named nothing.
+    ///
+    /// Backslashes first, then quotes: reversing the two would escape the
+    /// backslash this function just introduced and turn `\"` back into a live
+    /// delimiter.
+    private static func sanitized(_ values: [String]) -> [String] {
+        values
+            .map {
+                $0.collapsedToSingleLine()
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "\"", with: "\\\"")
+            }
+            .filter { !$0.isEmpty }
     }
 }
 
