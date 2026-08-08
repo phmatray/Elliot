@@ -306,9 +306,16 @@ struct RepoReconcilerTests {
         #expect(RepoIssue.notChecked.refined(by: .ok) != .ok)
     }
 
-    /// A row with no clone never asked git anything, so there is no observation
-    /// to weigh — and this is what stops the widening leaking into the four
-    /// verdicts that have no clone at all.
+    /// A row that is not probeable never asked git anything, so there is no
+    /// observation to weigh.
+    ///
+    /// "Not probeable" is not the same as "no clone", and the list below mixes
+    /// both reasons deliberately: `.notCloned`, `.missing` and `.misplaced` have
+    /// nothing at the path to ask, while `.unlisted` and `.notRegistered` have a
+    /// real clone and are excluded because GitHub *answered* about them (see
+    /// `anAnsweredVerdictIsNotProbedAway`). Collapsing the two reasons into "no
+    /// clone" is what makes dropping `.notRegistered`'s `Register` button look
+    /// harmless.
     @Test("A row that is not probeable keeps its verdict whatever it is handed")
     func unprobeableRowsAreUntouched() {
         let unprobeable: [RepoIssue] = [

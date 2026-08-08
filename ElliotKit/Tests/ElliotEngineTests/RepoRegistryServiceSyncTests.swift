@@ -147,6 +147,43 @@ struct RepoRegistryServiceSyncTests {
         #expect(
             probed[0].detail.contains("no network"),
             "a row whose verdict survived kept none of the sentence explaining it")
+        // …and it still says what git found, or a probed row would be
+        // indistinguishable from one the probe never touched — which during an
+        // outage is the majority of rows.
+        #expect(
+            probed[0].detail.contains("Up to date"),
+            "the clone was examined and the row says nothing about it")
+    }
+
+    /// The arm `refined(by:)`'s own comment flags as the awkward one, pinned so
+    /// that reversing it is a decision rather than a drift.
+    ///
+    /// Every other test here uses a local `origin`, where `fetch` always
+    /// succeeds — so without this one the *modal* outage is untested: no network
+    /// fails the listing and the fetch alike, and `.unreadable("fetch failed")`
+    /// then wins over `.notChecked` on every row. #189's spec chose that ("an
+    /// observation, not a guess"); the cost is that one global failure is
+    /// restated per clone and the `not checked` verdict is unreachable exactly
+    /// when it applies.
+    ///
+    /// The unreachable remote is a path that does not exist, so no network is
+    /// touched and the test stays deterministic and offline.
+    @Test("A not-checked row whose remote cannot be reached reads unreadable, not not-checked")
+    func notCheckedOverAnUnreachableRemoteIsUnreadable() async throws {
+        let (origin, clone, root) = try await makeClonePair()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try FileManager.default.removeItem(atPath: origin)
+
+        let service = RepoRegistryService(store: try BoardStore.inMemory(), config: syncTestConfig())
+        let probed = await service.probe([
+            RepoRow(
+                id: "o/r", path: clone, issue: .notChecked,
+                detail: "On disk; the listing for o failed: no network.")
+        ])
+        #expect(probed[0].issue == .unreadable("fetch failed"))
+        #expect(probed[0].issue != .notChecked)
+        #expect(probed[0].fixes.isEmpty)
+        #expect(probed[0].detail.contains("no network"), "the outage sentence still survives")
     }
 
     /// The second half of criterion 3: `.pull` is offered here on exactly the
@@ -178,14 +215,15 @@ struct RepoRegistryServiceSyncTests {
     /// verdict survives.
     @Test("No probed not-checked row is ever offered Register")
     func notCheckedIsNeverOfferedRegister() async throws {
+        // Each `defer` is installed on the line after its own pair, not once at
+        // the end: a throw from the second or third `makeClonePair()` would
+        // otherwise leak the trees the earlier ones had already written.
         let (_, dirty, dirtyRoot) = try await makeClonePair()
+        defer { try? FileManager.default.removeItem(atPath: dirtyRoot) }
         let (behindOrigin, behind, behindRoot) = try await makeClonePair()
+        defer { try? FileManager.default.removeItem(atPath: behindRoot) }
         let (_, detached, detachedRoot) = try await makeClonePair()
-        defer {
-            for root in [dirtyRoot, behindRoot, detachedRoot] {
-                try? FileManager.default.removeItem(atPath: root)
-            }
-        }
+        defer { try? FileManager.default.removeItem(atPath: detachedRoot) }
         FileManager.default.createFile(atPath: dirty + "/scratch.txt", contents: Data("x".utf8))
         try await git(["commit", "--allow-empty", "-m", "b"], in: behindOrigin)
         try await git(["checkout", "--detach"], in: detached)

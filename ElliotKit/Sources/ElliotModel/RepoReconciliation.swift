@@ -4,8 +4,14 @@ import Foundation
 ///
 /// Two families live here. The first six are what `RepoReconciler` decides from
 /// GitHub, the disk and the store. The rest are what a probe *observes* by
-/// asking git: they refine a row the reconciler already called `.ok`, and
-/// nothing about how rows are built changes to accommodate them.
+/// asking git, and nothing about how rows are built changes to accommodate them.
+///
+/// ⚠️ This said the probe's verdicts "refine a row the reconciler already called
+/// `.ok`" until #189, and that sentence was quoted in the issue as the line to
+/// move: a probe now refines any row `isProbeable` admits, which is `.ok` **and**
+/// `.notChecked`. The two are composed by `refined(by:)` rather than one
+/// replacing the other, because a clone's git state and its owner's listing
+/// answer different questions and an outage only takes the second away.
 public enum RepoIssue: Sendable, Hashable {
     case ok
     case notCloned
@@ -48,6 +54,13 @@ public enum RepoIssue: Sendable, Hashable {
     /// `RepoRegistryService.register` asks `gh repo view` for the default branch
     /// and falls back to `"main"` when *that* fails too. Offering it during an
     /// outage bakes a guess into the store, for the same reason the row appeared.
+    ///
+    /// Since #189 a probe may *replace* this verdict with what git saw on the
+    /// clone, and a row that comes back `.behind` does then get `.pull`. That is
+    /// not a hole in the paragraph above: by then the row is no longer
+    /// `.notChecked`, and a `--ff-only` against an already-configured upstream
+    /// is git alone — it never asks the `gh` that failed. This verdict itself
+    /// still carries no fix, and `Register` is still unreachable from it.
     case notChecked
     case outOfScope(OutOfScope)
 
@@ -118,15 +131,41 @@ public enum RepoIssue: Sendable, Hashable {
     /// as a pass — the exact defect #148 removed one layer up, restored here by
     /// a single `return observed`.
     ///
-    /// Every *other* observation wins, and needs no case of its own: dirty,
-    /// detached, diverged, ahead, no remote, unreadable and behind are each a
-    /// fact `git` established locally, which is precisely what an outage does
-    /// not take away. `.unreadable("fetch failed")` is the likely one during an
-    /// outage, and it is still the better answer — it says what was tried.
+    /// Every *other* observation wins: dirty, detached, diverged, ahead, no
+    /// remote, behind and `.outOfScope(.otherRoot)` are each a fact `git`
+    /// established on the local disk, which is precisely what an outage does not
+    /// take away.
+    ///
+    /// ⚠️ **`.unreadable("fetch failed")` is the one that does not fit that
+    /// sentence, and it is the likely one.** `fetch` is a network call, so a
+    /// modal outage — no network at all — fails the listing *and* the fetch, and
+    /// every row renders `unreadable` rather than `not checked`. #189's spec
+    /// decided that deliberately ("more informative than `.notChecked` … it is
+    /// an observation, not a guess") and this implements that decision; but the
+    /// argument for it is weaker than for the other six, because what was
+    /// observed is one global failure restated per clone. Pinned by
+    /// `notCheckedOverAnUnreachableRemoteIsUnreadable`, so a later reversal is a
+    /// decision rather than a drift.
+    ///
+    /// Written as an exhaustive `switch` over `self` rather than as two `==`
+    /// guards, and that is the same argument `isProbeable` makes one property
+    /// up: with guards, a verdict added to `isProbeable`'s `true` arm compiles
+    /// here untouched and silently inherits `.ok`'s "take whatever git saw",
+    /// which is the inheritance both of these exist to stop. Two exhaustive
+    /// switches mean a new case must answer *both* questions to build.
     public func refined(by observed: RepoIssue) -> RepoIssue {
-        guard isProbeable else { return self }
-        guard self == .notChecked else { return observed }
-        return observed == .ok ? .notChecked : observed
+        switch self {
+        case .ok:
+            return observed
+        case .notChecked:
+            return observed == .ok ? .notChecked : observed
+        // Not probeable: git was never asked, so there is no observation to
+        // weigh. Listed rather than swept into a `default:`, for the reason
+        // above — and these are exactly `isProbeable`'s `false` arm.
+        case .notCloned, .notRegistered, .missing, .misplaced, .unlisted, .outOfScope,
+            .behind, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable:
+            return self
+        }
     }
 }
 
@@ -169,8 +208,8 @@ public struct RepoRow: Identifiable, Sendable, Hashable {
     /// reconciles GitHub, the disk and the registration, and has no business
     /// knowing what is on a board — builds every row exactly as it did.
     /// `RepoBoardDigest` attaches these in a second, separate pass, the shape
-    /// `RepoRegistryService.probe` already uses to refine `.ok` into a git
-    /// verdict.
+    /// `RepoRegistryService.probe` already uses to refine a probeable row into a
+    /// git verdict.
     public var board: RepoBoardTally?
 
     public init(
