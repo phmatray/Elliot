@@ -66,13 +66,36 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
     one from the other is the mistake #116 is about.
 - **CI here is two workflows, and they answer different questions.**
   `.github/workflows/swift-floor.yml` (#116) asserts the runner's toolchain against the floor
-  `Package.swift` declares and builds on it; `.github/workflows/ci.yml` (#21) runs `swift build` then
-  `swift test`. ⚠️ **`swift build --build-tests` is not `swift test`** — the floor job compiles the
-  eight test targets and executes no `@Test`, so a green `swift-floor` is not a suite that passed.
-  **Branch protection is still off**, so both checks are advisory: `gh api
-  repos/phmatray/Elliot/branches/main/protection` returns 404 `Branch not protected`, and a red check
-  does not block a merge. "Wait for green CI" now returns a real verdict; it still does not stop
-  anything.
+  `Package.swift` declares, and asserts that `ci.yml` runs on that same image;
+  `.github/workflows/ci.yml` (#21) runs `swift build` then `swift test`. ⚠️ **`swift build
+  --build-tests` is not `swift test`** — `--build-tests` compiles the eight test targets and executes
+  no `@Test`, so "compiles on the floor" and "the suite passed" are two claims. That distinction is
+  #116's whole subject and it does not depend on how the jobs are arranged.
+  - **Since #187 the floor job compiles nothing, and the two claims are established one each.** It
+    ran `swift build` *and* `swift build --build-tests` until 2026-08-08, which meant every pull
+    request compiled the **whole package twice on two `macos-26` runners** — not just the test
+    targets, which is what the issue title said and what its own comments understated. Measured
+    before and after: **60–70 → 40–50 billed macOS minutes** per pull request, floor
+    2m21–3m58 → **8–9s**, ⚠️ and the figure to quote is the **saving** — 20–30 billed minutes,
+    entirely this job's own 3–4 → 1 — because `build-and-test` is untouched and its cold compile
+    still crosses a billed-minute boundary run to run (2m38, then 3m03),
+    with `1418 tests in 158 suites` unchanged either side. The arithmetic, the run ids and the
+    argument are in `swift-floor.yml`'s header, which is the durable copy — GitHub drops the logs at
+    90 days.
+  - ⛔ **So `ci.yml`'s `swift test` now carries the floor guarantee too.** Delete it, filter it, or
+    move `ci.yml` to another image and #116's claim quietly stops being exercised. Four ways for that
+    to happen are enforced by `swift-floor.yml`'s second step, which fails by name: the two
+    `runs-on:` labels parting, `swift test` disappearing from `ci.yml`, `ci.yml` selecting its own
+    toolchain (`setup-xcode`, `DEVELOPER_DIR`), and `ci.yml` filtering itself out with `paths:`.
+    What is **not** covered is a label that means two different images across a GitHub rollout, and a
+    job-level `if:` that grep cannot tell from a step-level one. Those are gaps, not impossibilities
+    — an earlier draft of this bullet said the `swift test` half "cannot be" enforced, which was
+    wrong the moment it was written (the grep that now enforces it is three lines) and is exactly the
+    kind of sentence that stops the next person closing a hole.
+  - **Branch protection is still off**, so both checks are advisory: `gh api
+    repos/phmatray/Elliot/branches/main/protection` returns 404 `Branch not protected`, and a red check
+    does not block a merge. "Wait for green CI" now returns a real verdict; it still does not stop
+    anything.
   - ⚠️ **A conflicted pull request fires no `pull_request` workflow at all — and it fails by silence,
     not by saying so.** Measured in #140: after `main` moved, GitHub created **zero** runs for the
     head SHA for 25 minutes, `check-runs` returned `total_count: 0`, a close/reopen produced nothing,

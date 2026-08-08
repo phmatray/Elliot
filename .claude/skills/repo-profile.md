@@ -33,7 +33,7 @@
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
 - **Full test:** `cd ElliotKit && swift test` (**1436 tests in 158 suites**, 5 of 5 samples on
-  `feat/189-probe-not-checked` on 2026-08-08 off `main` at `27e370f`; needs no Xcode,
+  `feat/187-compile-tests-once` on 2026-08-08 off `main` at `1c58799`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -85,6 +85,13 @@
       at the ready-flip), which is the #145 shape and the rarer one — so the whole of the +11/+0 is
       this branch's own tests and there is no drift mixed in at all. Both halves of the entry, one
       branch, no arithmetic needed: 11 new `@Test`s, 11 more in the run.
+    - **Landing #187 only the stamp moved, and the branch ships no Swift at all.** The line read
+      1418 in 158 off `da876d7`; `main` is `27e370f` (#227 added no test), and five of five samples
+      on this branch measure 1418 in 158 there too. `git merge-base HEAD origin/main` was `27e370f`
+      at the ready-flip, so `main` did not move for the branch's whole life — the #145 shape, where
+      the value is honest *and* nothing drifted underneath it. This branch touches two workflow
+      files and three prose files, so a re-measurement here could only ever change the stamp, which
+      is the #182 case as well. Both of those entries in one branch, and it cost one `swift test`.
   - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
     branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
     hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
@@ -265,13 +272,14 @@
 
 ## CI gates (the exact commands CI fails on — satisfy these locally before ready/merge)
 
-Two workflows, both on `macos-26`, and they answer different questions. Neither replaces running the
-commands locally — branch protection is off, so see the second warning below for what that costs.
+Two workflows, both on `macos-26` — and since #187 that sameness is **asserted rather than assumed**,
+because the floor claim depends on it. They answer different questions. Neither replaces running the
+commands locally — branch protection is off, so see the warning below for what that costs.
 
 | Workflow | Job | Trigger | What it runs | The claim it establishes |
 |---|---|---|---|---|
 | `.github/workflows/ci.yml` (#21) | `build-and-test` | `pull_request` → `main`, `push` → `main` | `swift build`, then `swift test`, from `ElliotKit` | the suite **passes** somewhere other than one laptop |
-| `.github/workflows/swift-floor.yml` (#116) | `floor` | `pull_request` → `main` | asserts the runner's Swift against the floor `Package.swift` declares, then `swift build` and `swift build --build-tests` | the declared floor is real and **compiles** this package |
+| `.github/workflows/swift-floor.yml` (#116, #187) | `floor` | `pull_request` → `main` | asserts the runner's Swift against the floor `Package.swift` declares, then asserts `ci.yml` runs on that same image. **Compiles nothing** — 9 seconds | the declared floor is real, and the job above is what exercises it |
 
 So the gates to satisfy locally before flipping a PR ready are exactly the two commands `ci.yml`
 runs — pass these and you have run what CI runs:
@@ -279,11 +287,32 @@ runs — pass these and you have run what CI runs:
 - `cd ElliotKit && swift build`
 - `cd ElliotKit && swift test`
 
-⚠️ **`swift build --build-tests` is not `swift test`, and the two workflows split precisely there.**
-The floor job compiles the eight test targets and never executes a `@Test`; until `ci.yml` landed, no
-assertion in this repository had ever been *run* anywhere but on a contributor's own machine. Do not
-read a green `swift-floor` check as a suite that passed — that reading is the same shape as the #116
-defect it exists to prevent.
+⚠️ **`swift build --build-tests` is not `swift test`.** This distinction is what #116 is about and it
+stays true whatever the workflows look like: `--build-tests` compiles the eight test targets and
+executes no `@Test`, so "it compiles on the floor" and "the suite passes" are two claims and only one
+of them is about behaviour. Until `ci.yml` landed, no assertion in this repository had ever been *run*
+anywhere but on a contributor's own machine.
+
+⚠️ **What changed in #187 is where each claim is established, and a green `swift-floor` now proves
+even less on its own than it used to.** The floor job ran `swift build` *and* `swift build
+--build-tests` until 2026-08-08; both came out, because `ci.yml`'s `swift test` compiles the same
+targets on the same image, so a pull request was compiling the whole package **twice on two runners**
+— 60–70 billed macOS minutes, now 40–50, a **saving of 20–30** (measured, criterion 3; the
+arithmetic and the run ids live in `swift-floor.yml`'s header, which also says why the saving is the
+honest figure to quote and the total is not). So:
+
+- `floor` green = the runner's Swift **is** the declared floor, and `ci.yml` runs on that image. It
+  compiles nothing, and it never did execute a `@Test`.
+- `build-and-test` green = the package compiles **and** the suite passes, on that same image.
+- Neither alone is #116's criterion; the two together are exactly it.
+
+⛔ **`ci.yml`'s `swift test` is now load-bearing for the floor claim, not only for test coverage.**
+Removing it, narrowing it with a filter, or moving `ci.yml` to a different image retires #116's
+guarantee. `floor`'s second step enforces four of those rather than requesting them, failing by name:
+the two `runs-on:` labels parting, `swift test` vanishing from `ci.yml`, `ci.yml` selecting its own
+toolchain (`setup-xcode`, `DEVELOPER_DIR`), and `ci.yml` filtering itself out with `paths:`. Two gaps
+remain and are written down rather than glossed: a runner label can mean different images either side
+of a GitHub rollout, and a job-level `if:` is not distinguishable from a step-level one by grep.
 
 ⚠️ **Branch protection on `main` is still off, so both checks are advisory.** Measured 2026-08-06:
 `gh api repos/phmatray/Elliot/branches/main/protection` returns **404 `Branch not protected`** — not
