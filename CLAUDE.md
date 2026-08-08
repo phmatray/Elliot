@@ -478,10 +478,27 @@ and the value the Start button is disabled by. It used to be a `.disabled(…)` 
 #151 removed that (a toggle you cannot switch off is worse than one that opens onto an explanation)
 and very nearly removed the gate with it.
 
-⛔ **The analysis panel carries no `.keyboardShortcut(.defaultAction)`.** It did as a `Window` scene,
-where Return was scoped to it. As a sibling in the board window it would share Return with
-`DetailPanelView`'s Save, with nothing in the code deciding between them — and the claimant here
+⛔ **The analysis panel's *Start* button carries no `.keyboardShortcut(.defaultAction)`.** It did as a
+`Window` scene, where Return was scoped to it. As a sibling in the board window it would share Return
+with `DetailPanelView`'s Save, with nothing in the code deciding between them — and the claimant here
 spawns up to eight unattended runs.
+
+⚠️ **This said "the analysis *panel* carries no `.defaultAction`" until #247, and that was false** —
+`ProposalEditor`'s Save has one, and always did. The error mattered in the direction it pointed: it
+made the Return problem read as already solved, while two claimants that **co-reside by design** sat
+on the same card. `PanelLayout.headerRegions` returns `[.mergeConfirmation]` and only *then* runs
+`guard !isEditing else { return regions }`, so on a card imported from a pull request that closes no
+issue — `issueNumber == nil` shows "Edit story", `prNumber != nil` arms a merge — Return resolved
+between saving an edit and **merging to a default branch on github.com**. `swift test` cannot press a
+key, so nothing failed and nothing could have.
+
+Since #247 the rule lives in code with a gate: **`.keyboardShortcut(.defaultAction)` may be claimed
+only by a control that commits text the reader has typed.** `DefaultAction` (`ElliotAppKit`) lists the
+three sanctioned claimants and the two deliberately denied; `DefaultActionTests` reads the source,
+attributes every claim to its button's label, and fails naming the file when one is unsanctioned,
+miscounted, in the wrong file, or unattributable. `Merge PR` lost its claim outright rather than being
+scoped better — the one act that cannot be taken back must be reached by pressing it. Verified by
+reintroducing the defect and watching all four checks go red.
 
 Opening the analysis panel scrolls the board to its leading edge
 (`BoardFraming.offsetX(from:boardWidth:)`), because a panel the reader just asked for that lands
