@@ -44,7 +44,10 @@ public struct NextStepsView: View {
                 }
             }
         }
-        .navigationTitle("Up next")
+        // No `.navigationTitle`: this is a console face now, and a title set
+        // here propagates to the *board window* and renames it — measured, and
+        // not stopped by a nested NavigationStack nor by an ancestor re-asserting
+        // the board's own. The console header names the screen.
     }
 
     private var header: some View {

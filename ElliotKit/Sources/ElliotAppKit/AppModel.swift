@@ -208,6 +208,62 @@ public final class AppModel {
         }
     }
 
+    /// Which screen the console is unfolding above the status bar, and how tall.
+    ///
+    /// One value rather than a face beside a `Bool`, and its transitions live on
+    /// `ConsoleState` rather than here: pressing a door twice is not the same act
+    /// as choosing a screen from a menu, and this model would otherwise decide
+    /// that afresh at each of the call sites below.
+    ///
+    /// ⚠️ **Not persisted, deliberately, and unlike the two panel spans.** A
+    /// board that reopened onto Operations would be reporting on a machine state
+    /// from a previous session, over the columns the reader actually came back
+    /// for. The *height* is a designed preference and will be persisted when
+    /// something exists to set it with; which screen was open is a session.
+    public var console = ConsoleState()
+
+    /// What a **door in the status bar** does.
+    ///
+    /// The figure a reader presses is the thing they are reading, so pressing it
+    /// again unmistakably means "put this away". `ConsoleState.press` holds that
+    /// rule; this is the funnel to it.
+    public func pressConsoleDoor(_ face: ConsoleFace) {
+        console.press(face)
+    }
+
+    /// What a **menu item** does: show this screen, whatever was showing.
+    ///
+    /// Deliberately not ``pressConsoleDoor``. An item named "Operations" that
+    /// closed Operations would do the opposite of what it says on every second
+    /// use, and unlike a door it carries no figure to make the toggle read as
+    /// one.
+    public func showConsoleFace(_ face: ConsoleFace) {
+        console.show(face)
+    }
+
+    /// Folds the console away, keeping the height for next time.
+    ///
+    /// Reached by the header's ✕ and by Escape, whose order is
+    /// `EscapeRoute.next(consoleIsOpen:hasSelectedCard:)` and not this method's
+    /// business.
+    public func closeConsole() {
+        console.close()
+    }
+
+    /// What View ▸ Shorten/Lengthen Console should read right now.
+    ///
+    /// Here for the reason ``panelWidthToggleTitle`` gives: which of the two
+    /// designed heights is the *other* one is a judgement about the designed
+    /// pair, and a menu that made it would be a second place holding it.
+    public var consoleHeightToggleTitle: String {
+        console.height == .tall ? "Shorten Console" : "Lengthen Console"
+    }
+
+    /// Moves the console to the height it is not currently at.
+    public func toggleConsoleHeight() {
+        console.height = console.height.toggled
+    }
+
     /// What View ▸ Narrow/Widen Details should read right now.
     ///
     /// Here rather than in the menu because it is a judgement about which of the

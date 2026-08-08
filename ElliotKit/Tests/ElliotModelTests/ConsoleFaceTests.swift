@@ -44,17 +44,29 @@ struct ConsoleFaceTests {
     /// The compatibility promise. `board_screenshot window=<id>` is the only way
     /// an agent has ever named a screen, and #232 is about that call being
     /// unable to reach any of them. The fix must not also rename them.
-    @Test("Every face's raw value is the scene id that screen has today")
-    func rawValuesAreTodaysSceneIDs() {
-        for face in ConsoleFace.allCases {
-            #expect(
-                ElliotWindows.all.contains(face.rawValue),
-                """
-                \(face.rawValue) is not a scene id today. While a face is still a window, its \
-                raw value has to be the id an agent already passes to board_screenshot
-                """
-            )
-        }
+    ///
+    /// ⚠️ **A frozen literal, and the one place in this suite where restating
+    /// the enum is correct.** It checked `ElliotWindows.all.contains(…)` until
+    /// the console's first wave, which held only while every face was still a
+    /// window; the moment `operations` and `nextSteps` stopped being scenes, the
+    /// check started asserting that the migration had not happened. What the
+    /// promise is actually about is **history** — the ids these screens were
+    /// published under — and history does not follow the source. So this list is
+    /// deliberately not derived from anything, and a face whose raw value must
+    /// change has to change it here too, in front of a comment explaining what
+    /// breaks for the caller.
+    @Test("Every face's raw value is the id that screen was published under")
+    func rawValuesAreThePublishedIDs() {
+        let published: Set<String> = [
+            "repositories", "operations", "nextSteps", "preflight", "archive", "newStory",
+        ]
+        #expect(
+            Set(ConsoleFace.allCases.map(\.rawValue)) == published,
+            """
+            a face's raw value has moved away from the id agents pass to board_screenshot. \
+            Renaming one is a breaking change to the only caller this migration exists to serve
+            """
+        )
     }
 
     @Test("A face round-trips through its raw value, which is also its identity")
