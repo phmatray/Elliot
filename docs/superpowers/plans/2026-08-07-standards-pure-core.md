@@ -473,7 +473,18 @@ and `notApplicable(.empty)` in Standards.
 
 **Files:**
 - Modify: `ElliotKit/Sources/ElliotModel/RepoReconciliation.swift:47`, `:175-183`
+- Modify: `ElliotKit/Sources/ElliotAppKit/RepositoriesView.swift:333-335` — the
+  `verdict` switch is exhaustive over `OutOfScope`, so adding `.empty` stops the
+  app compiling until it gets a word. Use `"empty"`.
+- Modify: `ElliotKit/Tests/ElliotAppKitTests/RepositoriesVocabularyTests.swift:73`
+  — add `.outOfScope(.empty)` to `everyIssue`.
 - Test: `ElliotKit/Tests/ElliotModelTests/RepoScopeTests.swift`
+
+⚠️ `RepositoriesVocabularyTests.vocabularyIsTotal` asserts three things about
+every verdict: it has a non-empty word, its icon is a real SF Symbol on this
+system, and **no two verdicts share a word**. So the new word has to be distinct
+from `"fork"`, `"archived"`, `"out of scope"` and the twelve others. `icon` and
+`tint` switch on `.outOfScope` without its associated value and need no change.
 
 **Interfaces:**
 - Consumes: `GHRepoSummary` (task 2).
