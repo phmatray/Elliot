@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1407 tests in 158 suites**, 5 of 5 samples on
-  `feat/132-persist-panel-width` on 2026-08-08 off `main` at `b0d121a`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1439 tests in 162 suites**, 5 of 5 samples on
+  `feat/167-artefact-retention` on 2026-08-08 off `main` at `da876d7`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -148,6 +148,14 @@
       its own tests existed, so 40 of its 46 were unrecorded drift and only 6 were the branch's own.
       A correction here is rarely evidence that the previous author miscounted; it is mostly the
       interval since they looked.
+    - **Landing #167 the drift was zero again, and the arithmetic closed exactly.** `main` did not
+      move for the whole life of the branch — `git log HEAD..origin/main` was **empty** at the
+      ready-flip, so the tested tree *was* the merged tree and the merge was a no-op. The previous
+      value, 1407 in 158 off `da876d7`, was still true; the delta of +32 and +4 is this branch's four
+      suites and nothing else (10 + 7 + 8 + 7). Worth recording only because the intermediate number
+      was **1438**, and the +1 came from the code-review pass replacing one test with two — so even a
+      branch with zero drift from `main` moved its own count after the baseline was taken. Re-measure
+      after the review, not only after the merge.
     - **Landing #145 the drift was zero and every test of the delta is the branch's own** — the rare
       complement to the bullet above, and worth recording because the entry is otherwise a list of
       the opposite. `git merge-base HEAD origin/main` was `2494882`, i.e. **`main` had not moved at
