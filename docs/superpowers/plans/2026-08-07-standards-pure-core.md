@@ -1325,6 +1325,13 @@ public struct StandardFinding: Identifiable, Sendable, Hashable {
 }
 ```
 
+⚠️ **Give `Violation`, `StandardFinding` and `RepoStandardsAssessment` an explicit
+`public init`**, matching the one `RepoMeasurement` already has in task 5. A public
+struct's memberwise initialiser is **internal**, which is invisible here — the tests
+use `@testable import` — and becomes a compile error the moment `StandardsService`
+is written, because plan 2 puts it in `ElliotEngine`, another module. This is not
+speculation: the spec places that service there, so the boundary is certain.
+
 > `Evidence` is reused from `StoryProposal.swift`. ⚠️ For standards,
 > `Evidence.exists` means *present in the GitHub tree*, never on disk.
 > `ProposalHarvester.resolve(_:repoPath:)` resolves with `FileManager` under a
@@ -1852,7 +1859,8 @@ every case, so topics moves from 21 to 38 by design, not by regression."
 
 **Interfaces:**
 - Consumes: tasks 4, 7, 9.
-- Produces: `StandardCardSeed(idempotencyKey:nameWithOwner:standard:title:story:body:evidence:)`,
+- Produces: `StandardCardSeed(idempotencyKey:nameWithOwner:standard:title:story:body:evidence:)`
+  — with an explicit `public init`, for the reason task 7 records,
   `StandardsEngine.cardSeed(for:repo:epoch:) -> StandardCardSeed?`.
 
 - [ ] **Step 1: Write the failing test**
