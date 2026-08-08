@@ -228,6 +228,18 @@ public final class AppModel {
             ? Preferences.spanChoices.narrow : Preferences.spanChoices.wide
     }
 
+    /// The archive's term, pages and folded days.
+    ///
+    /// On the model rather than in `ArchiveView`, for the two reasons
+    /// ``ArchiveReader`` sets out: the seam between a keystroke and a read had
+    /// no test and **could have none** while the term was `@State` (#230), and a
+    /// view's state dies with the view — which is what a board slot's hide does.
+    ///
+    /// A `let`: `@Observable` tracks through a nested reference fine, but a
+    /// satellite *reassigned* wholesale invalidates every reader of it, and
+    /// nothing here ever wants a second archive.
+    let archive = ArchiveReader()
+
     /// Every reader preference this launch holds, and the single source of the
     /// values the setters above expose one field at a time.
     ///
