@@ -285,7 +285,8 @@ jobs:
 
           # A quoted scalar is valid YAML and identical in meaning, so tolerate quotes rather than
           # failing on `runs-on: "macos-26"` with a message about ci.yml being deleted.
-          read_images() { sed -n 's|^ *runs-on: *["'\'']\{0,1\}\([A-Za-z0-9._-]\{1,\}\)["'\'']\{0,1\} *$|\1|p' "$1"; }
+          runs_on_re='^ *runs-on: *["'\'']\{0,1\}\([A-Za-z0-9._-]\{1,\}\)["'\'']\{0,1\} *$'
+          read_images() { sed -n "s|$runs_on_re|\1|p" "$1"; }
 
           floor_all=$(read_images .github/workflows/swift-floor.yml)
           ci_all=$(read_images .github/workflows/ci.yml)
@@ -368,4 +369,5 @@ jobs:
           # decoupled ci.yml from it", never as "the test targets compiled": that is ci.yml's own
           # check to report, and it reports it.
           echo "✓ Both workflows declare $ci_image, and ci.yml still runs 'swift test' on it."
-          echo "- floor image \`$floor_image\` == ci image \`$ci_image\`, ci.yml runs \`swift test\`" >> "$GITHUB_STEP_SUMMARY"
+          summary="- floor image \`$floor_image\` == ci image \`$ci_image\`"
+          echo "$summary, and ci.yml runs \`swift test\`" >> "$GITHUB_STEP_SUMMARY"
