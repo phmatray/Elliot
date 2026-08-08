@@ -57,6 +57,40 @@ struct ArchiveState: Equatable, Sendable {
     }
 }
 
+/// One day header the archive draws, and whether a page boundary may have cut
+/// that day.
+///
+/// A named value rather than a tuple built inline in the `body`, because the
+/// predicate that sets `partial` is the whole of what #162 changed on screen —
+/// and inline in a `ViewBuilder` it was unreachable by any test. Code review
+/// proved that concretely: inverting the flag, so every whole day was marked and
+/// the cut one was not, left all 1415 tests green.
+struct ShipDayRow: Equatable, Identifiable {
+    /// The day's own identity, so the `ForEach` keys on exactly what it did
+    /// before this type existed.
+    var id: Date { day.id }
+    var day: ShipDay
+    var partial: Bool
+}
+
+extension ArchiveState {
+    /// The loaded rows as day headers, each carrying whether its count is a
+    /// floor rather than the day's total.
+    ///
+    /// `now` and `calendar` are parameters and not `.current`, for the reason
+    /// `ShipDayHeader.text` gives: a rule tested against the ambient clock fails
+    /// somewhere near midnight and in somebody else's timezone.
+    ///
+    /// No horizon — the archive is the whole history, which is the case that
+    /// parameter exists for, and it is also what makes `partialDay` able to
+    /// answer at all (it refuses a horizon-limited log by design).
+    func dayRows(now: Date, calendar: Calendar) -> [ShipDayRow] {
+        let log = shippingLog(cards, now: now, calendar: calendar, horizonDays: nil)
+        let cut = log.partialDay(moreToLoad: canLoadMore)
+        return log.days.map { ShipDayRow(day: $0, partial: $0.start == cut) }
+    }
+}
+
 /// Everything the archive's answer depends on.
 ///
 /// A key for `.task(id:)`, so that any of the three changing re-reads. Written
@@ -122,12 +156,16 @@ public struct ArchiveView: View {
                     // ever going to be found.
                     Fact(text: summary, tint: Palette.quiet, small: true)
                         .padding(.bottom, 2)
-                    // No horizon: the archive is the whole history, which is
-                    // the case this parameter exists for.
-                    ForEach(shippingLog(state.cards, now: Date(), calendar: .current, horizonDays: nil).days) { day in
+                    // Computed once per pass rather than inside the `ForEach`:
+                    // `shippingLog` buckets and sorts every loaded card, and the
+                    // cut day can only be named from the whole log, so asking
+                    // per row would re-derive it once per day drawn.
+                    ForEach(state.dayRows(now: Date(), calendar: .current)) { row in
+                        let day = row.day
                         ShipDayHeader(
                             label: day.label,
                             count: day.cards.count,
+                            partial: row.partial,
                             collapsed: collapsedDays.contains(day.start)
                         ) {
                             if collapsedDays.contains(day.start) {

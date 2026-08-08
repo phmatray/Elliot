@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1451 tests in 164 suites**, 5 of 5 samples on
-  `feat/171-card-labels` on 2026-08-08 off `main` at `da876d7`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**PLACEHOLDER tests in PLACEHOLDER suites**, 5 of 5 samples on
+  `feat/171-card-labels` on 2026-08-08 off `main` at `27e370f`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -65,6 +65,14 @@
       arithmetic (1342 + #211/#217's own +32/+5 over the shared base) matched the run exactly, which
       is worth recording only because it was checked **after** the run rather than used in place of
       one.
+    - **Landing #162 both halves showed up again in one branch, and the stamp was the wrong half.**
+      The line read 1407 in 158 off `b0d121a`, and 1407 in 158 is exactly what this branch's
+      untouched baseline measured — off `da876d7`, one squash later, because #215 added no test. So
+      the *value* survived a commit the stamp did not name: the #138 shape, third time. Then `main`
+      did not move for the whole life of the branch (`git merge-base HEAD origin/main` == `da876d7`
+      at the ready-flip), which is the #145 shape and the rarer one — so the whole of the +11/+0 is
+      this branch's own tests and there is no drift mixed in at all. Both halves of the entry, one
+      branch, no arithmetic needed: 11 new `@Test`s, 11 more in the run.
   - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
     branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
     hours earlier. The instruction did not change: take your own baseline anyway. What changed is the

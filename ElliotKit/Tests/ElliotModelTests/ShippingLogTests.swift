@@ -139,4 +139,56 @@ struct ShippingLogTests {
         #expect(log.days.flatMap(\.cards).count + log.olderCount == cards.count)
         #expect(log.totalCount == cards.count)
     }
+
+    // MARK: - Which day a page boundary can understate
+
+    @Test("With everything loaded, no day's count is a guess")
+    func nothingIsPartialWhenFullyLoaded() {
+        let log = shippingLog([done(0.1), done(1.1), done(3.1)], now: now, calendar: utc, horizonDays: nil)
+        #expect(log.partialDay(moreToLoad: false) == nil)
+    }
+
+    /// Written against the corpus rather than against the implementation: the
+    /// named day is asserted to be *the one the page left short*, which is a
+    /// claim about the data. `== days.last?.start` was the first version of this
+    /// and it restated the function body, so it could not have failed for any
+    /// implementation of that shape — including a wrong one.
+    @Test("While more can load, the named day is the one the page left short")
+    func partialDayIsTheDayThePageCut() {
+        // Two whole days and a third, in the order `doneCards` returns them.
+        let corpus = ([done(0.1), done(0.2)] + [done(1.1), done(1.2), done(1.3)] + [done(2.1)])
+            .sorted { $0.columnEnteredAt > $1.columnEnteredAt }
+        let whole = shippingLog(corpus, now: now, calendar: utc, horizonDays: nil)
+
+        // A page that stops partway through the second day.
+        let page = shippingLog(Array(corpus.prefix(4)), now: now, calendar: utc, horizonDays: nil)
+        let named = page.partialDay(moreToLoad: true)
+
+        var short: [Date] = []
+        for day in page.days {
+            let trueCount = whole.days.first { $0.start == day.start }?.cards.count
+            if day.cards.count < (trueCount ?? 0) { short.append(day.start) }
+        }
+        #expect(short.count == 1)
+        #expect(named == short.first)
+    }
+
+    /// ⛔ A horizon-limited log cannot name a cut day, and must not guess one.
+    ///
+    /// `days.last` there is the oldest day *inside* the horizon — provably
+    /// whole — while the cards whose count is genuinely unknown are the ones
+    /// folded into `olderCount` and absent from `days` entirely. The board's own
+    /// `doneLog()` is exactly such a log, so nothing but this guard stops a
+    /// caller being handed a confidently wrong day.
+    @Test("A horizon-limited log answers 'I cannot say' rather than naming a whole day")
+    func horizonLimitedLogNamesNothing() {
+        let log = shippingLog([done(0.1), done(1.1), done(30), done(60)], now: now, calendar: utc, horizonDays: 7)
+        #expect(log.olderCount == 2)
+        #expect(log.partialDay(moreToLoad: true) == nil)
+    }
+
+    @Test("An empty log has no partial day to name")
+    func emptyLogHasNoPartialDay() {
+        #expect(ShippingLog().partialDay(moreToLoad: true) == nil)
+    }
 }
