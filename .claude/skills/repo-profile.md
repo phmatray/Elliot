@@ -33,7 +33,7 @@
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
 - **Full test:** `cd ElliotKit && swift test` (**1586 tests in 178 suites**, 5 of 5 samples on
-  `fix/179-concurrent-pumps` on 2026-08-08 off `main` at `b04e204`; needs no Xcode,
+  `docs/161-automation-grants-by-identity` on 2026-08-08 off `main` at `2e4285d`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -495,14 +495,26 @@ above within seconds.
     card into **Done** without moving one there through the board, which would merge a real pull
     request. Checkpoint the WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) before and after, or a still-open
     instance will silently checkpoint your row away.
-  - **Drive it with `cua-driver`**, which reads the tree and clicks by element index without bringing
-    the app to the front. Re-snapshot before every click: element indices are per-snapshot.
-  - **Or just look, since #155: `board_screenshot` over MCP.** Elliot renders its own window in
-    process, so there is no TCC grant to hold and nothing has to be frontmost. ⚠️ It cannot draw
+  - **Start by just looking, since #155: `board_screenshot` over MCP.** Elliot renders its own window
+    in process, so there is no TCC grant to hold and nothing has to be frontmost — which is why it is
+    first here rather than a fallback. ⚠️ It cannot draw
     sheets, popovers **or the toolbar's controls** — the last one is measured, not theoretical, and
     the toolbar is a conflict hot-spot in the table above. Every reply lists what it left out in
     `not_included`; read that before believing something is missing. Keep `ELLIOT_HOME` short or the
     unix socket exceeds `sun_path`'s 104 bytes and the helper reports a running app as absent.
+  - **Which grants *you* hold is a two-line answer** — `AXIsProcessTrusted()` and
+    `CGPreflightScreenCaptureAccess()`, neither of which prompts. `CLAUDE.md` § *Looking and touching
+    are two different grants* has those probes, the ancestry walk that names the identity they speak
+    for, and the measured table of what each channel answers. `Scripts/list-windows.swift` enumerates
+    windows on geometry alone, which survives without Screen Recording.
+  - ⚠️ **`cua-driver` is the last resort, not the first — it has held neither grant every time it has
+    been measured** (`cua-driver permissions status --json`, re-confirmed 2026-08-07), and without
+    Accessibility it reports `unverifiable` rather than failing. ⛔ **Your own shell's grants do not
+    help it**: the daemon is *its own responsible process* (`"bundle_id": "com.trycua.driver"`,
+    `"responsible_ppid": 1`), so no ancestry of yours changes what it can do — granting your terminal
+    Accessibility and concluding "then cua-driver will work for me" buys a run of silent no-ops. When
+    it *is* granted it reads the tree and clicks by element index without bringing the app to the
+    front; re-snapshot before every click, since element indices are per-snapshot.
   - **What this actually caught, on #79, with 730 tests green and `swift build` clean:** the framing
     scroll was a no-op — `onChange` ran inside the update that changed the selection, so it scrolled
     the row that existed *before* the panel was inserted and clamped to zero. It was invisible in four
