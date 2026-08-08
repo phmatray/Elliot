@@ -615,6 +615,43 @@ Claude Code handles it, aborts the turn, kills its Bash process tree, runs Sessi
 Runs default to `--permission-mode bypassPermissions`; `permissionMode` is a per-repo column if you want
 to tighten one.
 
+### Artefact retention
+
+`runs/`, `screenshots/` and `analyses/` are bounded since #167, by one pure rule applied once per
+launch. **Keep everything younger than 14 days; past that keep newest-first until 512 MB per
+directory and delete the rest** (`ArtifactRetention`, `ElliotModel`). The ceiling budgets the
+*remainder past the horizon*, not the directory total — young files are kept unconditionally and are
+not counted against it, so the honest bound is "a fortnight of writing, plus 512 MB".
+
+`ArtifactSweeper` (`ElliotEngine`, an `actor`) lists, asks and unlinks; it decides nothing.
+`AppModel.start()` runs it in a detached `Task` **after** `status` is assigned, and both halves of
+that placement are load-bearing: after the *reconciler* because the runs it just marked failed are
+exactly the ones whose logs stop being protected, and after the *status line* because the task shares
+the main actor with `start()` — started earlier, a sweep finishing inside one of `start()`'s
+suspensions appends its sentence to a line the "Ready." assignment then overwrites, so the message
+goes missing precisely when it had something to say.
+
+⛔ **Protection is a string comparison between two paths built by different code, so both sides go
+through `StoreLocation.canonicalPath`.** `FileManager`'s enumerator returns **symlink-resolved** URLs
+and `runLogURL` does not; on macOS `/tmp` is a symlink to `/private/tmp`, and `/tmp/elliot-check` is
+the scratch home this very file recommends. Measured while writing #167: `/var/folders/…` in, `/private/var/folders/…`
+out. Compare raw and the membership test silently stops matching, and the sweep deletes the log of a
+run still in flight — **failing open**, with nothing on screen. Same family as the false negatives
+this file already collects: nothing says *no*.
+
+⛔ **No protected set, no sweep.** The tempting `?? []` on a failed read of the runs table turns "I
+could not find out which runs are live" into "no run is live". A failure to read the board is a
+reason not to touch the disk.
+
+Verified on the shipped build, not inferred: a copy of the real `runs/` (754 files, 73 MB, all
+written within three days) went in and **754 came out** — the intended answer, since a retention rule
+whose first run deletes something gets reverted. Then, on the same binary with no constant patched,
+eight aged copies stacked to 586 MB: **523 files and 50.8 MB removed**, leaving 535,344,850 bytes
+against a 536,870,912 ceiling, and the status line read *"Ready. Pruned 523 old files (50,8 MB)."*
+The cut lands mid-copy because the rule cuts at the **file** that would overflow, and the files
+inside one copy share an mtime — which is the path tie-break earning its place on real data rather
+than in a unit test.
+
 ## Testing discipline
 
 `swift test` must be **deterministic and always-terminating**. Three rules keep it that way; breaking any
