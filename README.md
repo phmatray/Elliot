@@ -39,7 +39,7 @@ not open".
 
 | From → To | What happens |
 |---|---|
-| Backlog → To Do | `/ai-migration-kit:create-issue <story>` — fills in the issue number |
+| Backlog → To Do | `/ai-migration-kit:create-issue <story>` (+ repeatable `--label`) — fills in the issue number |
 | To Do → In Progress | `/ai-migration-kit:implement-issue <n>` — fills in the PR number and branch |
 | In Progress → In Review | *no skill* — automatic, when the PR goes ready |
 | In Review → Done | `/ai-migration-kit:merge-pr <pr>` (+ repeatable `--follow-up`) |
@@ -49,10 +49,39 @@ The backlog holds **user stories**, not loose ideas: `role` / `want` / `benefit`
 plus acceptance criteria, kept as separate fields. That is what will let a skill
 *generate* stories from a repository later instead of parsing prose back apart.
 
-A card can be corrected — label, story, acceptance criteria — from its detail
-sheet, right up until it is filed. Once it carries an issue number the card stops
-being the record: edit the issue on GitHub instead. Elliot refuses the edit rather
-than letting the two drift.
+A card can be corrected — label, story, acceptance criteria, GitHub labels — from
+its detail sheet, right up until it is filed. Once it carries an issue number the
+card stops being the record: edit the issue on GitHub instead. Elliot refuses the
+edit rather than letting the two drift.
+
+### The labels a card asks for
+
+A card says which GitHub labels its issue should carry, and they travel to
+`create-issue` as `--label "bug" --label "documentation"`. Left empty — the
+common case — the prompt gains nothing at all and the skill picks labels the way
+it always has.
+
+They are chosen from **the repository's own labels**, read through
+`gh label list`, so a card cannot quietly ask for one that does not exist. A
+label the repository turns out not to have is **struck through and marked on the
+card**, never dropped: the card records what someone asked for, and the mark is
+what says the repository disagrees. If `gh` cannot be reached at all, the card's
+own labels still show and the picker says so — *could not be established* is a
+different sentence from *this repository has no labels*, and Elliot does not
+print one when it means the other.
+
+A story from the analysis arrives with its lens's label already ticked, where you
+can see it and take it off: 🐛 bugs → `bug`, ✨ features → `enhancement`,
+📖 docs & DX → `documentation`. The other five lenses suggest nothing, on purpose
+— a quick win is a claim about effort and tech debt is a claim about where the
+work is, and neither names a kind of issue. A guess dressed as a decision is the
+thing this replaces.
+
+⚠️ **`--label` is an instruction, not a parsed flag.** Measured against
+ai-migration-kit 1.9.0: `merge-pr` documents `--follow-up` as an argument,
+`create-issue` documents no arguments and chooses labels itself. An agent reading
+the prompt will very likely honour it; nothing obliges it to. So the card is the
+record of the *intent*, and what the issue ended up with is read back from `gh`.
 
 ## Where stories come from
 

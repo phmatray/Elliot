@@ -97,6 +97,31 @@ public enum SlashCommandBuilder {
             // The flags go *after* the idea and never before it: the idea is
             // free text the skill reads to the end of, so a flag in front of it
             // would be swallowed as part of what the issue is about.
+            //
+            // ⚠️ **`--label` is not a contract `create-issue` publishes, and
+            // `--follow-up` is** — measured against ai-migration-kit 1.9.0 while
+            // landing #171, and worth knowing before trusting it. `merge-pr`'s
+            // SKILL.md has an *Arguments* section naming
+            // `--follow-up "<idea>"` as optional and repeatable; `create-issue`
+            // has no such section, says only "pull the idea(s) from the user's
+            // request", and **chooses labels itself** — read the live set, pick
+            // one per axis from the profile's taxonomy. Every `--label` in that
+            // skill is its own `gh issue create` call, not an input it parses.
+            //
+            // So this suffix is an instruction to a reader, not a flag to a
+            // parser: an agent that sees it will very likely honour it, and
+            // nothing obliges it to. That is why the card is the record — the
+            // board now *shows* the intent whatever the skill does — and why
+            // the acceptance check is the filed issue's labels read back
+            // through `gh`, never the run's closing prose. The durable fix is
+            // an *Arguments* section in `create-issue`, which lives in another
+            // repository; it is filed as a follow-up rather than worked around
+            // here, because inventing a second channel for it would be a second
+            // way for the two to disagree.
+            //
+            // What *is* established here: the flags reach the child process
+            // intact, in one argv element, quotes and all
+            // (`ClaudeRunnerTests.labelsReachTheArgv`).
             return "\(name) \(idea.collapsedToSingleLine())\(flags("--label", labels))"
 
         case .implementIssue(let n):
