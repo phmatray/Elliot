@@ -130,7 +130,25 @@ struct MergeConfirmation: View {
                 Button("Merge PR \(pr)") {
                     Task { await model.confirmMerge(cardID: pending.cardID, followUps: cleaned) }
                 }
-                .keyboardShortcut(.defaultAction)
+                // ⛔ No `.keyboardShortcut(.defaultAction)`, and its absence is
+                // load-bearing — see `DefaultAction`, which lists this control
+                // among the ones deliberately denied one.
+                //
+                // It carried one until it was measured against the panel it
+                // actually renders in. `PanelLayout.headerRegions` returns
+                // `[.mergeConfirmation]` and only *then* checks `isEditing`, so
+                // this confirmation deliberately survives edit mode; on a card
+                // imported from a pull request that closes no issue —
+                // `issueNumber == nil`, so "Edit story" shows; `prNumber != nil`,
+                // so a merge can be armed — Return had two claimants on screen
+                // at once and resolved between saving an edit and merging to a
+                // default branch on github.com, with nothing in the code
+                // deciding.
+                //
+                // The fix is not to scope Return better. The one act in this
+                // product that cannot be taken back must be reached by pressing
+                // it, which is the same argument `AnalysisPanelView` makes for
+                // its Start button one panel over.
                 .tint(Palette.irreversible)
             }
         }

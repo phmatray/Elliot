@@ -394,4 +394,57 @@ struct IPCTests {
         #expect(UnixSocket.pathFits(fits))
         #expect(throws: Never.self) { try UnixSocket.makeAddress(path: fits) }
     }
+
+    // MARK: - A merged outcome names its pull request on the wire too (#139)
+
+    /// The DTO already had `number`, `url` and `branch` for `pr_open`; what was
+    /// missing was the two cases passing them through. A helper that renders a
+    /// Done card's receipt has no other source for them.
+    @Test("A merged outcome carries its number, URL and branch through the DTO")
+    func mergedCarriesItsPullRequestOverTheWire() throws {
+        let dto = VerifiedOutcomeDTO(
+            .merged(
+                commitSHA: "abc1234", number: 42,
+                url: "https://github.com/o/r/pull/42", branch: "feat/7-x"
+            )
+        )
+
+        #expect(dto.kind == "merged")
+        #expect(dto.commitSHA == "abc1234")
+        #expect(dto.number == 42)
+        #expect(dto.url == "https://github.com/o/r/pull/42")
+        #expect(dto.branch == "feat/7-x")
+
+        // And it survives the encode/decode the wire actually performs.
+        let round = try JSONDecoder().decode(
+            VerifiedOutcomeDTO.self, from: JSONEncoder().encode(dto)
+        )
+        #expect(round == dto)
+    }
+
+    @Test("A closed-unmerged outcome carries its number, URL and branch too")
+    func closedUnmergedCarriesItsPullRequestOverTheWire() {
+        let dto = VerifiedOutcomeDTO(
+            .closedUnmerged(
+                number: 42, url: "https://github.com/o/r/pull/42", branch: "feat/7-x"
+            )
+        )
+
+        #expect(dto.kind == "closed_unmerged")
+        #expect(dto.number == 42)
+        #expect(dto.url == "https://github.com/o/r/pull/42")
+        #expect(dto.branch == "feat/7-x")
+    }
+
+    /// `VerifiedOutcome` crosses the wire, so widening two of its cases is a
+    /// wire-format change: an old helper in an old bundle must be refused at
+    /// `hello` rather than silently rendering a receipt with no pull request.
+    ///
+    /// The plan for #139 said "4 → 5"; `main` had already reached 6 by the time
+    /// it was executed, and writing 5 would have *lowered* the version and
+    /// readmitted exactly the helpers the bump exists to refuse.
+    @Test("Widening the outcome bumped the protocol version")
+    func protocolVersionIsSeven() {
+        #expect(elliotProtocolVersion == 7)
+    }
 }
