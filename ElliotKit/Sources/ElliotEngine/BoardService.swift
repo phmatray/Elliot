@@ -97,6 +97,12 @@ public actor BoardService: SystemMoving {
         let activeRun = try await store.activeRun(cardID: cardID)
         let context = MoveContext(
             repoIsEnabled: repo.isEnabled,
+            // Read off the row this method already loaded. That is the whole
+            // reason the verdict is persisted rather than held on `AppModel`:
+            // the funnel every move passes through gets it with no new
+            // collaborator, so a drag, `board_move_card` and `board_next`
+            // cannot answer differently.
+            repoPreflight: repo.preflightVerdict,
             activeRunID: activeRun?.id,
             allowSideEffects: origin.allowsSideEffects,
             providedFollowUps: followUps

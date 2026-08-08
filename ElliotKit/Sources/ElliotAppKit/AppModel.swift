@@ -1168,6 +1168,12 @@ public final class AppModel {
             card: card,
             context: MoveContext(
                 repoIsEnabled: repo(for: card)?.isEnabled ?? false,
+                // The persisted verdict, not `repoChecks` — the same value
+                // `BoardService` will read when the drop is committed. Reading
+                // the in-memory dictionary here would make the caption a second
+                // opinion about the drop, which is the one thing `preview`
+                // exists not to be.
+                repoPreflight: repo(for: card)?.preflightVerdict ?? .notChecked,
                 activeRunID: activeRuns[card.id]?.id,
                 allowSideEffects: true,
                 // Left uncollected on purpose: the merge really does stop to
@@ -2003,7 +2009,37 @@ public final class AppModel {
         )
         let preflight = service ?? PreflightService(environment: environment, config: toolConfig)
         for repo in repos {
-            repoChecks[repo.id] = await preflight.repoChecks(repo)
+            await record(await preflight.repoChecks(repo), for: repo)
+        }
+    }
+
+    /// Records a sweep's results in the two places that need them.
+    ///
+    /// `repoChecks` is what the screens read; `Repo.preflight` is what the rule
+    /// engine reads, through the row `BoardService.proposeMove` already loads.
+    /// One method rather than two assignments at each of the two sweep sites,
+    /// because the whole defect being fixed here is a verdict that existed in
+    /// one place and was unreachable from the other — writing it twice by hand
+    /// is how it would become unreachable again.
+    ///
+    /// The write is skipped when the verdict has not moved. The repo table is
+    /// observed, so an unconditional save on every sweep would republish every
+    /// row and reload the board for nothing.
+    private func record(_ results: [CheckResult], for repo: Repo) async {
+        repoChecks[repo.id] = results
+        let verdict: PreflightState = PreflightService.isBlocking(results) ? .failing : .passing
+        guard repo.preflightVerdict != verdict, let store else { return }
+        var updated = repo
+        updated.preflight = verdict
+        do {
+            try await store.saveRepo(updated)
+        } catch {
+            // Not `try?`. If this write is lost the board silently goes on
+            // permitting moves in a repository Elliot has just diagnosed as
+            // broken — which is the exact failure this whole change removes, so
+            // it is the last thing that should fail quietly.
+            status = "Could not record Preflight's verdict for \(repo.displayName): "
+                + error.localizedDescription
         }
     }
 
@@ -2077,7 +2113,11 @@ public final class AppModel {
         // subprocesses each, plus a networked `gh label list` per repo since
         // #170. Pressing one button should not start a full-board sweep with no
         // progress and no re-entrancy guard.
-        repoChecks[repo.id] = await preflight.repoChecks(repo)
+        // Through `record` so the repository row learns the new verdict too: a
+        // fix that repairs the failing check must clear the block here, not at
+        // the next full sweep. That is what bounds the staleness this column
+        // trades for being readable by the rule engine.
+        await record(await preflight.repoChecks(repo), for: repo)
     }
 
     // MARK: - Analysis

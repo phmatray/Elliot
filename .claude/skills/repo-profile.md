@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1586 tests in 178 suites**, 5 of 5 samples on
-  `docs/161-automation-grants-by-identity` on 2026-08-08 off `main` at `2e4285d`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1594 tests in 179 suites**, 5 of 5 samples on
+  `fix/249-blocked-repo-refuses-a-move` on 2026-08-08 off `main` at `f245ca9`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been

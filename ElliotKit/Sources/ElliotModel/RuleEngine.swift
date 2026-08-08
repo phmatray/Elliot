@@ -25,6 +25,12 @@ public enum MoveBlock: Equatable, Sendable, Hashable {
     case missingIssueNumber
     case missingPRNumber
     case repoDisabled
+    /// Preflight swept this repository and at least one check failed.
+    ///
+    /// Distinct from `repoDisabled`: that one is a switch the reader threw, this
+    /// one is a diagnosis Elliot made. They want different sentences and
+    /// different remedies — one is turned back on, the other is repaired.
+    case repoBlocked
     case runAlreadyInFlight(runID: UUID)
 
     /// Stable identifier surfaced to MCP callers.
@@ -36,6 +42,7 @@ public enum MoveBlock: Equatable, Sendable, Hashable {
         case .missingIssueNumber: "missing_issue_number"
         case .missingPRNumber: "missing_pr_number"
         case .repoDisabled: "repo_disabled"
+        case .repoBlocked: "repo_blocked"
         case .runAlreadyInFlight: "run_already_in_flight"
         }
     }
@@ -64,6 +71,16 @@ public enum MoveOutcome: Equatable, Sendable, Hashable {
 /// transition matrix is exhaustively testable without a database or a clock.
 public struct MoveContext: Equatable, Sendable, Hashable {
     public var repoIsEnabled: Bool
+
+    /// What Preflight last said about the card's repository.
+    ///
+    /// Defaults to `.notChecked` rather than `.passing`, and the difference is
+    /// the point: a caller that has not measured must not be able to assert a
+    /// pass by leaving an argument out. `.notChecked` does not block — see
+    /// ``PreflightState/notChecked`` for why — but it is a different answer, and
+    /// a reader can render it as one.
+    public var repoPreflight: PreflightState
+
     public var activeRunID: UUID?
 
     /// `false` for moves the app makes on its own behalf — reconciliation, or
@@ -77,11 +94,13 @@ public struct MoveContext: Equatable, Sendable, Hashable {
 
     public init(
         repoIsEnabled: Bool = true,
+        repoPreflight: PreflightState = .notChecked,
         activeRunID: UUID? = nil,
         allowSideEffects: Bool = true,
         providedFollowUps: [String]? = nil
     ) {
         self.repoIsEnabled = repoIsEnabled
+        self.repoPreflight = repoPreflight
         self.activeRunID = activeRunID
         self.allowSideEffects = allowSideEffects
         self.providedFollowUps = providedFollowUps
@@ -106,6 +125,24 @@ public func evaluateMove(
     guard context.allowSideEffects else { return .noAction }
 
     guard context.repoIsEnabled else { return .blocked(.repoDisabled) }
+
+    // The gate three documents claimed existed and no code implemented.
+    //
+    // CLAUDE.md's seeding recipe said a repository drawn as blocked was safe to
+    // leave on screen "because no transition can spawn an agent from it";
+    // `PreflightService.isBlocking`'s doc comment said "whether a repo's cards
+    // can be dragged at all"; and `labelsCheck` was deliberately made a warning
+    // rather than a failure *on the strength of that belief*. Meanwhile
+    // `isBlocking` was read by four views and by no rule, so a drag in a broken
+    // checkout spawned `claude -p` at `bypassPermissions` inside it.
+    //
+    // Placed beside `repoIsEnabled` rather than in front of the `.action` cases
+    // only: "this repository is not available" is one idea, and splitting it so
+    // that some moves work and others do not would be a second, subtler rule to
+    // keep in step. A repository Elliot has diagnosed as broken refuses moves,
+    // the way one switched off does.
+    guard context.repoPreflight.allowsMoves else { return .blocked(.repoBlocked) }
+
     if let runID = context.activeRunID { return .blocked(.runAlreadyInFlight(runID: runID)) }
 
     switch (from, to) {
@@ -229,6 +266,7 @@ public func nextCandidates(
             repoName: repo.nameWithOwner,
             context: MoveContext(
                 repoIsEnabled: repo.isEnabled,
+                repoPreflight: repo.preflightVerdict,
                 activeRunID: activeRunIDs[card.id],
                 allowSideEffects: true,
                 // `[]` and not nil. Nil means "not collected yet" and would
