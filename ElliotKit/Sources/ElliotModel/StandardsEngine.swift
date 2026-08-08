@@ -72,6 +72,88 @@ public enum StandardsEngine {
             evidence: measured.evidence)
     }
 
+    /// The card a verdict deserves — `nil` for all four non-violating cases.
+    ///
+    /// Total, and separate from `verdict`, so "only a violation files a card" is
+    /// one line a grep can find rather than an early return inside a switch
+    /// someone later adds a case to.
+    ///
+    /// `epoch` is the instant the repository last became violating on this axis
+    /// (or the instant an exemption expired). It is in the key because a
+    /// permanent key makes recurrence unfilable: `BoardService.createCard`
+    /// returns the existing card for a known key, and a card archived in Done
+    /// six months ago is what it would return.
+    ///
+    /// `repo` rather than `finding.nameWithOwner`: `finding.nameWithOwner` is
+    /// `""` whenever the universe read that produced it was not `.observed`
+    /// (see `assess`, above), and a finding in that state never reaches here —
+    /// `producesCard` is false for every verdict an unreadable universe can
+    /// produce. `repo` is the concrete value a caller already resolved to build
+    /// the finding in the first place, so the key is keyed on the one value
+    /// that is never the empty placeholder.
+    public static func cardSeed(
+        for finding: StandardFinding, repo: GHRepoSummary, epoch: Date
+    ) -> StandardCardSeed? {
+        guard finding.verdict.producesCard, case .violating(let violation) = finding.verdict else {
+            return nil
+        }
+
+        let standard = finding.standard
+        let key = "standard:\(repo.nameWithOwner):\(standard.rawValue):\(epoch.timeIntervalSince1970)"
+
+        // The axis, not prose: `want` restates the expectation, `benefit`
+        // restates why the axis exists — the rubric is the only place that
+        // sentence lives — and the acceptance criteria are that expectation
+        // plus the sweep's own re-check.
+        let story = UserStory(
+            role: "maintainer",
+            want: violation.expected,
+            benefit: standard.rubric,
+            acceptanceCriteria: [
+                violation.expected,
+                "the standards sweep reports this repository compliant",
+            ])
+
+        var lines = [
+            standard.rubric,
+            "",
+            "Expected: \(violation.expected)",
+            "Actual: \(violation.actual)",
+        ]
+        if let fixHint = violation.fixHint {
+            lines.append("Fix: \(fixHint)")
+        }
+        lines.append("")
+        lines.append(
+            "Assessed \(finding.assessedAt.description), from readings up to "
+                + "\(Self.age(finding.observationLag)) older than that.")
+        lines.append("Observed by:")
+        lines.append(contentsOf: finding.provenances.map { "- `\($0.command)`" })
+
+        return StandardCardSeed(
+            idempotencyKey: key,
+            nameWithOwner: repo.nameWithOwner,
+            standard: standard,
+            title: "\(standard.title): \(violation.summary)",
+            story: story,
+            body: lines.joined(separator: "\n"),
+            evidence: finding.evidence)
+    }
+
+    /// A plain, locale-free duration — seconds, then minutes, hours, days.
+    /// Nothing parses this back, so a `DateComponentsFormatter` (and the
+    /// `Locale` it would carry) buys nothing `ElliotModel` should hold; see
+    /// `ShipDayLabel`'s own reason for staying locale-free.
+    private static func age(_ interval: TimeInterval) -> String {
+        let seconds = Int(interval.rounded())
+        switch seconds {
+        case ..<60: return "\(seconds)s"
+        case ..<3_600: return "\(seconds / 60)m"
+        case ..<86_400: return "\(seconds / 3_600)h"
+        default: return "\(seconds / 86_400)d"
+        }
+    }
+
     /// Every axis, for one repository, under one clock reading.
     ///
     /// `seeds` is always empty here: the card a violation deserves needs an
