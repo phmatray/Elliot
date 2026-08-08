@@ -60,6 +60,16 @@ struct StandardApplicabilityTests {
                 == .notApplicable(.metaRepository))
     }
 
+    /// A repository the Python README sweeps skip is not thereby a
+    /// non-project. `phmatray/AAA` is an active .NET library, and its name was
+    /// carried into this list by inheritance rather than by judgement.
+    @Test("A real library is not a meta-repository")
+    func libraryIsNotMeta() {
+        for s in Standard.allCases {
+            #expect(s.applicability(to: summary("phmatray/AAA")) == .applies, "\(s)")
+        }
+    }
+
     /// Every rubric must say what it leaves alone as well as what it checks —
     /// without the second half five axes drift into "the repo looks tidy" and
     /// report the same list.

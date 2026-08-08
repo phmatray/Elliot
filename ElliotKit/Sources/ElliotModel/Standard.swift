@@ -90,8 +90,18 @@ public enum Applicability: Sendable, Hashable {
 }
 
 public extension Standard {
-    /// `<owner>/.github` and the profile repository: infrastructure, not projects.
-    static let metaRepositoryNames: Set<String> = [".github", "AAA"]
+    /// `<owner>/.github`: infrastructure carrying an account's community-health
+    /// files, not a project anyone ships.
+    ///
+    /// ⛔ Keep this to repositories that are genuinely not projects. It used to
+    /// also carry `"AAA"`, inherited from the Python sweeps' `NOISE_EXACT` — but
+    /// there the name means "do not rewrite its README", which is a different
+    /// judgement. `phmatray/AAA` is an active .NET library (a fluent
+    /// Arrange-Act-Assert test builder) and belongs under every axis. Excluding a
+    /// real project here drops it from all five silently and records the reason
+    /// nowhere; `.elliot/standards.yml` exemptions exist for that, and they
+    /// demand a reason.
+    static let metaRepositoryNames: Set<String> = [".github"]
 
     /// Scope, decided in code and in a fixed order.
     ///
@@ -104,6 +114,9 @@ public extension Standard {
             case .fork: return .notApplicable(.fork)
             case .archived: return .notApplicable(.archived)
             case .empty: return .notApplicable(.empty)
+            // A fact about local tree layout, not about the repository itself —
+            // this function only ever sees a `GHRepoSummary`, so it falls
+            // through to the later, repository-only gates instead of judging it.
             case .otherRoot: break
             }
         }
