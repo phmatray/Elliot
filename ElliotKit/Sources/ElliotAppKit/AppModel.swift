@@ -666,6 +666,49 @@ public final class AppModel {
         selectedCardID = cardID
     }
 
+    // MARK: - Repositories → the board
+
+    /// Scope the board to a repository, and report whether it worked.
+    ///
+    /// Guarded for the same reason `selectRepoFromNotification` above is, and it
+    /// is worth saying which reason: `repoRows` is a snapshot of a sweep, so a
+    /// `forget` applied between that sweep and this click would otherwise point
+    /// the picker at a registration that no longer exists — an empty board under
+    /// a phantom name. On refusal the current selection is left **as it was**
+    /// rather than cleared, because clearing it answers a stale row by silently
+    /// dumping the reader onto the whole portfolio.
+    ///
+    /// It returns whether it selected rather than raising the window itself:
+    /// `openWindow` belongs to a view's environment, and the caller should only
+    /// raise a window when there is something to raise it for.
+    @discardableResult
+    public func showBoard(repoID: UUID) -> Bool {
+        guard repos.contains(where: { $0.id == repoID }) else { return false }
+        selectedRepoID = repoID
+        return true
+    }
+
+    /// The Repositories list's selection, by `RepoRow.id` — `"owner/name"`.
+    ///
+    /// On the model rather than in `RepositoriesView`'s `@State` because the
+    /// menu item that gives this act its ⌘↩ lives in `ElliotApp`'s `Commands`,
+    /// which is not a view hierarchy and cannot read another view's state.
+    public var selectedRepoRowID: String?
+
+    /// The board action of whatever row is selected.
+    ///
+    /// Asked once, here, so the menu item's enablement and its action cannot
+    /// disagree — the two used to be the classic pair of independent guesses.
+    /// A selection can outlive its row (it is a string into a list every sweep
+    /// rebuilds), and that case answers `.unavailable` like any other row with
+    /// nowhere to go.
+    public var selectedRowBoardAction: RepoRowBoardAction {
+        guard let id = selectedRepoRowID,
+            let row = repoRows.first(where: { $0.id == id })
+        else { return .unavailable }
+        return row.boardAction
+    }
+
     /// Turns a scheduler update into a `NotificationEvent`, or drops it.
     ///
     /// Re-reads the run from the store rather than trusting the update's own
