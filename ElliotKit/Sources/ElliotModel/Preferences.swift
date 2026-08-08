@@ -51,6 +51,22 @@ public struct Preferences: Codable, Sendable, Equatable {
     /// tested from here on.
     public var analysisSpans: Int
 
+    /// What the reader has agreed to be interrupted by.
+    ///
+    /// Here rather than in `UserDefaults` (#222). `StoreLocation` already argued
+    /// the case in code: *"`UserDefaults.standard` is keyed by bundle
+    /// identifier, so nothing can point it at a different home"* — and every
+    /// on-screen verification in this project launches a second instance against
+    /// a scratch `ELLIOT_HOME`. Anything left in `.standard` therefore bleeds the
+    /// operator's real notification settings into the capture, and a scratch
+    /// instance can mute a category in the operator's own board.
+    ///
+    /// It keeps its own hand-written lenient decode — an unknown category is
+    /// dropped rather than thrown — so a payload written by a build with a fifth
+    /// category does not turn into "no preferences at all" and silently unmute
+    /// everything the reader switched off.
+    public var notifications: NotificationPreferences
+
     /// What a reader who has never expressed a preference gets.
     ///
     /// The wide panel, which is the mockup's two-pane body: the issue and the
@@ -58,15 +74,19 @@ public struct Preferences: Codable, Sendable, Equatable {
     /// screen's lens grid is two columns, and a proposal row carries a title, a
     /// narrative, a rationale and an evidence strip.
     public static let `default` = Preferences(
-        panelSpans: spanChoices.wide, analysisSpans: spanChoices.wide
+        panelSpans: spanChoices.wide,
+        analysisSpans: spanChoices.wide,
+        notifications: .default
     )
 
     public init(
         panelSpans: Int = Preferences.spanChoices.wide,
-        analysisSpans: Int = Preferences.spanChoices.wide
+        analysisSpans: Int = Preferences.spanChoices.wide,
+        notifications: NotificationPreferences = .default
     ) {
         self.panelSpans = panelSpans
         self.analysisSpans = analysisSpans
+        self.notifications = notifications
     }
 
     /// Decodes leniently, so that a file written by another version still loads.
@@ -93,6 +113,9 @@ public struct Preferences: Codable, Sendable, Equatable {
         analysisSpans =
             (try? container.decode(Int.self, forKey: .analysisSpans))
             ?? Preferences.default.analysisSpans
+        notifications =
+            (try? container.decode(NotificationPreferences.self, forKey: .notifications))
+            ?? Preferences.default.notifications
     }
 
     /// Each value if the app could have produced it, that value's default
@@ -120,7 +143,12 @@ public struct Preferences: Codable, Sendable, Equatable {
             panelSpans: Preferences.clampSpan(panelSpans, default: Preferences.default.panelSpans),
             analysisSpans: Preferences.clampSpan(
                 analysisSpans, default: Preferences.default.analysisSpans
-            )
+            ),
+            // Not clamped, and not by omission: `NotificationPreferences` has no
+            // invalid value a hand edit could produce. Its own decode already
+            // drops a category it does not recognise, and every combination of
+            // the master switch and the muted set is one the app can reach.
+            notifications: notifications
         )
     }
 

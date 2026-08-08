@@ -14,40 +14,31 @@ import Foundation
 @MainActor
 final class NotificationPresenter {
     private let delivery: any NotificationDelivering
-    private let defaults: UserDefaults
     /// Injected so a test can drive the frontmost rule without an `NSApp`.
     private let appIsActive: @MainActor () -> Bool
 
-    static let preferencesKey = "notificationPreferences"
-
     init(
         delivery: any NotificationDelivering,
-        defaults: UserDefaults = .standard,
+        preferences: NotificationPreferences = .default,
         appIsActive: @escaping @MainActor () -> Bool = { NSApp?.isActive ?? false }
     ) {
         self.delivery = delivery
-        self.defaults = defaults
+        self.preferences = preferences
         self.appIsActive = appIsActive
     }
 
-    /// What the user chose, or everything-on when they have chosen nothing.
+    /// What the user chose, pushed in by whoever owns the preference.
     ///
-    /// A payload that will not decode is treated as absent rather than fatal:
-    /// preferences are not board state, and refusing to start over a corrupt
-    /// defaults entry would be a worse failure than notifying too much.
-    var preferences: NotificationPreferences {
-        get {
-            guard
-                let data = defaults.data(forKey: Self.preferencesKey),
-                let decoded = try? JSONDecoder().decode(NotificationPreferences.self, from: data)
-            else { return .default }
-            return decoded
-        }
-        set {
-            guard let data = try? JSONEncoder().encode(newValue) else { return }
-            defaults.set(data, forKey: Self.preferencesKey)
-        }
-    }
+    /// Plain storage since #222. It read and wrote `UserDefaults.standard`,
+    /// which is keyed by bundle identifier and cannot follow `ELLIOT_HOME`, so a
+    /// scratch instance decided what the operator's real board would post — and
+    /// could mute a category in it. The value lives in `preferences.json` beside
+    /// the panel widths now, and `AppModel.notificationPreferences` is the one
+    /// writer.
+    ///
+    /// Still a *value* the policy is handed rather than something it reaches
+    /// for, which is what keeps "a muted category posts nothing" a unit test.
+    var preferences: NotificationPreferences
 
     func requestAuthorizationIfNeeded() async {
         await delivery.requestAuthorizationIfNeeded()

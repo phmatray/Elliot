@@ -252,6 +252,26 @@ public final class AppModel {
     /// lossless.
     private var readerPreferences: Preferences
 
+    /// What the reader has agreed to be interrupted by.
+    ///
+    /// The third reader preference, and it reaches disk exactly like the other
+    /// two: one field of the *held* value, then a save. It used to live in
+    /// `UserDefaults.standard`, which is keyed by bundle identifier and so
+    /// cannot follow `ELLIOT_HOME` — meaning every scratch-home check in this
+    /// project read *and wrote* the operator's real settings (#222).
+    public var notificationPreferences: NotificationPreferences {
+        get { readerPreferences.notifications }
+        set {
+            readerPreferences.notifications = newValue
+            preferences.save(readerPreferences)
+            // The presenter decides whether to post from a value it holds, so it
+            // has to be told. One writer, pushing — rather than the presenter
+            // reaching back for a getter, which is the shape that made this a
+            // `UserDefaults` read in the first place.
+            presenter?.preferences = newValue
+        }
+    }
+
     /// How many board columns wide the analysis panel is.
     ///
     /// The same kind of reader preference ``panelSpans`` is, and deliberately a
@@ -602,7 +622,10 @@ public final class AppModel {
             let preflight = PreflightService(environment: environment, config: config)
             globalChecks = await preflight.globalChecks(layout: layout)
 
-            let presenter = NotificationPresenter(delivery: makeNotificationDelivery())
+            let presenter = NotificationPresenter(
+                delivery: makeNotificationDelivery(),
+                preferences: readerPreferences.notifications
+            )
             self.presenter = presenter
             // Asked once, on launch, and never nagged about again. A denial
             // degrades Elliot to exactly what it was before this feature.
