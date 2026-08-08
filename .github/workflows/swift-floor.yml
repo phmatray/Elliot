@@ -46,15 +46,16 @@
 # ### How this divides with `ci.yml`
 #
 # `ci.yml` is on `main` — #21, landed by #102 — so the two files answer different questions rather than
-# one waiting on the other. This one establishes that the floor `Package.swift` declares is real and
-# **compiles** the package: it asserts the runner's Swift against that declaration, then runs
-# `swift build` and `swift build --build-tests`. `ci.yml` establishes that the suite **passes**
-# somewhere other than one laptop, by running `swift build` and then `swift test`.
-#
-# ⚠️ So a green check here is NOT a suite that passed: `--build-tests` compiles the eight test targets
-# and executes no `@Test`. Neither claim substitutes for the other, and reading this one as the other
-# is the same shape as the defect #116 exists to prevent. `.claude/skills/repo-profile.md` § *CI gates*
+# one waiting on the other. This one establishes that the floor `Package.swift` declares is still being
+# **exercised**, and that a toolchain on its release train **compiles** the package: it asserts the
+# runner's Swift against that declaration, then builds. (Still being exercised, not "the declared patch
+# was run" — the assertion below deliberately accepts a patch above the floor, and § *The two
+# comparisons are at different precisions* says why.) `ci.yml` establishes the other half: that the
+# suite **passes** somewhere other than one laptop. `.claude/skills/repo-profile.md` § *CI gates*
 # carries the same split as a table; keep the two in step.
+#
+# The `--build-tests`-is-not-`swift test` argument is deliberately NOT restated here. It already lives
+# at the step it governs, below, and `ci.yml`'s own header refuses a fourth copy of it in as many words.
 #
 # This section reported `ci.yml` as "in flight on #102" until #186, which stopped being true the moment
 # that pull request landed — a status report ages in a way an argument does not.

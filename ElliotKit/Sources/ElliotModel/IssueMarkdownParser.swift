@@ -11,12 +11,15 @@ import Foundation
 ///
 /// Hand-written rather than a dependency: the output has to be `Sendable` under
 /// `swiftLanguageModes: [.v6]`, and totality is the contract where a
-/// general-purpose library promises only best-effort parsing. Totality is a
-/// property of this type rather than of anyone's attention, which is why
-/// `ci.yml` does not make that reasoning weaker — CI catches a dependency that
-/// stops *resolving*, the loud failure, and nothing here pins a third-party
-/// parser's segmentation, so a bump that quietly drops a line still arrives
-/// with no red bar to miss.
+/// general-purpose library promises only best-effort parsing. Totality is
+/// therefore a property of this type rather than of a reviewer's attention —
+/// which is the whole reason it is stated here and pinned next door by
+/// `nothingIsDropped`, a cursor walk over five fixtures asserting every
+/// non-blank source line survives in order. That test goes through the public
+/// API, so it would hold a dependency to the same contract; what no test can
+/// do is notice the line that was never written down as a requirement, and a
+/// dropped line produces no error, no crash and no visible gap — just a panel
+/// with less in it.
 ///
 /// Three recognitions are deliberately narrower than CommonMark, each because
 /// being wrong costs more than being incomplete:

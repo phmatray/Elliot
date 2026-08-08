@@ -37,14 +37,18 @@
 // timeout inside a macro expansion: exactly the mystery this floor exists to prevent, one target
 // over.
 //
-// ⚠️ That CI exists now does **not** retire this argument — it moves where the mystery would be met,
-// not whether it is one. A red check arrives minutes later, on a runner the contributor cannot
-// inspect, carrying the same unreadable "unable to type-check this expression in reasonable time";
-// the refusal here arrives before a source file is read and names the version. `ci.yml` answers
-// whether the suite passes; this line answers why you cannot run it at all, and only the second one
-// is any use to someone whose toolchain is four releases short. Until #186 this paragraph reasoned
-// from CI's absence instead — the same rot as the 6.1 claim this header opens with: a premise that
-// was true the day it was written, and that nothing ever re-checked.
+// ⚠️ That CI exists now does **not** retire this argument — it makes it stronger, and the reason is
+// worth stating exactly. Both workflows pin `macos-26`, i.e. a 6.3.x toolchain, so CI never runs the
+// toolchain a 6.2 contributor is actually holding. Declare 6.2 and their local `swift test` dies on
+// the type-check timeout while both checks go **green**: there is no red bar coming to explain it,
+// and no runner log to read. The refusal here is the only thing that can, and it arrives before a
+// source file is read and names the version. `ci.yml` answers whether the suite passes on the
+// runner; this line answers why you cannot run it on your own machine, and CI is structurally unable
+// to answer the second.
+//
+// Until #186 this paragraph reasoned from CI's absence instead — the same rot as the 6.1 claim this
+// header opens with: a premise that was true the day it was written, and that nothing ever
+// re-checked.
 //
 // **The patch component is deliberate and load-bearing — do not round this to `6.3`.** It said `6.3`
 // for one commit, and that was wrong twice over: SwiftPM resolves `6.3` as **6.3.0**, and the
