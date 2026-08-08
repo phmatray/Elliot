@@ -21,6 +21,12 @@ struct NotificationPolicyTests {
 
     // MARK: - Fixtures
 
+    /// A landed pull request. Which one it was does not matter here — these
+    /// tests are about whether Elliot speaks, not about what the card records.
+    private let landedOutcome = VerifiedOutcome.merged(
+        commitSHA: "abc1234", number: nil, url: nil, branch: nil
+    )
+
     private let repo = Repo(
         id: UUID(), path: "/tmp/elliot", nameWithOwner: "phmatray/Elliot",
         displayName: "Elliot", isEnabled: true
@@ -63,7 +69,7 @@ struct NotificationPolicyTests {
     func masterSwitchSilencesEverything() {
         let off = NotificationPreferences(isEnabled: false, muted: [])
         let events: [NotificationEvent] = [
-            .runFinished(run: run(.succeeded, outcome: .merged(commitSHA: "abc1234")), card: card(), repo: repo),
+            .runFinished(run: run(.succeeded, outcome: landedOutcome), card: card(), repo: repo),
             .runFinished(run: run(.failed), card: card(), repo: repo),
             .runStalled(run: run(.stalled), card: card(), repo: repo),
             .systemMove(
@@ -98,7 +104,7 @@ struct NotificationPolicyTests {
         // value: the board already shows a landed run, so a banner about it is
         // a second copy of something you are looking at.
         let landed = NotificationEvent.runFinished(
-            run: run(.succeeded, outcome: .merged(commitSHA: "abc1234")), card: card(), repo: repo
+            run: run(.succeeded, outcome: landedOutcome), card: card(), repo: repo
         )
         #expect(decide(landed, appIsActive: true) == nil)
         #expect(decide(landed, appIsActive: false) != nil)

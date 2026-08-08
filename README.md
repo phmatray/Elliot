@@ -353,6 +353,48 @@ repository, `--add-dir` makes the scratch directory writable, and `git status
 --porcelain` is compared before and after. A run that edited your code is
 reported, not guessed at.
 
+**What Elliot keeps, and for how long.** Elliot writes three kinds of file and,
+until now, removed none of them: an NDJSON log and a stderr file per run, a
+full-resolution PNG per `board_screenshot`, and a `stories.json` per analysis
+run. Measured on the author's machine, `runs/` had reached **754 files and
+73 MB**. Nothing there is a leak — every file is written on purpose and every one
+is useful the day it is written. What had never been separated is "useful the day
+it is written" from "kept for ever".
+
+So each of `runs/`, `screenshots/` and `analyses/` is now bounded by one rule,
+applied once per launch:
+
+- **Nothing younger than 14 days is ever removed**, whatever the budget says.
+- Past that, the newest are kept until **512 MB**, and the rest go. The budget
+  covers the remainder past the horizon, not the directory total — young files
+  are never counted against it, which is the price of the guarantee above and the
+  right way round: a ceiling that could evict this morning's log is a ceiling
+  nobody dares switch on.
+- **A file a live run points at is never removed**, at any age or size. The
+  `logPath` and `stderrPath` of every non-terminal run are excluded before the
+  rule is asked anything. If the runs table cannot be read at all, the sweep does
+  not run — not knowing which runs are live is a reason to leave the disk alone,
+  not a licence to clear it.
+
+The rule never keeps an older file while deleting a newer one, and it is pure —
+`ArtifactRetention` in `ElliotModel` takes an inventory and an instant and
+returns what may go, so all of it is testable without a directory existing. The
+sweeper only lists, asks and unlinks; it runs off the main actor, throws nothing,
+and skips a file it cannot delete rather than giving up on the rest.
+
+Both numbers were chosen so the first run deletes **nothing** — verified against
+a copy of that real directory, 754 files in and 754 out. A retention rule whose
+first run removes something nobody expected is a retention rule that gets
+reverted. That it deletes *at all* was verified separately, on the same build
+with no constant patched, by stacking aged copies past the ceiling: 872 files
+went and the status bar said `872 pruned`. A no-op that is a no-op for the wrong
+reason would not be evidence.
+
+When a launch does prune something, the status bar carries a figure beside the
+worker and spend counts — the count in the strip, the byte total in its tooltip.
+When it prunes nothing, which is every ordinary day, there is no figure: a
+permanent "0 pruned" is furniture.
+
 ## Testing
 
 `swift test` runs everything, including an end-to-end suite that drives the real
