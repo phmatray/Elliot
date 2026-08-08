@@ -1447,7 +1447,13 @@ struct StandardsEngineOrderTests {
             for: .editorconfig, repo: .observed(repo(), old),
             measurement: emptyMeasurement, exemptions: exemptions([]),
             now: then, freshness: .default)
-        guard case .unmeasured(.stale) = v else { Issue.record("got \(v)"); return }
+        // `.universeStale`, not `.stale`: the distinction is the point. A stale
+        // *universe* invalidates scope for every axis at once, which is a
+        // different sentence from one axis's observation having aged out.
+        guard case .unmeasured(.universeStale(let age)) = v else {
+            Issue.record("got \(v)"); return
+        }
+        #expect(age == 100 * 3600)
     }
 
     @Test("An unreadable universe is unmeasured")
