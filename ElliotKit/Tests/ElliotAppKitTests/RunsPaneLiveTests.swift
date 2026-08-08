@@ -308,10 +308,10 @@ struct RunsPaneLiveTests {
         for outcome: VerifiedOutcome in [
             .issueCreated(number: 47, url: "https://github.com/phmatray/Elliot/issues/47"),
             .prOpen(number: 72, url: "…", isDraft: true, branch: "feat/47-ci"),
-            .merged(commitSHA: "abcdef1234"),
+            .merged(commitSHA: "abcdef1234", number: nil, url: nil, branch: nil),
             .noIssueCreated(reason: "nothing to file"),
             .notMerged(reason: "the branch is behind"),
-            .closedUnmerged,
+            .closedUnmerged(number: nil, url: nil, branch: nil),
             .unverified(reason: "gh did not answer"),
         ] {
             let receipt = try #require(VerdictBlock.receipt(for: Self.run(outcome: outcome)))
@@ -334,7 +334,7 @@ struct RunsPaneLiveTests {
 
         for outcome: VerifiedOutcome in [
             .notMerged(reason: "the branch is behind"),
-            .closedUnmerged,
+            .closedUnmerged(number: nil, url: nil, branch: nil),
             .unverified(reason: "gh did not answer"),
         ] {
             let receipt = try #require(VerdictBlock.receipt(for: Self.run(outcome: outcome)))
@@ -346,7 +346,8 @@ struct RunsPaneLiveTests {
         // And the other half of the claim: a receipt that *is* verified still
         // gets the verified tint, so the test above is not passing because
         // nothing is ever green.
-        let created = try #require(VerdictBlock.receipt(for: Self.run(outcome: .merged(commitSHA: nil))))
+        let merged = VerifiedOutcome.merged(commitSHA: nil, number: nil, url: nil, branch: nil)
+        let created = try #require(VerdictBlock.receipt(for: Self.run(outcome: merged)))
         #expect(try #require(Self.srgb(created.tint, in: appearance)) == verified)
     }
 

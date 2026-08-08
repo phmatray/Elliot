@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1460 tests in 162 suites**, 5 of 5 samples on
-  `feat/49-reorder-glue-tests` on 2026-08-08 off `main` at `a7a8397`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1473 tests in 162 suites**, 5 of 5 samples on
+  `fix/139-merged-outcome-carries-pr` on 2026-08-08 off `main` at `77045a8`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -129,6 +129,20 @@
       touched disjoint suites, and the ⛔ bullet below exists because a predicted 1177 once met a
       measured 1161. Resolve this conflict with a literal `PLACEHOLDER` and let `swift test`
       overwrite it; that is the whole procedure, and it costs one run.
+    - **Landing #139 the line was right, and the reason is worth more than the number.** It read
+      1328 in 149 off `dc5c2ce`, and `main` had since advanced to `2494882` — a *different* commit,
+      which is the trap. I measured `2494882` itself in a throwaway worktree rather than assume:
+      still **1328 in 149**. So the line had survived a move it was never re-measured against, and
+      the branch's whole delta — 13 tests, 0 suites — is its own. Second time this entry records no
+      drift (the first was #174). Written twice on purpose: 1339 after the plan's five samples, then
+      1341 after code review added two more. The second number is the one that shipped, which is the
+      ⛔ bullet below working — the count is whatever the last run printed, not what you meant to add.
+      - ⚠️ The first draft of this bullet said the branch measured "off the same commit" as the
+        previous line. It did not, and code review caught it. `dc5c2ce` was the *previous author's*
+        baseline; `git merge-base HEAD origin/main` said `2494882`. The counts coinciding is what
+        made the wrong sentence look right — **check `git merge-base`, do not infer your baseline
+        from the line you are replacing**, or this entry starts recording drift against commits
+        nobody measured.
     - **Landing #177 the branch's own number was stale before anyone read it** — it wrote 1244 in 141
       off `0902c10`, and the merged tree measured **1281 in 144** off `206c029`, five of five samples.
       The branch gained no commit between the two runs, so the whole 37 is `main` moving underneath

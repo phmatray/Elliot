@@ -37,9 +37,22 @@ public enum VerifiedOutcome: Codable, Sendable, Hashable {
     /// success, not a failure — the card just has no new issue.
     case noIssueCreated(reason: String)
     case prOpen(number: Int, url: String, isDraft: Bool, branch: String)
-    case merged(commitSHA: String?)
+    /// The pull request's own identity rides along with the conclusion so
+    /// `CardOutcome.applied` can record *which* pull request finished the card.
+    /// A card first sighted after its pull request already merged never sees a
+    /// `.prOpen`, so this is the only chance to learn the three fields.
+    ///
+    /// All three are optional because `Verifier.verifyMergePR` reaches this
+    /// through `GHMergeStatus`, which carries a URL but no number or branch of
+    /// its own — forcing them non-optional would buy a second `gh` call on a
+    /// path that does not need one. `applied` writes each only when non-`nil`,
+    /// so a `nil` never clears a field the card already has.
+    ///
+    /// ⛔ Deliberately no default values: every producer must name what it
+    /// holds, and the build is what finds the ones that were dropping it.
+    case merged(commitSHA: String?, number: Int?, url: String?, branch: String?)
     case notMerged(reason: String)
-    case closedUnmerged
+    case closedUnmerged(number: Int?, url: String?, branch: String?)
     case unverified(reason: String)
 }
 

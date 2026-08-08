@@ -103,14 +103,30 @@ struct CardOutcomeTests {
         #expect(result.changed)
     }
 
-    @Test("A merged pull request sends the card to Done and writes no field")
+    @Test("A merged pull request sends the card to Done and writes no field it was not given")
     func mergedMovesToDone() {
         let subject = card(in: .inReview, prNumber: 7)
-        let result = VerifiedOutcome.merged(commitSHA: "abc1234").applied(to: subject)
+        let result = VerifiedOutcome
+            .merged(commitSHA: "abc1234", number: nil, url: nil, branch: nil)
+            .applied(to: subject)
 
         #expect(result.move == .init(column: .done, reason: .prMergedExternally))
         #expect(result.card.prNumber == 7)
         #expect(result.card.lastError == nil)
+        #expect(result.changed)
+    }
+
+    @Test("A merged pull request first seen already merged records which one it was")
+    func mergedNamesItsPullRequest() {
+        let subject = card(in: .inProgress, issueNumber: 7)
+        let result = VerifiedOutcome
+            .merged(commitSHA: nil, number: 42, url: "https://github.com/o/r/pull/42", branch: "feat/7-x")
+            .applied(to: subject)
+
+        #expect(result.card.prNumber == 42)
+        #expect(result.card.prURL == "https://github.com/o/r/pull/42")
+        #expect(result.card.branch == "feat/7-x")
+        #expect(result.move == .init(column: .done, reason: .prMergedExternally))
         #expect(result.changed)
     }
 
@@ -138,11 +154,72 @@ struct CardOutcomeTests {
 
     @Test("A pull request closed without merging says so, in the one wording there is")
     func closedUnmerged() {
-        let result = VerifiedOutcome.closedUnmerged.applied(to: card(in: .inReview))
+        let result = VerifiedOutcome
+            .closedUnmerged(number: nil, url: nil, branch: nil)
+            .applied(to: card(in: .inReview))
 
         #expect(result.card.lastError == "The pull request was closed without being merged.")
         #expect(result.move == nil)
         #expect(result.changed)
+    }
+
+    @Test("A closed-unmerged pull request records which one it was, and still says so")
+    func closedUnmergedNamesItsPullRequest() {
+        let subject = card(in: .inProgress, issueNumber: 7)
+        let result = VerifiedOutcome
+            .closedUnmerged(number: 42, url: "https://github.com/o/r/pull/42", branch: "feat/7-x")
+            .applied(to: subject)
+
+        #expect(result.card.prNumber == 42)
+        #expect(result.card.prURL == "https://github.com/o/r/pull/42")
+        #expect(result.card.branch == "feat/7-x")
+        // The fields arrive *alongside* the banner, not instead of it.
+        #expect(result.card.lastError == "The pull request was closed without being merged.")
+        #expect(result.move == nil)
+        #expect(result.changed)
+    }
+
+    // MARK: - A `nil` field never clears one the card already carries
+
+    @Test("A merged outcome offering nothing leaves the fields the card already had")
+    func mergedWithNoFieldsPreservesWhatTheCardHas() {
+        let subject = card(
+            in: .inReview, prNumber: 7, prURL: "https://github.com/o/r/pull/7", branch: "feat/4-thing"
+        )
+        let result = VerifiedOutcome
+            .merged(commitSHA: "abc1234", number: nil, url: nil, branch: nil)
+            .applied(to: subject)
+
+        #expect(result.card.prNumber == 7)
+        #expect(result.card.prURL == "https://github.com/o/r/pull/7")
+        #expect(result.card.branch == "feat/4-thing")
+        #expect(result.move == .init(column: .done, reason: .prMergedExternally))
+    }
+
+    @Test("A closed-unmerged outcome offering nothing leaves the fields the card already had")
+    func closedUnmergedWithNoFieldsPreservesWhatTheCardHas() {
+        let subject = card(
+            in: .inReview, prNumber: 7, prURL: "https://github.com/o/r/pull/7", branch: "feat/4-thing"
+        )
+        let result = VerifiedOutcome
+            .closedUnmerged(number: nil, url: nil, branch: nil)
+            .applied(to: subject)
+
+        #expect(result.card.prNumber == 7)
+        #expect(result.card.prURL == "https://github.com/o/r/pull/7")
+        #expect(result.card.branch == "feat/4-thing")
+    }
+
+    @Test("Each field is written on its own — a partial offer fills only what it names")
+    func fieldsAreWrittenIndependently() {
+        let subject = card(in: .inReview, prNumber: 7, branch: "feat/4-thing")
+        let result = VerifiedOutcome
+            .merged(commitSHA: nil, number: nil, url: "https://github.com/o/r/pull/7", branch: nil)
+            .applied(to: subject)
+
+        #expect(result.card.prURL == "https://github.com/o/r/pull/7")
+        #expect(result.card.prNumber == 7)
+        #expect(result.card.branch == "feat/4-thing")
     }
 
     // MARK: - Clearing the error (AC3, AC4)
@@ -159,7 +236,9 @@ struct CardOutcomeTests {
         let opened = prOpenReady.applied(to: failed)
         #expect(opened.card.lastError == nil)
 
-        let merged = VerifiedOutcome.merged(commitSHA: nil).applied(to: failed)
+        let merged = VerifiedOutcome
+            .merged(commitSHA: nil, number: nil, url: nil, branch: nil)
+            .applied(to: failed)
         #expect(merged.card.lastError == nil)
     }
 
@@ -174,7 +253,9 @@ struct CardOutcomeTests {
     @Test("A merged pull request on a card already in Done changes nothing at all")
     func mergedOnADoneCardIsANoOp() {
         let subject = card(in: .done, prNumber: 7)
-        let result = VerifiedOutcome.merged(commitSHA: nil).applied(to: subject)
+        let result = VerifiedOutcome
+            .merged(commitSHA: nil, number: nil, url: nil, branch: nil)
+            .applied(to: subject)
 
         #expect(result.move == nil)
         #expect(result.card == subject)
@@ -229,7 +310,7 @@ struct CardOutcomeTests {
                 == .init(column: .inReview, reason: .prBecameReady)
         )
         #expect(
-            VerifiedOutcome.merged(commitSHA: nil)
+            VerifiedOutcome.merged(commitSHA: nil, number: nil, url: nil, branch: nil)
                 .applied(to: card(in: .inReview), attribution: .live).move
                 == .init(column: .done, reason: .prMergedExternally)
         )
@@ -242,7 +323,7 @@ struct CardOutcomeTests {
                 == .init(column: .inReview, reason: .reconciliation)
         )
         #expect(
-            VerifiedOutcome.merged(commitSHA: nil)
+            VerifiedOutcome.merged(commitSHA: nil, number: nil, url: nil, branch: nil)
                 .applied(to: card(in: .inReview), attribution: .launchSweep).move
                 == .init(column: .done, reason: .reconciliation)
         )
@@ -257,7 +338,7 @@ struct CardOutcomeTests {
     func attributionDoesNotCreateOrSuppressMoves() {
         #expect(prOpenDraft.applied(to: card(in: .inProgress), attribution: .launchSweep).move == nil)
         #expect(
-            VerifiedOutcome.merged(commitSHA: nil)
+            VerifiedOutcome.merged(commitSHA: nil, number: nil, url: nil, branch: nil)
                 .applied(to: card(in: .done), attribution: .launchSweep).move == nil
         )
     }
