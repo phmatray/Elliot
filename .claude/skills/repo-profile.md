@@ -32,7 +32,7 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**PLACEHOLDER tests in PLACEHOLDER suites**, 5 of 5 samples on
+- **Full test:** `cd ElliotKit && swift test` (**1462 tests in 164 suites**, 5 of 5 samples on
   `feat/171-card-labels` on 2026-08-08 off `main` at `27e370f`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
