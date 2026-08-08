@@ -251,7 +251,48 @@ public final class AppModel {
     /// 3 for the same reason `panelSpans` is: the setup screen's lens grid is
     /// two columns, and a proposal row carries a title, a narrative, a
     /// rationale and an evidence strip.
-    public var analysisSpans = 3
+    ///
+    /// **Restored, not reset** (#221): this was an in-memory `= 3`, so half the
+    /// board forgot its width at every launch while the other half remembered.
+    /// Computed over ``readerPreferences`` and saved on write, exactly like
+    /// ``panelSpans`` — the same funnel, deliberately not a second write path,
+    /// because two save paths into one file is how the field written last wins.
+    public var analysisSpans: Int {
+        get { readerPreferences.analysisSpans }
+        set {
+            // One field of the held value. See `panelSpans`'s setter: rebuilding
+            // a fresh `Preferences` here would save a struct whose *other* field
+            // is back at its default, so setting either span would silently
+            // reset the other. That comment described a bug that could not yet
+            // exist; this is the field that makes it possible, and
+            // `PreferencesFileTests` now holds the pair.
+            readerPreferences.analysisSpans = newValue
+            // Unclamped, like `panelSpans`, and for the same reason: the drag
+            // handle and View ▸ Narrow/Widen Analysis can only produce the two
+            // designed spans. The clamp belongs where the value cannot be
+            // trusted, which is `PreferencesFile.load`.
+            preferences.save(readerPreferences)
+        }
+    }
+
+    /// What View ▸ Narrow/Widen Analysis should read right now.
+    ///
+    /// Here rather than in the menu for the reason ``panelWidthToggleTitle``
+    /// gives: which of the two designed widths is "the other one" is a judgement
+    /// about the pair, and a menu that judged it would be a second place holding
+    /// it. `ElliotApp` spelled `model.analysisSpans >= 3 ? … : …` inline, with
+    /// the literal `3` — the exact shape `Preferences.spanChoices` exists to
+    /// prevent, and the one `panelWidthToggleTitle` was extracted out of.
+    public var analysisWidthToggleTitle: String {
+        analysisSpans >= Preferences.spanChoices.wide ? "Narrow Analysis" : "Widen Analysis"
+    }
+
+    /// Moves the analysis panel to the width it is not at, and remembers it.
+    public func toggleAnalysisWidth() {
+        analysisSpans =
+            analysisSpans >= Preferences.spanChoices.wide
+            ? Preferences.spanChoices.narrow : Preferences.spanChoices.wide
+    }
 
     /// What the analysis panel's setup form holds, and which proposals are
     /// staged for a bulk accept or reject.

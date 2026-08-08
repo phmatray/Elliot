@@ -34,14 +34,39 @@ public struct Preferences: Codable, Sendable, Equatable {
     /// width would be wrong the first time the reader resized the window.
     public var panelSpans: Int
 
+    /// How many board columns wide the analysis panel opens.
+    ///
+    /// A *separate* preference from ``panelSpans`` rather than a shared number,
+    /// for the reason `AppModel.analysisSpans` gives: they are two panels a
+    /// reader sets independently, and widening the analysis to read a proposal
+    /// must not also widen a card detail nobody is looking at.
+    ///
+    /// It is the second field, and that is the whole significance of this
+    /// property beyond the feature. `AppModel`'s `panelSpans` setter writes one
+    /// field of the *held* value on purpose, because rebuilding a fresh
+    /// `Preferences` per save would make each setter store a struct whose other
+    /// fields are back at their defaults — "a data-loss bug that cannot exist
+    /// while there is only one field, and would arrive fully grown with the
+    /// second". Until now that reasoning had never been executed. It can be
+    /// tested from here on.
+    public var analysisSpans: Int
+
     /// What a reader who has never expressed a preference gets.
     ///
     /// The wide panel, which is the mockup's two-pane body: the issue and the
-    /// runs side by side.
-    public static let `default` = Preferences(panelSpans: spanChoices.wide)
+    /// runs side by side. The analysis opens wide for its own reason — the setup
+    /// screen's lens grid is two columns, and a proposal row carries a title, a
+    /// narrative, a rationale and an evidence strip.
+    public static let `default` = Preferences(
+        panelSpans: spanChoices.wide, analysisSpans: spanChoices.wide
+    )
 
-    public init(panelSpans: Int = Preferences.spanChoices.wide) {
+    public init(
+        panelSpans: Int = Preferences.spanChoices.wide,
+        analysisSpans: Int = Preferences.spanChoices.wide
+    ) {
         self.panelSpans = panelSpans
+        self.analysisSpans = analysisSpans
     }
 
     /// Decodes leniently, so that a file written by another version still loads.
@@ -65,18 +90,44 @@ public struct Preferences: Codable, Sendable, Equatable {
         panelSpans =
             (try? container.decode(Int.self, forKey: .panelSpans))
             ?? Preferences.default.panelSpans
+        analysisSpans =
+            (try? container.decode(Int.self, forKey: .analysisSpans))
+            ?? Preferences.default.analysisSpans
     }
 
-    /// This value if the app could have produced it, the default otherwise.
+    /// Each value if the app could have produced it, that value's default
+    /// otherwise.
     ///
     /// Called on the way out of the file and nowhere else. `PanelLayout.snappedSpans`
     /// already documents this exact case from the other side — *"a span outside
     /// the two choices (which the menu cannot produce, but an integer preference
     /// can hold) resolves to the default instead"* — and this is the integer
     /// preference it was anticipating.
+    ///
+    /// ⚠️ **Per field, not the whole struct.** This returned `.default` wholesale
+    /// while there was one field, which was indistinguishable from clamping that
+    /// field. With two it is not: a hand-edited `panelSpans: 9` would have thrown
+    /// away a perfectly good `analysisSpans` on the way past, so one bad number
+    /// in the file would silently forget an unrelated preference. That is the
+    /// same shape as the rebuild-versus-mutate trap in `AppModel`'s setter — a
+    /// bug that could not exist with one field and arrives fully grown with the
+    /// second — reached from the read side instead of the write side.
+    ///
+    /// A field added later must get its own line here. There is deliberately no
+    /// loop over "all the span fields": the next preference will not be a span.
     public func clamped() -> Preferences {
-        let designed = [Preferences.spanChoices.narrow, Preferences.spanChoices.wide]
-        guard designed.contains(panelSpans) else { return .default }
-        return self
+        Preferences(
+            panelSpans: Preferences.clampSpan(panelSpans, default: Preferences.default.panelSpans),
+            analysisSpans: Preferences.clampSpan(
+                analysisSpans, default: Preferences.default.analysisSpans
+            )
+        )
+    }
+
+    /// One span, trusted or replaced. Extracted so the two fields cannot be
+    /// clamped by two slightly different expressions.
+    private static func clampSpan(_ value: Int, default fallback: Int) -> Int {
+        let designed = [spanChoices.narrow, spanChoices.wide]
+        return designed.contains(value) ? value : fallback
     }
 }

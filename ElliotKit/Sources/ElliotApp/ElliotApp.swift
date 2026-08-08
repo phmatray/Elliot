@@ -229,8 +229,15 @@ struct ElliotApp: App {
             }
             .keyboardShortcut("a", modifiers: [.command, .option])
 
-            Button(model.analysisSpans >= 3 ? "Narrow Analysis" : "Widen Analysis") {
-                model.analysisSpans = model.analysisSpans >= 3 ? 2 : 3
+            // Title and act both from the model, for the reason the Details pair
+            // above already gives: which width is "the other one" is a judgement
+            // about the designed pair, and spelling it here meant two literal
+            // `3`s and a `2` in a target that cannot import `ElliotModel` — so
+            // the menu could set a span the panel is not designed at, which
+            // `PreferencesFile.load` would then silently repair to the default.
+            // A preference that quietly forgets itself.
+            Button(model.analysisWidthToggleTitle) {
+                model.toggleAnalysisWidth()
             }
             .disabled(!model.showingAnalysisPanel)
 
