@@ -77,7 +77,7 @@ removed and fails with it present.
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `Provenance(command:observedAt:)`, `Unmeasured` (9 cases),
+- Produces: `Provenance(command:observedAt:)`, `Unmeasured` (10 cases),
   `Reading<Value>.observed(Value, Provenance)` /
   `.unavailable(Unmeasured, Provenance)`,
   `Reading.value(freshAt:policy:) -> Result<Value, Unmeasured>`,
@@ -175,6 +175,14 @@ public enum Unmeasured: Codable, Sendable, Hashable {
     case requestFailed(String)
     case rateLimited
     case notPermitted
+    /// Read successfully, and not interpretable — a workflow whose `on:` block
+    /// cannot be located, say. Distinct from `requestFailed` because the network
+    /// did its job: the fix is a better reader or a corrected file, never a retry.
+    ///
+    /// Added in task 9, which had been stretching `requestFailed` to cover it.
+    /// Kept separate for the same reason `.stale` and `.universeStale` are — a
+    /// case name that is nearly right is how a distinction quietly disappears.
+    case unreadableContent(String)
     /// The git-trees API set `truncated`. A path absent from a truncated tree
     /// proves nothing. The Python probe pipes through `--jq .tree[].path`, which
     /// throws this flag away before anyone can read it, and then reports a false
