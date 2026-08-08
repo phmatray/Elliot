@@ -103,4 +103,44 @@ struct StandardsFileParserTests {
         #expect(e.isActive(at: now))
         #expect(!e.isActive(at: now.addingTimeInterval(2 * 86_400)))
     }
+
+    /// A duplicated `repo:` defeats `refusesForeignRepo` one line lower: a
+    /// reviewer reads the first line, and a lenient parser would obey the
+    /// second. Strict for every top-level key, the same as inside one item.
+    @Test("A duplicated top-level key is refused, not resolved by taking the last one")
+    func refusesDuplicateTopLevelKey() {
+        let text = """
+            version: 1
+            repo: phmatray/AtypWebsite
+            repo: phmatray/Elliot
+            exemptions: []
+            """
+        guard case .failure(.exemptionsMalformed(let line, let detail)) =
+            StandardsFileParser.parse(text, expecting: nil) else {
+            Issue.record("expected a refusal"); return
+        }
+        #expect(line == 3)
+        #expect(detail.contains("repo"))
+    }
+
+    /// `#` inside a URL is not a comment. Losing the fragment would quietly
+    /// change what an exemption cites, and the reason is the whole point of the
+    /// exemption.
+    @Test("A hash inside a URL survives comment stripping")
+    func hashInsideURLSurvives() throws {
+        let text = """
+            version: 1
+            exemptions:
+              - standard: topics
+                reason: tracked in the linked comment   # this one IS a comment
+                granted_by: philippe
+                granted_at: 2026-08-07
+                evidence: https://github.com/phmatray/AtypWebsite/issues/61#issuecomment-42
+            """
+        let file = try StandardsFileParser.parse(text, expecting: nil).get()
+        #expect(
+            file.exemptions[0].evidence
+                == "https://github.com/phmatray/AtypWebsite/issues/61#issuecomment-42")
+        #expect(file.exemptions[0].reason == "tracked in the linked comment")
+    }
 }

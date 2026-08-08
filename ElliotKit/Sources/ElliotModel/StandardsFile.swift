@@ -71,6 +71,7 @@ public enum StandardsFileParser {
         var version: Int?
         var repo: String?
         var exemptions: [Exemption] = []
+        var seenTopLevelKeys: Set<String> = []
         var pos = 0
 
         while pos < lines.count {
@@ -91,6 +92,15 @@ public enum StandardsFileParser {
                         .exemptionsMalformed(
                             line: lines[pos].number, detail: "expected 'key: value', found '\(content)'"))
                 }
+                // A duplicated `repo:` is the exact guard `refusesForeignRepo`
+                // exists for, defeated one line lower: a reviewer reads the
+                // first line, the parser would obey the second. Strict for
+                // every top-level key, the same as inside one exemption.
+                guard !seenTopLevelKeys.contains(key) else {
+                    return .failure(
+                        .exemptionsMalformed(line: lines[pos].number, detail: "duplicate key '\(key)'"))
+                }
+                seenTopLevelKeys.insert(key)
 
                 switch key {
                 case "version":
