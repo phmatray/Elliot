@@ -11,8 +11,23 @@ import Testing
 /// `36b6da6`), each in one file, and a fourth investigation (#26) was aimed at
 /// one file when it opened.
 ///
-/// So the thing worth holding is the shape, and the shape is checkable. This
-/// repository has no CI, so a gate that is not a test is a gate nobody re-runs.
+/// So the thing worth holding is the shape, and the shape is checkable. A gate
+/// that is not a test is a gate nobody re-runs. Since #21 that argument is
+/// stronger rather than weaker — `ci.yml` executes `swift test` on every pull
+/// request, so a guard shaped as a test is enforced on every change rather than
+/// only when someone remembers to run it.
+///
+/// ⚠️ Not *the only* kind of guard, though: `swift-floor.yml` enforces a
+/// toolchain assertion and two builds on every pull request, and none of the
+/// three is a test. The claim worth making is the narrower true one above.
+///
+/// That sentence is worded to match CLAUDE.md § *One spawn* exactly, and the
+/// reason is this suite's own subject: an argument kept in two places drifts,
+/// and the halves stop agreeing long before anyone notices. Neither copy is
+/// counted below — the gate reads `Sources/ElliotProcess` only — so this pair
+/// is held together by hand, which is precisely the weakness the gate removes
+/// there. Both halves already had to be corrected once, in #186, for claiming
+/// more than was true.
 @Suite("Drain duplication")
 struct DrainDuplicationTests {
 
