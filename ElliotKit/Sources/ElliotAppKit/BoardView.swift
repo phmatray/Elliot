@@ -820,6 +820,21 @@ struct StatusBar: View {
                 )
             }
 
+            // Same rule as the queue above — only when there is one. With the
+            // shipped retention constants a launch prunes nothing, so this is
+            // absent on an ordinary day rather than reading "0 pruned"; and
+            // because it is derived from `artifactSweep` rather than pushed into
+            // `status`, nothing that speaks later can overwrite it.
+            if let sweep = model.artifactSweep, let sentence = sweep.sentence {
+                figure(
+                    text: "\(sweep.removed) pruned",
+                    tint: Palette.quiet,
+                    help: "\(sentence) Artefacts past the retention horizon, removed at launch.",
+                    spoken: sentence,
+                    window: "operations"
+                )
+            }
+
             figure(
                 text: MoneyFormat.usd(model.spentToday.totalUSD),
                 tint: model.isOverDailyCeiling ? Palette.refused : Palette.quiet,
@@ -1369,8 +1384,14 @@ enum BoardAccessibility {
     /// on `groupCaption`: the singular has to be written out by the one
     /// function that knows how, or a third label on this column joins the two
     /// that once disagreed about "1 cards".
-    static func shipDayCaption(day: String, count: Int) -> String {
-        "\(day), \(count) \(cards(count))"
+    ///
+    /// `partial` is the archive's case and defaults to the board's: a day the
+    /// page boundary may have cut is spoken as a floor, because the visible
+    /// capsule reads "23+" and VoiceOver cannot render a glyph. Saying "23
+    /// cards" to the one reader who cannot see the "+" would hand them the
+    /// precise claim this header stopped making.
+    static func shipDayCaption(day: String, count: Int, partial: Bool = false) -> String {
+        "\(day), \(partial ? "at least " : "")\(count) \(cards(count))"
     }
 
     /// Done's footer: how many finished cards the horizon is not drawing, and

@@ -10,6 +10,13 @@ import SwiftUI
 struct ShipDayHeader: View {
     var label: ShipDayLabel
     var count: Int
+    /// Whether `count` is a floor rather than the day's total — true only in the
+    /// archive, and only for the one day a page boundary may have cut
+    /// (`ShippingLog.partialDay(moreToLoad:)`, which is where that is decided).
+    ///
+    /// Defaulted so the board's Done column, which is not paged and whose counts
+    /// are therefore always whole, keeps saying exactly what it said before.
+    var partial: Bool = false
     var collapsed: Bool
     var onToggle: () -> Void
 
@@ -25,7 +32,7 @@ struct ShipDayHeader: View {
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(.tertiary)
                 ConsoleLabel(text: Self.text(label, calendar: calendar, locale: locale))
-                Fact(text: "\(count)", tint: Palette.quiet, small: true)
+                Fact(text: Self.countText(count: count, partial: partial), tint: Palette.quiet, small: true)
                 Spacer()
             }
             .contentShape(Rectangle())
@@ -38,9 +45,24 @@ struct ShipDayHeader: View {
         .accessibilityLabel(
             BoardAccessibility.shipDayCaption(
                 day: Self.text(label, calendar: calendar, locale: locale),
-                count: count
+                count: count,
+                partial: partial
             )
         )
+    }
+
+    /// How the count capsule reads.
+    ///
+    /// "23+" and not "23" when a page boundary may have cut this day. The bare
+    /// number reads as a claim about the day — it sits next to the day's name —
+    /// and in the archive it counts the rows loaded so far, which is a different
+    /// thing whenever there are more to load.
+    ///
+    /// A function rather than an expression in the `body` for the same reason
+    /// `text(_:calendar:locale:)` is one: a string assembled inline is a claim
+    /// no test can read, and this is the whole of what the reader sees.
+    static func countText(count: Int, partial: Bool) -> String {
+        partial ? "\(count)+" : "\(count)"
     }
 
     /// How a day reads.

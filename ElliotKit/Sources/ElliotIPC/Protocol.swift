@@ -43,7 +43,14 @@ import Foundation
 /// reads `nil` from a 5 app, and `nil` already means "no reading". So this bump
 /// is not protecting against a crash; it is keeping the rule that one number
 /// means one wire, which is what makes the handshake worth reading at all.
-public let elliotProtocolVersion = 6
+///
+/// **7** — `VerifiedOutcomeDTO`'s `merged` and `closed_unmerged` carry the
+/// pull request they are about (`number`, `url`, `branch`), so a card that
+/// reaches Done without ever having been seen as `pr_open` can still say what
+/// finished it (#139). Additive on the wire, like 6, and degrading the same
+/// quiet way — but a 6 helper renders a Done card's receipt with no pull
+/// request at all, which is the defect this closes rather than a cosmetic loss.
+public let elliotProtocolVersion = 7
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
@@ -208,6 +215,30 @@ public enum ElliotErrorCode: String, Codable, Sendable {
     /// fix the name, or open the window — and an agent that cannot tell them
     /// apart will retry the one that can never succeed.
     case windowNotOpen = "window_not_open"
+}
+
+/// The words a refusal adds to say what to do next.
+///
+/// Shared rather than written at each site: `card_not_found` is raised on six
+/// paths across two targets, and the offline copy already drifted once — it
+/// carried this pointer while the live path did not, and #144 reconciled them
+/// by dropping it. A constant makes the divergence impossible instead of
+/// merely detectable, which is strictly more than `OfflineParityTests` can buy
+/// on its own: a guard fires only once the two texts have already parted.
+///
+/// Here rather than in `ElliotModel` because it is wire vocabulary, and it
+/// belongs beside the code string it explains. `ElliotIPC` is also exactly the
+/// intersection of the two targets that need it — `ElliotEngine` and
+/// `ElliotMCPKit` both depend on it already, so nothing about the layering
+/// moves to share these words.
+///
+/// ⚠️ **One case, not a sweep.** `repo_not_found` is still written twice —
+/// message *and* its `"Known: …"` hint, in `MCPRequestHandler` and
+/// `OfflineResponder` — so the drift this type closes for `card_not_found`
+/// remains open one refusal over. This enum is where those words go when
+/// somebody moves them; its existence is not evidence that anybody has.
+public enum RefusalHint {
+    public static let cardNotFound = "board_list_cards lists the cards this board holds."
 }
 
 public enum ElliotResponse: Codable, Sendable {
@@ -723,12 +754,12 @@ public struct VerifiedOutcomeDTO: Codable, Sendable, Hashable {
             self.init(kind: "no_issue_created", reason: reason)
         case .prOpen(let number, let url, let isDraft, let branch):
             self.init(kind: "pr_open", number: number, url: url, isDraft: isDraft, branch: branch)
-        case .merged(let commitSHA):
-            self.init(kind: "merged", commitSHA: commitSHA)
+        case .merged(let commitSHA, let number, let url, let branch):
+            self.init(kind: "merged", number: number, url: url, branch: branch, commitSHA: commitSHA)
         case .notMerged(let reason):
             self.init(kind: "not_merged", reason: reason)
-        case .closedUnmerged:
-            self.init(kind: "closed_unmerged")
+        case .closedUnmerged(let number, let url, let branch):
+            self.init(kind: "closed_unmerged", number: number, url: url, branch: branch)
         case .unverified(let reason):
             self.init(kind: "unverified", reason: reason)
         }

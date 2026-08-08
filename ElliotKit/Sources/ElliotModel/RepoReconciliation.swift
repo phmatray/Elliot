@@ -4,8 +4,14 @@ import Foundation
 ///
 /// Two families live here. The first six are what `RepoReconciler` decides from
 /// GitHub, the disk and the store. The rest are what a probe *observes* by
-/// asking git: they refine a row the reconciler already called `.ok`, and
-/// nothing about how rows are built changes to accommodate them.
+/// asking git, and nothing about how rows are built changes to accommodate them.
+///
+/// ⚠️ This said the probe's verdicts "refine a row the reconciler already called
+/// `.ok`" until #189, and that sentence was quoted in the issue as the line to
+/// move: a probe now refines any row `isProbeable` admits, which is `.ok` **and**
+/// `.notChecked`. The two are composed by `refined(by:)` rather than one
+/// replacing the other, because a clone's git state and its owner's listing
+/// answer different questions and an outage only takes the second away.
 public enum RepoIssue: Sendable, Hashable {
     case ok
     case notCloned
@@ -48,6 +54,13 @@ public enum RepoIssue: Sendable, Hashable {
     /// `RepoRegistryService.register` asks `gh repo view` for the default branch
     /// and falls back to `"main"` when *that* fails too. Offering it during an
     /// outage bakes a guess into the store, for the same reason the row appeared.
+    ///
+    /// Since #189 a probe may *replace* this verdict with what git saw on the
+    /// clone, and a row that comes back `.behind` does then get `.pull`. That is
+    /// not a hole in the paragraph above: by then the row is no longer
+    /// `.notChecked`, and a `--ff-only` against an already-configured upstream
+    /// is git alone — it never asks the `gh` that failed. This verdict itself
+    /// still carries no fix, and `Register` is still unreachable from it.
     case notChecked
     case outOfScope(OutOfScope)
 
@@ -71,6 +84,88 @@ public enum RepoIssue: Sendable, Hashable {
     public var isBehind: Bool {
         if case .behind = self { return true }
         return false
+    }
+
+    /// Has a clone on disk that `git` may be asked about.
+    ///
+    /// Here rather than as a `==` chain inside `RepoRegistryService.refine`, for
+    /// the reason `isBehind` is here: the guard was `row.issue == .ok`, #189
+    /// makes it two verdicts, and the next case added to this enum has to face
+    /// the question rather than inherit an answer from a `||` someone forgot to
+    /// extend. Three copies of "which rows have a clone" is three chances to
+    /// forget one — and the failure is silent both ways, since probing a row
+    /// with no clone runs `git` against an absent path and *not* probing one
+    /// that has a clone throws away a measurement that was free.
+    ///
+    /// `.notRegistered` and `.unlisted` have a clone too, and are deliberately
+    /// out. Both are verdicts GitHub *answered*, so there is nothing a git
+    /// observation could recover — and `.notRegistered` carries `Register`,
+    /// which `refine`'s `fixes` assignment would take away.
+    ///
+    /// The `switch` is exhaustive with **no `default:`**, for the reason
+    /// `showsBoardFigures` and `RepositoriesView.icon` are.
+    public var isProbeable: Bool {
+        switch self {
+        case .ok, .notChecked:
+            return true
+        case .notCloned, .notRegistered, .missing, .misplaced, .unlisted, .outOfScope,
+            .behind, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable:
+            return false
+        }
+    }
+
+    /// What a git observation does to this verdict. Pure, total, and the whole
+    /// of the decision — there is no second copy of it at a renderer.
+    ///
+    /// The two arguments answer *different questions*, which is why one has to
+    /// be composed with the other rather than chosen between: `self` is what the
+    /// listing established (or failed to establish), `observed` is what `git`
+    /// saw on the disk. A row that is not probeable never asked git anything, so
+    /// it keeps what it had and `observed` is discarded.
+    ///
+    /// ⛔ **`.notChecked` refined by `.ok` stays `.notChecked`, and that arm is
+    /// the reason this function exists.** A clean, attached, up-to-date clone
+    /// whose owner was never listed is *still* not checked: "clean and up to
+    /// date" is a claim about a clone, and the row's open question is about the
+    /// repository. Collapsing the pair to `.ok` would render a non-measurement
+    /// as a pass — the exact defect #148 removed one layer up, restored here by
+    /// a single `return observed`.
+    ///
+    /// Every *other* observation wins: dirty, detached, diverged, ahead, no
+    /// remote, behind and `.outOfScope(.otherRoot)` are each a fact `git`
+    /// established on the local disk, which is precisely what an outage does not
+    /// take away.
+    ///
+    /// ⚠️ **`.unreadable("fetch failed")` is the one that does not fit that
+    /// sentence, and it is the likely one.** `fetch` is a network call, so a
+    /// modal outage — no network at all — fails the listing *and* the fetch, and
+    /// every row renders `unreadable` rather than `not checked`. #189's spec
+    /// decided that deliberately ("more informative than `.notChecked` … it is
+    /// an observation, not a guess") and this implements that decision; but the
+    /// argument for it is weaker than for the other six, because what was
+    /// observed is one global failure restated per clone. Pinned by
+    /// `notCheckedOverAnUnreachableRemoteIsUnreadable`, so a later reversal is a
+    /// decision rather than a drift.
+    ///
+    /// Written as an exhaustive `switch` over `self` rather than as two `==`
+    /// guards, and that is the same argument `isProbeable` makes one property
+    /// up: with guards, a verdict added to `isProbeable`'s `true` arm compiles
+    /// here untouched and silently inherits `.ok`'s "take whatever git saw",
+    /// which is the inheritance both of these exist to stop. Two exhaustive
+    /// switches mean a new case must answer *both* questions to build.
+    public func refined(by observed: RepoIssue) -> RepoIssue {
+        switch self {
+        case .ok:
+            return observed
+        case .notChecked:
+            return observed == .ok ? .notChecked : observed
+        // Not probeable: git was never asked, so there is no observation to
+        // weigh. Listed rather than swept into a `default:`, for the reason
+        // above — and these are exactly `isProbeable`'s `false` arm.
+        case .notCloned, .notRegistered, .missing, .misplaced, .unlisted, .outOfScope,
+            .behind, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable:
+            return self
+        }
     }
 }
 
@@ -97,6 +192,29 @@ public enum RepoFix: Sendable, Hashable {
     }
 }
 
+/// What a row can do about the **board**, as opposed to about itself.
+///
+/// Its own vocabulary rather than a sixth `RepoFix` case, and each mismatch is
+/// load-bearing rather than a matter of taste. `RepoFix` is *"the one thing a
+/// row's button does"* and every case repairs the repository's state — opening
+/// a window repairs nothing. Its buttons route through
+/// `AppModel.apply(_ fix:)`, which calls `RepoRegistryService` and then re-reads
+/// GitHub, the disk and the store; navigation would trigger a portfolio-wide
+/// sweep. They carry `.disabled(model.isReconciling)`, which is right for a
+/// repair and absurd for "show me the cards". And `RepoReconciler` is pure by
+/// design so that "this directory is misplaced" is provable; teaching it to
+/// emit a navigation affordance would couple *what is wrong here* to *where can
+/// I go from here*.
+public enum RepoRowBoardAction: Sendable, Hashable {
+    /// Registered — Elliot drives this checkout and the board can be scoped to it.
+    case open(repoID: UUID)
+    /// On disk, not registered. `RepoFix.register` is the way in; offering both
+    /// would name an act that cannot work yet.
+    case registerFirst
+    /// Neither: not cloned, out of scope, or nothing to go to.
+    case unavailable
+}
+
 public struct RepoRow: Identifiable, Sendable, Hashable {
     public var id: String
     public var nameWithOwner: String?
@@ -107,10 +225,20 @@ public struct RepoRow: Identifiable, Sendable, Hashable {
     public var detail: String
     public var fixes: [RepoFix]
 
+    /// What is on this repository's board, when it has one.
+    ///
+    /// Defaulted `nil` in the initialiser so `RepoReconciler` — which
+    /// reconciles GitHub, the disk and the registration, and has no business
+    /// knowing what is on a board — builds every row exactly as it did.
+    /// `RepoBoardDigest` attaches these in a second, separate pass, the shape
+    /// `RepoRegistryService.probe` already uses to refine a probeable row into a
+    /// git verdict.
+    public var board: RepoBoardTally?
+
     public init(
         id: String, nameWithOwner: String? = nil, path: String? = nil, repoID: UUID? = nil,
         visibility: RepoVisibility? = nil, issue: RepoIssue,
-        detail: String = "", fixes: [RepoFix] = []
+        detail: String = "", fixes: [RepoFix] = [], board: RepoBoardTally? = nil
     ) {
         self.id = id
         self.nameWithOwner = nameWithOwner
@@ -120,6 +248,61 @@ public struct RepoRow: Identifiable, Sendable, Hashable {
         self.issue = issue
         self.detail = detail
         self.fixes = fixes
+        self.board = board
+    }
+
+    /// Whether this row is one Elliot drives, and so may carry figures.
+    ///
+    /// **Not `repoID != nil`.** A registered fork has an id — `row(for:)` sets
+    /// `repoID: repo?.id` on the out-of-scope branch below, and so does the
+    /// `.unlisted`/`.notChecked` disk branch — so "has an id" and "is one
+    /// Elliot drives" are different predicates, and the one a view would reach
+    /// for is the wrong one. That is why this is a rule here rather than an
+    /// `if let` at the point of rendering: `swift test` can see it.
+    ///
+    /// The `switch` is exhaustive with **no `default:`**, for the reason
+    /// `RepositoriesView.icon` is: a verdict added to `RepoIssue` must fail to
+    /// compile here, so someone decides whether it carries figures instead of
+    /// inheriting an answer.
+    public var showsBoardFigures: Bool {
+        guard repoID != nil else { return false }
+        switch issue {
+        case .outOfScope:
+            return false
+        case .ok, .notCloned, .notRegistered, .missing, .misplaced, .unlisted, .notChecked,
+            .behind, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable:
+            return true
+        }
+    }
+
+    /// Whether this row can send the reader to the board, and how.
+    ///
+    /// **Registration is the gate — not `issue == .ok`, and that is the
+    /// decision.** A `.missing` row (registered, nothing on disk), an
+    /// `.unlisted` one (registered, GitHub did not list it) and a registered
+    /// `.outOfScope(.otherRoot)` one all still have cards on the board, and
+    /// those are exactly the rows a person is looking at when they want to see
+    /// them. Gating on `.ok` would refuse the reader at precisely the moment
+    /// the question got interesting.
+    ///
+    /// Note it is `repoID`, deliberately, and not `showsBoardFigures` above:
+    /// those two answer different questions. A registered fork is denied
+    /// *figures* because harmonising it is not our business — but its cards
+    /// exist, and refusing to show them would be that judgement leaking into
+    /// navigation.
+    ///
+    /// `.registerFirst` is read from the row's own `fixes` rather than from
+    /// `repoID == nil`. The two would usually agree; reading `fixes` is what
+    /// makes "offers Register first" an assertion about **the button the row
+    /// actually carries** instead of a second, independent guess at when one
+    /// exists — a `.notChecked` row, for instance, is unregistered and
+    /// deliberately carries no `Register` at all.
+    public var boardAction: RepoRowBoardAction {
+        if let repoID { return .open(repoID: repoID) }
+        let offersRegister = fixes.contains {
+            if case .register = $0 { return true } else { return false }
+        }
+        return offersRegister ? .registerFirst : .unavailable
     }
 }
 

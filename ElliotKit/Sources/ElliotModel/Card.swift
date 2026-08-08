@@ -28,6 +28,36 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
     /// same face as what was chosen.
     public var angle: AnalysisAngle?
 
+    /// The labels the issue this card becomes should carry, by **name**.
+    ///
+    /// A decision someone made and can see, which is the whole of the point:
+    /// without it `create-issue` picks labels from its own reading of the prose
+    /// and the board never says which. Empty by default, and empty is the
+    /// common path — the prompt then gains no `--label` at all and the skill
+    /// behaves exactly as it always has.
+    ///
+    /// Names rather than ids, because a name is what `gh issue create --label`
+    /// takes and what a human reads. The cost is that a renamed label stops
+    /// matching, and that is the **wanted** outcome: the card goes on recording
+    /// what someone asked for and the editor marks it as one this repository no
+    /// longer has, instead of silently forgetting it.
+    ///
+    /// No colour is stored beside them. The repository owns colours and
+    /// `RequiredLabel` carries them for creation; a second copy here would be a
+    /// second source of truth with nothing keeping it current.
+    ///
+    /// ⚠️ **`@DefaultsToEmpty` is load-bearing, not decoration.** Swift's
+    /// synthesised decoder ignores a property's default value and demands the
+    /// key, so without it a `Card` read from a database that predates the
+    /// `labels` column throws `keyNotFound` — and `BoardStore.openReadOnly`
+    /// *deliberately* accepts a database older than the helper, precisely so
+    /// the board is not blanked between installing a new bundle and the next
+    /// launch of the app. That tolerance is written for added columns, which
+    /// are supposed to read as absent. This is what makes this one do that;
+    /// `OlderDatabaseTests` is what says so, and it caught the version of this
+    /// field that did not.
+    @DefaultsToEmpty public var labels: [String]
+
     public var column: Column
 
     /// Position within the column. `Double` so an insert between two neighbours
@@ -64,6 +94,7 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
         body: String = "",
         story: UserStory? = nil,
         angle: AnalysisAngle? = nil,
+        labels: [String] = [],
         column: Column = .backlog,
         orderIndex: Double = 0,
         issueNumber: Int? = nil,
@@ -83,6 +114,7 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
         self.body = body
         self.story = story
         self.angle = angle
+        self.labels = labels
         self.column = column
         self.orderIndex = orderIndex
         self.issueNumber = issueNumber

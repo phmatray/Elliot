@@ -215,4 +215,116 @@ struct RepoReconcilerTests {
             disk: [], registered: [], layout: layout)
         #expect(rows.map(\.id) == ["Atypical-Consulting/alpha", "phmatray/zeta"])
     }
+
+    // MARK: - Which rows a probe may ask git about (#189)
+
+    /// The membership test, written out case by case rather than as
+    /// `!isProbeable` over a complement: what is being pinned is that widening
+    /// the guard past `.ok` admitted **one** further verdict, and a list stated
+    /// positively is the only form in which that stays visible.
+    ///
+    /// The four in the second group are the ones the widening must not reach —
+    /// each names a row with no clone to ask about, so probing one would be a
+    /// `git` invocation against a path that is absent, elsewhere, or `nil`.
+    @Test("Only a row with a clone on disk is probeable")
+    func onlyRowsWithACloneAreProbeable() {
+        #expect(RepoIssue.ok.isProbeable)
+        #expect(RepoIssue.notChecked.isProbeable, "the listing failed; the clone is still on disk")
+
+        let withoutAClone: [RepoIssue] = [
+            .notCloned, .missing, .misplaced(expected: "/R/x"),
+            .outOfScope(.fork), .outOfScope(.archived), .outOfScope(.otherRoot),
+        ]
+        #expect(withoutAClone.allSatisfy { !$0.isProbeable })
+    }
+
+    /// `.notRegistered` and `.unlisted` do have a clone, and are deliberately
+    /// still out: both are verdicts GitHub *answered*, so there is nothing for a
+    /// git observation to recover — and `.notRegistered` carries `Register`,
+    /// which a probe's `fixes` assignment would silently take away.
+    @Test("A verdict GitHub answered is not probeable, even with a clone on disk")
+    func anAnsweredVerdictIsNotProbedAway() {
+        #expect(!RepoIssue.notRegistered.isProbeable)
+        #expect(!RepoIssue.unlisted.isProbeable)
+    }
+
+    /// The git states a probe *produces*. A probed row is never probed again in
+    /// the same pass, so admitting them would only matter if `probe` were ever
+    /// run over its own output — but stating it here is what makes the next case
+    /// added to the enum face the question.
+    @Test("A verdict a probe produced is not itself probeable")
+    func gitStatesAreOutputNotInput() {
+        let observed: [RepoIssue] = [
+            .behind(by: 3), .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable("no HEAD"),
+        ]
+        #expect(observed.allSatisfy { !$0.isProbeable })
+    }
+
+    // MARK: - How the two verdicts compose (#189)
+
+    /// Today's behaviour for `.ok`, restated as the function rather than as the
+    /// assignment it used to be. It is the control for everything below: if this
+    /// stopped holding, the widening would have changed the case it was not
+    /// about.
+    @Test("A row the reconciler called ok takes whatever git saw")
+    func okTakesTheObservation() {
+        #expect(RepoIssue.ok.refined(by: .dirty) == .dirty)
+        #expect(RepoIssue.ok.refined(by: .behind(by: 2)) == .behind(by: 2))
+        #expect(RepoIssue.ok.refined(by: .ok) == .ok)
+        #expect(RepoIssue.ok.refined(by: .outOfScope(.otherRoot)) == .outOfScope(.otherRoot))
+    }
+
+    /// The recovery this issue is for: every one of these is a fact `git`
+    /// established on the local disk, and not one of them needed the listing
+    /// that failed.
+    @Test("An actionable git state wins over a listing that never arrived")
+    func anObservationBeatsNotChecked() {
+        #expect(RepoIssue.notChecked.refined(by: .dirty) == .dirty)
+        #expect(RepoIssue.notChecked.refined(by: .detached) == .detached)
+        #expect(RepoIssue.notChecked.refined(by: .diverged) == .diverged)
+        #expect(RepoIssue.notChecked.refined(by: .ahead) == .ahead)
+        #expect(RepoIssue.notChecked.refined(by: .noRemote) == .noRemote)
+        #expect(RepoIssue.notChecked.refined(by: .behind(by: 4)) == .behind(by: 4))
+        #expect(RepoIssue.notChecked.refined(by: .outOfScope(.otherRoot)) == .outOfScope(.otherRoot))
+    }
+
+    /// A `fetch` failing during an outage is the *likely* case, not an exotic
+    /// one — and `.unreadable("fetch failed")` is more informative than
+    /// `.notChecked`, because it is something that was observed rather than
+    /// something that was not asked.
+    @Test("An unreadable clone is an observation, and says what could not be read")
+    func unreadableIsAnObservation() {
+        #expect(RepoIssue.notChecked.refined(by: .unreadable("fetch failed")) == .unreadable("fetch failed"))
+    }
+
+    /// ⛔ The load-bearing one. Clean, attached and up to date is not a verdict
+    /// about a repository whose remote was never reached; collapsing this pair
+    /// to `.ok` is #148's defect restored, one layer down.
+    @Test("A clean clone whose owner was never listed is still not checked")
+    func cleanDoesNotBecomeOk() {
+        #expect(RepoIssue.notChecked.refined(by: .ok) == .notChecked)
+        #expect(RepoIssue.notChecked.refined(by: .ok) != .ok)
+    }
+
+    /// A row that is not probeable never asked git anything, so there is no
+    /// observation to weigh.
+    ///
+    /// "Not probeable" is not the same as "no clone", and the list below mixes
+    /// both reasons deliberately: `.notCloned`, `.missing` and `.misplaced` have
+    /// nothing at the path to ask, while `.unlisted` and `.notRegistered` have a
+    /// real clone and are excluded because GitHub *answered* about them (see
+    /// `anAnsweredVerdictIsNotProbedAway`). Collapsing the two reasons into "no
+    /// clone" is what makes dropping `.notRegistered`'s `Register` button look
+    /// harmless.
+    @Test("A row that is not probeable keeps its verdict whatever it is handed")
+    func unprobeableRowsAreUntouched() {
+        let unprobeable: [RepoIssue] = [
+            .notCloned, .missing, .misplaced(expected: "/R/x"), .unlisted, .notRegistered,
+            .outOfScope(.fork), .outOfScope(.archived), .outOfScope(.otherRoot),
+        ]
+        for issue in unprobeable {
+            #expect(issue.refined(by: .dirty) == issue)
+            #expect(issue.refined(by: .ok) == issue)
+        }
+    }
 }

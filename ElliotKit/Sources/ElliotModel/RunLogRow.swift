@@ -213,7 +213,7 @@ public extension VerifiedOutcome {
             "No issue — \(reason)"
         case .prOpen(let number, _, let isDraft, let branch):
             "\(isDraft ? "Draft PR" : "PR") \(number) on \(branch)"
-        case .merged(let sha):
+        case .merged(let sha, _, _, _):
             "Merged\(sha.map { " as \($0.prefix(7))" } ?? "")"
         case .notMerged(let reason):
             "Not merged — \(reason)"

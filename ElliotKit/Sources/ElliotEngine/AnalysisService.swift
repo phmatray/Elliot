@@ -213,7 +213,17 @@ public actor AnalysisService {
                     // The one line this whole issue is about: the lens was
                     // chosen before the run and recorded on the proposal, and
                     // until now it stopped existing here.
-                    angle: proposal.angle
+                    angle: proposal.angle,
+                    // And the label that lens honestly implies, for the three
+                    // that have one — pre-ticked, shown in the editor, and
+                    // removable like any other thing written on a card.
+                    //
+                    // Through `board.createCard` rather than written here:
+                    // `BoardService` stays the only thing that makes a card, so
+                    // this is a *caller* saying what it wants and not a second
+                    // writer. `nil` from a lens with no honest label becomes no
+                    // label at all, never a guess.
+                    labels: proposal.angle.suggestedLabel.map { [$0] } ?? []
                 ).card
             } catch {
                 // No card exists yet, so the claim can safely be given back —

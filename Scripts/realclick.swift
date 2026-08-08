@@ -23,16 +23,24 @@
 //
 // ⚠️ Posting events needs Accessibility, held by the **responsible process** of
 // whatever shell runs this — your terminal, or Elliot itself when Elliot spawned
-// the agent session. This comment used to claim "the shell does even when the
-// `cua-driver` daemon does not"; measured 2026-08-07 from an Elliot-spawned
-// shell, it did not, and the script reported nothing about it.
+// the agent session. So **whether your shell holds it depends on which shell you
+// are**: an interactive Terminal someone ticked the box for is a different TCC
+// identity from a spawned agent.
+//
+// This comment used to claim "the shell does even when the `cua-driver` daemon
+// does not", and two independent measurements falsified it. From an
+// Elliot-spawned shell on 2026-08-07 it did not hold the grant, and the script
+// reported nothing about it. From a `claude -p` run on 2026-08-08 (#132) the
+// same, with receipts: `osascript` returns `-1719 not allowed assistive access`
+// and `screencapture -x` returns `could not create image from display`.
 //
 // ⛔ Without the grant `CGEventPost` drops the events in silence and returns no
 // receipt, so a click that never left and a click the app ignored would be
 // indistinguishable from here. That is the same false negative one layer down —
 // so this script **refuses by name** instead of exiting 0 on nothing, because a
 // rule that lives only in a comment is a rule nobody re-runs. `AXIsProcessTrusted`
-// answers instantly and never prompts.
+// answers instantly and never prompts. CLAUDE.md § *Watching the caret's anchors
+// arrive* has the five probes and what still works without any grant.
 import ApplicationServices
 import CoreGraphics
 import Foundation

@@ -14,6 +14,12 @@
 #                                  tests read as documentation of intent
 #                          crash = write to stderr and exit non-zero
 #   FAKE_CLAUDE_ARGV_OUT   file to dump argv into, one argument per line
+#   FAKE_CLAUDE_SPAWN_LOG  file to APPEND one line to per invocation — the first
+#                          line of the -p prompt. The lossless counter for "how
+#                          many children were actually started". ARGV_OUT cannot
+#                          serve: it truncates, so two spawns look like one, and
+#                          counting spawns is exactly what a double-spawn test
+#                          must do.
 #   FAKE_CLAUDE_STDERR     text to emit on stderr
 #   FAKE_CLAUDE_READY      file to touch once the trap is installed, so a test
 #                          can wait on a fact instead of guessing a duration
@@ -39,6 +45,19 @@ trap terminated TERM INT
 if [ -n "${FAKE_CLAUDE_ARGV_OUT:-}" ]; then
   : >"$FAKE_CLAUDE_ARGV_OUT"
   for arg in "$@"; do printf '%s\n' "$arg" >>"$FAKE_CLAUDE_ARGV_OUT"; done
+fi
+
+# One short line, appended: O_APPEND writes under PIPE_BUF are atomic, so two
+# fakes running at once cannot interleave halves of a line. The prompt's first
+# line says which run this spawn belongs to.
+if [ -n "${FAKE_CLAUDE_SPAWN_LOG:-}" ]; then
+  spawn_prompt=""
+  spawn_prev=""
+  for arg in "$@"; do
+    if [ "$spawn_prev" = "-p" ]; then spawn_prompt="$arg"; fi
+    spawn_prev="$arg"
+  done
+  printf '%s\n' "$(printf '%s' "$spawn_prompt" | head -1)" >>"$FAKE_CLAUDE_SPAWN_LOG"
 fi
 
 if [ -n "${FAKE_CLAUDE_STDERR:-}" ]; then

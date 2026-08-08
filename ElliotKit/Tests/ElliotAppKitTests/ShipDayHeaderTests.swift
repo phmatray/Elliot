@@ -69,4 +69,40 @@ struct ShipDayHeaderTests {
         #expect(BoardAccessibility.shipDayCaption(day: "Today", count: 3) == "Today, 3 cards")
         #expect(BoardAccessibility.shipDayCaption(day: "Tuesday", count: 0) == "Tuesday, 0 cards")
     }
+
+    /// Extracted for the same reason `text(_:calendar:locale:)` is: a string
+    /// built inline in a `body` is a claim no test can read, and this one is the
+    /// whole of what #162 changed on screen.
+    @Test("The capsule marks a cut day with a plus and leaves a whole one bare")
+    func countTextMarksThePartialDay() {
+        #expect(ShipDayHeader.countText(count: 25, partial: true) == "25+")
+        #expect(ShipDayHeader.countText(count: 25, partial: false) == "25")
+        #expect(ShipDayHeader.countText(count: 0, partial: true) == "0+")
+    }
+
+    /// The visible capsule reads "23+"; VoiceOver cannot render a glyph, so it
+    /// gets the same claim written out. Both have to say *at least*, or the
+    /// screen and the screen-reader disagree about what is known.
+    @Test("A day a page boundary may have cut is spoken as a floor, not a count")
+    func captionSaysAtLeastWhenPartial() {
+        #expect(
+            BoardAccessibility.shipDayCaption(day: "28 Jun 2026", count: 23, partial: true)
+                == "28 Jun 2026, at least 23 cards"
+        )
+        #expect(
+            BoardAccessibility.shipDayCaption(day: "Today", count: 1, partial: true)
+                == "Today, at least 1 card"
+        )
+    }
+
+    /// The default keeps every existing caller — the board's Done column, which
+    /// is not paged — saying exactly what it said before.
+    @Test("A day that is whole is still spoken as a plain count")
+    func captionUnchangedWhenWhole() {
+        #expect(BoardAccessibility.shipDayCaption(day: "Today", count: 3, partial: false) == "Today, 3 cards")
+        #expect(
+            BoardAccessibility.shipDayCaption(day: "Today", count: 3)
+                == BoardAccessibility.shipDayCaption(day: "Today", count: 3, partial: false)
+        )
+    }
 }
