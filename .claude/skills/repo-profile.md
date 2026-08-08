@@ -448,7 +448,9 @@ above within seconds.
   criteria into a manual checklist, which #41 then had to undo.
 - Launched from the Finder the process sees only `/usr/bin:/bin:/usr/sbin:/sbin` — the login-shell
   environment is **captured**, never inherited (`LoginShellEnvironment.capture()`), and `claude`/`gh`/`git`
-  are located through `ToolLocator`. Anything spawning a tool must go through `ToolConfig`.
+  are located through `ToolLocator`. Anything spawning a tool must go through `ToolConfig`. The
+  consequence this sentence had never drawn: a `PATH` shim prepended before `open` therefore does not
+  reach the app, and nothing errors — `CLAUDE.md`'s on-screen-check block has the measurement (#188).
 - A registered repo path must be the **main checkout**, never a linked worktree (`merge-pr` tears down the
   PR's worktree and cannot do so from inside it) — `GitClient.isMainCheckout` enforces this in Preflight.
 - **The app is not sandboxed** (Hardened Runtime on, ad-hoc signed rather than notarised): child processes
