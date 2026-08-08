@@ -1617,7 +1617,35 @@ counts are recorded here so a moved number does not read as a regression.
 | `dependencyAutomation` | any of `renovate.json`, `.github/renovate.json`, `.renovaterc.json`, `.renovaterc`, `.github/dependabot.yml`, `.github/dependabot.yaml` | byte-equality against the preset — belongs to the sweep that writes; ⛔ and re-encoding with `JSONEncoder` would flip 199 of 202 repositories on `\/`-escaping alone |
 | `ciJudgeable` | at least one workflow whose `on:` has `pull_request` with no branch filter, or a filter matching the repository's own default branch | the "a green is a build" half — different cardinality, belongs with `GHMergeStatus` |
 | `topics` | `topics − {dotnet, csharp}` non-empty | "the topics list is empty" (21 / 29 depending on the tool) |
-| `licence` | expected value by (owner, visibility, language), compared to the SPDX id | a boolean "has a licence" — which would put MIT on a commercial product |
+| `licence` | expected value by (owner, visibility, language), compared to the SPDX id | a boolean "has a licence" — which would put MIT on a commercial product; **and** the Python's `SKIP_SUBSTR`/`SKIP_RE` name heuristic, see below |
+
+⛔ **Do not port `license_proposal.py`'s `SKIP_EXACT` / `SKIP_SUBSTR` / `SKIP_RE`
+into this axis.** They match on repository *names* (`-backup`, `template`,
+`support`, `vault`, `-docs`, and eight literal substrings) to mean "no OSS code
+licence fits". Arbitrated by the repo owner on 2026-08-08: the axis carries **no
+name heuristic**, and a repository that should stay unlicensed says so in its own
+`.elliot/standards.yml`, with a written reason.
+
+Two reasons, one of them already paid for. The `AAA` defect in task 4 was exactly
+this — a name list imported from the Python whose *meaning* did not transfer, which
+silently dropped a real library from all five axes. And the family is genuinely
+mixed: measured on the live portfolio, it is 16 repositories, and `MySaaS.Template`
+and `QualityLibTemplate` arguably *should* carry MIT so others can use them while
+`EmptyRepo` and the four `*-backup` clones should not. A name cannot tell those
+apart; a person writing one sentence can.
+
+**Expected first-run output of this axis, measured 2026-08-08** — so a reviewer can
+tell a correct result from a broken one:
+
+- **7 violations that are real**: `fire-book`, `master60`, `ids-microservices`,
+  `ids-llm`, `StateOfTheArtAI`, `LegacyModernization`, `FormidableAnalyse` — all
+  `TeX`, all unlicensed, all expecting CC-BY-4.0. This is the "7 LaTeX papers" the
+  portfolio CLAUDE.md names, arrived at independently.
+- **16 violations awaiting an exemption decision**, the SKIP family above.
+- **0 violations of the dangerous kind**: no `Atypical-Consulting` private
+  repository currently carries a licence, so "MIT on a commercial product" — the
+  one irreversible error on this axis — does not exist today. If the axis ever
+  reports one, it is real and urgent.
 
 - [ ] **Step 1: Write the failing test**
 
