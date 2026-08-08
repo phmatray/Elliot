@@ -130,6 +130,7 @@ public struct AppKitWindowCapture: WindowCapturing {
     /// Never by title: a title is a display string, it is localised, and on this
     /// board it changes with the selection. Matching on it would fail as "that
     /// window is not open", which is the quiet kind of wrong.
+    @MainActor
     static func window(id: String, among windows: [NSWindow]) -> NSWindow? {
         windows.first { $0.identifier?.rawValue == id && isOpen($0) }
     }
@@ -152,6 +153,7 @@ public struct AppKitWindowCapture: WindowCapturing {
     /// — measured on the real board, captured while Finder was frontmost.
     /// `isMiniaturized` is admitted because a window in the Dock is still open
     /// and still has a hierarchy worth drawing.
+    @MainActor
     static func isOpen(_ window: NSWindow) -> Bool {
         window.isVisible || window.isMiniaturized
     }
@@ -161,6 +163,7 @@ public struct AppKitWindowCapture: WindowCapturing {
     /// Filtered against `knownWindows` because AppKit hands out panels, tooltips
     /// and hosting windows nobody declared; offering those back as things an
     /// agent could photograph invites a request that can never work.
+    @MainActor
     static func openWindowIDs(among windows: [NSWindow]) -> [String] {
         knownWindows.filter { id in
             windows.contains { $0.identifier?.rawValue == id && isOpen($0) }
@@ -172,6 +175,7 @@ public struct AppKitWindowCapture: WindowCapturing {
     /// Two failures and not one. "That is not a window" is a typo to fix; "that
     /// window is not open" is a window to open. An agent told only that
     /// *something* was wrong retries the one that can never succeed.
+    @MainActor
     static func failure(for id: String, among windows: [NSWindow]) -> CaptureFailure? {
         guard knownWindows.contains(id) else { return .unknownWindow(known: knownWindows) }
         guard window(id: id, among: windows) != nil else {
