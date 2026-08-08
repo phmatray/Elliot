@@ -278,6 +278,25 @@ and then read the window's accessibility tree — the column captions, the toolb
 all carry labels, so "did the board survive" is a text diff rather than a squint. When in doubt,
 build the same check from `main` and compare.
 
+⚠️ **Do not make a tool fail by prepending a shim to `PATH` before `open` — the app never reads that
+`PATH`, and nothing tells you so.** `LoginShellEnvironment.capture()` runs `/bin/zsh -lic` and keeps
+*that* shell's environment, which is the whole point (a Finder launch sees only
+`/usr/bin:/bin:/usr/sbin:/sbin`). The injected directory is **not stripped** — it survives the capture
+and loses on *order*, which is what makes this false negative so convincing. Measured 2026-08-08
+(#188) with `--env PATH=/tmp/shim:$PATH` added to the command above and a `/tmp/shim/gh` that logs its
+argv and exits 1: `ps eww` showed the app really did carry `/tmp/shim` **first**, so the injection
+arrived; the captured `PATH` still carried it, at **index 26 of 47**; `ToolLocator.locate("gh")` returned
+`/opt/homebrew/bin/gh` (`foundVia: PATH (/bin/zsh -lic)`, index 9); the shim's log stayed **empty**;
+and the board read `Ready.` with no banner. A login shell runs its own rc files, and any that
+re-prepend their own bin directory push every inherited entry below them — here by 26, so the real
+`gh` won by 17 places. Nothing errors, and a pass run this way measures the real tool while looking
+exactly like a clean run: the shape catalogued below, one layer earlier than the grants.
+**Instead:** from a test, point `ToolConfig.ghPath` at `Scripts/fake-gh.sh` — `GHClient` spawns that
+path, so that is the whole seam and no production change is needed; from a launched app, cause a
+*genuine* failure, e.g. an owner handle that does not exist (`gh repo list phmatray-does-not-exist-9f3a`
+→ *"the owner handle … was not recognized as either a GitHub user or an organization"*, exit 1), which
+is what #183 did and is stronger evidence than a simulated one.
+
 **Since #155 the *agent* can look too: `board_screenshot`.** Elliot renders its own window with
 `NSView.cacheDisplay` and hands back a PNG as an MCP image block, so no permission is involved and
 nothing has to be frontmost — measured, on a window with `isVisible == false` in an app that was not
