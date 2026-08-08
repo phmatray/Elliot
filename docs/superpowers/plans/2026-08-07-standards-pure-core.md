@@ -1619,7 +1619,9 @@ Expected: PASS, 7 tests.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add ElliotKit/Sources/ElliotModel/StandardsEngine.swift ElliotKit/Tests/ElliotModelTests/StandardsEngineOrderTests.swift
+git add ElliotKit/Sources/ElliotModel/StandardsEngine.swift \
+        ElliotKit/Sources/ElliotModel/StandardPredicates.swift \
+        ElliotKit/Tests/ElliotModelTests/StandardsEngineOrderTests.swift
 git commit -m "feat(model): pin the order a standards verdict is decided in"
 ```
 
@@ -1883,7 +1885,36 @@ Expected: FAIL — every case, because the task-8 stub violates unconditionally.
 
 - [ ] **Step 3: Write the implementation**
 
-**The 16 tests in step 1 are the specification** — implement against them. Create
+**A violation must cite what was looked for.** `StandardFinding.evidence` and
+`StandardCardSeed.evidence` exist and nothing populated them until here — the same
+rule `StoryProposal` already enforces, where a story citing nothing is discarded
+because it cannot be judged. `evaluate` therefore returns the evidence alongside
+the verdict:
+
+```swift
+    public static func evaluate(
+        _ standard: Standard, repo: GHRepoSummary, measurement: RepoMeasurement,
+        now: Date, freshness: FreshnessPolicy
+    ) -> (verdict: StandardVerdict, evidence: [Evidence])
+```
+
+Cite a path **only when the axis actually looked at one**, and say truthfully
+whether it was there:
+
+| Axis | Evidence on a violation |
+|---|---|
+| `editorconfig` | `Evidence(path: ".editorconfig", exists: false)` |
+| `dependencyAutomation` | `Evidence(path: "renovate.json", exists: false)` — the canonical target, not all six candidates |
+| `ciJudgeable` | one `Evidence` per workflow file inspected, `exists: true`; empty when the repository has no workflows at all |
+| `topics` | **none.** There is no file. An invented path would be a fabricated citation |
+| `licence` | **none.** GitHub returns an SPDX id, not a path; `LICENSE` would be a guess |
+
+An empty array is a legitimate answer for the last two, and `StandardsEngine`
+must not treat it as a failure.
+
+**The 15 tests in step 1 are the specification** — implement against them, plus
+one more asserting that an `editorconfig` violation cites `.editorconfig` and that
+a `topics` violation cites nothing. Create
 `ElliotKit/Sources/ElliotModel/StandardPredicates.swift` with one private
 function per axis and a single `evaluate` that dispatches. Every read of an
 `Reading` goes through `value(freshAt:policy:)` and exits `.unmeasured` on
@@ -1904,7 +1935,7 @@ commented order: meta-repository → company-private → `TeX`/`Roff` → defaul
 - [ ] **Step 4: Run it to verify it passes**
 
 Run: `cd ElliotKit && swift test --filter StandardPredicatesTests`
-Expected: PASS, 15 tests.
+Expected: PASS, 16 tests (the 15 above plus the evidence test).
 
 ⚠️ **`RepoMeasurement.dependencyConfig` is read by no wave-1 predicate**, and
 that is correct rather than an omission: the arbitration made
