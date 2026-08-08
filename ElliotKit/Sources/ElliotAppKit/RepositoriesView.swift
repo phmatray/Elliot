@@ -65,6 +65,7 @@ public struct RepositoriesView: View {
                 await model.refreshRepoTallies()
             }
         }
+        .forgetConfirmation(model: model, on: .repositories)
     }
 
     // MARK: - Header
@@ -342,7 +343,7 @@ public struct RepositoriesView: View {
                     Button(fix.label) { Task { await model.apply(fix) } }
                         .controlSize(.small)
                         .disabled(model.isReconciling)
-                        .help(explain(fix))
+                        .help(explain(fix, in: row))
                 }
             }
         }
@@ -354,7 +355,10 @@ public struct RepositoriesView: View {
         String(nameWithOwner.split(separator: "/").last ?? Substring(nameWithOwner))
     }
 
-    private func explain(_ fix: RepoFix) -> String {
+    /// `RepoFix.forget` carries only a `repoID`, so the row supplies the name —
+    /// the same expression the row's title uses, so the tooltip and the heading
+    /// above it cannot name different things.
+    private func explain(_ fix: RepoFix, in row: RepoRow) -> String {
         switch fix {
         case .clone(let nameWithOwner, let into):
             "Clone \(nameWithOwner) into \(into)."
@@ -363,11 +367,17 @@ public struct RepositoriesView: View {
         case .register(let path):
             "Let Elliot drive the checkout at \(path)."
         case .forget:
-            "Remove the registration and this repository's cards. The clone on disk is untouched."
+            Self.explainForget(displayName: row.nameWithOwner.map(displayName) ?? row.id)
         case .pull(let path):
             "Fast-forward \(path) to its upstream. Never merges, never rebases, and refuses outright "
                 + "if anything there is uncommitted."
         }
+    }
+
+    /// The forget tooltip is `ForgetPrompt`'s, not this file's: the two screens
+    /// had already drifted here, one naming cards and the other naming nothing.
+    nonisolated static func explainForget(displayName: String) -> String {
+        ForgetPrompt.tooltip(displayName: displayName)
     }
 
     // MARK: - Status vocabulary

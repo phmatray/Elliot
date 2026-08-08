@@ -1578,6 +1578,13 @@ public final class AppModel {
     /// fix that failed quietly reads exactly like one that worked, which is the
     /// failure mode this page exists to remove.
     public func apply(_ fix: RepoFix) async {
+        // The one destructive fix on this page goes through the confirmation.
+        // Gating here rather than at the button covers every caller of
+        // `.forget`, and leaves the row's button untouched.
+        if case .forget(let repoID) = fix {
+            await requestForget(repoID: repoID, origin: .repositories)
+            return
+        }
         guard let registry else { return }
         let outcome = await registry.apply(fix, layout: layout)
         status = outcome.detail
@@ -1728,8 +1735,93 @@ public final class AppModel {
         try? await store?.saveRepo(repo)
     }
 
-    public func removeRepo(id: UUID) async {
-        try? await store?.deleteRepo(id: id)
+    /// A forget waiting for an answer.
+    ///
+    /// One optional rather than a per-screen flag: both screens present the same
+    /// dialog from this, so a second one cannot appear with different words.
+    public struct ForgetRequest: Identifiable, Sendable, Hashable {
+        /// Which button asked, and therefore which deleter runs on confirm.
+        /// Preflight deletes through the store; the Repositories page goes back
+        /// through `RepoRegistryService` so it keeps its outcome sentence and
+        /// its row refresh. The *confirmation* is what had to exist once.
+        public enum Origin: Sendable, Hashable { case preflight, repositories }
+
+        public let id: UUID
+        public let displayName: String
+        public let path: String
+        public let impact: ForgetImpact
+        public let origin: Origin
+
+        public var prompt: ForgetPrompt {
+            ForgetPrompt(impact: impact, displayName: displayName, path: path)
+        }
+    }
+
+    public private(set) var forgetRequest: ForgetRequest?
+
+    /// Counts what would go, then asks. Nothing is deleted here.
+    ///
+    /// A failure to count refuses the whole act rather than falling through to a
+    /// dialog with no numbers in it: a gate that fails open is not a gate, and a
+    /// vague warning is what this replaced.
+    public func requestForget(repoID: UUID, origin: ForgetRequest.Origin) async {
+        guard let store, let repo = repos.first(where: { $0.id == repoID }) else { return }
+        do {
+            let impact = try await store.forgetImpact(repoID: repoID)
+            forgetRequest = ForgetRequest(
+                id: repoID, displayName: repo.displayName, path: repo.path,
+                impact: impact, origin: origin)
+        } catch {
+            status = "Could not work out what forgetting \(repo.displayName) would delete: "
+                + error.localizedDescription
+        }
+    }
+
+    public func cancelForget() {
+        forgetRequest = nil
+    }
+
+    /// Takes the request rather than reading `forgetRequest`, and that is
+    /// load-bearing, not a style choice.
+    ///
+    /// SwiftUI clears `isPresented` **synchronously** as it dismisses the
+    /// dialog, and the Forget button's action can only be `Task { … }` because
+    /// this is `async`. So the modifier's `set:` — which treats a dismissal as a
+    /// cancel — always runs first, and a no-argument version reading
+    /// `forgetRequest` would find it nil and return at its guard: the dialog
+    /// would close, the status bar would stay quiet, and nothing would be
+    /// deleted. The button would look like it worked. Handing the value in is
+    /// the same fix as `presenting:` one layer up (#9).
+    public func confirmForget(_ request: ForgetRequest) async {
+        // Idempotent: the dismissal usually cleared it already, but a
+        // programmatic confirm must not leave a stale prompt behind.
+        forgetRequest = nil
+        switch request.origin {
+        case .preflight:
+            guard let store else {
+                status = "Could not forget \(request.displayName): the board is not open yet."
+                return
+            }
+            do {
+                try await store.deleteRepo(id: request.id)
+                status = "Forgot \(request.displayName). The clone on disk is untouched."
+            } catch {
+                // `try?` here would report a completed forget over a registration
+                // that survived — the failure mode `apply(_:)` exists to avoid.
+                status = "Could not forget \(request.displayName): "
+                    + error.localizedDescription
+            }
+        case .repositories:
+            guard let registry else {
+                status = "Could not forget \(request.displayName): the repository "
+                    + "registry is not ready."
+                return
+            }
+            let outcome = await registry.apply(.forget(repoID: request.id), layout: layout)
+            status = outcome.detail
+            await refreshRepoRows()
+            lastFixOutcome = FixOutcome(detail: outcome.detail, succeeded: outcome.succeeded)
+        }
     }
 
     public func refreshRepoChecks(using service: PreflightService? = nil) async {
