@@ -72,6 +72,34 @@ public enum RepoIssue: Sendable, Hashable {
         if case .behind = self { return true }
         return false
     }
+
+    /// Has a clone on disk that `git` may be asked about.
+    ///
+    /// Here rather than as a `==` chain inside `RepoRegistryService.refine`, for
+    /// the reason `isBehind` is here: the guard was `row.issue == .ok`, #189
+    /// makes it two verdicts, and the next case added to this enum has to face
+    /// the question rather than inherit an answer from a `||` someone forgot to
+    /// extend. Three copies of "which rows have a clone" is three chances to
+    /// forget one — and the failure is silent both ways, since probing a row
+    /// with no clone runs `git` against an absent path and *not* probing one
+    /// that has a clone throws away a measurement that was free.
+    ///
+    /// `.notRegistered` and `.unlisted` have a clone too, and are deliberately
+    /// out. Both are verdicts GitHub *answered*, so there is nothing a git
+    /// observation could recover — and `.notRegistered` carries `Register`,
+    /// which `refine`'s `fixes` assignment would take away.
+    ///
+    /// The `switch` is exhaustive with **no `default:`**, for the reason
+    /// `showsBoardFigures` and `RepositoriesView.icon` are.
+    public var isProbeable: Bool {
+        switch self {
+        case .ok, .notChecked:
+            return true
+        case .notCloned, .notRegistered, .missing, .misplaced, .unlisted, .outOfScope,
+            .behind, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable:
+            return false
+        }
+    }
 }
 
 /// The one thing a row's button does. Nothing here deletes.

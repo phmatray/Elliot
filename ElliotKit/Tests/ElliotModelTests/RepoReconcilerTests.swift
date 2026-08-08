@@ -215,4 +215,48 @@ struct RepoReconcilerTests {
             disk: [], registered: [], layout: layout)
         #expect(rows.map(\.id) == ["Atypical-Consulting/alpha", "phmatray/zeta"])
     }
+
+    // MARK: - Which rows a probe may ask git about (#189)
+
+    /// The membership test, written out case by case rather than as
+    /// `!isProbeable` over a complement: what is being pinned is that widening
+    /// the guard past `.ok` admitted **one** further verdict, and a list stated
+    /// positively is the only form in which that stays visible.
+    ///
+    /// The four in the second group are the ones the widening must not reach —
+    /// each names a row with no clone to ask about, so probing one would be a
+    /// `git` invocation against a path that is absent, elsewhere, or `nil`.
+    @Test("Only a row with a clone on disk is probeable")
+    func onlyRowsWithACloneAreProbeable() {
+        #expect(RepoIssue.ok.isProbeable)
+        #expect(RepoIssue.notChecked.isProbeable, "the listing failed; the clone is still on disk")
+
+        let withoutAClone: [RepoIssue] = [
+            .notCloned, .missing, .misplaced(expected: "/R/x"),
+            .outOfScope(.fork), .outOfScope(.archived), .outOfScope(.otherRoot),
+        ]
+        #expect(withoutAClone.allSatisfy { !$0.isProbeable })
+    }
+
+    /// `.notRegistered` and `.unlisted` do have a clone, and are deliberately
+    /// still out: both are verdicts GitHub *answered*, so there is nothing for a
+    /// git observation to recover — and `.notRegistered` carries `Register`,
+    /// which a probe's `fixes` assignment would silently take away.
+    @Test("A verdict GitHub answered is not probeable, even with a clone on disk")
+    func anAnsweredVerdictIsNotProbedAway() {
+        #expect(!RepoIssue.notRegistered.isProbeable)
+        #expect(!RepoIssue.unlisted.isProbeable)
+    }
+
+    /// The git states a probe *produces*. A probed row is never probed again in
+    /// the same pass, so admitting them would only matter if `probe` were ever
+    /// run over its own output — but stating it here is what makes the next case
+    /// added to the enum face the question.
+    @Test("A verdict a probe produced is not itself probeable")
+    func gitStatesAreOutputNotInput() {
+        let observed: [RepoIssue] = [
+            .behind(by: 3), .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable("no HEAD"),
+        ]
+        #expect(observed.allSatisfy { !$0.isProbeable })
+    }
 }
