@@ -4,7 +4,7 @@ import UserNotifications
 
 @main
 struct ElliotApp: App {
-    @State private var model = AppModel()
+    @State private var model = ElliotApp.liveModel()
     /// Apple requires the notification delegate be set before the app finishes
     /// launching, which is earlier than `AppModel.start()` runs — hence an
     /// adaptor rather than a line in `.task`.
@@ -15,6 +15,21 @@ struct ElliotApp: App {
         // bundle: without it the process starts as an accessory and never
         // shows a window.
         NSApplication.shared.setActivationPolicy(.regular)
+    }
+
+    /// The **only** place Elliot opts into writing a preference to disk (#132).
+    ///
+    /// Everything else — every test, `swift run ElliotApp` under a suite —
+    /// gets `AppModel()`, whose writer has nowhere to write. Keeping the choice
+    /// here rather than behind a default inside `ElliotAppKit` is what makes
+    /// "no test writes a preference it did not ask to" a property of the code
+    /// rather than a habit.
+    ///
+    /// One `PreferencesFile`, read from and written to, so the value restored and
+    /// the value saved cannot end up being two different files.
+    private static func liveModel() -> AppModel {
+        let file = PreferencesFile.atDefaultLocation()
+        return AppModel(preferences: file, initialPreferences: file.load())
     }
 
     var body: some Scene {
@@ -163,6 +178,14 @@ struct ElliotApp: App {
                 .disabled(model.selectedCard == nil)
         }
 
+        // Going from "this repository wants attention" to its cards is the
+        // Repositories page's other half, and criterion 4 of #143 is the same
+        // position the Card menu above states: an act worth a button is an act
+        // worth a shortcut, and a shortcut with no menu item is invisible.
+        CommandMenu("Repository") {
+            OpenBoardMenuItem(model: model)
+        }
+
         // Everything the toolbar offers, reachable without a pointer and
         // discoverable by reading the menus.
         CommandGroup(after: .toolbar) {
@@ -185,10 +208,17 @@ struct ElliotApp: App {
             // the panel is measured in board columns, so widening it is spending
             // columns. There is no toolbar button for it: this is a preference
             // set once, not a control worth a permanent seat.
-            Button(model.panelSpans >= 3 ? "Narrow Details" : "Widen Details") {
-                model.panelSpans = model.panelSpans >= 3 ? 2 : 3
-            }
-            .disabled(model.selectedCard == nil)
+            // Which width is "the other one" is a rule, so it is the model's and
+            // not this menu's (#132). It used to be two literal `3`s and a `2`
+            // spelt out here, beside the single definition `Preferences.spanChoices`
+            // had just become: a menu that set a span the panel is not designed at
+            // would be persisted unclamped and then silently repaired to the
+            // default on the next launch — a preference that quietly forgets
+            // itself. Reaching `Preferences` from here would also mean importing
+            // `ElliotModel`, and this target depends on `ElliotAppKit` and nothing
+            // else.
+            Button(model.panelWidthToggleTitle) { model.togglePanelWidth() }
+                .disabled(model.selectedCard == nil)
 
             // The analysis panel's pair of the two above. Not gated on a
             // repository being selected: the panel states that refusal itself,
@@ -234,6 +264,31 @@ private struct NewStoryMenuItem: View {
             openWindow(id: "newStory")
         }
         .keyboardShortcut("n")
+    }
+}
+
+/// Open Board for the Selected Repository, as a menu item.
+///
+/// ⚠️ The model is **passed in, never read from the environment**, for the
+/// reason spelled out on `NewStoryMenuItem` above: `@Environment(AppModel.self)`
+/// in a `Commands` tree compiles, passes every test, and kills the app at launch
+/// (#64, #84). This item is the second one written to that shape.
+private struct OpenBoardMenuItem: View {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        // The judgement is `AppModel`'s, not this item's: unwrapping the action
+        // and checking the registration still exists is the same act the row's
+        // button performs, and this target cannot reuse the view's private
+        // method. Repeating it here would make ⌘↩ a fifth copy of a decision
+        // the feature exists to hold in one place.
+        Button("Open Board for Selected Repository") {
+            guard model.showBoard(model.selectedRowBoardAction) else { return }
+            openWindow(id: "board")
+        }
+        .keyboardShortcut(.return, modifiers: .command)
+        .disabled(!model.canOpenBoardForSelectedRow)
     }
 }
 

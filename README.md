@@ -18,6 +18,14 @@ remote state — it is the remote control.
 MCP server, so an agent can create and move cards, and thereby start the same
 runs. Both paths — mouse and tool call — go through *the same rule engine*.
 
+**Preflight findings you can act on**: a check can now carry a fix, not just a
+sentence describing one. The first is labels — `create-issue` silently drops a
+label a repository does not have and files the issue anyway, so Preflight names
+the missing ones and offers to create them. Creating a *declared* label is
+deterministic, so that button runs `gh`, not an agent. Deciding a repository's
+own taxonomy is not, and edits a committed file, so that button adds a **card**
+— the work goes through the board, which is where Elliot starts agents.
+
 **And an agent can look at the result**: `board_screenshot` photographs one of
 Elliot's own windows and hands back the image, so a change that moved something
 on screen can be checked rather than assumed. Elliot draws its own hierarchy, so
@@ -31,7 +39,7 @@ not open".
 
 | From → To | What happens |
 |---|---|
-| Backlog → To Do | `/ai-migration-kit:create-issue <story>` — fills in the issue number |
+| Backlog → To Do | `/ai-migration-kit:create-issue <story>` (+ repeatable `--label`) — fills in the issue number |
 | To Do → In Progress | `/ai-migration-kit:implement-issue <n>` — fills in the PR number and branch |
 | In Progress → In Review | *no skill* — automatic, when the PR goes ready |
 | In Review → Done | `/ai-migration-kit:merge-pr <pr>` (+ repeatable `--follow-up`) |
@@ -41,10 +49,39 @@ The backlog holds **user stories**, not loose ideas: `role` / `want` / `benefit`
 plus acceptance criteria, kept as separate fields. That is what will let a skill
 *generate* stories from a repository later instead of parsing prose back apart.
 
-A card can be corrected — label, story, acceptance criteria — from its detail
-sheet, right up until it is filed. Once it carries an issue number the card stops
-being the record: edit the issue on GitHub instead. Elliot refuses the edit rather
-than letting the two drift.
+A card can be corrected — label, story, acceptance criteria, GitHub labels — from
+its detail sheet, right up until it is filed. Once it carries an issue number the
+card stops being the record: edit the issue on GitHub instead. Elliot refuses the
+edit rather than letting the two drift.
+
+### The labels a card asks for
+
+A card says which GitHub labels its issue should carry, and they travel to
+`create-issue` as `--label "bug" --label "documentation"`. Left empty — the
+common case — the prompt gains nothing at all and the skill picks labels the way
+it always has.
+
+They are chosen from **the repository's own labels**, read through
+`gh label list`, so a card cannot quietly ask for one that does not exist. A
+label the repository turns out not to have is **struck through and marked on the
+card**, never dropped: the card records what someone asked for, and the mark is
+what says the repository disagrees. If `gh` cannot be reached at all, the card's
+own labels still show and the picker says so — *could not be established* is a
+different sentence from *this repository has no labels*, and Elliot does not
+print one when it means the other.
+
+A story from the analysis arrives with its lens's label already ticked, where you
+can see it and take it off: 🐛 bugs → `bug`, ✨ features → `enhancement`,
+📖 docs & DX → `documentation`. The other five lenses suggest nothing, on purpose
+— a quick win is a claim about effort and tech debt is a claim about where the
+work is, and neither names a kind of issue. A guess dressed as a decision is the
+thing this replaces.
+
+⚠️ **`--label` is an instruction, not a parsed flag.** Measured against
+ai-migration-kit 1.9.0: `merge-pr` documents `--follow-up` as an argument,
+`create-issue` documents no arguments and chooses labels itself. An agent reading
+the prompt will very likely honour it; nothing obliges it to. So the card is the
+record of the *intent*, and what the issue ended up with is read back from `gh`.
 
 ## Where stories come from
 
@@ -315,6 +352,48 @@ expresses "Write, but only under this path". The prompt forbids touching the
 repository, `--add-dir` makes the scratch directory writable, and `git status
 --porcelain` is compared before and after. A run that edited your code is
 reported, not guessed at.
+
+**What Elliot keeps, and for how long.** Elliot writes three kinds of file and,
+until now, removed none of them: an NDJSON log and a stderr file per run, a
+full-resolution PNG per `board_screenshot`, and a `stories.json` per analysis
+run. Measured on the author's machine, `runs/` had reached **754 files and
+73 MB**. Nothing there is a leak — every file is written on purpose and every one
+is useful the day it is written. What had never been separated is "useful the day
+it is written" from "kept for ever".
+
+So each of `runs/`, `screenshots/` and `analyses/` is now bounded by one rule,
+applied once per launch:
+
+- **Nothing younger than 14 days is ever removed**, whatever the budget says.
+- Past that, the newest are kept until **512 MB**, and the rest go. The budget
+  covers the remainder past the horizon, not the directory total — young files
+  are never counted against it, which is the price of the guarantee above and the
+  right way round: a ceiling that could evict this morning's log is a ceiling
+  nobody dares switch on.
+- **A file a live run points at is never removed**, at any age or size. The
+  `logPath` and `stderrPath` of every non-terminal run are excluded before the
+  rule is asked anything. If the runs table cannot be read at all, the sweep does
+  not run — not knowing which runs are live is a reason to leave the disk alone,
+  not a licence to clear it.
+
+The rule never keeps an older file while deleting a newer one, and it is pure —
+`ArtifactRetention` in `ElliotModel` takes an inventory and an instant and
+returns what may go, so all of it is testable without a directory existing. The
+sweeper only lists, asks and unlinks; it runs off the main actor, throws nothing,
+and skips a file it cannot delete rather than giving up on the rest.
+
+Both numbers were chosen so the first run deletes **nothing** — verified against
+a copy of that real directory, 754 files in and 754 out. A retention rule whose
+first run removes something nobody expected is a retention rule that gets
+reverted. That it deletes *at all* was verified separately, on the same build
+with no constant patched, by stacking aged copies past the ceiling: 872 files
+went and the status bar said `872 pruned`. A no-op that is a no-op for the wrong
+reason would not be evidence.
+
+When a launch does prune something, the status bar carries a figure beside the
+worker and spend counts — the count in the strip, the byte total in its tooltip.
+When it prunes nothing, which is every ordinary day, there is no figure: a
+permanent "0 pruned" is furniture.
 
 ## Testing
 

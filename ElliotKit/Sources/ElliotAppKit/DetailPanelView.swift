@@ -73,13 +73,31 @@ struct DetailPanelView: View {
             header(card)
             Divider()
             if editor.isEditing {
-                editorBody
+                editorBody(card)
                 Divider()
                 editorActions(card)
             } else {
                 paneRow(card)
             }
         }
+        // ⛔ On the **panel**, not on `editorBody` — which is where it was, and
+        // that was wrong in the one place criterion 6 is about. `CardEditor.begin`
+        // refuses a card carrying an issue number, so a filed card can never
+        // reach edit mode, so the load never ran for it: `labels(for:)` stayed
+        // unestablished, `isMissing` was unconditionally false, and the chips
+        // that exist to *mark* a label the repository lacks drew it as an
+        // ordinary one. Worse, it was intermittent — the mark appeared only if
+        // the reader happened to have opened the editor on some other, unfiled
+        // card in the same repository earlier in the session.
+        //
+        // One `gh label list` per repository per selection, which is the same
+        // budget Preflight already spends and far less than the panel's own
+        // reads. Deliberately **not** skipped when a list is already held: this
+        // codebase's recurring defect is serving a remembered answer as a
+        // current one, and a label created since — by Preflight's own
+        // `createLabels` button, one screen over — would otherwise go on reading
+        // as missing.
+        .task(id: card.repoID) { await model.loadLabels(for: card.repoID) }
         .background(Color(nsColor: .windowBackgroundColor), in: outline)
         .overlay {
             outline.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
@@ -338,6 +356,8 @@ struct DetailPanelView: View {
                 switch which {
                 case .issue:
                     provenance(card)
+                    labels(card)
+                    PRStatusBlock(card: card)
                     IssuePane(card: card)
                 case .runs:
                     // Above the runs, mirroring `provenance` above the issue: a
@@ -370,10 +390,13 @@ struct DetailPanelView: View {
     /// Editing replaces the body rather than sitting inside a pane: a card is
     /// only editable until it carries an issue number, and while it is being
     /// rewritten there is nothing on GitHub to read beside it.
-    private var editorBody: some View {
+    private func editorBody(_ card: Card) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                CardFieldsEditor(draft: $editor.draft)
+                CardFieldsEditor(
+                    draft: $editor.draft,
+                    repositoryLabels: model.labels(for: card.repoID)
+                )
                 if let saveError {
                     Text(saveError).font(Type.prose).foregroundStyle(Palette.refused)
                 }
@@ -434,6 +457,27 @@ struct DetailPanelView: View {
                         .foregroundStyle(.tertiary)
                         .padding(.top, 2)
                 }
+            }
+        }
+    }
+
+    /// The labels the card asks for, read-only, beside what GitHub already
+    /// holds — because that is the question they answer: *what will this issue
+    /// carry*.
+    ///
+    /// Not removable here. A card's labels obey the same rule as its story:
+    /// correctable in the editor until it is filed, and refused afterwards.
+    /// Once the issue exists, github.com holds the labels and the card is a
+    /// record of what was asked for.
+    @ViewBuilder
+    private func labels(_ card: Card) -> some View {
+        if PanelLayout.showsLabels(card) {
+            VStack(alignment: .leading, spacing: 6) {
+                ConsoleLabel(text: card.issueNumber == nil ? "Labels to apply" : "Labels asked for")
+                LabelChips(
+                    names: card.labels,
+                    isMissing: { model.labels(for: card.repoID).isMissing($0) }
+                )
             }
         }
     }

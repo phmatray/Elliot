@@ -200,6 +200,13 @@ public struct PreflightView: View {
         }
         .frame(maxWidth: .infinity)
         .navigationTitle("Preflight")
+        .forgetConfirmation(model: model, on: .preflight)
+    }
+
+    /// `static` for the same reason `RepositoriesView.icon` is: what a screen
+    /// *says* is assertable, where its row sits on screen still is not.
+    nonisolated static func forgetHelp(displayName: String) -> String {
+        ForgetPrompt.tooltip(displayName: displayName)
     }
 
     /// Preflight is the first screen a new user sees, and until now it opened
@@ -311,14 +318,14 @@ public struct PreflightView: View {
                 .help(repo.isEnabled ? "Switch off to refuse every move on this repository" : "Switched off — moves are refused")
 
                 Button {
-                    Task { await model.removeRepo(id: repo.id) }
+                    Task { await model.requestForget(repoID: repo.id, origin: .preflight) }
                 } label: {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
-                .help("Remove \(repo.displayName) from Elliot. The checkout on disk is untouched.")
-                .accessibilityLabel("Remove \(repo.displayName)")
+                .help(Self.forgetHelp(displayName: repo.displayName))
+                .accessibilityLabel("Forget \(repo.displayName)")
             }
             Text(repo.path)
                 .font(Type.factSmall)
@@ -369,6 +376,33 @@ public struct PreflightView: View {
                             Label(hint, systemImage: "wrench.and.screwdriver")
                                 .font(Type.prose)
                                 .foregroundStyle(tint(result.status))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        // A finding you can act on. Every check that shipped
+                        // before #170 carries no fixes, so this renders nothing
+                        // for all of them — the screen did not grow buttons, it
+                        // gained the ability to have one.
+                        let buttons = PreflightFixes.buttons(for: result)
+                        if !buttons.isEmpty {
+                            HStack(spacing: 8) {
+                                ForEach(buttons) { button in
+                                    Button(button.title) {
+                                        Task { await model.apply(button.fix) }
+                                    }
+                                    .font(Type.prose)
+                                }
+                            }
+                            .padding(.top, 2)
+                        }
+                        if let outcome = model.fixOutcome(for: result) {
+                            // What the last fix did, in its own words. Shown
+                            // rather than swallowed because `apply` reports a
+                            // *partial* success — four labels asked for, three
+                            // created — and that sentence is the only place that
+                            // distinction survives.
+                            Text(outcome.detail)
+                                .font(Type.prose)
+                                .foregroundStyle(outcome.succeeded ? .secondary : tint(.fail))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }

@@ -4,7 +4,12 @@ import Foundation
 public enum TriggerAction: Equatable, Sendable, Hashable {
     /// `create-issue` reads free text and infers scope from it, so the idea is
     /// one string — normally a user story's narrative and acceptance criteria.
-    case createIssue(idea: String)
+    ///
+    /// `labels` is what the *card* asked for, and it is the one thing here the
+    /// skill would otherwise decide for itself. Defaulted to none, the way
+    /// `createCard(angle:)` is: an empty list is the common path and produces
+    /// the prompt this skill has always been sent, byte for byte.
+    case createIssue(idea: String, labels: [String] = [])
     case implementIssue(issueNumber: Int)
     case mergePR(prNumber: Int, followUps: [String])
 }
@@ -20,6 +25,12 @@ public enum MoveBlock: Equatable, Sendable, Hashable {
     case missingIssueNumber
     case missingPRNumber
     case repoDisabled
+    /// Preflight swept this repository and at least one check failed.
+    ///
+    /// Distinct from `repoDisabled`: that one is a switch the reader threw, this
+    /// one is a diagnosis Elliot made. They want different sentences and
+    /// different remedies — one is turned back on, the other is repaired.
+    case repoBlocked
     case runAlreadyInFlight(runID: UUID)
 
     /// Stable identifier surfaced to MCP callers.
@@ -31,6 +42,7 @@ public enum MoveBlock: Equatable, Sendable, Hashable {
         case .missingIssueNumber: "missing_issue_number"
         case .missingPRNumber: "missing_pr_number"
         case .repoDisabled: "repo_disabled"
+        case .repoBlocked: "repo_blocked"
         case .runAlreadyInFlight: "run_already_in_flight"
         }
     }
@@ -59,6 +71,16 @@ public enum MoveOutcome: Equatable, Sendable, Hashable {
 /// transition matrix is exhaustively testable without a database or a clock.
 public struct MoveContext: Equatable, Sendable, Hashable {
     public var repoIsEnabled: Bool
+
+    /// What Preflight last said about the card's repository.
+    ///
+    /// Defaults to `.notChecked` rather than `.passing`, and the difference is
+    /// the point: a caller that has not measured must not be able to assert a
+    /// pass by leaving an argument out. `.notChecked` does not block — see
+    /// ``PreflightState/notChecked`` for why — but it is a different answer, and
+    /// a reader can render it as one.
+    public var repoPreflight: PreflightState
+
     public var activeRunID: UUID?
 
     /// `false` for moves the app makes on its own behalf — reconciliation, or
@@ -72,11 +94,13 @@ public struct MoveContext: Equatable, Sendable, Hashable {
 
     public init(
         repoIsEnabled: Bool = true,
+        repoPreflight: PreflightState = .notChecked,
         activeRunID: UUID? = nil,
         allowSideEffects: Bool = true,
         providedFollowUps: [String]? = nil
     ) {
         self.repoIsEnabled = repoIsEnabled
+        self.repoPreflight = repoPreflight
         self.activeRunID = activeRunID
         self.allowSideEffects = allowSideEffects
         self.providedFollowUps = providedFollowUps
@@ -101,6 +125,24 @@ public func evaluateMove(
     guard context.allowSideEffects else { return .noAction }
 
     guard context.repoIsEnabled else { return .blocked(.repoDisabled) }
+
+    // The gate three documents claimed existed and no code implemented.
+    //
+    // CLAUDE.md's seeding recipe said a repository drawn as blocked was safe to
+    // leave on screen "because no transition can spawn an agent from it";
+    // `PreflightService.isBlocking`'s doc comment said "whether a repo's cards
+    // can be dragged at all"; and `labelsCheck` was deliberately made a warning
+    // rather than a failure *on the strength of that belief*. Meanwhile
+    // `isBlocking` was read by four views and by no rule, so a drag in a broken
+    // checkout spawned `claude -p` at `bypassPermissions` inside it.
+    //
+    // Placed beside `repoIsEnabled` rather than in front of the `.action` cases
+    // only: "this repository is not available" is one idea, and splitting it so
+    // that some moves work and others do not would be a second, subtler rule to
+    // keep in step. A repository Elliot has diagnosed as broken refuses moves,
+    // the way one switched off does.
+    guard context.repoPreflight.allowsMoves else { return .blocked(.repoBlocked) }
+
     if let runID = context.activeRunID { return .blocked(.runAlreadyInFlight(runID: runID)) }
 
     switch (from, to) {
@@ -112,7 +154,12 @@ public func evaluateMove(
         guard !card.hasIncompleteStory else { return .blocked(.incompleteStory) }
         let idea = card.ideaText
         guard !idea.isEmpty else { return .blocked(.emptyIdea) }
-        return .action(.createIssue(idea: idea))
+        // Whatever the card says, unfiltered. Whether the repository still has
+        // a label is not knowable here — this function is pure, and `gh` is the
+        // only thing that could answer — so the card's request travels intact
+        // and the skill drops what it cannot apply. Quietly stripping one on
+        // the way past would lose the request without telling anyone.
+        return .action(.createIssue(idea: idea, labels: card.labels))
 
     case (.todo, .inProgress):
         guard let issue = card.issueNumber else { return .blocked(.missingIssueNumber) }
@@ -219,6 +266,7 @@ public func nextCandidates(
             repoName: repo.nameWithOwner,
             context: MoveContext(
                 repoIsEnabled: repo.isEnabled,
+                repoPreflight: repo.preflightVerdict,
                 activeRunID: activeRunIDs[card.id],
                 allowSideEffects: true,
                 // `[]` and not nil. Nil means "not collected yet" and would

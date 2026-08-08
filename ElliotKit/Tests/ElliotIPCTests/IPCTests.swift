@@ -351,4 +351,100 @@ struct IPCTests {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         #expect(attributes[.posixPermissions] as? Int == 0o600)
     }
+
+    /// The limit is the platform's, so it is asserted as a range rather than as
+    /// 104: pinning the number would make this suite the thing that has to be
+    /// edited when Darwin changes it, and `MemoryLayout` already knows.
+    @Test("sun_path's size is read from the platform, not hard-coded")
+    func maxPathBytesIsThePlatformLimit() {
+        #expect(UnixSocket.maxPathBytes > 100)
+        #expect(UnixSocket.maxPathBytes < 110)
+    }
+
+    /// `<`, not `<=`. `strcpy` writes a terminating NUL, so a path of exactly
+    /// `maxPathBytes` needs one byte the field does not have — and this is the
+    /// off-by-one that would let `pathFits` say yes to a path `bind` then
+    /// refuses, which is the whole reason the two share one expression.
+    @Test("A path fits by its bytes, one short of the field")
+    func pathFitsMeasuresBytesAndLeavesRoomForTheTerminator() {
+        #expect(UnixSocket.pathFits("/tmp/elliot.sock"))
+
+        let exact = String(repeating: "a", count: UnixSocket.maxPathBytes)
+        #expect(exact.utf8.count == UnixSocket.maxPathBytes)
+        #expect(!UnixSocket.pathFits(exact))
+        #expect(UnixSocket.pathFits(String(exact.dropLast())))
+
+        // Bytes, not characters: `é` is two bytes in UTF-8, so a path of
+        // `maxPathBytes` of them is half the *characters* and twice the limit.
+        // Counting `.count` here would call it comfortably short.
+        let accented = String(repeating: "é", count: UnixSocket.maxPathBytes / 2)
+        #expect(accented.count < UnixSocket.maxPathBytes)
+        #expect(!UnixSocket.pathFits(accented))
+    }
+
+    /// The guard and the check are one expression, so a caller that asks
+    /// `pathFits` first can never be told yes by a path `makeAddress` rejects.
+    @Test("What pathFits refuses is exactly what binding refuses")
+    func bindAgreesWithPathFits() {
+        let tooLong = "/tmp/" + String(repeating: "x", count: UnixSocket.maxPathBytes)
+        #expect(!UnixSocket.pathFits(tooLong))
+        #expect(throws: SocketError.self) { try UnixSocket.makeAddress(path: tooLong) }
+
+        let fits = temporarySocketPath()
+        #expect(UnixSocket.pathFits(fits))
+        #expect(throws: Never.self) { try UnixSocket.makeAddress(path: fits) }
+    }
+
+    // MARK: - A merged outcome names its pull request on the wire too (#139)
+
+    /// The DTO already had `number`, `url` and `branch` for `pr_open`; what was
+    /// missing was the two cases passing them through. A helper that renders a
+    /// Done card's receipt has no other source for them.
+    @Test("A merged outcome carries its number, URL and branch through the DTO")
+    func mergedCarriesItsPullRequestOverTheWire() throws {
+        let dto = VerifiedOutcomeDTO(
+            .merged(
+                commitSHA: "abc1234", number: 42,
+                url: "https://github.com/o/r/pull/42", branch: "feat/7-x"
+            )
+        )
+
+        #expect(dto.kind == "merged")
+        #expect(dto.commitSHA == "abc1234")
+        #expect(dto.number == 42)
+        #expect(dto.url == "https://github.com/o/r/pull/42")
+        #expect(dto.branch == "feat/7-x")
+
+        // And it survives the encode/decode the wire actually performs.
+        let round = try JSONDecoder().decode(
+            VerifiedOutcomeDTO.self, from: JSONEncoder().encode(dto)
+        )
+        #expect(round == dto)
+    }
+
+    @Test("A closed-unmerged outcome carries its number, URL and branch too")
+    func closedUnmergedCarriesItsPullRequestOverTheWire() {
+        let dto = VerifiedOutcomeDTO(
+            .closedUnmerged(
+                number: 42, url: "https://github.com/o/r/pull/42", branch: "feat/7-x"
+            )
+        )
+
+        #expect(dto.kind == "closed_unmerged")
+        #expect(dto.number == 42)
+        #expect(dto.url == "https://github.com/o/r/pull/42")
+        #expect(dto.branch == "feat/7-x")
+    }
+
+    /// `VerifiedOutcome` crosses the wire, so widening two of its cases is a
+    /// wire-format change: an old helper in an old bundle must be refused at
+    /// `hello` rather than silently rendering a receipt with no pull request.
+    ///
+    /// The plan for #139 said "4 → 5"; `main` had already reached 6 by the time
+    /// it was executed, and writing 5 would have *lowered* the version and
+    /// readmitted exactly the helpers the bump exists to refuse.
+    @Test("Widening the outcome bumped the protocol version")
+    func protocolVersionIsSeven() {
+        #expect(elliotProtocolVersion == 7)
+    }
 }

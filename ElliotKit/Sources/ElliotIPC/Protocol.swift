@@ -36,7 +36,21 @@ import Foundation
 /// difference between "your helper is older than your Elliot" and an agent
 /// concluding the board is broken. The other direction is harmless and is
 /// refused for the same reason every other pairing is: one number, one meaning.
-public let elliotProtocolVersion = 5
+///
+/// **6** — `CardDTO` carries `prStatus`: what GitHub last said about the card's
+/// pull request. Additive, and both directions degrade quietly rather than
+/// dangerously — a 5 helper drops a field it has no property for, a 6 helper
+/// reads `nil` from a 5 app, and `nil` already means "no reading". So this bump
+/// is not protecting against a crash; it is keeping the rule that one number
+/// means one wire, which is what makes the handshake worth reading at all.
+///
+/// **7** — `VerifiedOutcomeDTO`'s `merged` and `closed_unmerged` carry the
+/// pull request they are about (`number`, `url`, `branch`), so a card that
+/// reaches Done without ever having been seen as `pr_open` can still say what
+/// finished it (#139). Additive on the wire, like 6, and degrading the same
+/// quiet way — but a 6 helper renders a Done card's receipt with no pull
+/// request at all, which is the defect this closes rather than a cosmetic loss.
+public let elliotProtocolVersion = 7
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
@@ -201,6 +215,30 @@ public enum ElliotErrorCode: String, Codable, Sendable {
     /// fix the name, or open the window — and an agent that cannot tell them
     /// apart will retry the one that can never succeed.
     case windowNotOpen = "window_not_open"
+}
+
+/// The words a refusal adds to say what to do next.
+///
+/// Shared rather than written at each site: `card_not_found` is raised on six
+/// paths across two targets, and the offline copy already drifted once — it
+/// carried this pointer while the live path did not, and #144 reconciled them
+/// by dropping it. A constant makes the divergence impossible instead of
+/// merely detectable, which is strictly more than `OfflineParityTests` can buy
+/// on its own: a guard fires only once the two texts have already parted.
+///
+/// Here rather than in `ElliotModel` because it is wire vocabulary, and it
+/// belongs beside the code string it explains. `ElliotIPC` is also exactly the
+/// intersection of the two targets that need it — `ElliotEngine` and
+/// `ElliotMCPKit` both depend on it already, so nothing about the layering
+/// moves to share these words.
+///
+/// ⚠️ **One case, not a sweep.** `repo_not_found` is still written twice —
+/// message *and* its `"Known: …"` hint, in `MCPRequestHandler` and
+/// `OfflineResponder` — so the drift this type closes for `card_not_found`
+/// remains open one refusal over. This enum is where those words go when
+/// somebody moves them; its existence is not evidence that anybody has.
+public enum RefusalHint {
+    public static let cardNotFound = "board_list_cards lists the cards this board holds."
 }
 
 public enum ElliotResponse: Codable, Sendable {
@@ -369,6 +407,102 @@ public enum ElliotTimeouts {
 // `VerifiedOutcomeDTO.kind`, `MoveBlock.code`), which is the convention this
 // file already had.
 
+/// A pull request's state as the board last read it, ready to render.
+///
+/// The facets travel **separately** from the sign, and both travel. A card has
+/// room for one mark; an agent reading `board_get_card` has room for the whole
+/// picture, and collapsing the three into the headline would hide "green, but in
+/// conflict" — a combination this board sees regularly.
+///
+/// `checks` carries the real names rather than a verdict about them. Elliot
+/// deliberately does not decide that `CodeQL` or `renovate/stability-days` is
+/// not a build: that judgement's data already lives in `repo-audit`, and a
+/// second copy here would drift. Printing what actually ran lets the reader
+/// judge, and `ci == "no_checks"` states the one thing that needs no list.
+public struct PRStatusDTO: Codable, Sendable, Hashable {
+    /// The most blocking known fact, or absent when there is nothing to report.
+    /// Absent here is an *answer*; `"unknown"` is the refusal to give one.
+    public var sign: String?
+    public var summary: String?
+    public var ci: String
+    public var merge: String
+    public var review: String
+    public var checks: [CheckDTO]
+    /// When this was read, and on which commit — so a caller can weigh it rather
+    /// than trust it.
+    public var checkedAt: Date
+    public var headRefOid: String
+    public var isStale: Bool
+
+    public struct CheckDTO: Codable, Sendable, Hashable {
+        public var name: String
+        public var conclusion: String?
+        public var isPending: Bool
+        /// Stated outright rather than left to be derived from `conclusion`.
+        ///
+        /// `gh` reports a **legacy StatusContext**'s verdict in `state`, not in
+        /// `conclusion`, so a failing legacy status arrives here with
+        /// `conclusion: null` — indistinguishable from a pass by any reader
+        /// inspecting that field alone. `CIState.failing` names the failures but
+        /// `code` flattens to `"failing"`, so without this the agent is told
+        /// something failed and cannot tell which.
+        public var hasFailed: Bool
+
+        public init(
+            name: String, conclusion: String? = nil, isPending: Bool = false,
+            hasFailed: Bool = false
+        ) {
+            self.name = name
+            self.conclusion = conclusion
+            self.isPending = isPending
+            self.hasFailed = hasFailed
+        }
+    }
+
+    public init(
+        sign: String? = nil,
+        summary: String? = nil,
+        ci: String,
+        merge: String,
+        review: String,
+        checks: [CheckDTO] = [],
+        checkedAt: Date,
+        headRefOid: String,
+        isStale: Bool
+    ) {
+        self.sign = sign
+        self.summary = summary
+        self.ci = ci
+        self.merge = merge
+        self.review = review
+        self.checks = checks
+        self.checkedAt = checkedAt
+        self.headRefOid = headRefOid
+        self.isStale = isStale
+    }
+
+    /// Built from the model's own resolution, never re-derived here — the
+    /// precedence order has exactly one implementation and it is in
+    /// `ElliotModel`.
+    public init(_ status: PRStatus, resolved: ResolvedPRStatus) {
+        sign = resolved.sign?.code
+        summary = resolved.sign?.summary
+        ci = resolved.ci.code
+        merge = resolved.merge.code
+        review = resolved.review.code
+        checks = resolved.isStale
+            ? []
+            : status.checks.map {
+                CheckDTO(
+                    name: $0.label, conclusion: $0.conclusion,
+                    isPending: $0.isPending, hasFailed: $0.hasFailed)
+            }
+        checkedAt = resolved.checkedAt
+        headRefOid = resolved.headRefOid
+        isStale = resolved.isStale
+    }
+}
+
 public struct CardDTO: Codable, Sendable, Hashable {
     public var id: UUID
     public var title: String
@@ -389,6 +523,15 @@ public struct CardDTO: Codable, Sendable, Hashable {
     /// must say so in its own note rather than leave this nil, or every held
     /// card reads as movable.
     public var activeRunID: UUID?
+
+    /// What GitHub says about this card's pull request, when a reading exists.
+    ///
+    /// Absent means Elliot has not read one — a card outside In Review, a card
+    /// with no pull request, or one nothing has looked at yet. It does **not**
+    /// mean the pull request is fine, which is why there is no "all clear" value:
+    /// the caller has to distinguish "no reading" from "a reading with nothing to
+    /// report", and only the presence of the object can do that.
+    public var prStatus: PRStatusDTO?
 
     public struct StoryDTO: Codable, Sendable, Hashable {
         public var role: String
@@ -420,7 +563,9 @@ public struct CardDTO: Codable, Sendable, Hashable {
         }
     }
 
-    public init(card: Card, repoName: String, activeRunID: UUID? = nil) {
+    public init(
+        card: Card, repoName: String, activeRunID: UUID? = nil, prStatus: PRStatusDTO? = nil
+    ) {
         id = card.id
         title = card.displayTitle
         column = card.column.rawValue
@@ -434,6 +579,7 @@ public struct CardDTO: Codable, Sendable, Hashable {
         branch = card.branch
         lastError = card.lastError
         self.activeRunID = activeRunID
+        self.prStatus = prStatus
     }
 
     /// Field by field, so a test can state the shape it expects without
@@ -608,12 +754,12 @@ public struct VerifiedOutcomeDTO: Codable, Sendable, Hashable {
             self.init(kind: "no_issue_created", reason: reason)
         case .prOpen(let number, let url, let isDraft, let branch):
             self.init(kind: "pr_open", number: number, url: url, isDraft: isDraft, branch: branch)
-        case .merged(let commitSHA):
-            self.init(kind: "merged", commitSHA: commitSHA)
+        case .merged(let commitSHA, let number, let url, let branch):
+            self.init(kind: "merged", number: number, url: url, branch: branch, commitSHA: commitSHA)
         case .notMerged(let reason):
             self.init(kind: "not_merged", reason: reason)
-        case .closedUnmerged:
-            self.init(kind: "closed_unmerged")
+        case .closedUnmerged(let number, let url, let branch):
+            self.init(kind: "closed_unmerged", number: number, url: url, branch: branch)
         case .unverified(let reason):
             self.init(kind: "unverified", reason: reason)
         }

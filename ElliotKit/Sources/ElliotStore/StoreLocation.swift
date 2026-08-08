@@ -1,3 +1,4 @@
+import ElliotModel
 import Foundation
 
 /// Where Elliot keeps its state on disk.
@@ -18,6 +19,23 @@ public enum StoreLocation {
 
     public static var databaseURL: URL {
         home.appendingPathComponent("elliot.sqlite")
+    }
+
+    /// What the reader chose about how the app looks, beside the board's own
+    /// state rather than in `UserDefaults`.
+    ///
+    /// `UserDefaults.standard` is keyed by bundle identifier, so nothing can
+    /// point it at a different home — and every on-screen verification in this
+    /// project runs against a scratch `ELLIOT_HOME`, where a preference bleeding
+    /// in from the operator's real app means the capture does not show what it
+    /// claims. Derived from ``home``, this follows the variable by construction,
+    /// which is the difference between an isolation nobody can forget and one
+    /// everybody has to remember.
+    ///
+    /// Not board state, so it never crosses the MCP socket and the sole-writer
+    /// rule does not reach it.
+    public static var preferencesURL: URL {
+        home.appendingPathComponent("preferences.json")
     }
 
     /// One NDJSON file per run, holding every line the CLI emitted. This is the
@@ -87,6 +105,74 @@ public enum StoreLocation {
 
     public static var socketURL: URL { home.appendingPathComponent("ipc.sock") }
     public static var tokenURL: URL { home.appendingPathComponent("ipc.token") }
+
+    /// The one spelling of a path that the retention sweep compares on.
+    ///
+    /// ⛔ **Both sides of the protection test must come through here.** The
+    /// safety rule — never delete a file a live run points at — is a set
+    /// membership test between `SkillRun.logPath` and what `inventory(of:)`
+    /// found, and both are strings. `FileManager`'s enumerator hands back
+    /// **symlink-resolved** URLs, while a `logPath` recorded from
+    /// `runLogURL(runID:)` is whatever `ELLIOT_HOME` said; on macOS `/tmp` is a
+    /// symlink to `/private/tmp`, and `/tmp/elliot-check` is the scratch home
+    /// this project's own verification recipe uses. So the two spellings differ
+    /// in exactly the setup a check runs under, the membership test quietly
+    /// stops matching, and the sweep deletes a live run's log — failing **open**,
+    /// with nothing on screen to say so.
+    ///
+    /// Applied explicitly rather than left to the enumerator, which resolves as
+    /// an undocumented convenience: a normalisation that happens by accident on
+    /// one side of a comparison is one release away from not happening.
+    public static func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+    }
+
+    /// Every file under `directory`, with the two facts the retention rule
+    /// decides on.
+    ///
+    /// The impure half of the sweep, and deliberately the whole of it: what to
+    /// delete is `ArtifactRetention`'s to say, and it can say it without a
+    /// directory existing. This only reads.
+    ///
+    /// - Returns: One entry per *regular file*, at any depth. Empty for a
+    ///   directory that does not exist — `ensureDirectories()` creates all three
+    ///   at launch, so that is the state of a fresh home for the instant before
+    ///   it, and a sweep that threw there is a sweep that could stop the app
+    ///   from starting.
+    ///
+    /// Depth matters: `analyses/` nests two levels (`<analysisID>/<runID>/`), so
+    /// a flat listing would report directories where the files are. Directories
+    /// are descended into and never returned as entries — the caller unlinks
+    /// what comes back, and unlinking a directory is a different act.
+    ///
+    /// An entry whose size or date cannot be read — a dangling symlink is the
+    /// ordinary case — is **dropped**. Substituting a default would put an age
+    /// nobody measured into a decision about deleting things.
+    public static func inventory(of directory: URL) throws -> [ArtifactFile] {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
+        // `errorHandler` returning true keeps the walk going past a directory it
+        // cannot open, which is the same bargain as dropping an unreadable file:
+        // one unreachable corner must not cost the sweep the rest of the tree.
+        guard let walk = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles],
+            errorHandler: { _, _ in true }
+        ) else { return [] }
+
+        var found: [ArtifactFile] = []
+        for case let url as URL in walk {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true,
+                  let bytes = values.fileSize,
+                  let modified = values.contentModificationDate
+            else { continue }
+            found.append(
+                ArtifactFile(path: canonicalPath(url.path), bytes: bytes, modified: modified)
+            )
+        }
+        return found
+    }
 
     /// Creates the directory tree with owner-only permissions. The socket and
     /// token live here, so the parent must not be group- or world-readable.

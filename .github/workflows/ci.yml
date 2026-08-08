@@ -1,0 +1,147 @@
+# The suite, run somewhere other than the author's laptop (#21).
+#
+# ### What this adds that `swift-floor.yml` does not
+#
+# What nothing ran remotely before this file existed is **the suite**. Every green verdict this
+# repository had ever recorded on its own behaviour — the rule engine, the atomic move, the drain
+# invariant, the end-to-end runs against `Scripts/fake-claude.sh` — was a claim about whichever
+# machine last typed `swift test`. #18, #19 and #20, roughly 6 000 added lines, merged on exactly
+# that.
+#
+# So the one step below that carries this file is `swift test`. The `swift build` before it is kept
+# deliberately even though `swift test` would build anyway: it separates "this does not compile" from
+# "this compiles and a test fails", which is the difference between reading a log and reading a wall
+# of type errors. It is nearly free — the second command reuses the first's objects.
+#
+# ⚠️ **Since #187 this job is the only thing that compiles this package on a pull request, and the
+# floor's guarantee now rests on it.** This paragraph used to say the opposite, and it was true when
+# written: `swift-floor.yml` ran `swift build` and `swift build --build-tests`, so compiling the
+# package was "already covered, and covered on the declared floor specifically". That was the whole
+# duplication — the *entire* package compiled twice, cold, on two `macos-26` runners, 60–70 billed
+# macOS minutes a pull request. #187 removed the second copy from `swift-floor.yml`, which now
+# asserts the toolchain and stops.
+#
+# The consequence for anyone editing this file: `swift test` below is what establishes that the eight
+# test targets compile on the declared floor. Removing it, or narrowing it with a filter, does not
+# merely reduce test coverage — it silently retires #116's guarantee. And the image on the job below
+# is load-bearing for the same reason: `swift-floor.yml` asserts the toolchain on *its* image, so its
+# assertion only speaks for this job while the two images are equal. They are compared on every pull
+# request by that file's parity step, which fails by name rather than trusting this sentence.
+#
+# ### Why the toolchain argument is not repeated here
+#
+# It used to be, at length, and it was wrong: this file argued against `macos-15` from a
+# `swift-tools-version: 6.1` that #116 has since replaced with 6.3.1. The measured version of that
+# argument now lives in three places that are kept true — `ElliotKit/Package.swift`'s header table,
+# `CLAUDE.md`, and `.claude/skills/repo-profile.md` — and `swift-floor.yml` *enforces* it on every
+# pull request rather than asserting it in a comment. A fourth copy here could only rot, which is the
+# failure mode #116 is entirely about. `macos-26` below is the same image that file picked, for the
+# same reason, and it is that file's job to go red when the reason stops holding.
+name: CI
+
+# `branches: [main]` is correct *here* because `main` genuinely is this repository's default branch
+# (profile, *Identity*). Recording that explicitly matters: the same two lines are a latent bug in any
+# repository whose default is `dev` — the job is then silently skipped on every pull request, which
+# looks exactly like a repository that has no CI at all. If the default branch is ever renamed, rename
+# it here too.
+#
+# `push: [main]` as well as `pull_request:`, and that is a deliberate difference from
+# `swift-floor.yml`, which is pull-request-only so a toolchain drift cannot leave the default branch
+# red. The two are not the same event. A drift failure says "re-measure"; a *test* failure on `main`
+# says main is broken, and that is precisely the thing a default branch should be red about — a
+# squash-merge can only be verified against the base it was tested on, and the post-merge run is the
+# only thing that ever measures the result.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# This job reads the repository and nothing else. Stating that here rather than inheriting it means a
+# later change to the repository or organisation default cannot silently hand `GITHUB_TOKEN` write
+# scope to a job that runs unreviewed code from a pull request. The suite itself needs no token and no
+# network — it drives `Scripts/fake-claude.sh` and `Scripts/fake-gh.sh` rather than the real tools —
+# so if a future test needs credentials that must be granted deliberately, not inherited.
+permissions:
+  contents: read
+
+# macOS runner minutes bill at 10× on a private repository and `pull_request` includes `synchronize`,
+# so this repository's own `implement-issue` flow — one commit per plan task — stacks a full run per
+# push. `swift-floor.yml` carries the full version of this argument; the short form is that a
+# superseded run measures a tree nobody will merge.
+#
+# `cancel-in-progress` is scoped to pull requests on purpose. On `main` every run is the only run that
+# will ever measure that commit, and cancelling it would leave a squash-merge unverified — which is
+# the hole this workflow exists to close, reopened for the sake of a few minutes.
+#
+# Both directions of that expression are measured rather than argued — #133 exists because the
+# behaviour is a runtime one that reading these three lines cannot show. **The run ids and the method
+# are in #227, and that is the durable copy: GitHub drops the logs at 90 days, and this file's own
+# header records what happens when a workflow comment becomes the place a measurement lives.** Two
+# results are worth carrying here because they change what someone editing this file may do:
+#
+#   • `false` does not mean "no grouping". Two runs in one group under any other event are **queued**,
+#     not cancelled — the second waits for the first and starts seconds after it ends. That is what
+#     keeps a `main` run's verdict, so widening `cancel-in-progress` to a bare `true` does not merely
+#     lose a little parallelism, it discards a squash-merge's only measurement.
+#   • ⚠️ A cancelled run reads as **red**, not as absent: `statusCheckRollup.state` for a commit whose
+#     only checks are `cancelled` is `FAILURE`. So a *required* check that ends `cancelled` is not a
+#     pass, and anything judging a pull request from an older sha will call it failed. Worth knowing
+#     before branch protection goes on (#21, Task 3) — still off as of 2026-08-08.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    # Carries Swift 6.3.x, the major.minor of the floor `ElliotKit/Package.swift` declares.
+    #
+    # ⛔ This literal and `swift-floor.yml`'s must stay equal, and since #187 that is enforced rather
+    # than requested: that file's parity step reads both `runs-on:` lines on every pull request and
+    # fails by name when they part. The reason is not tidiness — that job asserts the toolchain on
+    # its own image, and its assertion covers the compile below only while the two are the same
+    # image. Moving this one alone to a *newer* image is the quiet failure: everything stays green
+    # while nothing exercises the declared floor.
+    runs-on: macos-26
+    # The suite executes in about two seconds; the minutes are checkout and compiling eight test
+    # targets. A job that runs long here is a hang, not a slow test — #7's whole subject was a wedged
+    # child holding the SwiftPM build lock, which presented as a broken toolchain rather than as a
+    # stuck test. Bound it so a recurrence goes red instead of sitting in the queue.
+    timeout-minutes: 20
+
+    # ⛔ **Deliberately NOT cached, and since #187 this is the only file where that warning belongs.**
+    # It lived in `swift-floor.yml`, which is where the compile used to be; the compile is here now
+    # and the argument came with it. This is the job with a ~2m40 cold build and every incentive to
+    # add `actions/cache` on `ElliotKit/.build` — so, explicitly: do not. A cache-hit run would
+    # certify the declared floor from objects a *previous* toolchain produced, silently, and since
+    # #187 this job is what establishes that the floor compiles at all. `CLAUDE.md` records what
+    # stale build objects do here — wrong values, a link error, a SIGBUS charged to an innocent pull
+    # request, and a confident bisect that convicted an innocent commit — all cleared by
+    # `rm -rf .build`. The `concurrency` block above is the honest way to spend fewer minutes, and
+    # #187 was the other one.
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Its own line, so a runner-image toolchain drift reads as a version rather than as a mystery
+      # compile error further down. `swift-floor.yml` is what *fails* on that drift; this is only so
+      # the number is in this job's log too, where the failure it explains would appear.
+      - name: Toolchain
+        run: swift --version
+
+      # The end-to-end suite spawns these instead of the real `claude` and `gh`. git carries the mode
+      # bit, but assert it rather than assume it — a lost +x presents as a spawn failure a dozen tests
+      # deep, not as "the script is not executable".
+      - name: The fake tools are executable
+        run: test -x Scripts/fake-claude.sh && test -x Scripts/fake-gh.sh
+
+      # Kept although `swift test` builds too: it separates a compile failure from a test failure in
+      # the log. Incremental against the step below, so it costs almost nothing.
+      - name: Build
+        run: swift build
+        working-directory: ElliotKit
+
+      # The step this file exists for.
+      - name: Test
+        run: swift test
+        working-directory: ElliotKit

@@ -37,14 +37,27 @@ struct GHPayloadsTests {
         )
     }
 
-    @Test("A merged pull request reads as merged, with no commit to name")
+    /// `gh pr list` has the number, the URL and the branch in hand, so an
+    /// outcome that dropped them left the card unable to say what finished it.
+    @Test("A merged pull request reads as merged, naming itself — with no commit to name")
     func mergedReadsAsMerged() {
-        #expect(pr(state: "MERGED", mergedAt: Date()).verifiedOutcome == .merged(commitSHA: nil))
+        #expect(
+            pr(state: "MERGED", mergedAt: Date()).verifiedOutcome
+                == .merged(
+                    commitSHA: nil, number: 7,
+                    url: "https://github.com/o/r/pull/7", branch: "feat/4-thing"
+                )
+        )
     }
 
-    @Test("A pull request closed without merging reads as closed-unmerged")
+    @Test("A pull request closed without merging reads as closed-unmerged, naming itself")
     func closedUnmergedReadsAsClosedUnmerged() {
-        #expect(pr(state: "CLOSED").verifiedOutcome == .closedUnmerged)
+        #expect(
+            pr(state: "CLOSED").verifiedOutcome
+                == .closedUnmerged(
+                    number: 7, url: "https://github.com/o/r/pull/7", branch: "feat/4-thing"
+                )
+        )
     }
 
     @Test("An open pull request reads as prOpen, carrying its number, URL, draft flag and branch")
@@ -74,7 +87,13 @@ struct GHPayloadsTests {
     /// read state alone and every merge becomes an abandonment.
     @Test("A CLOSED pull request that was in fact merged reads as merged, never as closed-unmerged")
     func mergedIsCheckedBeforeClosed() {
-        #expect(pr(state: "CLOSED", mergedAt: Date()).verifiedOutcome == .merged(commitSHA: nil))
+        #expect(
+            pr(state: "CLOSED", mergedAt: Date()).verifiedOutcome
+                == .merged(
+                    commitSHA: nil, number: 7,
+                    url: "https://github.com/o/r/pull/7", branch: "feat/4-thing"
+                )
+        )
     }
 }
 

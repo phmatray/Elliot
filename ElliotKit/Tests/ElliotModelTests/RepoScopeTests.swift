@@ -41,7 +41,8 @@ struct RepoScopeTests {
     @Test("The reconciler agrees with the shared judgement")
     func reconcilerAgrees() {
         let rows = RepoReconciler.rows(
-            github: [summary(fork: true)], disk: [], registered: [], layout: .portfolio)
+            listing: GitHubListing(repos: [summary(fork: true)]),
+            disk: [], registered: [], layout: .portfolio)
         #expect(rows.first?.issue == .outOfScope(.fork))
     }
 }

@@ -11,9 +11,18 @@ struct ScreenshotWireTests {
     /// `.screenshot` to a 4 app sends a case that app cannot decode, so the
     /// pairing has to be refused at the handshake rather than halfway through a
     /// request — which is the whole job of this number.
-    @Test("The protocol version moved, so an old helper fails loudly")
+    ///
+    /// A floor rather than an equality, changed by #174 when it took the wire to
+    /// 6. The claim this test makes is *"screenshot needs at least 5"*, and that
+    /// stays true for ever; `== 5` additionally asserted that no later feature
+    /// would touch the wire, which is not a property of this feature and made
+    /// every subsequent bump edit a screenshot test to say so.
+    ///
+    /// Note what neither form catches: adding a field and forgetting to bump.
+    /// `==` only forced an edit, it never proved one was warranted.
+    @Test("The protocol version is at least the one screenshot needs")
     func versionBumped() {
-        #expect(elliotProtocolVersion == 5)
+        #expect(elliotProtocolVersion >= 5)
     }
 
     @Test("A screenshot request round-trips through the wire codec", arguments: [

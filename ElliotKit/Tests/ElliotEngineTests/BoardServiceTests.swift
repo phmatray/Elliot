@@ -319,6 +319,62 @@ struct BoardServiceTests {
             try await f.board.updateCard(id: UUID(), title: "Ghost", body: "", story: nil)
         }
     }
+
+    @Test("Editing rewrites the labels the card asks for")
+    func editsLabels() async throws {
+        let f = try await Fixture.make()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id, title: "Run log", labels: ["bug"]
+        ).card
+
+        try await f.board.updateCard(
+            id: card.id, title: "Run log", body: "", story: nil,
+            labels: ["documentation", "enhancement"]
+        )
+
+        #expect(try await f.store.card(id: card.id)?.labels == ["documentation", "enhancement"])
+    }
+
+    /// Labels obey the same rule as every other thing a human wrote on a card:
+    /// correctable until it is filed, refused afterwards, because from then on
+    /// github.com holds the labels and a card that disagreed would be a card
+    /// that lies.
+    @Test("A filed card refuses a label edit too")
+    func refusesLabelEditOnFiledCard() async throws {
+        let f = try await Fixture.make()
+        var card = try await f.board.createCard(
+            repoID: f.repo.id, title: "Run log", labels: ["bug"]
+        ).card
+        card.issueNumber = 42
+        try await f.store.saveCard(card)
+
+        await #expect(throws: BoardError.self) {
+            try await f.board.updateCard(
+                id: card.id, title: "Run log", body: "", story: nil, labels: ["documentation"]
+            )
+        }
+        #expect(try await f.store.card(id: card.id)?.labels == ["bug"])
+    }
+
+    /// ⚠️ `nil` is "the caller said nothing about labels", and it has to be,
+    /// because one caller genuinely says nothing: `board_update_card` is a wire
+    /// case that predates labels and names only title, body and story. Were the
+    /// parameter a plain `[String]`, that path would have to pass `[]` — and
+    /// every agent edit of a card's title would silently strip the labels a
+    /// human chose. Same shape as `MoveContext.providedFollowUps`.
+    @Test("An edit that says nothing about labels leaves them alone")
+    func silentEditKeepsLabels() async throws {
+        let f = try await Fixture.make()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id, title: "Run log", labels: ["bug", "documentation"]
+        ).card
+
+        try await f.board.updateCard(id: card.id, title: "Run log v2", body: "", story: nil)
+
+        let stored = try #require(try await f.store.card(id: card.id))
+        #expect(stored.title == "Run log v2")
+        #expect(stored.labels == ["bug", "documentation"], "an unspoken field is not an empty one")
+    }
 }
 
 @Suite("Scheduler admission")

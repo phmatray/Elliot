@@ -36,6 +36,23 @@ public struct SyncSummary: Sendable {
     }
 }
 
+/// One rebuild of the Repositories page: the rows, and the owners GitHub never
+/// answered for.
+///
+/// The two travel together on purpose. The banner and the rows have to describe
+/// the *same* pass — a page that named a failure from one refresh beside rows
+/// from another would be a new way of saying something nobody measured, which is
+/// the defect this type exists to end rather than relocate.
+public struct RepoPage: Sendable {
+    public var rows: [RepoRow]
+    public var listingFailures: [OwnerListingFailure]
+
+    public init(rows: [RepoRow], listingFailures: [OwnerListingFailure] = []) {
+        self.rows = rows
+        self.listingFailures = listingFailures
+    }
+}
+
 public struct RepoFixOutcome: Sendable, Hashable {
     public let succeeded: Bool
     public let detail: String
@@ -62,19 +79,62 @@ public struct RepoRegistryService: Sendable {
         self.git = GitClient(config: config)
     }
 
-    public func rows(layout: RepoTreeLayout) async -> [RepoRow] {
+    /// Rebuilds the page from GitHub, the disk and the store.
+    ///
+    /// The fan-out keeps the error rather than flattening it, and that one line
+    /// is #148: `(try? await gh.repos(owner:)) ?? []` turned "no network", "not
+    /// authenticated", "rate limited" and "no such token scope" all into the same
+    /// value an account with no repositories returns. Nothing downstream could
+    /// tell them apart, so the page rendered a non-measurement as a verdict —
+    /// including a `Register` button whose own work needs the `gh` that just
+    /// failed.
+    ///
+    /// Per owner, never per pass: one owner's rate limit costs that owner's
+    /// verdicts and nothing else. That is #131's lesson for the board, stated
+    /// again for the remote leg, and it is what a blanket failure cannot test.
+    public func rows(layout: RepoTreeLayout) async -> RepoPage {
         let gh = self.gh
-        let remotes = await withTaskGroup(of: [GHRepoSummary].self) { group in
+        let listed = await withTaskGroup(of: (String, Result<[GHRepoSummary], any Error>).self) { group in
             for owner in layout.owners {
-                group.addTask { (try? await gh.repos(owner: owner)) ?? [] }
+                group.addTask {
+                    do { return (owner, .success(try await gh.repos(owner: owner))) }
+                    catch { return (owner, .failure(error)) }
+                }
             }
-            return await group.reduce(into: [GHRepoSummary]()) { $0 += $1 }
+            return await group.reduce(into: [(String, Result<[GHRepoSummary], any Error>)]()) {
+                $0.append($1)
+            }
         }
-        return RepoReconciler.rows(
-            github: remotes,
-            disk: RepoTreeScanner(layout: layout).scan(),
-            registered: (try? await store.repos()) ?? [],
-            layout: layout)
+
+        var repos: [GHRepoSummary] = []
+        var failures: [OwnerListingFailure] = []
+        var named: Set<String> = []
+        for (owner, result) in listed {
+            switch result {
+            case .success(let listed): repos += listed
+            case .failure(let error):
+                // One line per owner, whatever the layout says. A duplicate
+                // entry in `owners` fans out twice and would fail twice, and the
+                // banner's `ForEach` keys on the owner — two rows with one id is
+                // undefined in SwiftUI, and "2 owners could not be listed" would
+                // be a count of *attempts*, which is not what the sentence says.
+                guard named.insert(owner).inserted else { continue }
+                failures.append(
+                    OwnerListingFailure(owner: owner, reason: Self.reason(error)))
+            }
+        }
+        // Completion order is not owner order, and the banner reads top to
+        // bottom: sorted so two refreshes of the same broken portfolio do not
+        // shuffle the lines under the reader.
+        failures.sort { $0.owner.lowercased() < $1.owner.lowercased() }
+
+        return RepoPage(
+            rows: RepoReconciler.rows(
+                listing: GitHubListing(repos: repos, failures: failures),
+                disk: RepoTreeScanner(layout: layout).scan(),
+                registered: (try? await store.repos()) ?? [],
+                layout: layout),
+            listingFailures: failures)
     }
 
     public func apply(_ fix: RepoFix, layout: RepoTreeLayout) async -> RepoFixOutcome {
@@ -146,8 +206,17 @@ public struct RepoRegistryService: Sendable {
         return RepoFixOutcome(succeeded: true, detail: "Registered \(repo.nameWithOwner).")
     }
 
-    /// Refines the rows the reconciler called `.ok` with what git says about
-    /// each clone. Every other row is returned exactly as it arrived.
+    /// Refines the rows that have a clone to ask about — `RepoIssue.isProbeable`,
+    /// which is `.ok` and, since #189, `.notChecked` — with what git says about
+    /// each. Every other row is returned exactly as it arrived.
+    ///
+    /// ⚠️ This said "the rows the reconciler called `.ok`" until #189, and the
+    /// widening makes an outage *more* expensive rather than less: with every
+    /// owner unlisted, every row is now probeable, so a page that used to paint
+    /// at once instead runs a real `git fetch` per clone, eight at a time, each
+    /// bounded only by `GitClient`'s 30-second timeout. That cost buys the local
+    /// half of the answer, which is the trade #189 asked for — but it is a trade,
+    /// and the 8-in-flight window it is paid through is unchanged by design.
     ///
     /// Eight in flight, matching `repo-audit/repo_sync.py`. One row costs up to
     /// six `git` invocations — two for `isMainCheckout`, then `symbolic-ref`,
@@ -184,13 +253,54 @@ public struct RepoRegistryService: Sendable {
     }
 
     private func refine(_ row: RepoRow) async -> RepoRow {
-        guard row.issue == .ok, let path = row.path else { return row }
-        let issue = await classify(path: path)
+        // `isProbeable` rather than `== .ok || == .notChecked`: which rows have
+        // a clone to ask about is stated once, on the enum, so the next verdict
+        // added has to answer the question instead of inheriting an answer from
+        // a chain nobody extended (#189).
+        guard row.issue.isProbeable, let path = row.path else { return row }
+        let observed = await classify(path: path)
+        let issue = row.issue.refined(by: observed)
         var refined = row
         refined.issue = issue
-        refined.detail = Self.explain(issue, path: path)
+        refined.detail = Self.detail(observed: observed, refining: row, path: path)
+        // Unchanged, and correct as it stands rather than by accident: the only
+        // fix a probe ever offers is `.pull`, and `.notChecked` is not
+        // `isBehind`, so a row whose listing failed is offered nothing unless
+        // git itself found it strictly behind. That case *is* legitimate —
+        // `--ff-only` against an already-configured upstream is git alone and
+        // never touches the `gh` that failed. `Register` cannot appear here at
+        // all: this line replaces the row's fixes rather than adding to them.
         refined.fixes = issue.isBehind ? [.pull(path: path)] : []
         return refined
+    }
+
+    /// The sentence a probed row carries: what git saw, then — when the row's
+    /// *listing* verdict is part of the answer — the sentence that records why
+    /// nothing was known about the repository.
+    ///
+    /// `explain` is handed a git verdict and a path. It cannot know which
+    /// owner's listing failed or why, and the reconciler's sentence is the only
+    /// place that is recorded, so overwriting it would leave the row saying
+    /// nothing about the outage at all. Nor is dropping git's half right: a
+    /// clean clone whose verdict correctly stays `.notChecked` would then look
+    /// identical to one the probe never touched, in what is the *majority* case
+    /// during an outage. Criterion 2 asks for both, so both are said, git first.
+    ///
+    /// `isProbeable && != .ok` rather than `== .notChecked`, so this is derived
+    /// from the same rule rather than being a third literal list of which
+    /// verdicts compose: any probeable verdict that is not `.ok` reached this
+    /// row from the reconciler and carries a sentence of its own worth keeping.
+    ///
+    /// It is handed the **observation**, not the composed verdict, and that is
+    /// load-bearing in the arm where `.notChecked` survives: there the composed
+    /// verdict *is* `.notChecked`, which `explain` has no case for, so it would
+    /// fall to the `default:` arm and render the row's own path as its sentence.
+    /// The observation is what git actually saw — "Up to date." — which is the
+    /// half worth reporting. Where git overruled, the two are the same value and
+    /// this is exactly the behaviour an `.ok` row has always had.
+    private static func detail(observed: RepoIssue, refining row: RepoRow, path: String) -> String {
+        guard row.issue.isProbeable, row.issue != .ok else { return explain(observed, path: path) }
+        return "\(explain(observed, path: path)) \(row.detail)"
     }
 
     /// One clone's git state. Ordered most-blocking first: the first answer wins,
@@ -254,6 +364,24 @@ public struct RepoRegistryService: Sendable {
         return SyncSummary(
             attempted: pullable.count, succeeded: succeeded,
             skipped: skipped, failed: failed)
+    }
+
+    /// Never empty, for `whyNotSwept`'s reason one screen over: a failure named
+    /// without its reason is the silence the banner exists to break, and it
+    /// renders as a line ending in a bare colon.
+    ///
+    /// `localizedDescription` is normally `ProcessError.failed`'s
+    /// `"gh exited 1: <stderr>"`, which is exactly what the page wants — but it
+    /// is a protocol requirement any error can satisfy with whitespace, and this
+    /// is the one place that decides what the reader is told.
+    ///
+    /// Internal rather than private so `ElliotEngineTests` can hand it a blank
+    /// one. Driving it through `rows(layout:)` cannot: every error the fake `gh`
+    /// can produce already describes itself, so a test at that seam would stay
+    /// green with this function deleted — which is a test that pins nothing.
+    static func reason(_ error: any Error) -> String {
+        let described = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return described.isEmpty ? "\(error)" : described
     }
 
     /// nil on success, the reason on failure.

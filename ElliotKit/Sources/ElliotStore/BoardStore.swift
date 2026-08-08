@@ -96,6 +96,32 @@ public final class BoardStore: Sendable {
         _ = try await requireWriter().write { db in try Repo.deleteOne(db, key: id.databaseKey) }
     }
 
+    /// What `deleteRepo` would destroy, counted in one read.
+    ///
+    /// One transaction, so the four numbers are one snapshot rather than four
+    /// readings a write could slip between. Built from the **same** private
+    /// filters the list queries use — `cardFilter`, `runFilter`, `proposalQuery`
+    /// — so "this repository's runs" has one definition and the count cannot
+    /// disagree with the rows it describes.
+    ///
+    /// `prStatus`, `dismissedExternal` and `moveAudit` cascade too and are
+    /// deliberately not counted: they are readings derived from this work, not
+    /// work. The confirmation names them as a clause.
+    public func forgetImpact(repoID: UUID) async throws -> ForgetImpact {
+        try await reader.read { db in
+            let cards = try Self.cardFilter(repoID: repoID, column: nil).fetchCount(db)
+            let runs = try Self.runFilter(cardID: nil, repoID: repoID).fetchCount(db)
+            let analyses = try Analysis
+                .filter(Analysis.Columns.repoID == repoID.databaseKey)
+                .fetchCount(db)
+            let proposals = try Self
+                .proposalQuery(analysisID: nil, repoID: repoID, status: nil)
+                .fetchCount(db)
+            return ForgetImpact(
+                cards: cards, runs: runs, analyses: analyses, proposals: proposals)
+        }
+    }
+
     public func repos() async throws -> [Repo] {
         try await reader.read { db in
             try Repo.order(SQLColumn("displayName")).fetchAll(db)
@@ -109,6 +135,34 @@ public final class BoardStore: Sendable {
     public func repo(path: String) async throws -> Repo? {
         try await reader.read { db in
             try Repo.filter(SQLColumn("path") == path).fetchOne(db)
+        }
+    }
+
+    // MARK: - Pull request status
+
+    /// Records one reading. Keyed by `(repoID, prNumber)`, so a second reading
+    /// of the same pull request replaces the first rather than accumulating
+    /// history — the board wants the current answer, and an old reading is
+    /// exactly what `PRStatus.resolved` refuses to report anyway.
+    public func savePRStatus(_ status: PRStatus) async throws {
+        try await requireWriter().write { db in try status.save(db) }
+    }
+
+    public func prStatus(repoID: UUID, prNumber: Int) async throws -> PRStatus? {
+        try await reader.read { db in
+            try PRStatus
+                .filter(PRStatus.Columns.repoID == repoID.databaseKey)
+                .filter(PRStatus.Columns.prNumber == prNumber)
+                .fetchOne(db)
+        }
+    }
+
+    public func prStatuses(repoID: UUID) async throws -> [PRStatus] {
+        try await reader.read { db in
+            try PRStatus
+                .filter(PRStatus.Columns.repoID == repoID.databaseKey)
+                .order(PRStatus.Columns.prNumber)
+                .fetchAll(db)
         }
     }
 
@@ -275,6 +329,72 @@ public final class BoardStore: Sendable {
                 unknownCost: row["unknown"] ?? 0
             )
         }
+    }
+
+    /// What is on each repository's board, as of one pass.
+    ///
+    /// Three grouped reads and not one query per repository, for the reason
+    /// `spendByRepo` gives: on this portfolio that is the difference between a
+    /// page load and three hundred. The spend half *is* `spendByRepo`, reused
+    /// rather than restated.
+    ///
+    /// A repository with nothing at all — no cards, no runs, nothing spent — is
+    /// **absent** from the answer, the way a silent repository is absent from
+    /// `spendByRepo`. That absence is deliberate and is the seam
+    /// `RepoBoardDigest` turns into `.empty`: a `LEFT JOIN` over every
+    /// registration here would answer criterion 3 in SQL, where no test of the
+    /// entitlement rule could reach it.
+    ///
+    /// `since` is a parameter rather than a clock inside the store, matching
+    /// `spend(since:)`, and it applies to **spend only**. Cards and runs in
+    /// flight are the board's state now, not a window over it.
+    ///
+    /// The decode happens inside each `read` block, like every other aggregate
+    /// here: `Row` is not `Sendable`, so handing rows out silently resolves
+    /// `read` to the blocking overload — see the note on `spendByKind`.
+    public func repoBoardTallies(since: Date) async throws -> [UUID: RepoBoardTally] {
+        let cards = try await reader.read { db in
+            try Row.fetchAll(
+                db,
+                Card.select(Card.Columns.repoID, count(Card.Columns.id).forKey("n"))
+                    .group(Card.Columns.repoID)
+            )
+            .reduce(into: [UUID: Int]()) { counts, row in
+                guard let id: UUID = row["repoID"] else { return }
+                counts[id] = row["n"] ?? 0
+            }
+        }
+        // `Self.activeStates` rather than a state list written out here: a
+        // second copy of "in flight" is a second answer to it, and this one
+        // would drift from the one `nonTerminalRuns()` and `activeRuns` share.
+        let inFlight = try await reader.read { db in
+            try Row.fetchAll(
+                db,
+                SkillRun
+                    .filter(Self.activeStates.contains(SkillRun.Columns.state))
+                    .select(SkillRun.Columns.repoID, count(SkillRun.Columns.id).forKey("n"))
+                    .group(SkillRun.Columns.repoID)
+            )
+            .reduce(into: [UUID: Int]()) { counts, row in
+                guard let id: UUID = row["repoID"] else { return }
+                counts[id] = row["n"] ?? 0
+            }
+        }
+        let spend = Dictionary(
+            try await spendByRepo(since: since).map { ($0.repoID, $0.spend) },
+            uniquingKeysWith: { first, _ in first })
+
+        // The union of the three, not the card count filtered by the others: a
+        // repository whose cards were forgotten still spent what it spent, and
+        // a run can outlive the card that started it.
+        var tallies: [UUID: RepoBoardTally] = [:]
+        for id in Set(cards.keys).union(inFlight.keys).union(spend.keys) {
+            tallies[id] = RepoBoardTally(
+                cards: cards[id] ?? 0,
+                runsInFlight: inFlight[id] ?? 0,
+                spendToday: spend[id] ?? .nothing)
+        }
+        return tallies
     }
 
     /// The two halves of the settings pair, written once.
@@ -513,6 +633,25 @@ public final class BoardStore: Sendable {
             .tracking { db in
                 try Self.cardQuery(repoID: repoID, column: nil, limit: nil).fetchAll(db)
             }
+            .removeDuplicates()
+            .values(in: reader)
+    }
+
+    /// Live pull request readings, board-wide.
+    ///
+    /// This exists because nothing else could deliver them. `PRWatcher` writes
+    /// only to `prStatus` and touches no card row, so a board refreshing off the
+    /// card observation would learn about a reading exactly never: the card
+    /// reaches In Review, the refresh runs and finds nothing (the `gh pr view`
+    /// has not returned yet), the row lands a moment later and nothing fires.
+    /// Checks going from running to failed five minutes on would not arrive
+    /// either. The feature would look like it did not work.
+    ///
+    /// Not keyed by card: the reader joins on `(repoID, prNumber)`, and a
+    /// per-card observation would mean one observation per waiting card.
+    public func observePRStatuses() -> AsyncValueObservation<[PRStatus]> {
+        ValueObservation
+            .tracking { db in try PRStatus.fetchAll(db) }
             .removeDuplicates()
             .values(in: reader)
     }
