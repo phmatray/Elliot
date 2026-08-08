@@ -108,4 +108,65 @@ struct ArchiveTests {
         let page = await model.archivePage(search: "", limit: 25, offset: 0)
         #expect(page == nil)
     }
+
+    // MARK: - A day the page boundary cut (#162)
+
+    /// A day holding more cards than one page, plus older days behind it —
+    /// exactly the seeded shape the on-screen pass used: 30 cards on the newest
+    /// day, 36 more below.
+    private func dayOf(_ count: Int, daysAgo: Int, calendar: Calendar) -> [Card] {
+        let day = calendar.date(byAdding: .day, value: -daysAgo, to: epoch)!
+        return (0..<count).map { i in
+            Card(
+                repoID: UUID(), title: "Ordinary finished card \(i)", column: .done,
+                columnEnteredAt: day.addingTimeInterval(Double(i) * 60),
+                createdAt: epoch, updatedAt: epoch
+            )
+        }
+    }
+
+    /// The defect this issue's second half is about, as arithmetic.
+    ///
+    /// The first page holds 25 of a day that has 30, so the header's own row
+    /// count is 25 — five short, and indistinguishable on screen from a day
+    /// that genuinely held 25. `partialDay` is what lets the header say so.
+    @Test("A day cut by the page boundary is named, and its row count is short")
+    func pageBoundaryCutsTheOldestLoadedDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+
+        let newest = dayOf(30, daysAgo: 3, calendar: calendar)
+        let older = dayOf(9, daysAgo: 5, calendar: calendar)
+        let all = (newest + older).sorted { $0.columnEnteredAt > $1.columnEnteredAt }
+
+        // What `doneCards(limit:offset:)` hands back for page one.
+        let page = Array(all.prefix(ArchiveState.pageSize))
+        var state = ArchiveState()
+        state.append(page, total: all.count)
+
+        let log = shippingLog(state.cards, now: epoch, calendar: calendar, horizonDays: nil)
+        #expect(log.days.count == 1)
+        // Short of the 30 that day actually holds — the number that used to be
+        // drawn as if it were the day's.
+        #expect(log.days[0].cards.count == 25)
+        #expect(state.canLoadMore)
+        #expect(log.partialDay(moreToLoad: state.canLoadMore) == log.days[0].start)
+    }
+
+    /// The complement, and the reason this is not simply "never show a count in
+    /// the archive": once the last page is in, every day is whole again.
+    @Test("With the last page loaded, no day is marked as cut")
+    func fullyLoadedArchiveMarksNothingPartial() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+
+        let all = dayOf(30, daysAgo: 3, calendar: calendar) + dayOf(9, daysAgo: 5, calendar: calendar)
+        var state = ArchiveState()
+        state.append(all, total: all.count)
+
+        let log = shippingLog(state.cards, now: epoch, calendar: calendar, horizonDays: nil)
+        #expect(!state.canLoadMore)
+        #expect(log.partialDay(moreToLoad: state.canLoadMore) == nil)
+        #expect(log.days.map(\.cards.count) == [30, 9])
+    }
 }

@@ -122,12 +122,11 @@ public struct ArchiveView: View {
                     // ever going to be found.
                     Fact(text: summary, tint: Palette.quiet, small: true)
                         .padding(.bottom, 2)
-                    // No horizon: the archive is the whole history, which is
-                    // the case this parameter exists for.
-                    ForEach(shippingLog(state.cards, now: Date(), calendar: .current, horizonDays: nil).days) { day in
+                    ForEach(loadedDays, id: \.day.id) { day, partial in
                         ShipDayHeader(
                             label: day.label,
                             count: day.cards.count,
+                            partial: partial,
                             collapsed: collapsedDays.contains(day.start)
                         ) {
                             if collapsedDays.contains(day.start) {
@@ -171,6 +170,22 @@ public struct ArchiveView: View {
             guard !Task.isCancelled else { return }
             await reload()
         }
+    }
+
+    /// The loaded rows as days, each paired with whether a page boundary may
+    /// have cut it.
+    ///
+    /// Computed once per pass rather than inside the `ForEach`: `shippingLog`
+    /// buckets and sorts every loaded card, and the partial day can only be
+    /// named by looking at the whole log, so asking per row would re-derive it
+    /// once per day drawn.
+    ///
+    /// No horizon — the archive is the whole history, which is the case that
+    /// parameter exists for.
+    private var loadedDays: [(day: ShipDay, partial: Bool)] {
+        let log = shippingLog(state.cards, now: Date(), calendar: .current, horizonDays: nil)
+        let cut = log.partialDay(moreToLoad: state.canLoadMore)
+        return log.days.map { ($0, $0.start == cut) }
     }
 
     /// Says which of the two empty states this is. "No results" and "nothing

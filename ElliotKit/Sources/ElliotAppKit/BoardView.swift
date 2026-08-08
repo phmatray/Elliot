@@ -1369,8 +1369,14 @@ enum BoardAccessibility {
     /// on `groupCaption`: the singular has to be written out by the one
     /// function that knows how, or a third label on this column joins the two
     /// that once disagreed about "1 cards".
-    static func shipDayCaption(day: String, count: Int) -> String {
-        "\(day), \(count) \(cards(count))"
+    ///
+    /// `partial` is the archive's case and defaults to the board's: a day the
+    /// page boundary may have cut is spoken as a floor, because the visible
+    /// capsule reads "23+" and VoiceOver cannot render a glyph. Saying "23
+    /// cards" to the one reader who cannot see the "+" would hand them the
+    /// precise claim this header stopped making.
+    static func shipDayCaption(day: String, count: Int, partial: Bool = false) -> String {
+        "\(day), \(partial ? "at least " : "")\(count) \(cards(count))"
     }
 
     /// Done's footer: how many finished cards the horizon is not drawing, and

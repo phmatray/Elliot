@@ -59,6 +59,28 @@ public struct ShippingLog: Sendable, Equatable {
         self.olderCount = olderCount
         self.totalCount = totalCount
     }
+
+    /// The start of the one day whose card count a page boundary can
+    /// understate, or `nil` when every count here is exact.
+    ///
+    /// Only the archive can produce a partial day, because only the archive
+    /// pages. It reads in `columnEnteredAt DESC, id DESC` — the order
+    /// `BoardStore.doneCards` imposes and the one this function's tie-break
+    /// deliberately matches — and re-buckets each page as it arrives. A cut can
+    /// therefore only ever fall at the **end** of what has been loaded, so every
+    /// day above the last is whole and exactly one may be short.
+    ///
+    /// A rule and not a view's arithmetic: which day is trustworthy is a claim
+    /// about the data, and `ShipDayHeader` renders whatever it is handed.
+    ///
+    /// ⚠️ It answers "may be short", never "is short". A last page that happens
+    /// to end exactly on a day boundary leaves a whole day marked as partial,
+    /// which understates what is known and is the safe direction — the failure
+    /// this exists to prevent is a header stating a number it cannot support.
+    public func partialDay(moreToLoad: Bool) -> Date? {
+        guard moreToLoad else { return nil }
+        return days.last?.start
+    }
 }
 
 /// Groups finished cards by the day they landed.

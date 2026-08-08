@@ -139,4 +139,28 @@ struct ShippingLogTests {
         #expect(log.days.flatMap(\.cards).count + log.olderCount == cards.count)
         #expect(log.totalCount == cards.count)
     }
+
+    // MARK: - Which day a page boundary can understate
+
+    @Test("With everything loaded, no day's count is a guess")
+    func nothingIsPartialWhenFullyLoaded() {
+        let log = shippingLog([done(0.1), done(1.1), done(3.1)], now: now, calendar: utc, horizonDays: nil)
+        #expect(log.partialDay(moreToLoad: false) == nil)
+    }
+
+    /// The archive reads pages in `columnEnteredAt DESC, id DESC` and re-buckets
+    /// each page with this function, so the cut always falls at the *end* of
+    /// what has been loaded. Every day above the last is therefore whole.
+    @Test("While more can load, the oldest loaded day is the one that may be cut")
+    func oldestLoadedDayIsThePartialOne() {
+        let log = shippingLog([done(0.1), done(1.1), done(3.1)], now: now, calendar: utc, horizonDays: nil)
+        #expect(log.partialDay(moreToLoad: true) == log.days.last?.start)
+        // And it is genuinely the oldest, not merely "some day".
+        #expect(log.partialDay(moreToLoad: true) == log.days.map(\.start).min())
+    }
+
+    @Test("An empty log has no partial day to name")
+    func emptyLogHasNoPartialDay() {
+        #expect(ShippingLog().partialDay(moreToLoad: true) == nil)
+    }
 }
