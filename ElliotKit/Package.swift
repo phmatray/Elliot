@@ -32,10 +32,23 @@
 // reason is this issue's own purpose rather than caution. A tools-version is enforced by SwiftPM at
 // *manifest parse*, before a source file is read: its job here is to turn a mysterious failure into
 // a named one. The failure a 6.2 contributor would actually hit is the test one — `swift test` is
-// this repository's only verification gate, there is no build-and-test CI to catch it for them, and
-// CLAUDE.md tells them to run it. Declaring 6.2 would let them build, then hand them a type-check
+// this repository's verification gate, CLAUDE.md tells them to run it, and since #21 `ci.yml` runs
+// it on every pull request as well. Declaring 6.2 would let them build, then hand them a type-check
 // timeout inside a macro expansion: exactly the mystery this floor exists to prevent, one target
 // over.
+//
+// ⚠️ That CI exists now does **not** retire this argument — it makes it stronger, and the reason is
+// worth stating exactly. Both workflows pin `macos-26`, i.e. a 6.3.x toolchain, so CI never runs the
+// toolchain a 6.2 contributor is actually holding. Declare 6.2 and their local `swift test` dies on
+// the type-check timeout while both checks go **green**: there is no red bar coming to explain it,
+// and no runner log to read. The refusal here is the only thing that can, and it arrives before a
+// source file is read and names the version. `ci.yml` answers whether the suite passes on the
+// runner; this line answers why you cannot run it on your own machine, and CI is structurally unable
+// to answer the second.
+//
+// Until #186 this paragraph reasoned from CI's absence instead — the same rot as the 6.1 claim this
+// header opens with: a premise that was true the day it was written, and that nothing ever
+// re-checked.
 //
 // **The patch component is deliberate and load-bearing — do not round this to `6.3`.** It said `6.3`
 // for one commit, and that was wrong twice over: SwiftPM resolves `6.3` as **6.3.0**, and the

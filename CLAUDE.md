@@ -66,13 +66,36 @@ claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp
     one from the other is the mistake #116 is about.
 - **CI here is two workflows, and they answer different questions.**
   `.github/workflows/swift-floor.yml` (#116) asserts the runner's toolchain against the floor
-  `Package.swift` declares and builds on it; `.github/workflows/ci.yml` (#21) runs `swift build` then
-  `swift test`. ⚠️ **`swift build --build-tests` is not `swift test`** — the floor job compiles the
-  eight test targets and executes no `@Test`, so a green `swift-floor` is not a suite that passed.
-  **Branch protection is still off**, so both checks are advisory: `gh api
-  repos/phmatray/Elliot/branches/main/protection` returns 404 `Branch not protected`, and a red check
-  does not block a merge. "Wait for green CI" now returns a real verdict; it still does not stop
-  anything.
+  `Package.swift` declares, and asserts that `ci.yml` runs on that same image;
+  `.github/workflows/ci.yml` (#21) runs `swift build` then `swift test`. ⚠️ **`swift build
+  --build-tests` is not `swift test`** — `--build-tests` compiles the eight test targets and executes
+  no `@Test`, so "compiles on the floor" and "the suite passed" are two claims. That distinction is
+  #116's whole subject and it does not depend on how the jobs are arranged.
+  - **Since #187 the floor job compiles nothing, and the two claims are established one each.** It
+    ran `swift build` *and* `swift build --build-tests` until 2026-08-08, which meant every pull
+    request compiled the **whole package twice on two `macos-26` runners** — not just the test
+    targets, which is what the issue title said and what its own comments understated. Measured
+    before and after: **60–70 → 40–50 billed macOS minutes** per pull request, floor
+    2m21–3m58 → **8–9s**, ⚠️ and the figure to quote is the **saving** — 20–30 billed minutes,
+    entirely this job's own 3–4 → 1 — because `build-and-test` is untouched and its cold compile
+    still crosses a billed-minute boundary run to run (2m38, then 3m03),
+    with `1418 tests in 158 suites` unchanged either side. The arithmetic, the run ids and the
+    argument are in `swift-floor.yml`'s header, which is the durable copy — GitHub drops the logs at
+    90 days.
+  - ⛔ **So `ci.yml`'s `swift test` now carries the floor guarantee too.** Delete it, filter it, or
+    move `ci.yml` to another image and #116's claim quietly stops being exercised. Four ways for that
+    to happen are enforced by `swift-floor.yml`'s second step, which fails by name: the two
+    `runs-on:` labels parting, `swift test` disappearing from `ci.yml`, `ci.yml` selecting its own
+    toolchain (`setup-xcode`, `DEVELOPER_DIR`), and `ci.yml` filtering itself out with `paths:`.
+    What is **not** covered is a label that means two different images across a GitHub rollout, and a
+    job-level `if:` that grep cannot tell from a step-level one. Those are gaps, not impossibilities
+    — an earlier draft of this bullet said the `swift test` half "cannot be" enforced, which was
+    wrong the moment it was written (the grep that now enforces it is three lines) and is exactly the
+    kind of sentence that stops the next person closing a hole.
+  - **Branch protection is still off**, so both checks are advisory: `gh api
+    repos/phmatray/Elliot/branches/main/protection` returns 404 `Branch not protected`, and a red check
+    does not block a merge. "Wait for green CI" now returns a real verdict; it still does not stop
+    anything.
   - ⚠️ **A conflicted pull request fires no `pull_request` workflow at all — and it fails by silence,
     not by saying so.** Measured in #140: after `main` moved, GitHub created **zero** runs for the
     head SHA for 25 minutes, `check-runs` returned `total_count: 0`, a close/reopen produced nothing,
@@ -169,10 +192,19 @@ escalation `ProcessRunner` never got) — and #26 opened a fourth investigation 
 `DrainDuplicationTests` keeps the measurement runnable: it re-derives that comment count and fails
 naming the invariant that is written twice, because **a gate that is not a test is a gate nobody
 re-runs**. Since #21 that argument is stronger rather than weaker — `ci.yml` executes `swift test` on
-every pull request, so a guard shaped as a test is now the *only* kind of guard this repository
-enforces off one laptop. (The wording here has been corrected twice: flatly "no CI" until #116 added
+every pull request, so a guard shaped as a test is enforced on every change rather than only when
+someone remembers to run it. (The wording here has been corrected twice: flatly "no CI" until #116 added
 `swift-floor.yml`, then "no build-and-test CI" until #21 added `ci.yml`. A stale claim in this file is
-what #116 was about, and the shape of it recurs.)
+what #116 was about, and the shape of it recurs. #186 is the third, and the first to land in *source*
+rather than here: #102 fixed this file and the profile, but #21's constraints barred it from
+`Package.swift` and every source file, so four comments — including `DrainDuplicationTests`' own
+header — went on reasoning from the retired premise in the interval. ⚠️ Before anyone automates the
+check: within #186's four scoped paths a `no CI` grep already returns two innocent hits, `PRStatus`'s
+"no CI *state*" and `ci.yml`'s hypothetical about a repository that merely *looks* like it has none;
+unscoped it also returns `Fixtures/issues/issue-79.md` and two `Fixtures/gh/*.json`, which are frozen
+copies of what those issues really said and must **not** be corrected. A string gate over prose can
+tell neither a claim from a mention nor a live claim from a quoted one, which is why the fix here is a
+habit rather than a matcher.)
 
 The single behavioural delta is recorded at both ends: `ProcessRunner` gave up its
 `state.withLock { !$0.exited } &&` conjunct in the SIGKILL backstop, since a sink may hold that lock
@@ -278,6 +310,31 @@ and then read the window's accessibility tree — the column captions, the toolb
 all carry labels, so "did the board survive" is a text diff rather than a squint. When in doubt,
 build the same check from `main` and compare.
 
+⚠️ **Do not make a tool fail by prepending a shim to `PATH` before `open`: the injection arrives and
+still loses, silently.** `LoginShellEnvironment.capture()` runs `/bin/zsh -lic` and keeps *that*
+shell's environment — the whole point, since a Finder launch sees only `/usr/bin:/bin:/usr/sbin:/sbin`.
+The injected directory is **not stripped**; it survives the capture and loses on *order*, which is what
+makes this false negative convincing. Measured 2026-08-08 (#188), `--env PATH=/tmp/shim:$PATH` on the
+command above with a `/tmp/shim/gh` that logs its argv and exits 1: `ps eww` showed the app really did
+carry `/tmp/shim` **first**, so the injection arrived; the captured `PATH` still held it, at **index 26
+of 47**; `ToolLocator.locate("gh")` returned `/opt/homebrew/bin/gh` (`foundVia: PATH (/bin/zsh -lic)`,
+index 9); the shim's log stayed **empty**; the board read `Ready.`, no banner. A login shell runs its
+own rc files, and any that re-prepend their own bin directory push every inherited entry below them.
+**The margin is this machine's, not a constant** — #183 measured the same trap at 12 entries, not 17 —
+and where nothing re-prepends, the shim stays at index 0 and wins. It is the sixth member of the
+family *Things that bite* catalogues below, and like the other five it never says *no*.
+
+**What does say so is Preflight**, which is the screen to read before trusting a pass: its `gh` row
+prints the resolved path (`/opt/homebrew/bin/gh — gh version …`, never `/tmp/shim/gh`) and *Login shell
+environment* prints `Captured via /bin/zsh -lic — 47 PATH entries` — or `.warn`s *"Could not read the
+login shell"*, which is the one case where the shim really is stripped, because both `-lic` and `-lc`
+failed and `capture()` fell back to a built-in `PATH`. **Instead:** from a test, point
+`ToolConfig.ghPath` at `Scripts/fake-gh.sh` — the seam *Testing discipline* describes below, no
+production change; from a launched app, cause a *genuine* failure, e.g. an owner handle that does not
+exist (`gh repo list phmatray-does-not-exist-9f3a` → *"the owner handle … was not recognized as either
+a GitHub user or an organization"*, exit 1), which is what #183 did and is stronger evidence than a
+simulated one.
+
 **Since #155 the *agent* can look too: `board_screenshot`.** Elliot renders its own window with
 `NSView.cacheDisplay` and hands back a PNG as an MCP image block, so no permission is involved and
 nothing has to be frontmost — measured, on a window with `isVisible == false` in an app that was not
@@ -294,6 +351,25 @@ white capsules, because SwiftUI hosts `.toolbar` in titlebar accessory views the
 never reaches. The toolbar is a named conflict hot-spot in this repo, so that blind spot sits exactly
 where changes land. `not_included` names all of it in every reply — **read it before concluding that
 something failed to appear**, and use the accessibility tree above for anything in the toolbar.
+
+⛔ **It photographs an open window; it cannot open one — so on a fresh launch an agent can look at
+the board and at nothing else.** `AppKitWindowCapture.isOpen` is `isVisible || isMiniaturized`, and
+that is deliberate (a closed scene stays in `NSApp.windows` and photographing its stale hierarchy is
+the defect the check exists to stop). But every other scene — Archive, Preflight, Repositories,
+Operations, Up next, New story — opens only from the View menu or a button, i.e. from a **click**,
+and the measurements below say an agent has no click. Measured 2026-08-08 (#162) against a freshly
+launched, seeded scratch instance:
+
+| call | reply |
+|---|---|
+| `board_screenshot window=archive` | `window_not_open` · *"The window "archive" exists but is not open."* · hint: **"Open right now: board."** |
+| `board_screenshot window=board` | `is_visible: true`, `source: live`, 1510×925 |
+
+So "since #155 the agent can look too" is true of the **board**, and of any other window only once a
+human has opened it. Plan an on-screen pass for a secondary window as *needing a person*, rather than
+discovering it after building the bundle and seeding a store. The refusal is at least honest — it
+names the two cases apart and lists what is open — which is the one thing this file's false-negative
+family never does.
 
 ⚠️ **A long `ELLIOT_HOME` silently costs you the MCP socket.** `sun_path` is capped at 104 bytes on
 macOS, so a scratch home under a deep path makes `startIPC` fail; the app runs fine, and Preflight
@@ -322,8 +398,8 @@ from #75 to #89 carried some version of *"opening a `Window` scene needs the app
 automation driver refuses"*, and it was never true. A background `openWindow` does open the window; it
 just lands off-screen because the app is not frontmost. The trap is the enumeration, not the window:
 **list all of a pid's windows, never only the ones reporting `is_on_screen`.** Measured on a running
-build, when `ElliotApp.swift` declared six `Window` scenes (it declares five since #151 retired the
-Analysis one), two of them open:
+build, when `ElliotApp.swift` declared six `Window` scenes (**seven today** — counted 2026-08-08 in
+#162: board, Repositories, Operations, Up next, Preflight, Archive, New story), two of them open:
 
 ```
 id=2737  on_screen=False  820x720 @ (454,215)  title='Preflight'
@@ -371,10 +447,13 @@ the two above. Anything needing a click or a key is **not verifiable** until som
 ⚠️ **As of today the driver holds neither grant** — `accessibility: false` *and*
 `screen_recording: false`, read against the daemon's own TCC identity `com.trycua.driver`, which is
 the identity that matters because the daemon is its own responsible process. So observation is off
-too, and the window listing above is not currently reproducible through it. `/usr/sbin/screencapture
--l` from a shell still enumerates windows and is what produced today's listings, but it is **not** a
-substitute: a non-frontmost window parks in the Stage Manager strip at ~143×160, and nothing in it
-can be read as text.
+too, and the window listing above is not currently reproducible through it. ⛔ **This paragraph used to
+offer `/usr/sbin/screencapture -l` as a shell fallback that "still enumerates windows"; it does
+neither.** `-l<windowid>` *captures* one window rather than listing any, and from an agent's shell it
+answers `could not create image from window` — the same missing grant, measured 2026-08-08 (#132). The
+caveat it carried was true and beside the point: a non-frontmost window parks in the Stage Manager
+strip at ~143×160 with nothing in it readable as text. See the probe table further down for what an
+agent can and cannot do, and reach for `board_screenshot` instead.
 
 Recognise the shape rather than the tool, because it has now bitten this project four times: **a
 permission that silently changes behaviour instead of erroring.** A blank accessibility tree that
@@ -557,10 +636,53 @@ osascript -e "tell application \"System Events\" to tell (first process whose un
 /usr/sbin/screencapture -x -R <x>,<y>,<w>,<h> /tmp/board.png
 ```
 
-The shell holds Accessibility even when the `cua-driver` daemon does not, so
-`osascript -e 'tell application "System Events" to click at {x, y}'` selects a card and
-`key code 53` is Escape. One more false negative to know: `entire contents` of the window can return
-**empty** while `count of UI elements` returns 6. An empty AX dump is not an empty window.
+⛔ **"The shell holds Accessibility even when the `cua-driver` daemon does not" — that is what this
+paragraph said, and it is not true of an agent's shell.** Measured 2026-08-08 from a `claude -p` run
+(#132), which is how most verification passes in this repository are actually driven:
+
+| probe | answer |
+|---|---|
+| `cua-driver permissions status --json` | `accessibility: false`, `screen_recording: false` |
+| `osascript … to keystroke "q" using command down` | `execution error: osascript is not allowed to send keystrokes. (1002)` |
+| `osascript … to get {position, size} of window 1` | `execution error: osascript is not allowed assistive access. (-1719)` |
+| `osascript … to count of UI elements of window 1` | same, `-1719` |
+| `/usr/sbin/screencapture -x` | `could not create image from display`, exit 1, no file |
+
+So **every command in the recipe above fails for an agent**, and with it the whole chain: no keystroke,
+no AX read, no window position — and without a window position there is no coordinate to aim
+`Scripts/realclick.swift` at, so the real-`CGEvent` path is out too even though it needs only
+Accessibility. An interactive Terminal that has been granted the box is a different TCC identity from
+the one a spawned agent runs under; the claim was probably true where it was written and does not
+transfer. **The grant belongs to whoever is asking — measure it in the session you are in, not from
+this file.**
+
+Re-measured in a separate session on the same day (#162): all five answers identical, plus
+`osascript … to click at {x, y}` → `-25200`. Two sessions is not a guarantee about the next one — the
+sentence above still stands — but it does mean an agent should *plan* for no grant rather than
+discover it, which is what #162 did after building a bundle and seeding a store.
+
+The one thing that still works with no grant at all is **`board_screenshot`** (#155), because Elliot
+renders its own hierarchy in-process. Aiming it at a scratch instance rather than the everyday board
+does not need a second registered helper either — spawn `elliot-mcp` yourself with the home set and
+speak JSON-RPC at its stdin (`initialize` → `notifications/initialized` → `tools/call`):
+`ELLIOT_HOME=/tmp/elliot-check dist/Elliot.app/Contents/MacOS/elliot-mcp`. The reply carries
+`png_path` at full resolution, inside that home's `screenshots/`. What it cannot do is *act*, so a
+check that needs a card selected still needs a person or a grant.
+
+⚠️ `screencapture` **erroring** rather than handing back a black frame is worth noting on its own: it
+is the one member of this file's false-negative family that actually says no — `-x` gives
+`could not create image from display` and `-l<windowid>` gives `could not create image from window`.
+Both are the missing grant, so capture-by-window-id is **not** a fallback either.
+
+⛔ **Do not read `screencapture`'s short usage line as its option list.** `usage: screencapture
+[-icMPmwsWxSCUtoa] [files]` omits `-l`, and a bare `-l` answers `illegal option -- l` because it wants
+an argument — between them those two outputs read exactly like "this macOS has no such flag", which is
+what got written here for one commit and what code review caught. `screencapture --help` lists
+`-l<windowid> capture this windowsid` plainly. **An option that needs an argument reports its absence
+the same way an unknown option does**; check `--help` before concluding a flag does not exist.
+
+One more false negative to know: `entire contents` of the window can return **empty** while
+`count of UI elements` returns 6. An empty AX dump is not an empty window.
 
 ### Run lifecycle
 
@@ -730,7 +852,9 @@ Two invariants carry most of the weight:
 - **PATH is captured, never inherited.** Launched from the Finder the app sees only
   `/usr/bin:/bin:/usr/sbin:/sbin`. `LoginShellEnvironment.capture()` gets the real environment and
   `ToolLocator` finds `claude`/`gh`/`git`; anything spawning a tool must go through `ToolConfig`. Testing
-  preflight means launching from the Finder, not from a terminal or Xcode.
+  preflight means launching from the Finder, not from a terminal or Xcode. The consequence, measured in
+  #188 and written up beside the launch recipe above: prepending a shim to `PATH` before `open` does not
+  make that shim win.
 - **A registered repo path must be the main checkout, never a linked worktree** — `merge-pr` tears down
   the PR's worktree and cannot do so from inside it. `GitClient.isMainCheckout` enforces this in Preflight.
 - **The app is not sandboxed** (Hardened Runtime on, ad-hoc signed, not notarised). Child processes

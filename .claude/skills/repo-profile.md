@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1341 tests in 149 suites**, 5 of 5 samples on
-  `fix/139-merged-outcome-carries-pr` on 2026-08-07 off `main` at `2494882`; needs no Xcode,
+- **Full test:** `cd ElliotKit && swift test` (**1473 tests in 162 suites**, 5 of 5 samples on
+  `fix/139-merged-outcome-carries-pr` on 2026-08-08 off `main` at `77045a8`; needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
@@ -49,6 +49,49 @@
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
     your own untouched run and compare against *that*, never against this line.
+  - ✅ **Landing #189 both shapes appeared at once and the attribution is exact — the first entry
+    here that can say that.** The line read 1418 in 158 off `da876d7`; `main` at `27e370f`, three
+    squashes later, **measures 1418 in 158** — so the value was right and the stamp was behind, the
+    #138 shape for the fourth time. And `git merge-base --is-ancestor origin/main HEAD` held at the
+    ready-flip, i.e. `main` did not move for the whole life of the branch, which is the #145 shape
+    and the rarer one. Both together mean the +18/+0 is this branch's own with nothing mixed in.
+    ⚠️ The baseline that proves it was taken from a **separate worktree at `27e370f`**, not by
+    subtraction — the branch's own untouched run had been spoiled when an edit landed mid-build
+    (`error: input file … was modified during the build`, which aborts rather than measuring). The
+    arithmetic *was* checked afterwards and agrees to the test: 19 added `@Test` lines less one that
+    is a rename of `onlyRefinesOk`, so 18 new, and 1418 + 18 = 1436. That order is the whole of the
+    ⛔ bullet below — the sum was checked **against** the run, never in place of it.
+  - ✅ **Second time it did not drift, landing #138 — and this one separates the two halves of the
+    line cleanly.** The branch's untouched baseline measured **1328 in 149**, the line's exact value,
+    off `main` at `2494882`; the line said `dc5c2ce`, which is `2494882`'s parent. So the *value* was
+    right and the *commit* was one behind — which is the whole of what the bullets below argue: the
+    number measures when you looked, and the stamp is the half worth maintaining. The branch itself
+    then adds 14 tests and one suite.
+    - **And then it was overtaken anyway, which is the same entry's other half arriving in the same
+      pull request.** Between the ready-flip and the merge, `main` took #211 and #217, so the branch's
+      honest 1342 in 150 met a `main` at 1360 in 154 and `git merge` had, once again, no way to
+      choose. The merged tree measures the value in the line above, five of five. Both halves are
+      therefore demonstrated by one branch: a baseline can be exactly right when taken **and** stale
+      by the time it lands, and neither fact is evidence against the other. #217's instruction was
+      followed literally — the line went in as `PLACEHOLDER` and `swift test` overwrote it — and the
+      arithmetic (1342 + #211/#217's own +32/+5 over the shared base) matched the run exactly, which
+      is worth recording only because it was checked **after** the run rather than used in place of
+      one.
+    - **Landing #162 both halves showed up again in one branch, and the stamp was the wrong half.**
+      The line read 1407 in 158 off `b0d121a`, and 1407 in 158 is exactly what this branch's
+      untouched baseline measured — off `da876d7`, one squash later, because #215 added no test. So
+      the *value* survived a commit the stamp did not name: the #138 shape, third time. Then `main`
+      did not move for the whole life of the branch (`git merge-base HEAD origin/main` == `da876d7`
+      at the ready-flip), which is the #145 shape and the rarer one — so the whole of the +11/+0 is
+      this branch's own tests and there is no drift mixed in at all. Both halves of the entry, one
+      branch, no arithmetic needed: 11 new `@Test`s, 11 more in the run.
+    - **Landing #187 only the stamp moved, and the branch ships no Swift at all.** The line read
+      1418 in 158 off `da876d7`; `main` is `27e370f` (#227 added no test), and five of five samples
+      on this branch measure 1418 in 158 there too. `git merge-base HEAD origin/main` was `27e370f`
+      at the ready-flip, so `main` did not move for the branch's whole life — the #145 shape, where
+      the value is honest *and* nothing drifted underneath it. This branch touches two workflow
+      files and three prose files, so a re-measurement here could only ever change the stamp, which
+      is the #182 case as well. Both of those entries in one branch, and it cost one `swift test`.
   - ✅ **First time it did NOT drift, #174, and that is worth as much as the corrections.** The
     branch's own untouched baseline measured **1167 in 135** — the line's exact value, set by #140
     hours earlier. The instruction did not change: take your own baseline anyway. What changed is the
@@ -61,6 +104,31 @@
     Corrected again landing #180 — the branch measured 1170 in 135 off `0902c10`, and the merge
     that landed it measured **1188 in 136** off `5b12add`, both from five samples. No ordinal,
     deliberately, and no attribution of the difference: see the two bullets below.
+    - **#209 is the first entry where the line was true at the start and true again at the end.**
+      Its branch measured the previous value exactly — 1328 in 149, off `2494882`, the commit and
+      count this line already named — so the whole of its +30/+4 is its own five new suites and
+      nothing is unattributed drift. That is only worth recording because it is what the entry keeps
+      failing to be: `main` did not move for the length of the branch, which is the *one* condition
+      under which a number written here survives to be read. Its sampling is also the entry's own
+      advice taken twice over — 15 runs, of which **14 kept their output** and were green; the 15th
+      printed no summary and its output had already been discarded by the command that took it, so
+      it is unclassified rather than green. A sample you did not keep is not a sample you can cite.
+    - **Landing #215 the value was right and the commit was one behind — the #138 shape again.** The
+      line read 1374 in 155 off `941888c`, and 1374 in 155 is exactly what `main` measures at
+      `b0d121a`, one squash later: #216 added no test, so the *value* survived a commit the stamp did
+      not name. The merged tree measures **1407 in 158**, five of five, which is that 1374 plus the
+      branch's own +33/+3 with nothing left over. Same caveat as #217 below — the sum was checked
+      **after** the runs, never in place of them, and it is only predictable because the two sides
+      touched disjoint suites.
+    - **Landing #217 the conflict was two honest numbers, and the merged value was the exact sum.**
+      Both sides measured off `2494882` and both were right when written — #209's 1358 in 153 and
+      this branch's 1330 in 150 — so `git merge` had no way to choose and the line came through as a
+      conflict rather than as drift. The merged tree measures **1360 in 154**, five of five, which is
+      1330 + #209's own +30/+4 with nothing left over. ⚠️ **That arithmetic was checked against the
+      run, not used instead of it** — the sum was predictable here only because the two branches
+      touched disjoint suites, and the ⛔ bullet below exists because a predicted 1177 once met a
+      measured 1161. Resolve this conflict with a literal `PLACEHOLDER` and let `swift test`
+      overwrite it; that is the whole procedure, and it costs one run.
     - **Landing #139 the line was right, and the reason is worth more than the number.** It read
       1328 in 149 off `dc5c2ce`, and `main` had since advanced to `2494882` — a *different* commit,
       which is the trap. I measured `2494882` itself in a throwaway worktree rather than assume:
@@ -102,6 +170,15 @@
       Nothing about the branch changed between the two runs. That is this entry's thesis with the
       interval stretched far enough to be unmistakable: the number measures **when you looked**,
       not what you wrote.
+    - **Landing #49's Task 3 the delta was entirely the branch's own — the rare case, recorded as
+      rare.** 1328/149 → 1332/150 is exactly the four tests and one suite this branch adds. The
+      arithmetic closes without re-running `main` only because of *which branch* the previous stamp
+      names: `fix/147-proposal-editor-card-draft` is the branch that squashed into `2494882`, this
+      branch's base, so its 1328 is that commit's count measured a squash early.
+      ⚠️ **`dc5c2ce` is that branch's base, not `2494882`** — they are two distinct commits
+      (`git rev-parse 2494882^`), and a first draft of this bullet called them the same one. That is
+      the entry's own thesis biting the person writing it: the branch name and the base commit answer
+      different questions, and only the branch name licenses the shortcut taken here.
     - **#159 and #155 both wrote "sixth" here, on branches open at the same time, and the merge had
       to renumber one of them.** That is the entry's own thesis arriving as a merge conflict: two
       authors each measured honestly, each counted from the last number they could see, and the
@@ -121,6 +198,13 @@
       its own tests existed, so 40 of its 46 were unrecorded drift and only 6 were the branch's own.
       A correction here is rarely evidence that the previous author miscounted; it is mostly the
       interval since they looked.
+    - **Landing #145 the drift was zero and every test of the delta is the branch's own** — the rare
+      complement to the bullet above, and worth recording because the entry is otherwise a list of
+      the opposite. `git merge-base HEAD origin/main` was `2494882`, i.e. **`main` had not moved at
+      all** between branching and the ready-flip, so the +2 tests and +1 suite are exactly what this
+      branch added (`RefusalHintTests`, and one test in `OfflineParityTests`) with nothing else mixed
+      in. Which is the entry's thesis stated the other way round: the number is honest when the
+      interval is short, and the interval — not the author — is what usually spoils it.
   - ⛔ **Do not write the number down before the run prints it.** Resolving one of these collisions in
     #140, this line was first filled in with a *predicted* 1177 — arrived at by adding the two
     branches together — and the run said **1161**. Caught immediately, but it is exactly the act the
@@ -211,13 +295,14 @@
 
 ## CI gates (the exact commands CI fails on — satisfy these locally before ready/merge)
 
-Two workflows, both on `macos-26`, and they answer different questions. Neither replaces running the
-commands locally — branch protection is off, so see the second warning below for what that costs.
+Two workflows, both on `macos-26` — and since #187 that sameness is **asserted rather than assumed**,
+because the floor claim depends on it. They answer different questions. Neither replaces running the
+commands locally — branch protection is off, so see the warning below for what that costs.
 
 | Workflow | Job | Trigger | What it runs | The claim it establishes |
 |---|---|---|---|---|
 | `.github/workflows/ci.yml` (#21) | `build-and-test` | `pull_request` → `main`, `push` → `main` | `swift build`, then `swift test`, from `ElliotKit` | the suite **passes** somewhere other than one laptop |
-| `.github/workflows/swift-floor.yml` (#116) | `floor` | `pull_request` → `main` | asserts the runner's Swift against the floor `Package.swift` declares, then `swift build` and `swift build --build-tests` | the declared floor is real and **compiles** this package |
+| `.github/workflows/swift-floor.yml` (#116, #187) | `floor` | `pull_request` → `main` | asserts the runner's Swift against the floor `Package.swift` declares, then asserts `ci.yml` runs on that same image. **Compiles nothing** — 9 seconds | the declared floor is real, and the job above is what exercises it |
 
 So the gates to satisfy locally before flipping a PR ready are exactly the two commands `ci.yml`
 runs — pass these and you have run what CI runs:
@@ -225,11 +310,32 @@ runs — pass these and you have run what CI runs:
 - `cd ElliotKit && swift build`
 - `cd ElliotKit && swift test`
 
-⚠️ **`swift build --build-tests` is not `swift test`, and the two workflows split precisely there.**
-The floor job compiles the eight test targets and never executes a `@Test`; until `ci.yml` landed, no
-assertion in this repository had ever been *run* anywhere but on a contributor's own machine. Do not
-read a green `swift-floor` check as a suite that passed — that reading is the same shape as the #116
-defect it exists to prevent.
+⚠️ **`swift build --build-tests` is not `swift test`.** This distinction is what #116 is about and it
+stays true whatever the workflows look like: `--build-tests` compiles the eight test targets and
+executes no `@Test`, so "it compiles on the floor" and "the suite passes" are two claims and only one
+of them is about behaviour. Until `ci.yml` landed, no assertion in this repository had ever been *run*
+anywhere but on a contributor's own machine.
+
+⚠️ **What changed in #187 is where each claim is established, and a green `swift-floor` now proves
+even less on its own than it used to.** The floor job ran `swift build` *and* `swift build
+--build-tests` until 2026-08-08; both came out, because `ci.yml`'s `swift test` compiles the same
+targets on the same image, so a pull request was compiling the whole package **twice on two runners**
+— 60–70 billed macOS minutes, now 40–50, a **saving of 20–30** (measured, criterion 3; the
+arithmetic and the run ids live in `swift-floor.yml`'s header, which also says why the saving is the
+honest figure to quote and the total is not). So:
+
+- `floor` green = the runner's Swift **is** the declared floor, and `ci.yml` runs on that image. It
+  compiles nothing, and it never did execute a `@Test`.
+- `build-and-test` green = the package compiles **and** the suite passes, on that same image.
+- Neither alone is #116's criterion; the two together are exactly it.
+
+⛔ **`ci.yml`'s `swift test` is now load-bearing for the floor claim, not only for test coverage.**
+Removing it, narrowing it with a filter, or moving `ci.yml` to a different image retires #116's
+guarantee. `floor`'s second step enforces four of those rather than requesting them, failing by name:
+the two `runs-on:` labels parting, `swift test` vanishing from `ci.yml`, `ci.yml` selecting its own
+toolchain (`setup-xcode`, `DEVELOPER_DIR`), and `ci.yml` filtering itself out with `paths:`. Two gaps
+remain and are written down rather than glossed: a runner label can mean different images either side
+of a GitHub rollout, and a job-level `if:` is not distinguishable from a step-level one by grep.
 
 ⚠️ **Branch protection on `main` is still off, so both checks are advisory.** Measured 2026-08-06:
 `gh api repos/phmatray/Elliot/branches/main/protection` returns **404 `Branch not protected`** — not
@@ -406,7 +512,11 @@ above within seconds.
   criteria into a manual checklist, which #41 then had to undo.
 - Launched from the Finder the process sees only `/usr/bin:/bin:/usr/sbin:/sbin` — the login-shell
   environment is **captured**, never inherited (`LoginShellEnvironment.capture()`), and `claude`/`gh`/`git`
-  are located through `ToolLocator`. Anything spawning a tool must go through `ToolConfig`.
+  are located through `ToolLocator`. Anything spawning a tool must go through `ToolConfig`. The
+  consequence this sentence had never drawn: a `PATH` shim prepended before `open` therefore does not
+  make that shim *win*, and nothing errors — the injected directory reaches the app and survives the
+  capture, it just loses on order. `CLAUDE.md`, "**Do not make a tool fail by prepending a shim to
+  `PATH`**", has the measurement (#188).
 - A registered repo path must be the **main checkout**, never a linked worktree (`merge-pr` tears down the
   PR's worktree and cannot do so from inside it) — `GitClient.isMainCheckout` enforces this in Preflight.
 - **The app is not sandboxed** (Hardened Runtime on, ad-hoc signed rather than notarised): child processes

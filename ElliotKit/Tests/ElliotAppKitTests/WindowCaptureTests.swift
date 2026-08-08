@@ -31,31 +31,74 @@ struct WindowCaptureTests {
     /// was the one place that skipped it.
     private init() { _ = TestHome.root }
 
-    /// Reports itself open without a window server having to put it on screen.
+    /// Reports itself open, and reports its children, without a window server
+    /// having to put anything on screen.
     ///
-    /// A test must not order real windows front — that flashes them at whoever
-    /// is running the suite and depends on a display. Overriding the one
-    /// property the liveness check reads keeps the assertion about *our* rule
-    /// rather than about AppKit's ordering.
+    /// A test must not put real windows on screen — that flashes them at whoever
+    /// is running the suite and depends on a display. Overriding the properties
+    /// the code under test *reads* keeps each assertion about **our** rule rather
+    /// than about AppKit's window management.
+    ///
+    /// ⛔ **`declaredChildren` exists because `addChildWindow` displays the
+    /// child, and no amount of not calling `orderFront` prevents it.** Parenting
+    /// *is* an ordering operation. The stack, caught by overriding
+    /// `order(_:relativeTo:)` on this class and dumping its caller:
+    ///
+    /// ```
+    /// -[NSWindow addChildWindow:ordered:]      +584
+    ///   → -[NSWindow _rebuildOrderingGroup:]
+    ///     → _NSWindowWalkOrderingGroupInternal
+    ///       → OpenWindow.order(1, relativeTo: 12430)
+    /// from WindowCaptureTests.childWindowsAreDisclosed
+    /// ```
+    ///
+    /// One such call per suite run, and one window on screen per suite run: a red
+    /// 320×272 at the bottom-left of the display, `alpha=1.0`, for ~850 ms, in
+    /// each `swiftpm-testing-helper` process in turn. Philippe reported it as *"a
+    /// child window with a red square filling it, opening and closing several
+    /// times in a row"* with no gesture of his behind it, because it is agents
+    /// that run this suite. Measured by polling `kCGWindowIsOnscreen` at 33 Hz;
+    /// A/B in one probe session, two runs each way: **2 windows before, 0 after.**
+    ///
+    /// ⚠️ **`kCGWindowIsOnscreen` is the discriminator, and using the wrong one
+    /// cost two false diagnoses.** `CGWindowListCopyWindowInfo(.optionAll)`
+    /// includes *off-screen* windows, so membership of that list is not evidence
+    /// that anything was displayed. Read that way, `defer: false` looked
+    /// implicated (it is not — it changes list membership and nothing else) and
+    /// this very fix looked ineffective. `defer:` is therefore left alone: it is
+    /// not what this is about.
+    ///
+    /// ⛔ And the repair that looks right: calling `orderOut(nil)` straight after
+    /// `addChildWindow` **empties `childWindows`**, so the test would go on
+    /// passing while asserting nothing at all.
     private final class OpenWindow: NSWindow {
+        /// What `disclosures(for:)` should see. Nil when empty, because that is
+        /// the shape AppKit uses and the code under test branches on it.
+        var declaredChildren: [NSWindow] = []
+
         override var isVisible: Bool { true }
+        override var childWindows: [NSWindow]? { declaredChildren.isEmpty ? nil : declaredChildren }
     }
 
-    /// A window with something recognisable in it, never ordered front.
+    /// A window with something recognisable in it, never put on screen.
     ///
     /// `open` defaults to true because that is the interesting case; pass false
-    /// for a window that is closed or has never been shown.
+    /// for a window that is closed or has never been shown. `children` are
+    /// *declared*, not parented — see `OpenWindow` for the stack that makes that
+    /// distinction load-bearing.
     private func makeWindow(
         id: String,
         title: String,
         size: NSSize = NSSize(width: 320, height: 240),
-        open: Bool = true
+        open: Bool = true,
+        children: [NSWindow] = []
     ) -> NSWindow {
         let rect = NSRect(origin: .zero, size: size)
         let mask: NSWindow.StyleMask = [.titled, .closable, .resizable]
         let window: NSWindow = open
             ? OpenWindow(contentRect: rect, styleMask: mask, backing: .buffered, defer: false)
             : NSWindow(contentRect: rect, styleMask: mask, backing: .buffered, defer: false)
+        (window as? OpenWindow)?.declaredChildren = children
         window.identifier = NSUserInterfaceItemIdentifier(id)
         window.title = title
         window.contentView = NSHostingView(
@@ -201,8 +244,13 @@ struct WindowCaptureTests {
 
     @Test("A child window is named, because the picture cannot contain it")
     func childWindowsAreDisclosed() {
-        let parent = makeWindow(id: "board", title: "Elliot")
-        parent.addChildWindow(makeWindow(id: "child", title: "Popover"), ordered: .above)
+        // Declared, not parented: `addChildWindow` puts the child on screen, and
+        // for this suite's whole life it did — see `OpenWindow`. What
+        // `disclosures(for:)` reads is `childWindows`, so that is what is stated.
+        let parent = makeWindow(
+            id: "board", title: "Elliot",
+            children: [makeWindow(id: "child", title: "Popover")]
+        )
 
         let said = AppKitWindowCapture.disclosures(for: parent)
         #expect(said.count == 1)

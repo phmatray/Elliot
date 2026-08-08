@@ -200,6 +200,13 @@ public struct PreflightView: View {
         }
         .frame(maxWidth: .infinity)
         .navigationTitle("Preflight")
+        .forgetConfirmation(model: model, on: .preflight)
+    }
+
+    /// `static` for the same reason `RepositoriesView.icon` is: what a screen
+    /// *says* is assertable, where its row sits on screen still is not.
+    nonisolated static func forgetHelp(displayName: String) -> String {
+        ForgetPrompt.tooltip(displayName: displayName)
     }
 
     /// Preflight is the first screen a new user sees, and until now it opened
@@ -311,14 +318,14 @@ public struct PreflightView: View {
                 .help(repo.isEnabled ? "Switch off to refuse every move on this repository" : "Switched off — moves are refused")
 
                 Button {
-                    Task { await model.removeRepo(id: repo.id) }
+                    Task { await model.requestForget(repoID: repo.id, origin: .preflight) }
                 } label: {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
-                .help("Remove \(repo.displayName) from Elliot. The checkout on disk is untouched.")
-                .accessibilityLabel("Remove \(repo.displayName)")
+                .help(Self.forgetHelp(displayName: repo.displayName))
+                .accessibilityLabel("Forget \(repo.displayName)")
             }
             Text(repo.path)
                 .font(Type.factSmall)

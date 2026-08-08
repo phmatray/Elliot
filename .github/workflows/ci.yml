@@ -2,21 +2,31 @@
 #
 # ### What this adds that `swift-floor.yml` does not
 #
-# Read that file first — it landed while this pull request sat in draft, and it already does most of
-# what an early draft of this one claimed as its own: `macos-26`, `swift build`, and
-# `swift build --build-tests`. Compiling this package is therefore already covered, and covered on
-# the declared floor specifically, which is a stronger claim than this job could make.
-#
-# What nothing runs remotely today is **the suite**. `swift build --build-tests` compiles the eight
-# test targets and stops there; it never executes a single `@Test`. Every green verdict this
-# repository has ever recorded on its own behaviour — the rule engine, the atomic move, the drain
-# invariant, the end-to-end runs against `Scripts/fake-claude.sh` — is a claim about whichever machine
-# last typed `swift test`. #18, #19 and #20, roughly 6 000 added lines, merged on exactly that.
+# What nothing ran remotely before this file existed is **the suite**. Every green verdict this
+# repository had ever recorded on its own behaviour — the rule engine, the atomic move, the drain
+# invariant, the end-to-end runs against `Scripts/fake-claude.sh` — was a claim about whichever
+# machine last typed `swift test`. #18, #19 and #20, roughly 6 000 added lines, merged on exactly
+# that.
 #
 # So the one step below that carries this file is `swift test`. The `swift build` before it is kept
 # deliberately even though `swift test` would build anyway: it separates "this does not compile" from
 # "this compiles and a test fails", which is the difference between reading a log and reading a wall
 # of type errors. It is nearly free — the second command reuses the first's objects.
+#
+# ⚠️ **Since #187 this job is the only thing that compiles this package on a pull request, and the
+# floor's guarantee now rests on it.** This paragraph used to say the opposite, and it was true when
+# written: `swift-floor.yml` ran `swift build` and `swift build --build-tests`, so compiling the
+# package was "already covered, and covered on the declared floor specifically". That was the whole
+# duplication — the *entire* package compiled twice, cold, on two `macos-26` runners, 60–70 billed
+# macOS minutes a pull request. #187 removed the second copy from `swift-floor.yml`, which now
+# asserts the toolchain and stops.
+#
+# The consequence for anyone editing this file: `swift test` below is what establishes that the eight
+# test targets compile on the declared floor. Removing it, or narrowing it with a filter, does not
+# merely reduce test coverage — it silently retires #116's guarantee. And the image on the job below
+# is load-bearing for the same reason: `swift-floor.yml` asserts the toolchain on *its* image, so its
+# assertion only speaks for this job while the two images are equal. They are compared on every pull
+# request by that file's parity step, which fails by name rather than trusting this sentence.
 #
 # ### Why the toolchain argument is not repeated here
 #
@@ -63,21 +73,52 @@ permissions:
 # `cancel-in-progress` is scoped to pull requests on purpose. On `main` every run is the only run that
 # will ever measure that commit, and cancelling it would leave a squash-merge unverified — which is
 # the hole this workflow exists to close, reopened for the sake of a few minutes.
+#
+# Both directions of that expression are measured rather than argued — #133 exists because the
+# behaviour is a runtime one that reading these three lines cannot show. **The run ids and the method
+# are in #227, and that is the durable copy: GitHub drops the logs at 90 days, and this file's own
+# header records what happens when a workflow comment becomes the place a measurement lives.** Two
+# results are worth carrying here because they change what someone editing this file may do:
+#
+#   • `false` does not mean "no grouping". Two runs in one group under any other event are **queued**,
+#     not cancelled — the second waits for the first and starts seconds after it ends. That is what
+#     keeps a `main` run's verdict, so widening `cancel-in-progress` to a bare `true` does not merely
+#     lose a little parallelism, it discards a squash-merge's only measurement.
+#   • ⚠️ A cancelled run reads as **red**, not as absent: `statusCheckRollup.state` for a commit whose
+#     only checks are `cancelled` is `FAILURE`. So a *required* check that ends `cancelled` is not a
+#     pass, and anything judging a pull request from an older sha will call it failed. Worth knowing
+#     before branch protection goes on (#21, Task 3) — still off as of 2026-08-08.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:
-    # Carries Swift 6.3.x, the major.minor of the floor `ElliotKit/Package.swift` declares. Keep it in
-    # step with `swift-floor.yml`'s image: that job asserts the runner against the declared floor and
-    # goes red when they part, and it can only speak for the image it runs on.
+    # Carries Swift 6.3.x, the major.minor of the floor `ElliotKit/Package.swift` declares.
+    #
+    # ⛔ This literal and `swift-floor.yml`'s must stay equal, and since #187 that is enforced rather
+    # than requested: that file's parity step reads both `runs-on:` lines on every pull request and
+    # fails by name when they part. The reason is not tidiness — that job asserts the toolchain on
+    # its own image, and its assertion covers the compile below only while the two are the same
+    # image. Moving this one alone to a *newer* image is the quiet failure: everything stays green
+    # while nothing exercises the declared floor.
     runs-on: macos-26
     # The suite executes in about two seconds; the minutes are checkout and compiling eight test
     # targets. A job that runs long here is a hang, not a slow test — #7's whole subject was a wedged
     # child holding the SwiftPM build lock, which presented as a broken toolchain rather than as a
     # stuck test. Bound it so a recurrence goes red instead of sitting in the queue.
     timeout-minutes: 20
+
+    # ⛔ **Deliberately NOT cached, and since #187 this is the only file where that warning belongs.**
+    # It lived in `swift-floor.yml`, which is where the compile used to be; the compile is here now
+    # and the argument came with it. This is the job with a ~2m40 cold build and every incentive to
+    # add `actions/cache` on `ElliotKit/.build` — so, explicitly: do not. A cache-hit run would
+    # certify the declared floor from objects a *previous* toolchain produced, silently, and since
+    # #187 this job is what establishes that the floor compiles at all. `CLAUDE.md` records what
+    # stale build objects do here — wrong values, a link error, a SIGBUS charged to an innocent pull
+    # request, and a confident bisect that convicted an innocent commit — all cleared by
+    # `rm -rf .build`. The `concurrency` block above is the honest way to spend fewer minutes, and
+    # #187 was the other one.
 
     steps:
       - uses: actions/checkout@v7
