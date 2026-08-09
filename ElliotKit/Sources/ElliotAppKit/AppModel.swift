@@ -1319,13 +1319,31 @@ public final class AppModel {
         analysis?.mark(notice, runID)
     }
 
-    /// One event collapsed to one line, for `CardView`'s running strip and
-    /// nowhere else.
+    /// The most recent event of this run that says anything in one line.
     ///
-    /// A card shows a single line of a run in flight, so a collapse is the
+    /// Searched backwards rather than taken from the end: `liveLog` holds every
+    /// event now, and most of them — a successful tool result, a `system` line,
+    /// a partial — collapse to nothing. Taking the last event outright would
+    /// blank the strip every time one of those arrived last.
+    ///
+    /// Here rather than in `CardView`, where it was, because `RunningStrip` is
+    /// drawn on the card *and* in Operations' Running now band. A second copy in
+    /// the second caller is how the two would come to disagree about what "the
+    /// last line" is — the shape #146 paid for one layer down.
+    func lastLine(of run: SkillRun) -> String? {
+        guard let events = liveLog[run.id] else { return nil }
+        return events.reversed().lazy.compactMap(AppModel.describe).first
+    }
+
+    /// One event collapsed to one line, for `RunningStrip` and nowhere else.
+    ///
+    /// A strip shows a single line of a run in flight, so a collapse is the
     /// right answer *there* — it is the wrong answer everywhere a log is read,
     /// which is why the panel folds `liveLog` into `RunLogRow`s instead. Keep
     /// this narrow: widening it back is how the log became a `[String]`.
+    ///
+    /// Its one caller is `lastLine(of:)` above. It said "`CardView`'s running
+    /// strip" until the strip became a component two screens draw.
     static func describe(_ event: StreamEvent) -> String? {
         switch event {
         case .systemInit(let info):
