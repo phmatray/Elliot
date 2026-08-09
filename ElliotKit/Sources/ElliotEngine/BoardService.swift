@@ -24,6 +24,14 @@ public enum BoardError: Error, LocalizedError {
     case cardTracksPullRequest(Int)
     case runNotFound(UUID)
     case unknownMethod(String)
+    /// The repository's method declares no step for this transition.
+    ///
+    /// Not a defect and not a fallback: wave 1 ships a BMAD pack carrying
+    /// project requirements and no steps at all, and a GSD pack declaring only
+    /// `create-issue`. Borrowing another method's command here would run
+    /// `claude -p` at `bypassPermissions` against a checkout whose owner asked
+    /// for something else entirely.
+    case methodHasNoStep(method: String, kind: String)
 
     public var errorDescription: String? {
         switch self {
@@ -37,6 +45,8 @@ public enum BoardError: Error, LocalizedError {
         case .unknownMethod(let id):
             "This repository is set to the method \"\(id)\", which this build does not know. "
                 + "Choose one on the Repositories page."
+        case .methodHasNoStep(let method, let kind):
+            "The \(method) method declares no \(kind) step, so this move has nothing to run."
         }
     }
 }
@@ -178,20 +188,27 @@ public actor BoardService: SystemMoving {
         guard let repo = try await store.repo(id: card.repoID) else {
             throw BoardError.repoNotFound(card.repoID)
         }
-        // ⚠️ Interim, replaced by Task 7, which reads `repo.method`: the builder
-        // needs a pack, and `resolve(nil)` answers the pack a repository that
-        // never chose one gets — today's behaviour by construction, which is
-        // what keeps `BoardServiceTests`' prompt literals green through this
-        // change.
+        // Read off the row this method already loaded, for the same reason
+        // `repoPreflight` is: the funnel every move passes through gets it with
+        // no new collaborator, so a drag and `board_move_card` cannot answer
+        // differently.
         //
-        // `.unknown` is unreachable from `nil` and is refused rather than
-        // substituted anyway: the reason `MethodResolution` has three cases is
-        // that a repository whose method the catalogue does not know must not
-        // quietly run another method's commands.
+        // ⛔ Both refusals fail closed, and they run *before* the transaction at
+        // the call site (`commitMove`), so a refused move leaves the card where
+        // it was. A repository whose method the catalogue does not know has no
+        // commands, and a pack that declares no step for this kind has none
+        // either — running another method's would be the silent substitution
+        // `MethodResolution` was made three-valued to refuse, at
+        // `bypassPermissions` inside a real checkout.
         let method: MethodPack
-        switch MethodCatalog.resolve(nil) {
+        switch repo.method {
         case .unset(let pack), .chosen(let pack): method = pack
         case .unknown(let id): throw BoardError.unknownMethod(id)
+        }
+        guard method.steps[action.kind] != nil else {
+            throw BoardError.methodHasNoStep(
+                method: method.displayName, kind: action.kind.skillName
+            )
         }
         let runID = UUID()
         return SkillRun(

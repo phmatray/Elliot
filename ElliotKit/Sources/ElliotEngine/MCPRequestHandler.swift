@@ -126,18 +126,26 @@ public struct MCPRequestHandler: Sendable {
                     hint: "Edit the pull request instead: gh pr edit \(number). The card follows "
                         + "the pull request, never the other way round."
                 )
-            case .unknownMethod:
-                // Unreachable today: `BoardService.makeRun` resolves `nil`, which
-                // never answers `.unknown`. `.unknownMethod` exists only so this
-                // switch — and every other exhaustive one over `BoardError` —
-                // compiles once `SlashCommandBuilder.prompt` needs a pack; Task 7
-                // is what makes a repository's own `methodID` reach here, and
-                // that task is the one that should give this its own wire code
-                // if agents need to act on it distinctly from an internal error.
+            // Both reachable since Task 7 wired `repo.method` into `makeRun`:
+            // one for a `methodID` this build's catalogue does not carry, one
+            // for a pack that declares no step for this transition — which the
+            // shipped BMAD pack does by design, and GSD does for every
+            // transition but the first.
+            //
+            // ⚠️ Deliberately **not** given codes of their own, and the earlier
+            // comment here asked Task 7 to decide that. A new `ElliotErrorCode`
+            // is a wire-format change: the enum is `String`-raw and `Codable`,
+            // so a helper from an older bundle meeting a code it has never seen
+            // fails to decode the reply. That costs a `elliotProtocolVersion`
+            // bump, and nothing yet shows an agent needs to act on these two
+            // differently from any other refusal — the message names which one
+            // it is, and `hint` says the same thing `errorDescription` does
+            // rather than a second, subtly different sentence.
+            case .unknownMethod, .methodHasNoStep:
                 return .failure(
                     code: .internalError,
                     message: error.localizedDescription,
-                    hint: "Choose a method on the Repositories page."
+                    hint: "Choose one on the Repositories page."
                 )
             }
         } catch let error as AnalysisError {
