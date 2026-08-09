@@ -1335,14 +1335,34 @@ public final class AppModel {
     }
 
     /// A drag. Goes through exactly the same two calls the MCP tool uses.
-    public func move(cardID: UUID, to column: ElliotModel.Column) async {
+    /// - Parameter orderIndex: Where the card should land in `column`, when the
+    ///   caller already knows. `nil` appends, which is what every caller but a
+    ///   cross-column drop means.
+    ///
+    ///   It travels **with** the move rather than being applied after it (#205).
+    ///   `reorder` used to move and then re-read `cards` to confirm the card had
+    ///   arrived before placing it — and `cards` has exactly one writer, the
+    ///   GRDB observation pump, which nothing sequences against the move. When
+    ///   the delivery had not landed the guard was false, the placement was
+    ///   dropped, and the card sat in the right column at the wrong index. That
+    ///   reads as "it just went to the bottom", not as a bug.
+    ///
+    ///   ⚠️ The placement was never *late*, it was **lost**: nothing retries a
+    ///   guard that has already returned. #205 called the coupling latent on 47
+    ///   local samples that never lost; CI lost it twice on two different runs,
+    ///   the second time through a 10-second bounded wait that had nothing to
+    ///   wait for.
+    public func move(
+        cardID: UUID, to column: ElliotModel.Column, orderIndex: Double? = nil
+    ) async {
         guard let board else { return }
         // Captured before the move: by the time `board.move` returns, the
         // card's column and `activeRuns` have both changed, so asking then
         // would describe the world after the act rather than the act.
         let predicted = card(id: cardID).map { Consequence.of(preview($0, to: column)) }
         do {
-            let result = try await board.move(cardID: cardID, to: column, origin: .userDrag)
+            let result = try await board.move(
+                cardID: cardID, to: column, origin: .userDrag, orderIndex: orderIndex)
             switch result {
             case .moved(let runID):
                 refusal = nil
@@ -1412,13 +1432,33 @@ public final class AppModel {
         case .reorder(let p, let n):
             (previous, next) = (p, n)
         case .moveThenReorder(let destination, let p, let n):
-            // Crossing columns is a move first — it may file an issue, open a
-            // pull request or merge one — and only then a placement. A refused
-            // move places nothing, which is why this returns rather than
-            // falling through.
-            await move(cardID: cardID, to: destination)
-            guard refusal == nil, card(id: cardID)?.column == destination else { return }
-            (previous, next) = (p, n)
+            // Crossing columns is a move — it may file an issue, open a pull
+            // request or merge one — and the placement rides along with it
+            // rather than chasing it. One call, one write, and no re-read of
+            // observed state (#205).
+            //
+            // ⛔ This used to be `await move(…)` followed by
+            // `guard refusal == nil, card(id: cardID)?.column == destination`,
+            // and that guard was the defect. `card(id:)` reads `cards`, whose
+            // only writer is the GRDB observation pump; nothing sequences that
+            // pump against the move. When the delivery had not arrived the
+            // guard was false and the placement was **dropped for good** —
+            // nothing retries a guard that has already returned.
+            //
+            // A refused move still places nothing, and now for a structural
+            // reason instead of a second guard kept in step by hand:
+            // `commitMove` writes `orderIndex` only in its two moved cases, so
+            // `.blocked` and `.needsInput` write no row at all.
+            //
+            // ⚠️ `p`/`n` are the destination column's neighbours as they stand
+            // *before* the move. That index is still right afterwards because
+            // `commitMove` does not renumber neighbours — an invariant this
+            // branch now depends on, and `neighboursAreNotRenumberedByAMove`
+            // is what keeps it true.
+            await move(
+                cardID: cardID, to: destination,
+                orderIndex: CardReorder.index(previous: p, next: n))
+            return
         }
 
         do {
