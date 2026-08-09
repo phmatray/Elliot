@@ -32,12 +32,15 @@ struct PreflightSummary: Hashable {
     /// would silently shrink the denominator, which is the shape of every bug
     /// this type is about.
     static func of(machine: [CheckResult], repositories: [PreflightReading?]) -> PreflightSummary {
-        let read = repositories.compactMap { $0 }
-        let all = machine + read.flatMap(\.results)
+        let all = machine + repositories.compactMap { $0 }.flatMap(\.results)
         return PreflightSummary(
             failing: all.count { $0.status == .fail },
             warning: all.count { $0.status == .warn },
-            unread: repositories.count - read.count,
+            // Through `PreflightReading.verdict(of:)` rather than by counting
+            // the nils: "nobody looked" is that type's word, and this screen
+            // asking the question its own way is how the two come to disagree
+            // about a repository whose reading arrives empty.
+            unread: repositories.count { PreflightReading.verdict(of: $0) == .notChecked },
             checks: all.count,
             repositories: repositories.count
         )
