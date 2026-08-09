@@ -62,6 +62,16 @@ public final class AppModel {
     public private(set) var recentRuns: [SkillRun] = []
     public private(set) var isQueuePaused = false
 
+    /// The runs the machine is doing right now, ordered and capped, with the
+    /// remainder counted.
+    ///
+    /// Derived rather than stored, like `nextSteps`: it is a function of
+    /// `recentRuns`, which is already observed and already stall-marked, and a
+    /// stored copy is one more thing that can be stale. The selection — which
+    /// runs, in what order, how many, and what to say about the rest — is
+    /// `RunningNow`'s, in `ElliotModel`, so `swift test` can hold all of it.
+    public var runningNow: RunningNow { RunningNow.of(recentRuns) }
+
     public private(set) var ceiling: SpendCeiling = .off
     public private(set) var spentToday: Spend = .nothing
     public private(set) var isOverDailyCeiling = false
@@ -1394,6 +1404,12 @@ public final class AppModel {
 
     public func repo(for card: Card) -> Repo? {
         repos.first { $0.id == card.repoID }
+    }
+
+    /// The repository a **run** belongs to, which a card cannot answer for: an
+    /// analysis run has no card, and it is the kind Operations exists to show.
+    public func repo(id: UUID) -> Repo? {
+        repos.first { $0.id == id }
     }
 
     public func card(id: UUID?) -> Card? {

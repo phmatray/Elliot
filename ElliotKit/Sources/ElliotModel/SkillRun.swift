@@ -24,6 +24,32 @@ public enum RunState: String, Codable, CaseIterable, Sendable, Hashable {
     /// A run in one of these states holds its card: no further move is allowed.
     public var isActive: Bool { !isTerminal }
 
+    /// Started, and not finished — a run the machine is actually *doing*.
+    ///
+    /// The one case where this differs from ``isActive`` is `queued`, and the
+    /// difference is the whole reason it exists. A queued run is one the
+    /// scheduler is **holding**, and Operations already draws it in the Waiting
+    /// band together with the rule holding it (#58). A *Running now* band built
+    /// on `isActive` would list that same run a second time, under a heading
+    /// saying it is going, with no elapsed time and nothing to cancel — one run
+    /// reported twice and described two ways.
+    ///
+    /// It also matches what `RunScheduler.occupancy` counts, which is
+    /// `inFlight`: the runs it has started and not yet reaped. That is not a
+    /// coincidence to preserve by hand — it is why the band's row count and the
+    /// Workers gauge beside it agree.
+    ///
+    /// **Exhaustive, with no `default`**, for the reason `MoveOrigin
+    /// .allowsSideEffects` gives: a case added to this enum must be classified
+    /// deliberately rather than inherit whichever answer the shorter spelling
+    /// happened to give.
+    public var isUnderway: Bool {
+        switch self {
+        case .running, .cancelling, .stalled: true
+        case .queued, .succeeded, .completedWithDenials, .failed, .cancelled, .timedOut: false
+        }
+    }
+
     /// Still worth offering a stop to. A run already winding down is not —
     /// `cancelling` means the SIGTERM has gone out, so a second Cancel changes
     /// nothing and reads as a button that does not work.

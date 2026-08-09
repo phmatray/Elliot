@@ -32,6 +32,7 @@ public struct OperationsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 preflightBand
+                runningBand
                 workersBand
                 queueBand
                 spendingBand
@@ -118,6 +119,52 @@ public struct OperationsView: View {
                 }
         }
         return global + perRepo
+    }
+
+    // MARK: - Running now
+
+    /// The runs themselves, above the gauge that counts them.
+    ///
+    /// Above Workers because `2 / 2` is the *summary* of this band, and a screen
+    /// that answers "what is the machine doing" with a summary and no detail is
+    /// the state #303 describes. It is also the only place an **analysis** run
+    /// appears outside the analysis panel: `activeRuns` is keyed by card id, and
+    /// an analysis has none.
+    ///
+    /// It computes nothing, like every other band here. Which runs, in what
+    /// order and how many is `RunningNow`'s, the last line is `AppModel`'s, and
+    /// Cancel goes to `model.cancelRun` — the one funnel every stop travels,
+    /// whether it started here, in a card's menu or over MCP.
+    @ViewBuilder
+    private var runningBand: some View {
+        let running = model.runningNow
+        band("Running now") {
+            if running.isEmpty {
+                // Said plainly rather than by drawing nothing: an empty band and
+                // a band that failed to load look identical.
+                Text("Nothing is running.")
+                    .font(Type.prose)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(running.shown) { run in
+                    RunningStrip(
+                        run: run,
+                        lastLine: model.lastLine(of: run),
+                        context: run.context(repoName: model.repo(id: run.repoID)?.displayName),
+                        cancel: { Task { await model.cancelRun(id: run.id) } }
+                    )
+                    // `.contain`, not `.combine`: this row carries a button, and
+                    // combining it into one element is what makes Cancel
+                    // unreachable to a screen reader.
+                    .accessibilityElement(children: .contain)
+                }
+                if let note = running.note {
+                    Text(note)
+                        .font(Type.prose)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     // MARK: - Workers
