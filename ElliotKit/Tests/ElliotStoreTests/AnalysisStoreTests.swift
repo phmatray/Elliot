@@ -70,6 +70,114 @@ struct AnalysisStoreTests {
         #expect(try await store.proposals(repoID: repo.id, status: .accepted).map(\.title) == ["B"])
     }
 
+    // MARK: - Claiming a proposal
+
+    /// Seeds one proposal in whatever state the claim under test needs.
+    private func seededProposal(
+        _ store: BoardStore, _ repo: Repo,
+        status: ProposalStatus = .proposed, acceptedCardID: UUID? = nil
+    ) async throws -> StoryProposal {
+        let analysis = Analysis(repoID: repo.id, angles: [.bugs], createdAt: Date())
+        try await store.saveAnalysis(analysis)
+        let proposal = StoryProposal(
+            analysisID: analysis.id, runID: UUID(), repoID: repo.id, angle: .bugs,
+            title: "Claim me",
+            story: UserStory(role: "dev", want: "w", benefit: "b"),
+            status: status, acceptedCardID: acceptedCardID, createdAt: Date()
+        )
+        try await store.saveProposals([proposal])
+        return proposal
+    }
+
+    @Test("Each claim moves a proposal along its own transition")
+    func everyClaimLands() async throws {
+        let (store, repo) = try await seededStore()
+
+        let accepted = try await seededProposal(store, repo)
+        #expect(try await store.claimProposal(id: accepted.id, .accept))
+        #expect(try await store.proposal(id: accepted.id)?.status == .accepted)
+
+        let rejected = try await seededProposal(store, repo)
+        #expect(try await store.claimProposal(id: rejected.id, .reject))
+        #expect(try await store.proposal(id: rejected.id)?.status == .rejected)
+
+        // The one that did not exist until #292: rejecting marked rather than
+        // deleted precisely so there would be something to put back, and until
+        // now nothing could.
+        #expect(try await store.claimProposal(id: rejected.id, .restore))
+        #expect(try await store.proposal(id: rejected.id)?.status == .proposed)
+    }
+
+    /// A claim is a compare-and-set, so the losing caller must see zero rows
+    /// changed rather than a stale read it has no way to know is stale. Losing
+    /// is a *state*, which is why none of this needs concurrency to provoke.
+    @Test("A claim whose starting status is wrong changes nothing and says so")
+    func aWrongStartingStatusIsRefused() async throws {
+        let (store, repo) = try await seededStore()
+
+        // Restoring something nobody rejected.
+        let open = try await seededProposal(store, repo)
+        #expect(try await store.claimProposal(id: open.id, .restore) == false)
+        #expect(try await store.proposal(id: open.id)?.status == .proposed)
+
+        // Deciding something already decided, in both directions.
+        let decided = try await seededProposal(store, repo, status: .rejected)
+        #expect(try await store.claimProposal(id: decided.id, .accept) == false)
+        #expect(try await store.claimProposal(id: decided.id, .reject) == false)
+        #expect(try await store.proposal(id: decided.id)?.status == .rejected)
+
+        // And an id that is not there at all.
+        #expect(try await store.claimProposal(id: UUID(), .restore) == false)
+    }
+
+    /// The trap #292 names: a rejected proposal that already produced a Backlog
+    /// card must be refused restoration outright, or the next Accept makes a
+    /// second card for one story.
+    ///
+    /// The predicate lives in the `UPDATE`, not in a `fetch → check → write`
+    /// around it — that shape is the race the whole method exists to replace,
+    /// and a restore losing it is precisely how the second card appears.
+    @Test("A rejected proposal that carries a card cannot be restored")
+    func anAcceptedCardBlocksTheWayBack() async throws {
+        let (store, repo) = try await seededStore()
+        let card = Card(
+            repoID: repo.id, title: "Already on the board",
+            columnEnteredAt: Date(), createdAt: Date(), updatedAt: Date()
+        )
+        try await store.saveCard(card)
+        let proposal = try await seededProposal(
+            store, repo, status: .rejected, acceptedCardID: card.id
+        )
+
+        #expect(try await store.claimProposal(id: proposal.id, .restore) == false)
+        let back = try #require(try await store.proposal(id: proposal.id))
+        #expect(back.status == .rejected)
+        #expect(back.acceptedCardID == card.id, "and the backlink survives the refusal")
+    }
+
+    /// The claim is the whole of the concurrency defence, so a crowd of
+    /// simultaneous restores must produce exactly one winner. Eight tasks give
+    /// the scheduler real opportunities to interleave, rather than hoping two
+    /// `async let`s overlap.
+    @Test("Concurrent restores of one proposal produce exactly one winner")
+    func restoreRacesToOneWinner() async throws {
+        let (store, repo) = try await seededStore()
+        let proposal = try await seededProposal(store, repo, status: .rejected)
+        let id = proposal.id
+
+        let wins = try await withThrowingTaskGroup(of: Bool.self) { group in
+            for _ in 0..<8 {
+                group.addTask { try await store.claimProposal(id: id, .restore) }
+            }
+            var won = 0
+            for try await result in group where result { won += 1 }
+            return won
+        }
+
+        #expect(wins == 1, "\(wins) callers were each told they had restored the same proposal")
+        #expect(try await store.proposal(id: id)?.status == .proposed)
+    }
+
     @Test("An analysis run stores its angle and no card")
     func analysisRunHasNoCard() async throws {
         let (store, repo) = try await seededStore()

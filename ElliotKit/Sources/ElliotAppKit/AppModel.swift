@@ -2914,6 +2914,31 @@ public final class AppModel {
         return failure
     }
 
+    /// Puts rejected proposals back on the list, and says whether they moved.
+    ///
+    /// Through ``analysisWrite`` like the other three, so an absent service is a
+    /// reported failure rather than the silent no-op `analysisService?.…` makes
+    /// of it (#223). The note is the one place the two counts meet: `restore`
+    /// answers with what the store actually changed, and
+    /// ``AnalysisWriteFailure/restorationNote(asked:restored:failure:)`` turns
+    /// that into a sentence — so a restore refused because the proposal already
+    /// produced a card says so, instead of claiming a success the list will
+    /// visibly contradict.
+    @discardableResult
+    public func restoreProposals(ids: [UUID]) async -> AnalysisWriteFailure? {
+        // Written by the closure below rather than returned from it:
+        // `analysisWrite` funnels every analysis write and answers with the
+        // *failure*, which is the whole of #223's fix. Giving it a generic
+        // return would let a caller thread a value out of it and, in doing so,
+        // out of the funnel.
+        var restored = 0
+        let failure = await analysisWrite { restored = try await $0.restore(proposalIDs: ids) }
+        analysis?.note = AnalysisWriteFailure.restorationNote(
+            asked: ids.count, restored: restored, failure: failure
+        )
+        return failure
+    }
+
     /// The angles still working, for the window's header.
     public var runningAngles: [AnalysisAngle] {
         analysis?.runs.filter { !$0.state.isTerminal }.compactMap(\.analysisAngle) ?? []

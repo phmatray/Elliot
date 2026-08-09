@@ -65,6 +65,62 @@ struct AnalysisWriteFailureTests {
         #expect(AnalysisWriteFailure.rejectionNote(count: 3, failure: nil) == "Rejected 3 proposals.")
     }
 
+    // MARK: - The note after a restoration
+
+    @Test("A failed restoration never claims anything came back", arguments: [0, 1, 2, 17])
+    func aFailedRestorationSaysSo(count: Int) {
+        for failure in [AnalysisWriteFailure.serviceUnavailable, .refused("no")] {
+            let note = AnalysisWriteFailure.restorationNote(
+                asked: count, restored: count, failure: failure
+            )
+            #expect(
+                !note.contains("Restored"),
+                "\(count) proposals with \(failure) produced \(note) — the board claimed a success"
+            )
+            #expect(note == failure.sentence)
+        }
+    }
+
+    @Test("A restoration that landed in full says how many, and counts one properly")
+    func aFullRestorationCountsCorrectly() {
+        #expect(
+            AnalysisWriteFailure.restorationNote(asked: 1, restored: 1, failure: nil)
+                == "Restored 1 proposal.")
+        #expect(
+            AnalysisWriteFailure.restorationNote(asked: 3, restored: 3, failure: nil)
+                == "Restored 3 proposals.")
+    }
+
+    /// The whole reason this note takes two counts and `rejectionNote` takes
+    /// one. A restore can lose its claim to a proposal that already produced a
+    /// **card**, and announcing the number asked for would hide exactly the case
+    /// the store's refusal exists for — a reader would read "Restored 3", see
+    /// two rows move, and have nothing to tell them why.
+    @Test("A partly-refused restoration reports what actually moved, not what was asked")
+    func aPartialRestorationTellsTheTruth() {
+        let note = AnalysisWriteFailure.restorationNote(asked: 3, restored: 2, failure: nil)
+        #expect(note.contains("2"))
+        #expect(note.contains("3"))
+        #expect(
+            !note.hasPrefix("Restored 3"),
+            "\(note) announces the number the button asked for, which is the defect"
+        )
+    }
+
+    @Test("A restoration that moved nothing says so rather than counting zero")
+    func aRefusedRestorationDoesNotCountZero() {
+        for asked in [0, 1, 5] {
+            let note = AnalysisWriteFailure.restorationNote(
+                asked: asked, restored: 0, failure: nil
+            )
+            #expect(note.hasPrefix("Nothing to restore"))
+            #expect(
+                !note.contains("Restored 0"),
+                "\(note) reads as a successful restoration of nothing"
+            )
+        }
+    }
+
     @Test("The two failures are distinguishable")
     func theCasesAreNotInterchangeable() {
         #expect(AnalysisWriteFailure.serviceUnavailable != .refused("anything"))

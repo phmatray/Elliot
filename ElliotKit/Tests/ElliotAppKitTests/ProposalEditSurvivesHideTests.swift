@@ -168,17 +168,26 @@ struct AnalysisPanelStateTests {
     /// - `lensesExpanded` is a disclosure preference with a computed default.
     /// - `showingDropped` is a disclosure toggle over a report the run owns.
     /// - `showingCriteria` is the same, over the proposal's own criteria.
+    /// - `rejectedExpanded` is the same again, over rows the store holds (#292).
     /// - `hovering` is pointer state, recomputed by the next mouse move.
     ///
-    /// The line these four sit on the right side of: they are *views of data
+    /// The line these five sit on the right side of: they are *views of data
     /// that is intact*, so re-showing the panel redraws them from the source. A
     /// draft is not — the characters exist nowhere else.
     ///
     /// Anything the reader can *type into* or *choose* belongs on the model:
     /// `analysisAngles`, `analysisInstructions`, `analysisMaxStories`,
     /// `analysisSelection`, and since #291 `analysisEdit`.
+    ///
+    /// ✅ This gate earned its place again in #292: the *Rejected* disclosure's
+    /// open/closed flag was written as `@State` and the suite went red naming
+    /// it, which is the review conversation happening in the build rather than
+    /// in somebody's memory. It stays here because a folded disclosure is not
+    /// typed and reopens onto the same rows — not because it was inconvenient
+    /// to move.
     private static let allowed: Set<String> = [
-        "past", "lensesExpanded", "showingDropped", "showingCriteria", "hovering",
+        "past", "lensesExpanded", "showingDropped", "showingCriteria", "rejectedExpanded",
+        "hovering",
     ]
 
     /// ⚠️ **The whole file, not just `AnalysisPanelView`.** The first draft cut
