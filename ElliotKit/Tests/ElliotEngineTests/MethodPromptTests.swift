@@ -45,14 +45,6 @@ private struct Fixture {
     }
 }
 
-/// A built-in pack, other than the default, whose `implement-issue` step is a
-/// *different* command **and takes a number**.
-///
-/// ⛔ Both halves matter. Without the command difference, a builder that ignored
-/// its `method` argument entirely would still pass. Without
-/// `arguments == .number`, the assertion `"\(expected) 47"` is a claim about a
-/// tail shape this predicate never selected for — a pack whose step took
-/// `.ideaThenLabels` would fail this test for a reason unrelated to the wiring.
 /// A built-in pack, other than the default, that declares a *different* command
 /// for `kind`.
 ///
@@ -108,9 +100,6 @@ struct MethodPromptTests {
             // ⚠️ Wave 1's catalogue may genuinely contain no such pack — GSD and
             // Spec Kit both declare only `.createIssue`. Say so rather than pass
             // in silence, so the gap is visible the day it can be closed.
-            // Hoisted into a `let`: `Issue.record` takes a `Comment`, which is
-            // `ExpressibleByStringLiteral`, so a `+` between two literals in the
-            // argument position resolves against `Sequence` and fails to compile.
             // Hoisted into a `let`: `Issue.record` takes a `Comment`, which is
             // `ExpressibleByStringLiteral`, so a `+` between two literals in the
             // argument position resolves against `Sequence` and fails to compile.
