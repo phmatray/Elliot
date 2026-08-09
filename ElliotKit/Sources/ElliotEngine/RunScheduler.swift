@@ -437,9 +437,10 @@ public actor RunScheduler: RunLaunching {
             // `.elliot`, not the agent: nothing was spawned, so there is no
             // agent to attribute this to. Recording it as prose is what put a
             // sentence Elliot wrote under the panel's "IT SAID" caption (#288).
-            updated.setClosing(.elliot(repoReadError.map {
+            let sentence = repoReadError.map {
                 "Elliot could not read this run's repository: \($0.localizedDescription)"
-            } ?? "The repository this run belongs to no longer exists."))
+            } ?? "The repository this run belongs to no longer exists."
+            updated.setClosing(.elliot(sentence))
             try? await store.saveRun(updated)
             continuation.yield(.runFinished(
                 runID: run.id, cardID: run.cardID, state: .failed, outcome: nil
