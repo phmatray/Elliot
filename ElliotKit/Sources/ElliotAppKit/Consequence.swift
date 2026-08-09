@@ -9,6 +9,32 @@ import SwiftUI
 /// the column's own caption, and it is read from `evaluateMove`, the same pure
 /// function `BoardService` commits with. The board cannot promise one thing and
 /// do another.
+/// What a keyboard nudge would do, as the menu should present it.
+///
+/// One value rather than three properties, so a caller cannot take the title
+/// from here and the enabled state from somewhere else — which is the shape that
+/// let `⌘→` be enabled on a Done card it could not move.
+///
+/// ⛔ **`isEnabled` is false only when there is no selected card.** A move the
+/// rules refuse stays pressable on purpose: pressing it is how the reason gets
+/// said, exactly as dropping a card on a column that refuses it writes the
+/// refusal on the card. Disabling it restores the original defect one step over
+/// — the reader presses, nothing happens, and nothing explains why.
+public struct NudgeOffer: Sendable, Equatable {
+    /// The menu item's title, e.g. "Advance — merges PR 412".
+    public var title: String
+    public var isEnabled: Bool
+    /// The consequence on its own, for the status bar's hint. `nil` when no card
+    /// is selected.
+    public var detail: String?
+
+    public init(title: String, isEnabled: Bool, detail: String?) {
+        self.title = title
+        self.isEnabled = isEnabled
+        self.detail = detail
+    }
+}
+
 struct Consequence {
     /// One line, active voice, saying exactly what happens.
     var summary: String

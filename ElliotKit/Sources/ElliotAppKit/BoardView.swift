@@ -654,10 +654,16 @@ public struct BoardView: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer(minLength: 8)
-                        Button("Retry") { Task { await model.refreshFromGitHub() } }
-                            .buttonStyle(.link)
-                            .font(Type.labelSmall)
-                            .disabled(model.isImporting)
+                        // This row names one repository and one `gh` message, so
+                        // its button means that repository. It used to re-import
+                        // the whole board whenever the picker said "All".
+                        Button("Retry") {
+                            Task { await model.refreshFromGitHub(repoID: entry.repo.id) }
+                        }
+                        .buttonStyle(.link)
+                        .font(Type.labelSmall)
+                        .disabled(model.isImporting)
+                        .help("Re-import \(entry.repo.displayName)")
                     }
                     .help(entry.message)
                 }
@@ -907,14 +913,15 @@ struct StatusBar: View {
                 face: .operations
             )
 
-            // Elliot wrote this hint, so it is not set in the fact face.
-            Text(
-                model.selectedCard == nil
-                    ? "↑↓←→ pick a card"
-                    : "⌘→ advance · ⌘← back · esc deselect"
-            )
-            .font(Type.prose)
-            .foregroundStyle(Palette.quiet)
+            // Elliot wrote this hint, so it is not set in the fact face. It said
+            // a flat "⌘→ advance" for every card, including the ones where ⌘→
+            // does nothing at all; `selectionHint` reaches `preview` for the
+            // card actually selected.
+            Text(model.selectionHint)
+                .font(Type.prose)
+                .foregroundStyle(Palette.quiet)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
