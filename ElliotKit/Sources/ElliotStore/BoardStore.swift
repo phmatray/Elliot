@@ -92,6 +92,33 @@ public final class BoardStore: Sendable {
         try await requireWriter().write { db in try repo.save(db) }
     }
 
+    /// Writes Preflight's verdict and **only** Preflight's verdict.
+    ///
+    /// `AppModel.refreshRepoChecks` captures `repos`, then per repository awaits
+    /// `preflight.repoChecks(repo)` — which shells out to `gh` and `git`, so the
+    /// suspension is seconds long, not microseconds. Writing the captured row
+    /// back through ``saveRepo(_:)`` therefore reverts anything saved during
+    /// that window, and a first sweep after launch moves every repository from
+    /// `notChecked`, so the window opens for all of them at once.
+    ///
+    /// The hazard has existed since the verdict was persisted and never
+    /// mattered, because `isEnabled` and a sweep are rarely touched together. It
+    /// starts mattering the moment the field being silently reverted is the one
+    /// bounding what an unattended agent may do to a checkout: a safety control
+    /// that quietly returns to `bypassPermissions` while the screen still shows
+    /// the tightened value is worse than no control at all.
+    ///
+    /// A single-column `UPDATE` rather than a read-modify-write, so there is no
+    /// window of its own to reason about.
+    public func saveRepoPreflight(id: UUID, verdict: PreflightState) async throws {
+        _ = try await requireWriter().write { db in
+            try db.execute(
+                sql: "UPDATE repo SET preflight = ? WHERE id = ?",
+                arguments: [verdict.rawValue, id.databaseKey]
+            )
+        }
+    }
+
     public func deleteRepo(id: UUID) async throws {
         _ = try await requireWriter().write { db in try Repo.deleteOne(db, key: id.databaseKey) }
     }
@@ -443,6 +470,17 @@ public final class BoardStore: Sendable {
     public func backfillCardAngles() async throws {
         try await requireWriter().write { db in
             try db.execute(sql: Migrations.backfillCardAnglesSQL)
+        }
+    }
+
+    /// Runs the v12 backfill again. Idempotent — it only writes a card whose
+    /// `appraisedAt` is still NULL **and** which has a proposal to read one
+    /// from, so it can neither redo an appraisal nor blank one it has nothing
+    /// to say about — and exists so a test can assert what the migration does
+    /// without reaching into `grdb_migrations`.
+    public func backfillCardAppraisals() async throws {
+        try await requireWriter().write { db in
+            try db.execute(sql: Migrations.backfillCardAppraisalsSQL)
         }
     }
 

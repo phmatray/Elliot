@@ -390,6 +390,34 @@ discovering it after building the bundle and seeding a store. The refusal is at 
 names the two cases apart and lists what is open — which is the one thing this file's false-negative
 family never does.
 
+⚠️ **Re-measured 2026-08-09 (#333) on a bundle built from `main`, and the reply has changed — the
+conclusion has not, it has hardened.** Those six scenes are no longer *windows*; the console
+refactor made them **faces of the board window**, so there is nothing to be "not open":
+
+| call | reply |
+|---|---|
+| `board_screenshot window=preflight` | `window_not_found` · *"No Elliot window is called "preflight"."* · hint: **"Known windows: board."** |
+| `board_screenshot window=board` | `is_visible: true`, `source: live`, 1510×995 |
+
+⛔ **So a console face cannot be photographed by an agent at all, and no seeding trick gets around
+it**: `AppModel.console` is deliberately *not persisted* ("a board that reopened onto Operations
+would be reporting on a machine state from a previous session"), so which face is showing cannot be
+arranged in the database the way a card or a repository can. Every face — Repositories, Operations,
+Up next, Preflight, Archive, New story — needs a human to click it into view, and a change to one is
+**unverifiable on screen from here**. Say so in the pull request rather than implying otherwise.
+
+The `elliot` helper registered with Claude Code points at whichever `ELLIOT_HOME` it was registered
+under, so to reach a scratch instance, spawn one yourself and speak JSON-RPC at its stdin — and
+⚠️ **keep stdin open**: `subprocess.communicate()` closes it, and this helper then exits 0 having
+written nothing at all, which reads exactly like a helper that failed to start. Send `initialize`,
+then `notifications/initialized`, then `tools/call`, reading replies as they arrive.
+
+⚠️ **A repository inserted with `sqlite3` while the app is running does not appear on the board**,
+though `board_list_repos` reports it the same second. That is not a defect and not a race: SQLite
+does not notify *other processes* of writes, which is the whole reason the app is the sole writer —
+the in-app MCP handler re-reads per call and sees it, the app's `ValueObservation` never fires. Seed
+**before** launching, then `PRAGMA wal_checkpoint(TRUNCATE)`.
+
 ⚠️ **A long `ELLIOT_HOME` silently costs you the MCP socket.** `sun_path` is capped at 104 bytes on
 macOS, so a scratch home under a deep path makes `startIPC` fail; the app runs fine, and Preflight
 says so under *MCP socket*. Keep the check store short — `/tmp/elliot-check` is short on purpose.
@@ -929,8 +957,35 @@ There is no wall-clock kill (`merge-pr` waiting hours on CI is legitimate). What
 **silence**: 20 minutes without output marks the run stalled and asks. Cancellation is a plain SIGTERM —
 Claude Code handles it, aborts the turn, kills its Bash process tree, runs SessionEnd hooks, exits 143.
 
-Runs default to `--permission-mode bypassPermissions`; `permissionMode` is a per-repo column if you want
-to tighten one.
+Runs default to `--permission-mode bypassPermissions`. **Since #333 a single repository can actually be
+tightened** — Preflight ▸ each repository ▸ *Run terms*, holding the mode picker and the extra allowed
+tools, written through `AppModel.setRunTerms` → `saveRepo`.
+
+⚠️ **This line claimed that capability for the whole life of the project and it did not exist.**
+`permissionMode` and `extraAllowedTools` are **v1** columns; `RunScheduler` read both at spawn,
+`ClaudeInvocation.arguments()` emitted both flags, `board_list_repos` reported the mode, and **nothing
+anywhere ever assigned either one**. Every registration took `bypassPermissions` and `[]` permanently,
+so every drag in every registered repository started `claude -p` accepting every tool call and asking
+nobody. Three documents described the knob — this file, `Repo.permissionMode`'s doc comment, and
+`ListReposTool`'s description telling an agent to *"read `permissionMode` before you move a card"* — and
+not one of them was wrong about what the value *meant*; they were wrong that it could ever be anything
+else. It is the milder cousin of the `isBlocking` defect below: not a gate asserted in three places and
+implemented in none, but a setting readable everywhere and writable nowhere. **A column with readers is
+not a feature until something writes it.**
+
+Two things worth keeping from the fix:
+
+- **Only `bypassPermissions` has ever been run.** The picker offers all six tokens `claude --help`
+  accepts and explains exactly one of them, because the CLI documents no semantics for any and this
+  board has exercised no other. The five say so. Inventing their behaviour would be the `x402-dotnet`
+  mistake in miniature — prose that afterwards reads as a measurement.
+- ⛔ **A sweep must not write back a row it captured before a network call.** `refreshRepoChecks`
+  captures `repos`, then per repository awaits `preflight.repoChecks(repo)` — `gh` and `git`, so
+  *seconds* — and used to save the captured row whole. That silently reverted anything saved during the
+  window, and a first sweep after launch opens it for every repository at once. Harmless while the only
+  field at risk was `isEnabled`; not harmless when it is the one bounding what an unattended agent may
+  do. `BoardStore.saveRepoPreflight` writes the verdict column alone, and `setRunTerms` re-reads the row
+  rather than editing the copy the view was rendering — the same hazard pointed the other way.
 
 ### Artefact retention
 
