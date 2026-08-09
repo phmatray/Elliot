@@ -130,7 +130,7 @@ struct ConsoleRegion: View {
         case .preflight: PreflightView()
         case .repositories: RepositoriesView()
         case .archive: ArchiveView()
-        case .newStory: NewCardWindow()
+        case .newStory: NewStoryView()
         }
     }
 }
