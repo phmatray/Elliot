@@ -41,8 +41,30 @@ PR4 requires, and Task 1 proves by compiling:
 | PR1 | `MoveBlock.notVerifiedGreen(sign: PRSign?)` | `code == "not_verified_green"` |
 | PR1 | `MoveBlock.systemOwnedTransition` | `code == "system_owned_transition"` |
 | PR1 | `ResolvedPRStatus.isMergeableUnattended: Bool` | at least option B: `!isStale && sign == nil && merge == .clean` |
-| PR1 | `BoardService.proposeMove(cardID:to:origin:followUps:orderIndex:requiresVerifiedGreen:)` | `requiresVerifiedGreen` last, **`= false`** — corrected against PR1's plan, which ships the default deliberately so every headless construction keeps compiling. The "no default" rule PR1 applies is to `MoveContext`'s two fields, not to this parameter, and PR4 needs only that the label exists in that position |
-| PR1 | `BoardService.move(cardID:to:origin:followUps:orderIndex:requiresVerifiedGreen:)` | the same parameter, in the same position, also `= false`. `move` is `proposeMove` + `commitMove` (`BoardService.swift:153-165`); PR1 has it **take** the parameter and forward it, which is what Task 6's third test relies on |
+| PR1 | `BoardService.proposeMove(cardID:to:origin:followUps:orderIndex:requiresVerifiedGreen:)` | `requiresVerifiedGreen` last, **and it has NO default — you must state it** |
+| PR1 | `BoardService.move(cardID:to:origin:followUps:orderIndex:requiresVerifiedGreen:)` | the same parameter, in the same position, **also with no default** |
+
+> 🔴 **Corrected 2026-08-09, and this row is the one that would have undone PR1.** Both rows above
+> said `= false`, and the first argued for it by name: *"The 'no default' rule PR1 applies is to
+> `MoveContext`'s two fields, not to this parameter, and PR4 needs only that the label exists in
+> that position."* That reasoning was wrong, PR1 shipped without the default, and **this plan is
+> the one place where following the old text would have been fatal.**
+>
+> Why: `AutoDevService` is the sole caller in the system with nobody watching. A call written
+>
+> ```swift
+> try await board.move(cardID: id, to: next, origin: .autoDev(sessionID: session.id), followUps: [])
+> ```
+>
+> would, under a defaulted parameter, **compile, run, and merge to a default branch on github.com
+> with no gate at all** — branch protection is off in this repository, so `isMergeableUnattended`
+> is the only thing in the way, and the parameter that engages it would have been optional.
+>
+> `MoveContext`'s fields were only ever half the rule. The outer boundary is where PR4 actually
+> calls, and it now carries the same discipline: **every call site states its answer.** PR1's four
+> production sites do (`AppModel`'s drag path and `confirmMerge`, `MCPRequestHandler.moveCard`,
+> `BoardService.applySystemMove`), each with its own reason rather than a copy of its neighbour's.
+> Yours says `true`.
 
 > 🔴 **Arbitrated 2026-08-09 — PR2 IS a hard prerequisite of this plan.** An earlier draft of this
 > paragraph said PR2 was "not required: the engaged card ids are supplied by the caller". That was

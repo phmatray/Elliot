@@ -219,10 +219,16 @@ commit."* `noReading` keeps the two facts it genuinely cannot separate: no row a
 all, and a row `PRVerdictReader` could not check because `gh` was unreachable.
 
 `code` is `"not_verified_green"` and `"system_owned_transition"` — snake_case,
-per the rule written at `Protocol.swift:398-401`. The first sentence is written
-once, from `sign?.summary ?? "No reading of the pull request."`, because
-`PRSign.summary` already exists and already says the right thing for all eight
-signs (`PRStatus.swift:182-202`).
+per the rule written at `Protocol.swift:398-401`.
+
+⚠️ **Corrected 2026-08-09.** This said the sentence was "written once, from
+`sign?.summary ?? "No reading of the pull request."`". Both halves are now
+wrong. There is no bare sign to fall back on, and the sentence is written
+**twice, deliberately** — a four-arm switch in each renderer
+(`NextRendering.swift`, `Consequence.swift`), phrased in each one's own voice.
+`RefusalWordingTests` asserts the two stay *different* and that neither contains
+the other, so a single shared string would fail it. `PRSign.summary` still does
+the work inside the `.sign(_)` arm, which is the only arm that has a sign.
 
 The second case exists so the refusal is *truthful*. Reusing
 `notVerifiedGreen` for In Progress → In Review would tell the reader the CI is
@@ -582,8 +588,11 @@ it returns `true` for *no row at all*.
 | `missingIssueNumber`, `missingPRNumber` | `.wait` — the previous step has not landed |
 | `runAlreadyInFlight` | `.wait` |
 | `repoDisabled`, `repoBlocked` | **`.abortSession`** |
-| `notVerifiedGreen(.checksRunning / .unknown / nil)` | `.wait` |
-| `notVerifiedGreen(.noBuild / .conflict / .changesRequested / .reviewRequired / .mergeBlocked / .checksFailing)` | `.settle` |
+| `notVerifiedGreen(.sign(.checksRunning))` · `.sign(.unknown)` | `.wait` — and `.sign(.unknown)` is the ordinary *somebody just pushed* case, so it must wait rather than settle |
+| `notVerifiedGreen(.sign(.noBuild / .conflict / .changesRequested / .reviewRequired / .mergeBlocked / .checksFailing))` | `.settle` |
+| `notVerifiedGreen(.noReading)` | `.wait` — nothing has been read yet, which a later tick can fix |
+| `notVerifiedGreen(.notClean(_))` | `.settle` — GitHub will merge it, but not every check is green, and waiting does not change that |
+| `notVerifiedGreen(.noBuildVerdict)` | `.settle` — the only passing checks are analysers; no build is coming |
 | `systemOwnedTransition` | `.settle` — the loop asked for a move that is not its to make; waiting cannot fix a category error |
 | `sameColumn` | `.settle` — unreachable via `naturalNext`, and a `.wait` here would spin |
 

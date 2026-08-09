@@ -1985,7 +1985,7 @@ git commit -m "feat(model): a mover with no human merges only on a verified gree
     `public static let listingTTL: TimeInterval`.
     ⚠ It **throws**, and the two failure directions are different on purpose: a store that cannot be read propagates — which is what `prStatusDTO` did before this reader existed, and losing it would turn a database error into "this pull request has nothing on it" — while a `gh` that cannot be reached answers `nil`, and only under `.establish`, where refusing the merge is the safe direction.
   - `BoardService.init(store: BoardStore, launcher: any RunLaunching, verdicts: PRVerdictReader? = nil)`.
-  - `BoardService.proposeMove(cardID:to:origin:followUps:orderIndex:requiresVerifiedGreen:)` and `BoardService.move(cardID:to:origin:followUps:orderIndex:requiresVerifiedGreen:)`, both with `requiresVerifiedGreen: Bool = false` last.
+  - `BoardService.proposeMove(cardID:to:origin:followUps:orderIndex:requiresVerifiedGreen:)` and `BoardService.move(cardID:to:origin:followUps:orderIndex:requiresVerifiedGreen:)`, both with `requiresVerifiedGreen: Bool` last — ⚠️ **no default**, see the correction below. The code blocks in Steps 3 and 4 still print `= false`; they are wrong.
   - `MCPRequestHandler.init(store:board:analysis:capture:verdicts:)` with `verdicts: PRVerdictReader? = nil` last.
 
 - [ ] **Step 1: Write the failing test**
@@ -2431,7 +2431,7 @@ with:
         origin: MoveOrigin,
         followUps: [String]? = nil,
         orderIndex: Double? = nil,
-        requiresVerifiedGreen: Bool = false
+        requiresVerifiedGreen: Bool   // ⚠️ no default — corrected 2026-08-09
     ) async throws -> MoveProposal {
         guard let card = try await store.card(id: cardID) else { throw BoardError.cardNotFound(cardID) }
         guard let repo = try await store.repo(id: card.repoID) else {
@@ -2469,7 +2469,7 @@ with:
         origin: MoveOrigin,
         followUps: [String]? = nil,
         orderIndex: Double? = nil,
-        requiresVerifiedGreen: Bool = false
+        requiresVerifiedGreen: Bool   // ⚠️ no default — corrected 2026-08-09
     ) async throws -> MoveResult {
         let proposal = try await proposeMove(
             cardID: cardID, to: column, origin: origin,
