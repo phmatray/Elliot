@@ -1,4 +1,5 @@
 import ElliotModel
+import ElliotProcess
 import ElliotStore
 import Foundation
 
@@ -75,19 +76,36 @@ public struct NextSteps: Sendable, Equatable {
 public actor BoardService: SystemMoving {
     private let store: BoardStore
     private let launcher: any RunLaunching
+    /// The only thing here that can establish a verdict.
+    ///
+    /// Defaulted rather than required so every headless construction keeps
+    /// compiling — and a board built without one refuses every merge asked for
+    /// under `requiresVerifiedGreen`, which is the direction to fail in.
+    private let verdicts: PRVerdictReader
 
-    public init(store: BoardStore, launcher: any RunLaunching) {
+    public init(
+        store: BoardStore,
+        launcher: any RunLaunching,
+        verdicts: PRVerdictReader? = nil
+    ) {
         self.store = store
         self.launcher = launcher
+        self.verdicts = verdicts ?? PRVerdictReader(store: store, gh: nil)
     }
 
     /// Works out what a move would mean, without changing anything.
+    ///
+    /// `requiresVerifiedGreen` is the caller's own claim about itself, not
+    /// something derived from `origin`: a drag is watched by the person making
+    /// it, and an MCP call has a human behind the agent. Only a caller with
+    /// nobody at all asks for the restraint, and it asks by name.
     public func proposeMove(
         cardID: UUID,
         to column: ElliotModel.Column,
         origin: MoveOrigin,
         followUps: [String]? = nil,
-        orderIndex: Double? = nil
+        orderIndex: Double? = nil,
+        requiresVerifiedGreen: Bool = false
     ) async throws -> MoveProposal {
         guard let card = try await store.card(id: cardID) else { throw BoardError.cardNotFound(cardID) }
         guard let repo = try await store.repo(id: card.repoID) else {
@@ -95,16 +113,22 @@ public actor BoardService: SystemMoving {
         }
 
         let activeRun = try await store.activeRun(cardID: cardID)
+        // Read only when the answer can change the decision: `.establish` spends
+        // a `gh pr list`, and a drop that is not held to a verdict must not cost
+        // one. A card with no pull request number has nothing to read, and the
+        // rule refuses it on `missingPRNumber` before it looks at the verdict.
+        var prVerdict: ResolvedPRStatus?
+        if requiresVerifiedGreen, let prNumber = card.prNumber {
+            prVerdict = try await verdicts.reading(
+                repo: repo, prNumber: prNumber, now: Date(), head: .establish)?.resolved
+        }
         let context = MoveContext(
             repoIsEnabled: repo.isEnabled,
             activeRunID: activeRun?.id,
             allowSideEffects: origin.allowsSideEffects,
             providedFollowUps: followUps,
-            // Task 8 fills these from `PRVerdictReader`. Until then the board
-            // answers what it has always answered: a drag and an MCP move are
-            // watched by a human and are not held to a verdict.
-            requiresVerifiedGreen: false,
-            prVerdict: nil
+            requiresVerifiedGreen: requiresVerifiedGreen,
+            prVerdict: prVerdict
         )
         let outcome = evaluateMove(from: card.column, to: column, card: card, context: context)
         let index: Double
@@ -160,11 +184,13 @@ public actor BoardService: SystemMoving {
         to column: ElliotModel.Column,
         origin: MoveOrigin,
         followUps: [String]? = nil,
-        orderIndex: Double? = nil
+        orderIndex: Double? = nil,
+        requiresVerifiedGreen: Bool = false
     ) async throws -> MoveResult {
         let proposal = try await proposeMove(
             cardID: cardID, to: column, origin: origin,
-            followUps: followUps, orderIndex: orderIndex
+            followUps: followUps, orderIndex: orderIndex,
+            requiresVerifiedGreen: requiresVerifiedGreen
         )
         return try await commitMove(proposal)
     }

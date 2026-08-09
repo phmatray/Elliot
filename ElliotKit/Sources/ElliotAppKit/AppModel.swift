@@ -517,7 +517,12 @@ public final class AppModel {
                 store: store, toolConfig: config, verifier: verifier,
                 limits: limits, ceiling: ceiling
             )
-            let board = BoardService(store: store, launcher: scheduler)
+            // One reader, shared: the board's merge decision and the MCP
+            // surface's card reads then spend one `gh pr list` between them
+            // rather than one each, and there is one place where "what did `gh`
+            // establish about this pull request" is answered.
+            let verdicts = PRVerdictReader(store: store, gh: ghClient)
+            let board = BoardService(store: store, launcher: scheduler, verdicts: verdicts)
             await scheduler.setSystemMover(board)
             self.scheduler = scheduler
             self.board = board
@@ -547,7 +552,7 @@ public final class AppModel {
                 store: store, launcher: scheduler, board: board, gh: ghClient
             )
             self.analysisService = analysisService
-            startIPC(board: board, store: store, analysis: analysisService)
+            startIPC(board: board, store: store, analysis: analysisService, verdicts: verdicts)
 
             // Put the board back in touch with reality before anything is
             // dragged: runs died when the app last quit.
@@ -612,7 +617,10 @@ public final class AppModel {
         }
     }
 
-    private func startIPC(board: BoardService, store: BoardStore, analysis: AnalysisService) {
+    private func startIPC(
+        board: BoardService, store: BoardStore, analysis: AnalysisService,
+        verdicts: PRVerdictReader
+    ) {
         do {
             let token = try IPCServer.loadOrCreateToken(at: StoreLocation.tokenURL)
             // The one place the app hands the engine a way to look at itself.
@@ -622,7 +630,7 @@ public final class AppModel {
             // reporting a picture of none.
             let handler = MCPRequestHandler(
                 store: store, board: board, analysis: analysis,
-                capture: AppKitWindowCapture()
+                capture: AppKitWindowCapture(), verdicts: verdicts
             )
             let server = IPCServer(
                 socketPath: StoreLocation.socketURL.path,

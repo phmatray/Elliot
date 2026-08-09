@@ -319,6 +319,49 @@ struct BoardServiceTests {
             try await f.board.updateCard(id: UUID(), title: "Ghost", body: "", story: nil)
         }
     }
+
+    // MARK: - The green guard
+
+    @Test("A merge asked for under the green guard is refused when nothing was read")
+    func unattendedMergeWithoutAVerdictIsRefused() async throws {
+        // The board's half of the guard. `Fixture.make` builds a `BoardService`
+        // with no `PRVerdictReader`, so there is nothing that could establish a
+        // verdict — and the answer to that has to be a refusal, never a merge.
+        let f = try await Fixture.make()
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
+        card.column = .inReview
+        card.prNumber = 279
+        try await f.store.saveCard(card)
+
+        let result = try await f.board.move(
+            cardID: card.id, to: .done, origin: .autoDev(sessionID: UUID()),
+            followUps: [], requiresVerifiedGreen: true
+        )
+        #expect(result == .blocked(.notVerifiedGreen(reason: .noReading)))
+        #expect(try await f.store.card(id: card.id)?.column == .inReview)
+        let launched = await f.launcher.launchedRuns()
+        #expect(launched.isEmpty, "a merge ran on a verdict nobody established")
+    }
+
+    @Test("The same merge, not asked to be verified, still runs")
+    func watchedMergeStillRuns() async throws {
+        // The control the refusal above cannot be: without it, a board that
+        // refused *every* merge would pass.
+        let f = try await Fixture.make()
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
+        card.column = .inReview
+        card.prNumber = 279
+        try await f.store.saveCard(card)
+
+        let result = try await f.board.move(
+            cardID: card.id, to: .done, origin: .userDrag, followUps: []
+        )
+        guard case .moved(let runID?) = result else {
+            Issue.record("expected a run, got \(result)")
+            return
+        }
+        #expect(try await f.store.run(id: runID)?.kind == .mergePR)
+    }
 }
 
 @Suite("Scheduler admission")

@@ -1,0 +1,14 @@
+[
+  {
+    "number": 7,
+    "url": "https://github.com/phmatray/Elliot/pull/7",
+    "title": "feat(model): the thing issue 4 asked for",
+    "body": "Ready for review.",
+    "headRefName": "feat/4-the-thing",
+    "isDraft": false,
+    "state": "OPEN",
+    "createdAt": "2026-08-02T09:00:00Z",
+    "mergedAt": null,
+    "headRefOid": "b7c1f0aa5d2e4c9188ff0e6a2d3b4c5d6e7f8091"
+  }
+]
