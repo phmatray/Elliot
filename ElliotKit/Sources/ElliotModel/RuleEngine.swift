@@ -25,7 +25,15 @@ public enum TriggerAction: Equatable, Sendable, Hashable {
 /// and found wanting. Each of those two states gets its own case here instead
 /// of borrowing one that already means something else.
 public enum NotGreenReason: Equatable, Sendable, Hashable {
-    /// No `PRStatus` row at all — nothing has been read.
+    /// Nothing came back: either there is no `PRStatus` row at all, or a row
+    /// exists and could not be checked because `gh` was unreachable.
+    ///
+    /// ⚠️ Those two are not the same fact, and this case cannot tell them
+    /// apart — `PRVerdictReader.reading` answers `nil` to both, and widening
+    /// that is a change to an interface this pull request only consumes. What
+    /// this case no longer covers is a **stale** reading: staleness is the row
+    /// describing a commit that is no longer the head, which is somebody
+    /// pushing rather than nobody looking, and it answers `.sign(.unknown)`.
     case noReading
     /// A sign names the problem. `PRSign.summary` already says it well.
     case sign(PRSign)
@@ -44,13 +52,25 @@ public extension NotGreenReason {
     /// whichever one this happens to check last.
     ///
     /// Answers in exactly the order `ResolvedPRStatus.isMergeableUnattended`
-    /// refuses in: no reading (nil or stale, which describes a commit no
-    /// longer under review and so is not a reading of *this* pull request),
-    /// then a sign, then an unclean merge state, then — the only conjunct
-    /// left once the other three have passed — no build verdict. That last
-    /// arm is a claim, not a default: it is reachable only when the reading
-    /// exists, is not stale, carries no sign, and is `.clean`, so
-    /// `ci.hasBuildVerdict` is the one thing that can still have failed.
+    /// refuses in: nothing came back, then stale, then a sign, then an unclean
+    /// merge state, then — the only conjunct left once the other four have
+    /// passed — no build verdict. That last arm is a claim, not a default: it
+    /// is reachable only when the reading exists, is not stale, carries no
+    /// sign, and is `.clean`, so `ci.hasBuildVerdict` is the one thing that can
+    /// still have failed.
+    ///
+    /// **Stale answers `.sign(.unknown)`, not `.noReading`** — and this is the
+    /// likeliest refusal in production, not a corner. Stale means the row
+    /// describes a commit that is no longer the head: the ordinary case of
+    /// somebody pushing while the board was deciding. `.noReading` would tell
+    /// that reader nothing had been read, which is false. The accurate sentence
+    /// already exists and is already written once: `resolved(now:)` stamps a
+    /// stale row `sign: .unknown`, and `PRSign.unknown.summary` reads "Not
+    /// established — the reading is missing, aged out, or from an older
+    /// commit." The arm is stated separately rather than left to the `sign`
+    /// arm below because `ResolvedPRStatus` has a public memberwise init, so
+    /// `isStale: true` with `sign: nil` is constructible — the same defensive
+    /// reason `isMergeableUnattended` keeps its own `!isStale` conjunct.
     ///
     /// Truthful only when the reading it was given is *not* mergeable —
     /// called on one that is, it still answers confidently (`.noBuildVerdict`,
@@ -58,7 +78,8 @@ public extension NotGreenReason {
     /// `isMergeableUnattended` first. Its one call site today is inside the
     /// refusal branch of `evaluateMove`, where that is already true.
     static func of(_ verdict: ResolvedPRStatus?) -> NotGreenReason {
-        guard let verdict, !verdict.isStale else { return .noReading }
+        guard let verdict else { return .noReading }
+        if verdict.isStale { return .sign(.unknown) }
         if let sign = verdict.sign { return .sign(sign) }
         if verdict.merge != .clean { return .notClean(verdict.merge) }
         return .noBuildVerdict

@@ -324,19 +324,58 @@ struct RuleEngineTests {
 
     // MARK: - `NotGreenReason.of`
 
-    @Test("No reading at all, and a reading that has aged out, both answer noReading")
+    @Test("Nothing at all answers noReading — and only nothing at all")
     func notGreenReasonNoReading() {
         #expect(NotGreenReason.of(nil) == .noReading)
-        #expect(NotGreenReason.of(verdict(isStale: true)) == .noReading)
+    }
+
+    /// A stale row is the ordinary "somebody just pushed" case and the refusal
+    /// most likely to be seen in production, so what it *says* matters more
+    /// than the rest of this enum put together. `.noReading` would tell the
+    /// reader nothing had been read about a pull request that was read, resolved
+    /// and found to be about an older commit — the same defect, one layer down,
+    /// that turned `notVerifiedGreen`'s payload from a `PRSign?` into a reason.
+    @Test("A stale reading was read: it answers unknown, never noReading")
+    func notGreenReasonStaleIsUnknown() {
+        #expect(NotGreenReason.of(verdict(isStale: true)) == .sign(.unknown))
+        #expect(NotGreenReason.of(verdict(isStale: true)) != .noReading)
+        // And the sentence a reader gets is the accurate one, already written
+        // once in `ElliotModel` rather than a second time here.
+        #expect(PRSign.unknown.summary.contains("from an older commit"))
     }
 
     @Test("A stale reading outranks a sign it would otherwise carry")
     func notGreenReasonStaleOutranksSign() {
         // Built directly with both set: `sign` is stated rather than derived
         // in this file, so this combination need not be one `PRStatus.resolved`
-        // would ever produce. The point is the *order* `of` checks in.
+        // would ever produce. The point is the *order* `of` checks in — and
+        // that the answer is staleness's own `.unknown`, not the sign the row
+        // happens to carry about a commit nobody is reviewing any more.
         let reading = verdict(merge: .conflict, isStale: true, sign: .conflict)
-        #expect(NotGreenReason.of(reading) == .noReading)
+        #expect(NotGreenReason.of(reading) == .sign(.unknown))
+    }
+
+    /// The pairing that makes the previous test a claim rather than a
+    /// coincidence: `resolved` is where the `.unknown` stamp is applied, so a
+    /// reading that goes stale through the real function — not a hand-built
+    /// one — must reach the same answer.
+    @Test("A row resolved against a moved head reaches the same unknown")
+    func notGreenReasonStaleThroughResolved() {
+        let now = Date()
+        let status = PRStatus(
+            repoID: UUID(), prNumber: 7, headRefOid: "aaaa", checkedAt: now,
+            rawMergeStateStatus: "CLEAN", rawMergeable: "MERGEABLE",
+            rawReviewDecision: "APPROVED",
+            checks: [
+                GHMergeStatus.StatusCheck(
+                    name: "build-and-test", conclusion: "SUCCESS", status: "COMPLETED"),
+            ])
+        let moved = status.resolved(now: now, currentHeadOid: "bbbb")
+        #expect(moved.isStale)
+        #expect(NotGreenReason.of(moved) == .sign(.unknown))
+        // The control: the same row, on the commit it was taken about, is not
+        // refused at all.
+        #expect(status.resolved(now: now, currentHeadOid: "aaaa").isMergeableUnattended)
     }
 
     @Test("A sign outranks an unclean merge state")
