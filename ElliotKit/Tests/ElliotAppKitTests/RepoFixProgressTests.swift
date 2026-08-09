@@ -142,4 +142,53 @@ struct RegistrationShapeTests {
     func addRepoUsesTheRegistry() throws {
         #expect(try Self.addRepoBody.contains(".register(path: path)"))
     }
+
+    /// The body of `apply(_ fix: RepoFix)`.
+    private static var applyBody: String {
+        get throws {
+            let source = try appModelSource
+            guard
+                let start = source.range(of: "public func apply(_ fix: RepoFix) async {"),
+                let end = source.range(
+                    of: "\n    }\n", range: start.upperBound..<source.endIndex)
+            else { return "" }
+            return String(source[start.upperBound..<end.lowerBound])
+        }
+    }
+
+    /// ⛔ **The ordering is the fix, so the ordering is what is pinned.**
+    ///
+    /// Deleting `applyingFix = fix` left the whole suite green: the idle-state
+    /// test still passed, every sentence still rendered, and nothing anywhere
+    /// asserted that a running fix is ever announced. That is this repository's
+    /// own #249 — a gate asserted in the prose of three places and implemented
+    /// in none — reproduced inside the change that was meant to avoid it, and
+    /// found only by deliberately breaking it.
+    ///
+    /// ⚠️ A shape gate, and it says so: raising a flag *around an await* is a
+    /// property of two statements' order, and `swift test` cannot observe a
+    /// main-actor value at the instant a suspended call is in flight without a
+    /// clock. What it can do is read the source and refuse the two arrangements
+    /// that break it.
+    @Test("apply raises the flag before the fix and drops it before the sweep")
+    func applyRaisesTheFlagAroundTheFix() throws {
+        let body = try Self.applyBody
+        #expect(body.isEmpty == false, "the method this suite is about was not found")
+
+        let raise = try #require(body.range(of: "applyingFix = fix"))
+        let work = try #require(body.range(of: "await registry.apply(fix, layout: layout)"))
+        let clear = try #require(body.range(of: "applyingFix = nil"))
+        let sweep = try #require(body.range(of: "await refreshRepoRows()"))
+
+        // Raised *before* the fix: raising it after the await is the original
+        // defect, where a 600-second clone left the page looking idle.
+        #expect(raise.upperBound < work.lowerBound)
+        // Cleared *before* the sweep: `refreshRepoRows()` takes minutes of its
+        // own, and holding the flag across it disables the page for something
+        // that is not the fix.
+        #expect(work.upperBound < clear.lowerBound)
+        #expect(clear.upperBound < sweep.lowerBound)
+        // And a second fix is refused while one is running.
+        #expect(body.contains("applyingFix == nil"))
+    }
 }
