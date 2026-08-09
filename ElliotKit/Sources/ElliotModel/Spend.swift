@@ -153,6 +153,24 @@ public struct SpendFigure: Sendable, Equatable {
         MoneyFormat.usd(spend.totalUSD, locale: locale)
     }
 
+    /// The number with a trailing `+` when it is a floor rather than a bill.
+    ///
+    /// For a **column** in a row of them, where `sentence()` — three wrapped
+    /// lines of amber, four times over — buries the figures it is qualifying.
+    /// Looked at on screen: the four caveats were taller than everything above
+    /// them put together.
+    ///
+    /// The `+` is `AnalysisSpend.label`'s mark, deliberately, and its reasoning
+    /// carries over whole: *a tooltip is not "saying so plainly" — the mark has
+    /// to survive on screen*. So the mark stays visible and only the explanation
+    /// moves to `help`; the caller must still hand `sentence()` to `help` and to
+    /// the accessibility label, or it has hidden the caveat rather than
+    /// shortened it. The place that has room for the sentence — a lone figure,
+    /// like the day's total — keeps it.
+    public func amountMark(locale: Locale = .current) -> String {
+        isComplete ? amount(locale: locale) : "\(amount(locale: locale))+"
+    }
+
     /// Whether the figure accounts for everything — asked here rather than of
     /// `Spend`, which can only answer the narrower half.
     public var isComplete: Bool { spend.isComplete && inFlight == 0 }

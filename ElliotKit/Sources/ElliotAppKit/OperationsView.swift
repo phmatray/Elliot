@@ -319,7 +319,7 @@ public struct OperationsView: View {
     private var byKindRow: some View {
         HStack(alignment: .top, spacing: 20) {
             ForEach(model.todayByKind, id: \.kind) { entry in
-                amount(entry.kind.skillName, entry.figure, showsRuns: true)
+                amount(entry.kind.skillName, entry.figure, isColumn: true)
             }
             Spacer(minLength: 0)
         }
@@ -332,29 +332,36 @@ public struct OperationsView: View {
     /// answer the narrower question. Asking `isComplete` of it kept this caveat
     /// silent through every analysis — the figure read near zero exactly while
     /// the spending was happening, and landed on the total afterwards.
-    /// `showsRuns` is what a **column** adds over the day's total: a skill's
-    /// figure means little without how many runs it is over — `$4.10` across two
-    /// merges and across forty analyses are different facts. The total above has
-    /// no such caption, because "everything" needs no denominator.
+    /// `isColumn` is what one figure in a **row** of them can afford, and it was
+    /// decided by looking rather than by reasoning: rendered, the four skills'
+    /// `sentence()`s wrapped to three amber lines each and were taller than
+    /// every band above them together.
+    ///
+    /// So a column carries `amountMark` — the `+` `AnalysisSpend` already uses
+    /// for the same claim — plus its run count, which is the denominator a
+    /// skill's figure is meaningless without: `$4.10` across two merges and
+    /// across forty analyses are different facts. ⛔ The sentence is not dropped,
+    /// it **moves**: to `help` and to the spoken label, both below. A lone figure
+    /// like the day's total has the room and keeps it on screen.
     private func amount(
-        _ title: String, _ figure: SpendFigure, showsRuns: Bool = false
+        _ title: String, _ figure: SpendFigure, isColumn: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             ConsoleLabel(text: title)
-            Fact(text: figure.amount(), tint: .primary)
-            if showsRuns {
+            Fact(text: isColumn ? figure.amountMark() : figure.amount(), tint: .primary)
+            if isColumn {
                 Fact(text: figure.spend.runsSentence, tint: Palette.quiet, small: true)
-            }
-            if !figure.isComplete {
+            } else if !figure.isComplete {
                 Text(figure.sentence())
                     .font(Type.factSmall)
                     .foregroundStyle(Palette.attention)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .help(isColumn ? figure.sentence() : "")
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            showsRuns
+            isColumn
                 ? "\(title): \(figure.sentence()), over \(figure.spend.runsSentence)"
                 : "\(title): \(figure.sentence())")
     }

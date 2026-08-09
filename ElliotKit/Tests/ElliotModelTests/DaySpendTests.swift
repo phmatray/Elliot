@@ -116,6 +116,27 @@ struct DaySpendTests {
         #expect(DaySpend.nothing.byKind.isEmpty)
     }
 
+    // MARK: - The mark a column can afford
+
+    /// A row of four `sentence()`s wrapped to three amber lines each and was
+    /// taller than every band above it — measured by rendering it. The `+` is the
+    /// mark that survives in a column; the sentence moves to `help` and to the
+    /// spoken label, and the caller is told so.
+    @Test("A floor is marked, so a column never reads as a settled bill")
+    func aFloorIsMarkedInAColumn() {
+        let us = Locale(identifier: "en_US")
+        let inFlight = SpendFigure(spend: Spend(totalUSD: 3.15, runs: 2, unknownCost: 0), inFlight: 2)
+        let unknown = SpendFigure(spend: Spend(totalUSD: 2, runs: 3, unknownCost: 1), inFlight: 0)
+        let settled = SpendFigure(spend: Spend(totalUSD: 1, runs: 1, unknownCost: 0), inFlight: 0)
+
+        #expect(inFlight.amountMark(locale: us) == "$3.15+")
+        #expect(unknown.amountMark(locale: us) == "$2.00+")
+        // No mark where there is nothing to qualify — a `+` on every figure is a
+        // `+` that means nothing.
+        #expect(settled.amountMark(locale: us) == "$1.00")
+        #expect(settled.amountMark(locale: us) == settled.amount(locale: us))
+    }
+
     // MARK: - How many runs a figure is over
 
     @Test("The run count is worded once, here")
