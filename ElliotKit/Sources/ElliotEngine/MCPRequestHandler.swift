@@ -308,7 +308,12 @@ public struct MCPRequestHandler: Sendable {
         // An omitted list already became `[]` at the MCP boundary: an agent
         // saying nothing about follow-ups means "none", not "ask me".
         let result = try await board.move(
-            cardID: id, to: column, origin: .mcp(client: client), followUps: followUps
+            cardID: id, to: column, origin: .mcp(client: client), followUps: followUps,
+            // `false`: an MCP call is an agent acting as a human's proxy, with
+            // that human behind it and reading the reply. The restraint belongs
+            // to the caller that has nobody — and that caller does not arrive
+            // over this wire, which carries no origin of its own.
+            requiresVerifiedGreen: false
         )
 
         switch result {

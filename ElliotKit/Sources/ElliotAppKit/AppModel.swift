@@ -1386,7 +1386,12 @@ public final class AppModel {
         let predicted = card(id: cardID).map { Consequence.of(preview($0, to: column)) }
         do {
             let result = try await board.move(
-                cardID: cardID, to: column, origin: .userDrag, orderIndex: orderIndex)
+                cardID: cardID, to: column, origin: .userDrag, orderIndex: orderIndex,
+                // The drag itself, and `false`: the person who made it is
+                // looking at the board. Stated rather than defaulted — see
+                // `BoardService.proposeMove`'s ⛔ note for what a defaulted
+                // `false` would let a later caller merge by omission.
+                requiresVerifiedGreen: false)
             switch result {
             case .moved(let runID):
                 refusal = nil
@@ -1518,7 +1523,11 @@ public final class AppModel {
         pendingFollowUps = nil
         do {
             let result = try await board.move(
-                cardID: cardID, to: .done, origin: .userDrag, followUps: followUps
+                cardID: cardID, to: .done, origin: .userDrag, followUps: followUps,
+                // The one merge a human performs by hand, having just typed the
+                // follow-ups into the sheet. `false` is the whole point of the
+                // field being named for the rule rather than for the caller.
+                requiresVerifiedGreen: false
             )
             if case .blocked(let block) = result { status = Self.explain(block) }
         } catch {

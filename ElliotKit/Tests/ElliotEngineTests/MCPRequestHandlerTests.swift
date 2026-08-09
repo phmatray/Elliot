@@ -356,7 +356,7 @@ struct MCPRequestHandlerTests {
             story: UserStory(role: "developer", want: "a log", benefit: "I can diagnose")
         ).card
         guard case .moved(let runID?) = try await f.board.move(
-            cardID: card.id, to: .todo, origin: .userDrag
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false
         ) else {
             Issue.record("expected a queued run")
             return
@@ -391,7 +391,7 @@ struct MCPRequestHandlerTests {
             story: UserStory(role: "developer", want: "a log", benefit: "I can diagnose")
         ).card
         guard case .moved(let runID?) = try await f.board.move(
-            cardID: card.id, to: .todo, origin: .userDrag
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false
         ) else {
             Issue.record("expected a queued run")
             return
