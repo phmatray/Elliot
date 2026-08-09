@@ -58,18 +58,26 @@ struct CardFreezeTests {
 
     /// The editor's guard is the same question, not a looser one. This is the
     /// half that let the reader *into* an editor whose Save could only fail.
+    ///
+    /// ⚠️ A **fresh editor per case**, deliberately. `begin` leaves `isEditing`
+    /// alone when it refuses — correctly, since refusing to open an editor is
+    /// not the same as closing one — so a shared editor carries a successful
+    /// open into the next assertion and one broken case fails three. Measured:
+    /// with the pull-request half removed, the shared version failed the issue
+    /// case too, which is a failure about the test rather than about the code.
     @Test("The editor refuses to open on a card the service would refuse to save")
     func theEditorAndTheServiceAgree() {
-        var editor = CardEditor()
+        var fromPullRequest = CardEditor()
+        fromPullRequest.begin(from: Self.card(pr: 47))
+        #expect(fromPullRequest.isEditing == false)
 
-        editor.begin(from: Self.card(pr: 47))
-        #expect(editor.isEditing == false)
+        var filed = CardEditor()
+        filed.begin(from: Self.card(issue: 12))
+        #expect(filed.isEditing == false)
 
-        editor.begin(from: Self.card(issue: 12))
-        #expect(editor.isEditing == false)
-
-        editor.begin(from: Self.card())
-        #expect(editor.isEditing)
+        var unfiled = CardEditor()
+        unfiled.begin(from: Self.card())
+        #expect(unfiled.isEditing)
     }
 
     /// Each record gets its own sentence, because "edit it on GitHub" points
