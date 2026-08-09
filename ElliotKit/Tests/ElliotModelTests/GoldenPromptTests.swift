@@ -42,7 +42,8 @@ let goldens: [Golden] = [
     Golden(
         what: "create-issue, two labels",
         action: .createIssue(idea: "Add a dark mode toggle.", labels: ["bug", "documentation"]),
-        expected: #"/ai-migration-kit:create-issue Add a dark mode toggle. --label "bug" --label "documentation""#
+        expected: #"/ai-migration-kit:create-issue Add a dark mode toggle. --label "bug" "#
+            + #"--label "documentation""#
     ),
     Golden(
         what: "create-issue, blank labels dropped",
@@ -79,7 +80,8 @@ let goldens: [Golden] = [
     Golden(
         what: "merge-pr, two follow-ups",
         action: .mergePR(prNumber: 279, followUps: ["add Rust snapshot tests", "document minimap config"]),
-        expected: #"/ai-migration-kit:merge-pr 279 --follow-up "add Rust snapshot tests" --follow-up "document minimap config""#
+        expected: #"/ai-migration-kit:merge-pr 279 --follow-up "add Rust snapshot tests" "#
+            + #"--follow-up "document minimap config""#
     ),
     Golden(
         what: "merge-pr, blank follow-ups dropped",
@@ -90,6 +92,38 @@ let goldens: [Golden] = [
         what: "merge-pr, quotes and backslashes in a follow-up",
         action: .mergePR(prNumber: 1, followUps: [#"handle C:\path\ and "quotes""#]),
         expected: #"/ai-migration-kit:merge-pr 1 --follow-up "handle C:\\path\\ and \"quotes\"""#
+    ),
+]
+
+/// The three sentences `.naturalLanguage` actually produces once `{}` is
+/// substituted — hand-typed against the sentence itself, never derived from
+/// `step.prose`, so a build that stops substituting fails here instead of
+/// passing by construction (round 1 of review: it was passing by
+/// construction, because the assertion read the same live `step.prose` the
+/// implementation did).
+///
+/// `implement-issue` and `merge-pr` are the two whose payload sits
+/// **mid-sentence** — `"…on issue {}: execute…"`, `"…pull request {}."` — which
+/// is exactly what a `head + tail` concatenation cannot reproduce, and exactly
+/// what the bug this table now pins let through.
+let naturalLanguageGoldens: [Golden] = [
+    Golden(
+        what: "create-issue, natural language, one label",
+        action: .createIssue(idea: "Add a dark mode toggle.", labels: ["bug"]),
+        expected: "Use the create-issue skill to file a GitHub issue for this user story: "
+            + #"Add a dark mode toggle. --label "bug""#
+    ),
+    Golden(
+        what: "implement-issue, natural language — the number sits mid-sentence",
+        action: .implementIssue(issueNumber: 47),
+        expected: "Use the implement-issue skill on issue 47: execute its implementation "
+            + "plan and open a pull request."
+    ),
+    Golden(
+        what: "merge-pr, natural language, two follow-ups — the number sits mid-sentence",
+        action: .mergePR(prNumber: 279, followUps: ["add Rust snapshot tests", "document minimap config"]),
+        expected: #"Use the merge-pr skill to land pull request 279. --follow-up "add Rust snapshot tests" "#
+            + #"--follow-up "document minimap config""#
     ),
 ]
 
@@ -135,20 +169,25 @@ struct GoldenPromptTests {
         #expect(countUnescapedQuotes(in: followed) == 2)
     }
 
-    /// What a golden table cannot pin: the fallback's exact sentence, which is
-    /// now the pack's `prose` and so is data rather than code. What is pinned is
-    /// the rendering rule — the prose, then the very same escaped tail the slash
-    /// form emits — which is why there is one renderer and not two.
-    @Test("The natural-language fallback is the prose plus the same escaped tail")
-    func naturalFallbackIsProseThenTail() throws {
+    /// `{}` is a marker meant to be substituted, not a prefix meant to be
+    /// concatenated past — `MethodPack.swift`'s own doc comment says so, and
+    /// `MethodCatalogTests.proseSlots` pins exactly one per payload-carrying
+    /// form. Asserted against `naturalLanguageGoldens`' hand-typed sentences
+    /// rather than against `step.prose` itself, which is the live value the
+    /// implementation reads: an assertion built from the same data the code
+    /// under test reads is true by construction and cannot see the marker
+    /// survive unsubstituted.
+    @Test(
+        "The natural-language fallback substitutes {} rather than leaving it visible",
+        arguments: naturalLanguageGoldens
+    )
+    func naturalLanguageSubstitutesThePayload(golden: Golden) throws {
         let kit = try #require(aiMigrationKitPack())
-        let step = try #require(kit.steps[.createIssue])
         let prompt = SlashCommandBuilder.prompt(
-            for: .createIssue(idea: "Add a dark mode toggle.", labels: ["bug"]),
-            method: kit,
-            strategy: .naturalLanguage
+            for: golden.action, method: kit, strategy: .naturalLanguage
         )
-        #expect(prompt == step.prose + #" Add a dark mode toggle. --label "bug""#)
+        #expect(prompt == golden.expected, "\(golden.what) drifted")
+        #expect(!prompt.contains("{}"), "the marker survived unsubstituted: \(prompt)")
         #expect(!prompt.contains("\n"))
     }
 
@@ -182,6 +221,22 @@ struct GoldenPromptTests {
         )
         #expect(created == #"create-issue Ship it --label "bug""#)
         #expect(!created.contains("ai-migration-kit"), "a stepless pack borrowed another's command")
+    }
+
+    /// The same contract as `aPackWithNoStepBorrowsNothing`, one strategy over:
+    /// `undeclaredStep`'s own prose carries the same `{}` marker a declared
+    /// step's does, so `.naturalLanguage` does not silently drop the payload
+    /// just because nobody wrote a real sentence for this kind.
+    @Test("A pack with no step still substitutes the payload under natural language")
+    func aPackWithNoStepStillSubstitutesUnderNaturalLanguage() {
+        let stepless = MethodPack(
+            id: "stepless", displayName: "Stepless", summary: "s", plugin: .none, steps: [:]
+        )
+        let prompt = SlashCommandBuilder.prompt(
+            for: .implementIssue(issueNumber: 47), method: stepless, strategy: .naturalLanguage
+        )
+        #expect(prompt == "Use the implement-issue skill: 47")
+        #expect(!prompt.contains("{}"), "the marker survived unsubstituted: \(prompt)")
     }
 
     /// ⛔ A form whose action carries no payload appends **nothing**, not a lone

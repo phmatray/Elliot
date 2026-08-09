@@ -86,22 +86,35 @@ public enum SlashCommandBuilder {
         strategy: PromptStrategy = .slashCommand
     ) -> String {
         let step = method.steps[action.kind] ?? undeclaredStep(for: action)
-        let head =
-            switch strategy {
-            case .slashCommand: step.command
-            case .naturalLanguage: step.prose
-            }
-        return head + tail(step.arguments, of: action)
+        switch strategy {
+        case .slashCommand:
+            return step.command + tail(step.arguments, of: action)
+        case .naturalLanguage:
+            // `{}` is a marker, not a prefix — two of the three shipped
+            // sentences carry the payload mid-sentence
+            // ("…on issue {}: execute…"), so this cannot be reproduced by
+            // concatenating a fixed head and a fixed tail the way the slash
+            // form is. `StepSpec.prose`'s contract is exactly one `{}` for
+            // every payload-carrying form (`MethodCatalogTests.proseSlots`),
+            // so a literal, unconditional replace is correct: for `.none`,
+            // `payload` is `""` and the prose carries no `{}` to touch.
+            let substituted = step.prose.replacingOccurrences(
+                of: "{}", with: payload(step.arguments, of: action)
+            )
+            return substituted + flagsTail(step.arguments, of: action)
+        }
     }
 
     /// The step a pack does not declare.
     ///
-    /// It answers with the skill's own name, never another method's command.
+    /// It answers with the skill's own name, never another method's command —
+    /// and its prose carries the same `{}` marker every declared step's does,
+    /// so `.naturalLanguage` does not silently drop the payload here either.
     private static func undeclaredStep(for action: TriggerAction) -> StepSpec {
         StepSpec(
             command: action.kind.skillName,
             arguments: form(of: action),
-            prose: "Use the \(action.kind.skillName) skill:"
+            prose: "Use the \(action.kind.skillName) skill: {}"
         )
     }
 
@@ -129,27 +142,46 @@ public enum SlashCommandBuilder {
     /// space included, which is what `GoldenPromptTests` pins:
     /// `--label`/`--follow-up` flags go *after* the free text and never before
     /// it, because the idea is read to the end of.
+    ///
+    /// Built from `payload` and `flagsTail` below rather than switching again:
+    /// those two are also what `.naturalLanguage` substitutes into `prose` and
+    /// appends after it, and a second switch here is a second place the two
+    /// strategies' payload could quietly stop agreeing.
     private static func tail(_ form: ArgumentForm, of action: TriggerAction) -> String {
+        let text = payload(form, of: action)
+        return (text.isEmpty ? "" : " \(text)") + flagsTail(form, of: action)
+    }
+
+    /// The raw payload — no leading space, no flags — substituted at a
+    /// `.naturalLanguage` prose's `{}` marker, and what `tail` above prefixes
+    /// with a leading space for the slash form.
+    ///
+    /// Emitted alone for a number, so the skills' `grep -oE '[0-9]+' | head -1`
+    /// reads it: no title, no '#', no year.
+    private static func payload(_ form: ArgumentForm, of action: TriggerAction) -> String {
         switch form {
         case .none:
-            return ""
-        case .idea:
-            let text = idea(of: action)
-            return text.isEmpty ? "" : " \(text)"
-        case .ideaThenLabels:
-            let text = idea(of: action)
-            return (text.isEmpty ? "" : " \(text)") + flags("--label", labels(of: action))
-        case .number:
-            return number(of: action)
-        case .numberThenFollowUps:
-            return number(of: action) + flags("--follow-up", followUps(of: action))
+            ""
+        case .idea, .ideaThenLabels:
+            idea(of: action)
+        case .number, .numberThenFollowUps:
+            action.targetNumber.map(String.init) ?? ""
         }
     }
 
-    /// Emitted alone, so the skills' `grep -oE '[0-9]+' | head -1` reads it:
-    /// no title, no '#', no year.
-    private static func number(of action: TriggerAction) -> String {
-        action.targetNumber.map { " \($0)" } ?? ""
+    /// The repeatable `--label`/`--follow-up` flags alone, with no payload —
+    /// shared by both strategies, which is what keeps the escaping in exactly
+    /// one place. Appended *after* the substituted prose for `.naturalLanguage`
+    /// and after the payload for `.slashCommand`.
+    private static func flagsTail(_ form: ArgumentForm, of action: TriggerAction) -> String {
+        switch form {
+        case .none, .idea, .number:
+            ""
+        case .ideaThenLabels:
+            flags("--label", labels(of: action))
+        case .numberThenFollowUps:
+            flags("--follow-up", followUps(of: action))
+        }
     }
 
     /// Flattened because the whole prompt is one argv element and one logical
