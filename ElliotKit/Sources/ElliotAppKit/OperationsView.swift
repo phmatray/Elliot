@@ -32,6 +32,7 @@ public struct OperationsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 preflightBand
+                runningBand
                 workersBand
                 queueBand
                 spendingBand
@@ -118,6 +119,52 @@ public struct OperationsView: View {
                 }
         }
         return global + perRepo
+    }
+
+    // MARK: - Running now
+
+    /// The runs themselves, above the gauge that counts them.
+    ///
+    /// Above Workers because `2 / 2` is the *summary* of this band, and a screen
+    /// that answers "what is the machine doing" with a summary and no detail is
+    /// the state #303 describes. It is also the only place an **analysis** run
+    /// appears outside the analysis panel: `activeRuns` is keyed by card id, and
+    /// an analysis has none.
+    ///
+    /// It computes nothing, like every other band here. Which runs, in what
+    /// order and how many is `RunningNow`'s, the last line is `AppModel`'s, and
+    /// Cancel goes to `model.cancelRun` — the one funnel every stop travels,
+    /// whether it started here, in a card's menu or over MCP.
+    @ViewBuilder
+    private var runningBand: some View {
+        let running = model.runningNow
+        band("Running now") {
+            if running.isEmpty {
+                // Said plainly rather than by drawing nothing: an empty band and
+                // a band that failed to load look identical.
+                Text("Nothing is running.")
+                    .font(Type.prose)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(running.shown) { run in
+                    RunningStrip(
+                        run: run,
+                        lastLine: model.lastLine(of: run),
+                        context: run.context(repoName: model.repo(id: run.repoID)?.displayName),
+                        cancel: { Task { await model.cancelRun(id: run.id) } }
+                    )
+                    // `.contain`, not `.combine`: this row carries a button, and
+                    // combining it into one element is what makes Cancel
+                    // unreachable to a screen reader.
+                    .accessibilityElement(children: .contain)
+                }
+                if let note = running.note {
+                    Text(note)
+                        .font(Type.prose)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     // MARK: - Workers
@@ -253,6 +300,28 @@ public struct OperationsView: View {
                 Button("Set a ceiling") { openWindow(id: "preflight") }
                     .controlSize(.small)
             }
+            byKindRow
+        }
+    }
+
+    /// What today's money went on, under the total it adds up to.
+    ///
+    /// `spendByKind` was written, documented and tested and called by nothing
+    /// outside tests (#308), while the analysis panel started up to eight runs
+    /// from one button and no screen said what that costs against filing one
+    /// issue. This is that query, reaching a reader.
+    ///
+    /// Every kind, always, in one order: a column that appears and disappears as
+    /// work moves is one nobody can glance at. Each figure states its own
+    /// caveats through `amount`, which is where the "at least" wording already
+    /// lives — the split must not read as a smaller, complete bill than the
+    /// total above it.
+    private var byKindRow: some View {
+        HStack(alignment: .top, spacing: 20) {
+            ForEach(model.todayByKind, id: \.kind) { entry in
+                amount(entry.kind.skillName, entry.figure, isColumn: true)
+            }
+            Spacer(minLength: 0)
         }
     }
 
@@ -263,11 +332,27 @@ public struct OperationsView: View {
     /// answer the narrower question. Asking `isComplete` of it kept this caveat
     /// silent through every analysis — the figure read near zero exactly while
     /// the spending was happening, and landed on the total afterwards.
-    private func amount(_ title: String, _ figure: SpendFigure) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    /// `isColumn` is what one figure in a **row** of them can afford, and it was
+    /// decided by looking rather than by reasoning: rendered, the four skills'
+    /// `sentence()`s wrapped to three amber lines each and were taller than
+    /// every band above them together.
+    ///
+    /// So a column carries `amountMark` — the `+` `AnalysisSpend` already uses
+    /// for the same claim — plus its run count, which is the denominator a
+    /// skill's figure is meaningless without: `$4.10` across two merges and
+    /// across forty analyses are different facts. ⛔ The sentence is not dropped,
+    /// it **moves**: to `help` and to the spoken label, both below. A lone figure
+    /// like the day's total has the room and keeps it on screen.
+    @ViewBuilder
+    private func amount(
+        _ title: String, _ figure: SpendFigure, isColumn: Bool = false
+    ) -> some View {
+        let figureStack = VStack(alignment: .leading, spacing: 2) {
             ConsoleLabel(text: title)
-            Fact(text: figure.amount(), tint: .primary)
-            if !figure.isComplete {
+            Fact(text: isColumn ? figure.amountMark() : figure.amount(), tint: .primary)
+            if isColumn {
+                Fact(text: figure.spend.runsSentence, tint: Palette.quiet, small: true)
+            } else if !figure.isComplete {
                 Text(figure.sentence())
                     .font(Type.factSmall)
                     .foregroundStyle(Palette.attention)
@@ -275,7 +360,19 @@ public struct OperationsView: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title): \(figure.sentence())")
+        .accessibilityLabel(
+            isColumn
+                ? "\(title): \(figure.sentence()), over \(figure.spend.runsSentence)"
+                : "\(title): \(figure.sentence())")
+
+        // Branched rather than `.help(isColumn ? … : "")`: what an empty help
+        // string does is unmeasured here, and a figure that already spells its
+        // caveat out on screen has nothing to add in a tooltip anyway.
+        if isColumn {
+            figureStack.help(figure.sentence())
+        } else {
+            figureStack
+        }
     }
 
     private var ceilingSentence: String {
