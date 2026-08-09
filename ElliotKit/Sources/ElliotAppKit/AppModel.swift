@@ -2421,8 +2421,48 @@ public final class AppModel {
         return (cards, total)
     }
 
-    public func updateProposal(_ proposal: StoryProposal) async {
-        try? await analysisService?.updateProposal(proposal)
+    /// Every write to the analysis, funnelled so that none of them can report a
+    /// success that did not happen.
+    ///
+    /// ⛔ **`try? await analysisService?.…` cannot be written correctly**, and
+    /// that is why this exists rather than a rule asking people to be careful.
+    /// It fails two ways and reports neither: the `try?` discards a `throw`, and
+    /// the `?` turns an absent service into a silent no-op *before* the `try?`
+    /// is reached. Both were live — ``updateProposal`` closed its editor exactly
+    /// as on success (#223), and ``rejectProposals`` went further and asserted
+    /// "Rejected N proposals" whichever had happened.
+    ///
+    /// Returns `nil` when the write landed. The note is **cleared before the
+    /// await and set after**, which is `acceptProposals`' rule: replacing one
+    /// sentence with another in place reads as nothing having happened.
+    private func analysisWrite(
+        _ body: (AnalysisService) async throws -> Void
+    ) async -> AnalysisWriteFailure? {
+        analysis?.note = nil
+        guard let analysisService else {
+            let failure = AnalysisWriteFailure.serviceUnavailable
+            analysis?.note = failure.sentence
+            return failure
+        }
+        do {
+            try await body(analysisService)
+            return nil
+        } catch {
+            let failure = AnalysisWriteFailure.refused(error.localizedDescription)
+            analysis?.note = failure.sentence
+            return failure
+        }
+    }
+
+    /// Saves an edited proposal, and says whether it saved.
+    ///
+    /// The return value is the whole fix for #223: the editor closes on `nil`
+    /// and stays open otherwise, so a reader is never left believing an edit
+    /// landed. A `Void` return could not express that, which is how the silent
+    /// dismissal survived.
+    @discardableResult
+    public func updateProposal(_ proposal: StoryProposal) async -> AnalysisWriteFailure? {
+        await analysisWrite { try await $0.updateProposal(proposal) }
     }
 
     public func acceptProposals(ids: [UUID]) async {
@@ -2440,10 +2480,15 @@ public final class AppModel {
         }
     }
 
-    public func rejectProposals(ids: [UUID]) async {
-        analysis?.note = nil
-        try? await analysisService?.reject(proposalIDs: ids)
-        analysis?.note = ids.count == 1 ? "Rejected 1 proposal." : "Rejected \(ids.count) proposals."
+    /// ⚠️ **This claimed success unconditionally**, and it is the louder half of
+    /// #223: the `try?` swallowed the error and the very next line wrote
+    /// "Rejected N proposals" whether or not anything had been. A silent failure
+    /// leaves a reader guessing; an asserted one leaves them certain and wrong.
+    @discardableResult
+    public func rejectProposals(ids: [UUID]) async -> AnalysisWriteFailure? {
+        let failure = await analysisWrite { try await $0.reject(proposalIDs: ids) }
+        analysis?.note = AnalysisWriteFailure.rejectionNote(count: ids.count, failure: failure)
+        return failure
     }
 
     /// The angles still working, for the window's header.
