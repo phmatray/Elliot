@@ -537,11 +537,11 @@ struct SchemaUpgradeTests {
 
     /// The measurement the schema decision rests on, taken rather than assumed.
     ///
-    /// `evidence` is `[Evidence]?` and not `[]` because a file written before v9
+    /// `evidence` is `[Evidence]?` and not `[]` because a file written before v11
     /// has no column at all, and GRDB decodes an absent optional as `nil` — the
     /// reasoning written at `BoardStore.openReadOnly`. That reasoning is not
     /// allowed into a pull request body until this has run: rewind a store below
-    /// v9, open it with **this** build through `openReadOnly` — which never
+    /// v11, open it with **this** build through `openReadOnly` — which never
     /// migrates, so the columns really are absent at read time — and read the
     /// cards back.
     ///
