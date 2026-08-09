@@ -34,9 +34,12 @@ public enum EscapeRoute: Equatable, Sendable, CaseIterable {
     /// claim Escape for something that did not use it.
     ///
     /// **This app has no sheets at all** — zero `.sheet(` in the package,
-    /// measured; the things that read like one are a `Window` scene
-    /// (`NewCardWindow`) or inline panel regions (`MergeConfirmation`,
-    /// `ProposalEditor`). The concrete claimant down the chain is
+    /// measured; the things that read like one are a console face
+    /// (`NewStoryView`) or inline panel regions (`MergeConfirmation`,
+    /// `ProposalEditor`). ⚠️ It said *"a `Window` scene (`NewCardWindow`)"* until
+    /// #313, which had been false since the console migration landed and named a
+    /// type that no longer exists — the same rot this paragraph already carries
+    /// two corrections for. The concrete claimant down the chain is
     /// `ProposalEditor`'s own `.onExitCommand`, which states the stake exactly:
     /// *"Without it the key would fall through to the window, which is the wrong
     /// thing to close while a row is open."*

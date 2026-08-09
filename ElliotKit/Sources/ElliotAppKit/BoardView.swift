@@ -233,7 +233,11 @@ public struct BoardView: View {
 
         ToolbarItem {
             Button {
-                model.newCardRepoID = model.defaultRepoIDForNewCard
+                // No repository is assigned here any more. `AppModel.newCardRepo`
+                // resolves the face's target from the board and from whatever the
+                // reader picks in the face itself, so an assignment at the moment
+                // of opening would freeze one guess — and, since #314, overwrite a
+                // choice the reader had already made and folded away (#314).
                 model.showConsoleFace(.newStory)
             } label: {
                 Label("New story", systemImage: "plus")
