@@ -78,6 +78,29 @@ struct RepoReconcilerTests {
             registered: [registered("/R/phmatray/private/Koine", "phmatray/Koine")], layout: layout)
         #expect(rows[0].issue == .ok)
         #expect(rows[0].fixes.isEmpty)
+
+        // ⛔ The assertion that would have failed before #218, and the one that
+        // keeps it failing. `detail` was `actual` — the row's own path — so a
+        // row rendered straight from the reconciler drew the same path twice, in
+        // two faces. It does not reach the screen today only because
+        // `RepoRegistryService.probe` rewrites `detail` for every `.ok` row
+        // before the view sees one; nothing in this target said so, and a test,
+        // a preview or an offline path would each meet the duplicate.
+        #expect(
+            rows[0].detail != rows[0].path,
+            """
+            an .ok row's detail is its own path again — the field the other nine verdicts use for a \
+            sentence. `path` already carries it, and the view draws the two on consecutive lines
+            """
+        )
+        // Stated positively too: `!= path` alone would pass on an empty string,
+        // and `.ok` being the one verdict that says nothing is the alternative
+        // this deliberately did not take.
+        #expect(rows[0].detail == "Cloned where it belongs.")
+        // ⚠️ And explicitly *not* "Up to date." — that is the probe's sentence
+        // for its own, stronger `.ok`. The reconciler has not fetched, so
+        // claiming it would be a statement about git from code that never ran it.
+        #expect(!rows[0].detail.contains("Up to date"))
     }
 
     /// The distinction this suite exists to hold: "nothing is wrong here" and "I
