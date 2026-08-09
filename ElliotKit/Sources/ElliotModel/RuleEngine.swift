@@ -9,6 +9,30 @@ public enum TriggerAction: Equatable, Sendable, Hashable {
     case mergePR(prNumber: Int, followUps: [String])
 }
 
+/// Why a pull request fell short of a verified green, total by construction.
+///
+/// Not an optional `PRSign`: `PRSign`'s own `nil` means *everything known is
+/// fine* (`PRStatus.swift:160-162`), the opposite of what a refusal needs it
+/// to mean, and `ResolvedPRStatus.isMergeableUnattended` blocks two states —
+/// `.unstable`, and "the only greens are analysers" — precisely where `sign`
+/// reads `nil`. Passing that same optional to a refusal would have told the
+/// reader "nothing was read" about a pull request that was read, resolved,
+/// and found wanting. Each of those two states gets its own case here instead
+/// of borrowing one that already means something else.
+public enum NotGreenReason: Equatable, Sendable, Hashable {
+    /// No `PRStatus` row at all — nothing has been read.
+    case noReading
+    /// A sign names the problem. `PRSign.summary` already says it well.
+    case sign(PRSign)
+    /// Read, and `mergeState` is not `.clean` — `.unstable` above all, which
+    /// `PRSign` deliberately lets through because it is also a display type
+    /// (`MergeableUnattended.swift`'s reason 1).
+    case notClean(MergeState)
+    /// Read, clean, nothing signed — and every passing check is an analyser,
+    /// never a build (`MergeableUnattended.swift`'s reason 2).
+    case noBuildVerdict
+}
+
 /// Why a move was refused. Each case carries enough for the UI to say
 /// something actionable and for the MCP layer to return a machine-readable code.
 public enum MoveBlock: Equatable, Sendable, Hashable {
@@ -21,6 +45,17 @@ public enum MoveBlock: Equatable, Sendable, Hashable {
     case missingPRNumber
     case repoDisabled
     case runAlreadyInFlight(runID: UUID)
+    /// Nothing established that this pull request is green, and this caller may
+    /// not merge on less. Carries why, as a `NotGreenReason` — see its own doc
+    /// for why that is not an optional `PRSign`.
+    case notVerifiedGreen(reason: NotGreenReason)
+    /// This transition has one owner, and the caller is not it.
+    ///
+    /// Its own case rather than a second use of `notVerifiedGreen`, so the
+    /// refusal is truthful: reusing that one for In Progress → In Review would
+    /// tell the reader the CI is the problem when the real answer is that
+    /// nobody but Elliot makes this move.
+    case systemOwnedTransition
 
     /// Stable identifier surfaced to MCP callers.
     public var code: String {
@@ -32,6 +67,8 @@ public enum MoveBlock: Equatable, Sendable, Hashable {
         case .missingPRNumber: "missing_pr_number"
         case .repoDisabled: "repo_disabled"
         case .runAlreadyInFlight: "run_already_in_flight"
+        case .notVerifiedGreen: "not_verified_green"
+        case .systemOwnedTransition: "system_owned_transition"
         }
     }
 }

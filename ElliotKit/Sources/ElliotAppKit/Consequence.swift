@@ -97,6 +97,32 @@ struct Consequence {
         case .missingPRNumber: "No pull request yet — implement it first."
         case .repoDisabled: "This repository is switched off in Preflight."
         case .runAlreadyInFlight: "A run is already working on this card."
+        case .notVerifiedGreen(let reason):
+            "Not a verified green — " + Self.notGreenGap(reason)
+        case .systemOwnedTransition:
+            "Elliot fills this column itself; it is not a move to make from here."
+        }
+    }
+
+    /// The gap named for each `NotGreenReason`, in the board's own words.
+    ///
+    /// Written separately from `MoveBlockText`'s wire phrasing on purpose —
+    /// `RefusalWordingTests.theTwoWordingsStayApart` holds the two apart, and a
+    /// shared helper here would collapse them back into one sentence read
+    /// twice. The `.sign` case is the one exception: both voices quote
+    /// `PRSign.summary` verbatim, because that sentence is already written
+    /// once, well, in `ElliotModel` — a second phrasing of it here would be the
+    /// second table of sentences this file's own tests refuse.
+    private static func notGreenGap(_ reason: NotGreenReason) -> String {
+        switch reason {
+        case .noReading:
+            "nothing has been read about this pull request."
+        case .sign(let sign):
+            sign.summary
+        case .notClean(let state):
+            "GitHub does not call this clean (\(state.code))."
+        case .noBuildVerdict:
+            "everything that passed is an analyser, not a build."
         }
     }
 }

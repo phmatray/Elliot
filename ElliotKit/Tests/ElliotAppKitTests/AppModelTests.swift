@@ -279,15 +279,12 @@ struct AppModelTests {
         // before `explain` was folded into `Consequence.reason`. This pins that
         // they cannot drift apart again.
         //
-        // Listed rather than iterated: `MoveBlock` carries an associated value
-        // so it is not `CaseIterable`, and a `default` here would let a new case
-        // arrive unworded — which is the failure this test exists to catch.
-        let blocks: [MoveBlock] = [
-            .sameColumn, .emptyIdea, .incompleteStory, .missingIssueNumber,
-            .missingPRNumber, .repoDisabled, .runAlreadyInFlight(runID: UUID()),
-        ]
-        // Every `code` distinct proves the list above is complete: a case added
-        // to the enum and forgotten here leaves `codes` short of `blocks`.
+        // `MoveBlockCase` rather than a literal list. The literal was the
+        // failure this test was written to catch, one level up: it claimed to
+        // cover every block and could fall behind the enum without reddening,
+        // which it duly did. The shadow's `of(_:)` is exhaustive over
+        // `MoveBlock`, so a case added to the model cannot reach here unnamed.
+        let blocks = MoveBlockCase.allBlocks
         #expect(Set(blocks.map(\.code)).count == blocks.count)
 
         for block in blocks {
