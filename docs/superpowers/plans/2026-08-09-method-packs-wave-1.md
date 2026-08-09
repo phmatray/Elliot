@@ -96,9 +96,17 @@ number**. Different objects, so passing one as the other plans or ships the wron
 .createIssue: StepSpec(
     command: "/gsd-capture",
     arguments: .idea,
-    prose: "Use GSD's capture command to turn this idea into a tracked todo: "
+    prose: "Use GSD's capture command to turn this idea into a tracked todo: {}"
 )
 ```
+
+⚠️ **The `{}` is load-bearing, and A3 shipped without it for one revision.** `StepSpec.prose`
+documents `{}` as standing exactly where the payload goes, `MethodCatalogTests.proseSlots` pins
+exactly one slot for every step whose `arguments != .none`, and `.idea` is not `.none`. Without the
+slot the reader's typed idea never reaches the prompt — **silently**, which is the failure family
+this plan exists to catch. A3 changed the command correctly and lost the slot in transcription;
+Task 2's implementer caught it by noticing every other pack's prose ends `: {}`, and refused to
+patch a value it had been told to use verbatim rather than fixing it quietly.
 
 `.implementIssue` and `.mergePR` are absent, so those drags are refused by
 `BoardError.methodHasNoStep`. GSD's `summary` must say so in plain words.
