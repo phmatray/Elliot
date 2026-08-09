@@ -232,11 +232,12 @@ public enum ElliotErrorCode: String, Codable, Sendable {
 /// `ElliotMCPKit` both depend on it already, so nothing about the layering
 /// moves to share these words.
 ///
-/// ⚠️ **One case, not a sweep.** `repo_not_found` is still written twice —
-/// message *and* its `"Known: …"` hint, in `MCPRequestHandler` and
-/// `OfflineResponder` — so the drift this type closes for `card_not_found`
-/// remains open one refusal over. This enum is where those words go when
-/// somebody moves them; its existence is not evidence that anybody has.
+/// ⚠️ **One case, deliberately.** `repo_not_found` was written twice when this
+/// type landed, and it is now `ElliotResponse.repoNotFound(name:in:)` — a
+/// function rather than a constant here, because that refusal is parameterised
+/// on both halves and carries a `code` this enum structurally cannot hold. A
+/// constant is the right shape for `card_not_found` and the wrong one for its
+/// neighbour; see that factory for the argument.
 public enum RefusalHint {
     public static let cardNotFound = "board_list_cards lists the cards this board holds."
 }
@@ -244,6 +245,43 @@ public enum RefusalHint {
 public enum ElliotResponse: Codable, Sendable {
     case ok(ElliotPayload)
     case failure(code: ElliotErrorCode, message: String, hint: String?)
+}
+
+extension ElliotResponse {
+    /// The one definition of how Elliot refuses a repository it does not know.
+    ///
+    /// A **function** rather than a `RefusalHint` constant because this refusal
+    /// is parameterised on both halves — the message carries the name that was
+    /// asked for, the hint lists the repositories that exist — and once it is a
+    /// function it may as well own the `code` too, which is the field
+    /// `RefusalHint` cannot hold at all.
+    ///
+    /// ⛔ **The thing that was duplicated is not a string, it is an answer.**
+    /// `MCPRequestHandler.unknownRepo` and `OfflineResponder.filter` each built
+    /// all three fields, byte for byte identically, in two targets that must not
+    /// import each other. Sharing only the words would leave each caller
+    /// assembling the *combination* — and assembling the same reply twice is
+    /// precisely the failure mode being closed. Returning the finished
+    /// `.failure` makes divergence impossible for all three fields at once.
+    ///
+    /// ⚠️ `OfflineParityTests.unknownRepoRefusalAgrees` byte-compares the two
+    /// paths and would have caught a one-sided edit — but only *after* someone
+    /// wrote it, at CI, on a machine that is not theirs. That is the same
+    /// argument `RefusalHint` records above: **a guard fires once the two texts
+    /// have already parted.** One definition moves the failure to compile time,
+    /// where there is nothing to detect because there is nothing to diverge.
+    ///
+    /// Here rather than in either caller because `ElliotIPC` is the intersection
+    /// both already depend on, so nothing about the layering moves — in
+    /// particular `ElliotMCPKit` still imports neither `ElliotEngine` nor
+    /// `ElliotProcess`.
+    public static func repoNotFound(name: String, in repos: [Repo]) -> ElliotResponse {
+        .failure(
+            code: .repoNotFound,
+            message: "No registered repository matches \"\(name)\".",
+            hint: "Known: \(repos.map(\.nameWithOwner).joined(separator: ", "))"
+        )
+    }
 }
 
 public enum ElliotPayload: Codable, Sendable {

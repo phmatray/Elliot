@@ -552,12 +552,12 @@ public struct MCPRequestHandler: Sendable {
         return .one(match)
     }
 
+    /// Deliberately a one-line delegation rather than the words themselves: the
+    /// offline responder answers the same question and must answer it in the
+    /// same bytes, and the two targets cannot import each other. See
+    /// ``ElliotIPC/ElliotResponse/repoNotFound(name:in:)`` (#219).
     private static func unknownRepo(_ name: String, in repos: [Repo]) -> ElliotResponse {
-        .failure(
-            code: .repoNotFound,
-            message: "No registered repository matches \"\(name)\".",
-            hint: "Known: \(repos.map(\.nameWithOwner).joined(separator: ", "))"
-        )
+        .repoNotFound(name: name, in: repos)
     }
 
     private static func names(of repos: [Repo]) -> [UUID: String] {
