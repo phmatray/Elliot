@@ -28,26 +28,18 @@ public enum SkillKind: String, Codable, CaseIterable, Sendable, Hashable {
     /// `.analyzeRepo` is named here even though it is no plugin skill: an
     /// analysis run reaches `RunDTO` like any other, and a run whose kind
     /// rendered as empty would be the one an agent could not correlate.
+    ///
+    /// ⛔ There is deliberately no `slashName` any more. It hardcoded
+    /// `/ai-migration-kit:…` for three of the four cases, which made one
+    /// methodology the only one a board could drive. What a kind runs is
+    /// `MethodPack.steps[kind]?.command`, chosen per repository — and this
+    /// name is what a pack that declares no step falls back to, below.
     public var skillName: String {
         switch self {
         case .createIssue: "create-issue"
         case .implementIssue: "implement-issue"
         case .mergePR: "merge-pr"
         case .analyzeRepo: "analyze-repo"
-        }
-    }
-
-    /// Plugin-qualified slash name, for the three kinds that *are* plugin
-    /// skills. The CLI builds component ids as `"\(pluginName):\(name)"`.
-    ///
-    /// `.analyzeRepo` has none: there is no `analyze-repo` skill anywhere, that
-    /// prompt is Elliot's own and is built by `AnalysisPromptBuilder`.
-    public var slashName: String? {
-        switch self {
-        case .createIssue: "/ai-migration-kit:create-issue"
-        case .implementIssue: "/ai-migration-kit:implement-issue"
-        case .mergePR: "/ai-migration-kit:merge-pr"
-        case .analyzeRepo: nil
         }
     }
 }
@@ -62,7 +54,7 @@ public extension TriggerAction {
     }
 
     /// The issue or PR number this action targets, if any. Used for the
-    /// scheduler's dedupe key.
+    /// scheduler's dedupe key, and by `.number` below.
     var targetNumber: Int? {
         switch self {
         case .createIssue: nil
@@ -73,92 +65,114 @@ public extension TriggerAction {
 }
 
 public enum SlashCommandBuilder {
+    /// The prompt for one action, in the method the repository chose.
+    ///
+    /// `method` carries **no default value**, on purpose. Defaulting it to
+    /// ai-migration-kit would make "this caller never resolved a pack" and
+    /// "this repository chose the default" the same call — the two-valued
+    /// answer to a three-valued question `MethodResolution` exists to refuse,
+    /// one layer up.
+    ///
+    /// The pack picks the command name and the argument *form*; every byte of
+    /// escaping stays in `flags`/`sanitized` below, which is the whole reason
+    /// `ArgumentForm` is a closed enum rather than a template string.
+    ///
+    /// Total by construction: a pack that declares no step for this kind gets
+    /// `undeclaredStep` below. The **refusal** lives in `BoardService.makeRun`,
+    /// which can decline to move a card; a `String` return cannot.
     public static func prompt(
         for action: TriggerAction,
+        method: MethodPack,
         strategy: PromptStrategy = .slashCommand
     ) -> String {
-        switch strategy {
-        case .slashCommand: slashPrompt(for: action)
-        case .naturalLanguage: naturalPrompt(for: action)
-        }
-    }
-
-    private static func slashPrompt(for action: TriggerAction) -> String {
-        // A `TriggerAction` is by construction one of the three plugin skills,
-        // so this is never nil on this path. Falling back rather than forcing
-        // keeps the function total if that ever stops being true.
-        guard let name = action.kind.slashName else { return naturalPrompt(for: action) }
-
-        switch action {
-        case .createIssue(let idea, let labels):
-            // Free text; the skill infers scope from it. Flattened because the
-            // whole prompt is one argv element and one logical line.
-            //
-            // The flags go *after* the idea and never before it: the idea is
-            // free text the skill reads to the end of, so a flag in front of it
-            // would be swallowed as part of what the issue is about.
-            //
-            // ⚠️ **`--label` is not a contract `create-issue` publishes, and
-            // `--follow-up` is** — measured against ai-migration-kit 1.9.0 while
-            // landing #171, and worth knowing before trusting it. `merge-pr`'s
-            // SKILL.md has an *Arguments* section naming
-            // `--follow-up "<idea>"` as optional and repeatable; `create-issue`
-            // has no such section, says only "pull the idea(s) from the user's
-            // request", and **chooses labels itself** — read the live set, pick
-            // one per axis from the profile's taxonomy. Every `--label` in that
-            // skill is its own `gh issue create` call, not an input it parses.
-            //
-            // So this suffix is an instruction to a reader, not a flag to a
-            // parser: an agent that sees it will very likely honour it, and
-            // nothing obliges it to. That is why the card is the record — the
-            // board now *shows* the intent whatever the skill does — and why
-            // the acceptance check is the filed issue's labels read back
-            // through `gh`, never the run's closing prose. The durable fix is
-            // an *Arguments* section in `create-issue`, which lives in another
-            // repository; it is filed as a follow-up rather than worked around
-            // here, because inventing a second channel for it would be a second
-            // way for the two to disagree.
-            //
-            // What *is* established here: the flags reach the child process
-            // intact, in one argv element, quotes and all
-            // (`ClaudeRunnerTests.labelsReachTheArgv`).
-            return "\(name) \(idea.collapsedToSingleLine())\(flags("--label", labels))"
-
-        case .implementIssue(let n):
-            // The skill resolves its argument with `grep -oE '[0-9]+' | head -1`.
-            // Emit the number and nothing else — no title, no '#', no year.
-            // `SlashCommandBuilderTests.firstDigitRunIsTheIssueNumber` guards this.
-            return "\(name) \(n)"
-
-        case .mergePR(let pr, let followUps):
-            return "\(name) \(pr)\(flags("--follow-up", followUps))"
-        }
-    }
-
-    private static func naturalPrompt(for action: TriggerAction) -> String {
-        switch action {
-        case .createIssue(let idea, let labels):
-            var s = "Use the create-issue skill to file a GitHub issue for this user story: "
-                + idea.collapsedToSingleLine()
-            // Named here too, so the fallback files the same issue the slash
-            // form would. A strategy nobody chose per-card silently dropping
-            // the one thing the card was allowed to decide is exactly the
-            // divergence `.naturalLanguage` exists to be a *drop-in* for.
-            let wanted = quoted(labels)
-            if !wanted.isEmpty { s += " Apply these labels to it: \(wanted)." }
-            return s
-
-        case .implementIssue(let n):
-            return "Use the implement-issue skill on issue \(n): execute its implementation "
-                + "plan and open a pull request."
-
-        case .mergePR(let pr, let followUps):
-            var s = "Use the merge-pr skill to land pull request \(pr)."
-            let items = quoted(followUps)
-            if !items.isEmpty {
-                s += " File these follow-ups after merging: \(items)."
+        let step = method.steps[action.kind] ?? undeclaredStep(for: action)
+        let head =
+            switch strategy {
+            case .slashCommand: step.command
+            case .naturalLanguage: step.prose
             }
-            return s
+        return head + tail(step.arguments, of: action)
+    }
+
+    /// The step a pack does not declare.
+    ///
+    /// It answers with the skill's own name, never another method's command.
+    private static func undeclaredStep(for action: TriggerAction) -> StepSpec {
+        StepSpec(
+            command: action.kind.skillName,
+            arguments: form(of: action),
+            prose: "Use the \(action.kind.skillName) skill:"
+        )
+    }
+
+    private static func form(of action: TriggerAction) -> ArgumentForm {
+        switch action {
+        case .createIssue: .ideaThenLabels
+        case .implementIssue: .number
+        case .mergePR: .numberThenFollowUps
+        }
+    }
+
+    // MARK: - The four argument forms
+
+    /// What the declared form appends, and the only place a payload is escaped.
+    ///
+    /// The form decides; the action supplies. ⛔ **A form asking for a payload
+    /// its action does not carry appends nothing** — not a lone space, which is
+    /// what a naive `" \(idea)"` emits and what `promptsAreSingleLine` cannot
+    /// see. A pack that does that is misdeclared; `MethodCatalogTests` and
+    /// `SlashCommandBuilderTests.everyNumberFormPutsTheNumberFirst` are where to
+    /// catch it, and `GoldenPromptTests.aMisdeclaredFormAppendsNothing` is what
+    /// makes this sentence true rather than aspirational.
+    ///
+    /// Each case reproduces the string the hardcoded builder emitted, leading
+    /// space included, which is what `GoldenPromptTests` pins:
+    /// `--label`/`--follow-up` flags go *after* the free text and never before
+    /// it, because the idea is read to the end of.
+    private static func tail(_ form: ArgumentForm, of action: TriggerAction) -> String {
+        switch form {
+        case .none:
+            return ""
+        case .idea:
+            let text = idea(of: action)
+            return text.isEmpty ? "" : " \(text)"
+        case .ideaThenLabels:
+            let text = idea(of: action)
+            return (text.isEmpty ? "" : " \(text)") + flags("--label", labels(of: action))
+        case .number:
+            return number(of: action)
+        case .numberThenFollowUps:
+            return number(of: action) + flags("--follow-up", followUps(of: action))
+        }
+    }
+
+    /// Emitted alone, so the skills' `grep -oE '[0-9]+' | head -1` reads it:
+    /// no title, no '#', no year.
+    private static func number(of action: TriggerAction) -> String {
+        action.targetNumber.map { " \($0)" } ?? ""
+    }
+
+    /// Flattened because the whole prompt is one argv element and one logical
+    /// line — and deliberately **not** escaped: the idea is free text, and the
+    /// shipped builder passed it through untouched.
+    private static func idea(of action: TriggerAction) -> String {
+        switch action {
+        case .createIssue(let idea, _): idea.collapsedToSingleLine()
+        case .implementIssue, .mergePR: ""
+        }
+    }
+
+    private static func labels(of action: TriggerAction) -> [String] {
+        switch action {
+        case .createIssue(_, let labels): labels
+        case .implementIssue, .mergePR: []
+        }
+    }
+
+    private static func followUps(of action: TriggerAction) -> [String] {
+        switch action {
+        case .mergePR(_, let followUps): followUps
+        case .createIssue, .implementIssue: []
         }
     }
 
@@ -167,22 +181,18 @@ public enum SlashCommandBuilder {
     /// A repeatable `--<flag> "<value>"` tail, one per non-blank value, or the
     /// empty string when there are none.
     ///
-    /// Written once because there are now two of these — `--follow-up` and
+    /// Written once because there are two of these — `--follow-up` and
     /// `--label` — and they are the same hazard with different names: the
     /// quotes are structural in the argv the skill parses, so an unescaped one
     /// in the payload closes the flag early and leaves the rest as stray text
     /// the skill reads as something else. A second copy would be a second place
-    /// for that escaping to be got wrong.
+    /// for that escaping to be got wrong, and a pack-supplied template string
+    /// would be a third.
     ///
     /// Empty in, empty out — so a card that named no labels produces the prompt
     /// this skill has always been sent, byte for byte.
     private static func flags(_ flag: String, _ values: [String]) -> String {
         sanitized(values).map { " \(flag) \"\($0)\"" }.joined()
-    }
-
-    /// The same values as a comma-separated quoted list, for the prose form.
-    private static func quoted(_ values: [String]) -> String {
-        sanitized(values).map { #""\#($0)""# }.joined(separator: ", ")
     }
 
     /// Flattened, escaped, and blanks dropped — an empty flag would ask the

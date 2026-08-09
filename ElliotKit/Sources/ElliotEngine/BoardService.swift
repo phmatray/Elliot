@@ -23,6 +23,7 @@ public enum BoardError: Error, LocalizedError {
     case cardAlreadyFiled(Int)
     case cardTracksPullRequest(Int)
     case runNotFound(UUID)
+    case unknownMethod(String)
 
     public var errorDescription: String? {
         switch self {
@@ -33,6 +34,9 @@ public enum BoardError: Error, LocalizedError {
         case .cardTracksPullRequest(let number):
             "This card tracks pull request #\(number); edit it on GitHub."
         case .runNotFound(let id): "No run with id \(id)."
+        case .unknownMethod(let id):
+            "This repository is set to the method \"\(id)\", which this build does not know. "
+                + "Choose one on the Repositories page."
         }
     }
 }
@@ -174,13 +178,28 @@ public actor BoardService: SystemMoving {
         guard let repo = try await store.repo(id: card.repoID) else {
             throw BoardError.repoNotFound(card.repoID)
         }
+        // ⚠️ Interim, replaced by Task 7, which reads `repo.method`: the builder
+        // needs a pack, and `resolve(nil)` answers the pack a repository that
+        // never chose one gets — today's behaviour by construction, which is
+        // what keeps `BoardServiceTests`' prompt literals green through this
+        // change.
+        //
+        // `.unknown` is unreachable from `nil` and is refused rather than
+        // substituted anyway: the reason `MethodResolution` has three cases is
+        // that a repository whose method the catalogue does not know must not
+        // quietly run another method's commands.
+        let method: MethodPack
+        switch MethodCatalog.resolve(nil) {
+        case .unset(let pack), .chosen(let pack): method = pack
+        case .unknown(let id): throw BoardError.unknownMethod(id)
+        }
         let runID = UUID()
         return SkillRun(
             id: runID,
             cardID: card.id,
             repoID: card.repoID,
             kind: action.kind,
-            prompt: SlashCommandBuilder.prompt(for: action),
+            prompt: SlashCommandBuilder.prompt(for: action, method: method),
             cwd: repo.path,
             logPath: StoreLocation.runLogURL(runID: runID).path,
             stderrPath: StoreLocation.runStderrURL(runID: runID).path,

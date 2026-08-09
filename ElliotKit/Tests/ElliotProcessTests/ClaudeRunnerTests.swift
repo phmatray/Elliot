@@ -559,7 +559,11 @@ struct ClaudeRunnerTests {
             Issue.record("the move produced no action: \(outcome)")
             return
         }
-        let prompt = SlashCommandBuilder.prompt(for: action)
+        guard case .unset(let method) = MethodCatalog.resolve(nil) else {
+            Issue.record("a repository that never chose a method must resolve to the default pack")
+            return
+        }
+        let prompt = SlashCommandBuilder.prompt(for: action, method: method)
 
         let run = try ClaudeRun.start(
             invocation: ClaudeInvocation(runID: UUID(), prompt: prompt, cwd: dir.path),

@@ -126,6 +126,19 @@ public struct MCPRequestHandler: Sendable {
                     hint: "Edit the pull request instead: gh pr edit \(number). The card follows "
                         + "the pull request, never the other way round."
                 )
+            case .unknownMethod:
+                // Unreachable today: `BoardService.makeRun` resolves `nil`, which
+                // never answers `.unknown`. `.unknownMethod` exists only so this
+                // switch — and every other exhaustive one over `BoardError` —
+                // compiles once `SlashCommandBuilder.prompt` needs a pack; Task 7
+                // is what makes a repository's own `methodID` reach here, and
+                // that task is the one that should give this its own wire code
+                // if agents need to act on it distinctly from an internal error.
+                return .failure(
+                    code: .internalError,
+                    message: error.localizedDescription,
+                    hint: "Choose a method on the Repositories page."
+                )
             }
         } catch let error as AnalysisError {
             switch error {
