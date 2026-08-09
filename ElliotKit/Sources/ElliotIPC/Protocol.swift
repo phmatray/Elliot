@@ -452,11 +452,20 @@ public enum ElliotTimeouts {
 /// picture, and collapsing the three into the headline would hide "green, but in
 /// conflict" — a combination this board sees regularly.
 ///
-/// `checks` carries the real names rather than a verdict about them. Elliot
-/// deliberately does not decide that `CodeQL` or `renovate/stability-days` is
-/// not a build: that judgement's data already lives in `repo-audit`, and a
-/// second copy here would drift. Printing what actually ran lets the reader
-/// judge, and `ci == "no_checks"` states the one thing that needs no list.
+/// `checks` carries the real names rather than a verdict about them, and that
+/// is still true — but not for the reason this comment used to give.
+///
+/// It said Elliot "deliberately does not decide" that `CodeQL` or
+/// `renovate/stability-days` is not a build. Elliot does decide that, since
+/// #322: once, in `NonBuildChecks`, read by `ResolvedPRStatus`
+/// `.isMergeableUnattended` and by nothing else, because that is the one caller
+/// allowed to merge to a default branch on github.com with nobody watching.
+///
+/// This DTO is unaffected **by design**, not by omission. An agent reading
+/// `board_get_card` gets every name that ran so it can judge for itself, and
+/// `ci == "no_checks"` states the one thing that needs no list. Discounting
+/// names here would hide from the reader exactly what the merge gate is
+/// reasoning about.
 public struct PRStatusDTO: Codable, Sendable, Hashable {
     /// The most blocking known fact, or absent when there is nothing to report.
     /// Absent here is an *answer*; `"unknown"` is the refusal to give one.
