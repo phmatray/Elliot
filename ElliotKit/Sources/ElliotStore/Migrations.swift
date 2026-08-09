@@ -319,8 +319,10 @@ enum Migrations {
         // halves against this same table, next to v11's.
         //
         // ⚠️ **This was planned as `v9_runResumedFrom` and is v13**, which is
-        // the fourth time this file has recorded that sentence and is the rule
-        // rather than an exception. Four migrations landed between the plan
+        // the third time this file has recorded that sentence in this exact
+        // form — v10 and v12 above — and the seventh time it has recorded the
+        // trade at all, counting v3, v4, v6 and v7. It is the rule rather than
+        // an exception. Four migrations landed between the plan
         // being written and this branch: v9_cardLabels, v10_repoPreflight,
         // v11_runResultSource (#344) and v12_cardAppraisal (#339). Every one of
         // them reached `main` first, so every one of them keeps its number and
