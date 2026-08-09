@@ -662,7 +662,9 @@ sqlite3 "$ELLIOT_HOME/elliot.sqlite" "PRAGMA wal_checkpoint(TRUNCATE);"
 Point the seeded repo at a throwaway `git init` directory, not one of Philippe's checkouts: the cards
 then render "Repository blocked — see Preflight", which is the state you want for a look-only pass
 because no transition can spawn an agent from it. Leave **To Do** and **In Progress** empty if you
-want to exercise the "arrows skip empty columns" rule.
+want to exercise the "arrows skip empty columns" rule. (Since #298 a swept blocked card names the
+check instead — *"Blocked: Main checkout"* — and the older generic sentence survives only for a
+repository whose verdict was restored from the database with no reading behind it yet.)
 
 ⛔ **That sentence was false from the day it was written until #249, and it is the most expensive
 false claim this file has carried** — it invited a verification pass to leave an armed board on
@@ -672,6 +674,12 @@ dragged perfectly well and spawned `claude -p` at `bypassPermissions` inside the
 Two other documents asserted the same gate — `PreflightService.isBlocking`'s doc comment ("whether a
 repo's cards can be dragged at all") and `labelsCheck`, which was made a *warning* rather than a
 failure on the strength of it. **Three assertions, no implementation.**
+
+⚠️ **`PreflightService.isBlocking` no longer exists** (#302). Every sentence about it here is history
+and stays that way; the function was deleted rather than kept as a wrapper, because two names for one
+question is what this section is about. Its replacement is `PreflightReading` in `ElliotEngine` —
+checks *plus the moment they were taken*, so it **cannot be built without a sweep having happened**
+and the absent case is a missing value rather than an empty array.
 
 It is true now: `Repo.preflight` carries the verdict, `BoardService.proposeMove` reads it off the row
 it already loads, and `evaluateMove` refuses with `MoveBlock.repoBlocked`. Held by `BlockedRepoTests`,
@@ -683,7 +691,16 @@ whenever a rate-limited `gh label list` stops the sweep finishing. So a seeded b
 **once its repositories have actually been swept**; between launch and the first sweep every
 repository is `notChecked` and every transition is live. The lesson generalises past this bug: a
 two-valued answer to a three-valued question is how the gap hid for as long as it did —
-`isBlocking([])` is `false`, so "nobody looked" and "it passed" were the same value.
+`isBlocking([])` **was** `false`, so "nobody looked" and "it passed" were the same value.
+
+⚠️ **And the same two-valued answer was still being given one layer up until #302.** The rule engine
+could say `notChecked`; the *screens* could not, because both callers reached `isBlocking` through
+`repoChecks[id] ?? []`, which turns an unswept repository into a pass. Two live consequences fell out
+of fixing it, neither of which the issue predicted: the verdict is **persisted** and the readings are
+not, so a repository that failed last session refused every drag while its cards drew nothing at all
+until the first sweep landed — and the checks' disclosure state was keyed on `CheckResult.id` alone,
+which repeats across repositories, so collapsing *Labels* on one collapsed it on all. Both were
+invisible with a single repository registered, which is how every scratch board is seeded.
 
 ### Board transitions
 

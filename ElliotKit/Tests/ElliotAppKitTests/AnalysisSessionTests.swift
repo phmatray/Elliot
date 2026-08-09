@@ -200,12 +200,20 @@ struct AppModelAnalysisSessionTests {
     /// cannot switch off is worse than one that opens onto an explanation) and
     /// it took the gate with it: Start would have spawned up to eight unattended
     /// runs inside a checkout Preflight had already refused.
+    ///
+    /// ⚠️ **Seeded on `Repo.preflight`, not on the checks, since #298.** The
+    /// gate used to read the in-memory sweep results, which is a second opinion
+    /// about a repository the board judges by its persisted verdict — and the
+    /// two differ for the whole of every launch, because the verdict survives a
+    /// quit and the readings do not. Eight unattended runs are now held back by
+    /// the same value one drag is.
     @Test("An analysis is refused for a repository Preflight is failing")
     func analysisIsGatedOnPreflight() {
         let healthy = Repo(path: "/tmp/healthy", nameWithOwner: "o/healthy", displayName: "healthy")
         let off = Repo(
             path: "/tmp/off", nameWithOwner: "o/off", displayName: "off", isEnabled: false)
-        let blocked = Repo(path: "/tmp/blocked", nameWithOwner: "o/blocked", displayName: "blocked")
+        var blocked = Repo(path: "/tmp/blocked", nameWithOwner: "o/blocked", displayName: "blocked")
+        blocked.preflight = .failing
 
         let model = AppModel()
         model.testOnlySeed(repos: [healthy, off, blocked], cards: [])

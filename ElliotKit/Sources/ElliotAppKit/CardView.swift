@@ -113,10 +113,30 @@ struct CardView: View {
                 }
             }
 
-            if isBlockedRepo {
-                Label("Repository blocked — see Preflight", systemImage: "exclamationmark.triangle.fill")
-                    .font(Type.prose)
-                    .foregroundStyle(Palette.attention)
+            // Names the check that refused this card, and goes there.
+            //
+            // A real `Button`, like `LinkBadge` above it, rather than a tap
+            // gesture on the label: a gesture here would be a second claimant on
+            // the card's own tap, which is the ancestor/descendant problem this
+            // board has already paid for four times.
+            //
+            // `lineLimit(1)` because a check title is not this file's to bound —
+            // it comes from `PreflightService` — and a card is a narrow surface
+            // whose height is shared with the columns either side of it. A long
+            // title truncates; it does not reflow the card.
+            if let badge = blockedBadge {
+                Button {
+                    model.openPreflight(badge)
+                } label: {
+                    Label(badge.sentence, systemImage: "exclamationmark.triangle.fill")
+                        .font(Type.prose)
+                        .foregroundStyle(Palette.attention)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .help(badge.openHint)
             }
 
             if let refusal = model.refusal, refusal.cardID == card.id {
@@ -152,6 +172,17 @@ struct CardView: View {
         // operable to assistive technology and do nothing when operated. The
         // tap gesture is invisible to it; this is the same act, exposed.
         .accessibilityAction { toggleSelection() }
+        // The badge's button is inside an element `.combine` has already
+        // flattened, so assistive technology can read the sentence and cannot
+        // press it — the same gap the default action above exists to close, for
+        // the same reason. Offered only when there is one, because an action
+        // that resolves to nothing is the confident-looking no-op this file
+        // keeps refusing to ship.
+        .accessibilityActions {
+            if let badge = blockedBadge {
+                Button(badge.openHint) { model.openPreflight(badge) }
+            }
+        }
         .contextMenu { menu }
         .task(id: card.id) { await model.refreshRuns(cardID: card.id) }
         // Where the caret points. A card's y inside a `LazyVStack` inside a
@@ -223,8 +254,11 @@ struct CardView: View {
         return card.stagnation(now: .now)
     }
 
-    private var isBlockedRepo: Bool {
-        model.repo(for: card).map { model.isBlocked($0) } == true
+    /// Why this card cannot move, when it cannot — the sentence and the
+    /// destination in one value, decided by `AppModel` against the same verdict
+    /// the drop is decided by.
+    private var blockedBadge: BlockedBadge? {
+        model.repo(for: card).flatMap { model.blockedBadge(for: $0) }
     }
 
     /// The one mark the card has room for.

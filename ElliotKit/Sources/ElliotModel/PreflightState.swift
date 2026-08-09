@@ -3,13 +3,19 @@
 /// Three states and not a `Bool`, and the third one is the whole reason this
 /// type exists rather than a flag on `Repo`.
 ///
-/// `PreflightService.isBlocking` is `results.contains { $0.status == .fail }`,
-/// so on an empty array — a repository nobody has swept yet — it answers
-/// **`false`**. A repository that has never been looked at is therefore
+/// `PreflightService.isBlocking` was `results.contains { $0.status == .fail }`,
+/// so on an empty array — a repository nobody had swept yet — it answered
+/// **`false`**. A repository that had never been looked at was therefore
 /// indistinguishable, at the type level, from one that was looked at and
-/// passed. That is not a bug in `isBlocking`; it is what a two-valued answer to
+/// passed. That was not a bug in `isBlocking`; it is what a two-valued answer to
 /// a three-valued question always does, and it is how a gate that three separate
 /// documents claimed existed turned out never to have been written.
+///
+/// ⛔ That function is gone since #302, and the shape with it: `PreflightReading`
+/// cannot be built without a moment it was taken at, so the screens hold one per
+/// repository and an **absent** reading is this enum's first case. Nothing in
+/// the app now turns a pile of checks into a verdict without saying whether
+/// anybody looked.
 ///
 /// So: a caller that has not measured cannot *say* "passing" by accident. It has
 /// to say `notChecked`, and every reader decides what that means for itself.

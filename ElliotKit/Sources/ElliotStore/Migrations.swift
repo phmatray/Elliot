@@ -219,8 +219,11 @@ enum Migrations {
         // What matters is that neither spelling is a pass. Every row predating
         // this column has genuinely never been swept, and defaulting them to a
         // pass would be the same lie the change exists to remove:
-        // `isBlocking([])` answering `false` for an unmeasured repository is
-        // what let three documents assert a gate nobody had written.
+        // `PreflightService.isBlocking([])` answering `false` for an unmeasured
+        // repository is what let three documents assert a gate nobody had
+        // written. (That function no longer exists — #302 replaced it with
+        // `PreflightReading`, which cannot be built without a sweep — but the
+        // column still has to survive the row it was written for.)
         migrator.registerMigration("v10_repoPreflight") { db in
             try db.alter(table: "repo") { t in
                 t.add(column: "preflight", .text)
