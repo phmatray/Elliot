@@ -535,6 +535,48 @@ struct SchemaUpgradeTests {
         #expect(back.first { $0.id == accepted.id }?.appraisedAt == then.addingTimeInterval(60))
     }
 
+    /// The measurement the schema decision rests on, taken rather than assumed.
+    ///
+    /// `evidence` is `[Evidence]?` and not `[]` because a file written before v9
+    /// has no column at all, and GRDB decodes an absent optional as `nil` — the
+    /// reasoning written at `BoardStore.openReadOnly`. That reasoning is not
+    /// allowed into a pull request body until this has run: rewind a store below
+    /// v9, open it with **this** build through `openReadOnly` — which never
+    /// migrates, so the columns really are absent at read time — and read the
+    /// cards back.
+    ///
+    /// `openReadOnly` and not `open` is the whole configuration: `open` would
+    /// migrate the file and add the columns before anything read them, which is
+    /// exactly the measurement that proves nothing.
+    @Test("A build that knows the appraisal columns reads a file that has none")
+    func appraisalColumnsAreAbsentRatherThanFatal() async throws {
+        let scratch = try Scratch()
+        let repository = repo()
+        let kept = card(repoID: repository.id, title: "Written before the appraisal")
+
+        do {
+            let old = try BoardStore.open(at: scratch.database)
+            try await old.saveRepo(repository)
+            try await old.saveCard(kept)
+        }
+        try rewindToV1(scratch.database)
+        let columns = try columnNames(of: "card", at: scratch.database)
+        #expect(!columns.contains("effort"))
+        #expect(!columns.contains("evidence"))
+        #expect(!columns.contains("appraisedAt"))
+
+        let helper = try BoardStore.openReadOnly(at: scratch.database)
+        let back = try await helper.cards(repoID: repository.id)
+
+        #expect(back.count == 1)
+        #expect(back[0].title == "Written before the appraisal")
+        // Absent, not defaulted, and not fatal. Nothing could have written a
+        // value the column did not exist to hold, so `nil` is the truth.
+        #expect(back[0].effort == nil)
+        #expect(back[0].evidence == nil)
+        #expect(back[0].appraisedAt == nil)
+    }
+
     /// The row guard and the assignment guard the same thing, which is the one
     /// place this statement is not v7's shape.
     ///
