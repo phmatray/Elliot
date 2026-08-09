@@ -227,6 +227,34 @@ enum Migrations {
             }
         }
 
+        // v11, additive: which method pack this repository's transitions run.
+        //
+        // **Nullable, with no default**, and both halves are deliberate.
+        //
+        // Nullable because `Repo.methodID` is an `Optional` and has to be. The
+        // synthesised decoder emits `decode(_:forKey:)` and ignores a property's
+        // default, so a non-optional field throws `keyNotFound` on every
+        // database predating this column when read through `openReadOnly` — the
+        // window that keeps the MCP helper answering between a new bundle
+        // landing and the app next launching. A `NOT NULL` column under an
+        // optional property is the mirror mistake, and would fail on the first
+        // repository registered without a method.
+        //
+        // No `DEFAULT 'ai-migration-kit'` either, even though that *is* what a
+        // row written before this column runs. A default spells one state two
+        // ways — NULL, from `openReadOnly` on an older file, and the literal,
+        // from this build — and "never chosen" then becomes a question nothing
+        // can ask. `Repo.method` folds NULL into `.unset` once, and it can only
+        // do that honestly because the fold has a third value beside it: an id
+        // the catalogue has lost resolves to `.unknown`, never to the default.
+        // `RepoMethodMigrationTests.v11DoesNotBackfillExistingRows` is what
+        // makes this paragraph enforceable rather than aspirational.
+        migrator.registerMigration("v11_repoMethodID") { db in
+            try db.alter(table: "repo") { t in
+                t.add(column: "methodID", .text)
+            }
+        }
+
         return migrator
     }
 
