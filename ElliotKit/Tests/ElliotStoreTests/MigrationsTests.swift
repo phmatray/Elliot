@@ -115,10 +115,122 @@ struct MigrationsTests {
         #expect(loaded?.labels == ["documentation", "bug", "enhancement"])
     }
 
+    /// Every run already on a board must read back saying nothing about where
+    /// its text came from.
+    ///
+    /// Two claims in one test, because they are one window. First the *absent
+    /// column* case, which is what `openReadOnly` serves between a new bundle
+    /// landing and the app next launching: the row is fetched with a record
+    /// type that knows a column the file does not have. `resultSource` is an
+    /// `Optional`, so the synthesised decoder calls `decodeIfPresent` and it
+    /// reads as nil — a non-optional would throw `keyNotFound` on **every run
+    /// ever recorded**, which is the trap `labels` had to be given
+    /// `@DefaultsToEmpty` for. Then the migrated case, where the column exists
+    /// and is NULL.
+    ///
+    /// ⛔ NULL must stay NULL. Defaulting these rows to `agent` — or inferring
+    /// a source from `numTurns`, the state, the exit code — would write a guess
+    /// into the database where nothing afterwards could tell it from a
+    /// measurement, and guessing is the whole of what the column exists to stop
+    /// (#288).
+    @Test("A run written before the source column reads as unattributed, not as the agent's")
+    func runsPredatingTheSourceColumnAreNotAttributed() throws {
+        let queue = try DatabaseQueue()
+        try Migrations.migrator.migrate(queue, upTo: Self.migrationBeforeResultSource)
+
+        let repoID = UUID().uuidString.uppercased()
+        let cardID = UUID().uuidString.uppercased()
+        let runID = UUID().uuidString.uppercased()
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO "repo"
+                    ("id", "path", "nameWithOwner", "defaultBranch", "displayName",
+                     "permissionMode", "extraAllowedTools", "isEnabled")
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    repoID, "/R/phmatray/private/Koine", "phmatray/Koine", "main", "Koine",
+                    "bypassPermissions", "[]", true,
+                ])
+            try db.execute(
+                sql: """
+                    INSERT INTO "card"
+                    ("id", "repoID", "title", "body", "column", "orderIndex",
+                     "columnEnteredAt", "createdAt", "updatedAt")
+                    VALUES (?, ?, 'Written before the source', '', 'todo', 1024, ?, ?, ?)
+                    """,
+                arguments: [cardID, repoID, then, then, then])
+            try db.execute(
+                sql: """
+                    INSERT INTO "skillRun"
+                    ("id", "cardID", "repoID", "kind", "prompt", "argv", "cwd", "state",
+                     "logPath", "stderrPath", "resultText", "permissionDenials", "createdAt")
+                    VALUES (?, ?, ?, 'createIssue', '/x', '[]', '/tmp', 'failed',
+                            '/tmp/a.ndjson', '/tmp/a.stderr', ?, '[]', ?)
+                    """,
+                arguments: [runID, cardID, repoID, "zsh: command not found: claude", then])
+        }
+
+        // The window `openReadOnly` exists to keep working: the column is
+        // genuinely not there yet.
+        let missing = try queue.read { try SkillRun.fetchOne($0, key: runID) }
+        let beforeMigrating = try #require(missing, "a pre-v11 run failed to decode at all")
+        #expect(beforeMigrating.resultText == "zsh: command not found: claude")
+        #expect(beforeMigrating.resultSource == nil)
+
+        try Migrations.migrator.migrate(queue)
+
+        let loaded = try #require(try queue.read { try SkillRun.fetchOne($0, key: runID) })
+        #expect(loaded.resultText == "zsh: command not found: claude")
+        #expect(loaded.resultSource == nil, "the migration invented a source for history")
+        // This row really does hold stderr, and the board still may not say so:
+        // nothing recorded it, and a caption is not the place to start guessing.
+        #expect(loaded.closing?.caption == "it said")
+        #expect(loaded.closing?.isHearsay == true)
+    }
+
+    /// A source written today survives the round trip, so the test above is not
+    /// passing because the column is never populated at all.
+    @Test("A source recorded today round-trips through the column")
+    func resultSourceRoundTrips() throws {
+        let queue = try DatabaseQueue()
+        try Migrations.migrator.migrate(queue)
+
+        let repository = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot"
+        )
+        let card = Card(
+            repoID: repository.id, title: "Anything",
+            columnEnteredAt: then, createdAt: then, updatedAt: then
+        )
+        let run = SkillRun.card(
+            cardID: card.id, repoID: repository.id, kind: .createIssue, prompt: "/x",
+            cwd: "/tmp", logPath: "/tmp/a.ndjson", stderrPath: "/tmp/a.stderr",
+            closing: ClosingRemark(text: "zsh: command not found: claude", source: .stderr),
+            createdAt: then
+        )
+        try queue.write { db in
+            try repository.insert(db)
+            try card.insert(db)
+            try run.insert(db)
+        }
+
+        let loaded = try queue.read { try SkillRun.fetchOne($0, key: run.id.uuidString.uppercased()) }
+        #expect(loaded?.resultSource == .stderr)
+        #expect(loaded?.closing?.caption == "stderr")
+        #expect(loaded?.closing?.isHearsay == false)
+    }
+
     /// Named once. When the next migration lands on top of this one, the two
     /// tests above must keep asking about the schema *before* labels rather than
     /// silently starting to test the newest thing instead.
     private static let migrationBeforeLabels = "v8_prStatus"
+
+    /// The same, for the run-source column. Named for the same reason: the
+    /// point is the schema one step behind it, not whatever is newest.
+    private static let migrationBeforeResultSource = "v10_repoPreflight"
 }
 
 private let then = Date(timeIntervalSince1970: 1_700_000_000)

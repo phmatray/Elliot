@@ -561,9 +561,10 @@ private struct LogSource: Equatable {
 
 // MARK: - The verdict
 
-/// What the agent said, and what `gh` established, one above the other.
+/// What the run said for itself, and what `gh` established, one above the
+/// other.
 ///
-/// This is the app's whole epistemology drawn as two rows. The claim is set in
+/// This is the app's whole epistemology drawn as two rows. A *claim* is set in
 /// `Type.hearsay` — demoted, italic, proportional — and is never parsed for a
 /// number. The receipt is set in the fact face and takes its tint **and** its
 /// icon from `VerifiedOutcome.receipt`, verbatim.
@@ -572,6 +573,14 @@ private struct LogSource: Equatable {
 /// verified tint on the `gh` side would paint "Not merged — the branch is
 /// behind" green, in the one block built to stop exactly that. The tint is read
 /// from the outcome, never chosen here.
+///
+/// ⛔ And the top row is only a claim when the text is one. A run that died
+/// before its terminal event stores stderr, and a run Elliot could not start
+/// stores a sentence Elliot wrote; both were captioned "IT SAID" and demoted
+/// into italic, which inverted the rule inside the block built to show it
+/// (#288). Which tier a text belongs to is decided by `ClosingRemark` in
+/// `ElliotModel` — `swift test` cannot see a caption drawn in a view, so a
+/// caption chosen here is a caption nothing checks.
 struct VerdictBlock: View {
     var run: SkillRun
 
@@ -579,22 +588,23 @@ struct VerdictBlock: View {
         let verdict = RunVerdict.of(run)
         let receipt = Self.receipt(for: run)
 
-        if verdict.itSaid != nil || receipt != nil {
+        if verdict.closing != nil || receipt != nil {
             VStack(alignment: .leading, spacing: 0) {
-                if let said = verdict.itSaid {
-                    row(caption: "it said", ground: Surface.recessFaint) {
-                        Text(said)
-                            .font(Type.hearsay)
-                            .foregroundStyle(.secondary)
+                if let closing = verdict.closing {
+                    let style = Self.style(for: closing)
+                    row(caption: closing.caption, ground: style.ground) {
+                        Text(closing.text)
+                            .font(style.font)
+                            .foregroundStyle(style.tint)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel("It said, \(said)")
+                    .accessibilityLabel("\(closing.spokenLead), \(closing.text)")
                 }
 
                 if let receipt {
-                    if verdict.itSaid != nil {
+                    if verdict.closing != nil {
                         Rectangle()
                             .fill(Surface.hairline)
                             .frame(height: 1)
@@ -643,6 +653,25 @@ struct VerdictBlock: View {
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(ground)
+    }
+
+    /// How the top row is drawn, decided from the attribution and nothing else.
+    ///
+    /// `static` and `nonisolated` for the reason `receipt(for:)` is: it is the
+    /// only part of this view a test can hold, and the mapping is exactly what
+    /// #288 got wrong. Two tiers, not three — `ClosingRemark.isHearsay` is the
+    /// model's answer and this spends no fourth colour on the difference
+    /// between stderr and Elliot's own note, which the caption already carries.
+    ///
+    /// `Palette.refused` is "a move was refused, or a run failed", which is the
+    /// only way either fact-tier source is ever produced: both mean the agent
+    /// never got to its terminal event.
+    nonisolated static func style(
+        for closing: ClosingRemark
+    ) -> (font: Font, tint: Color, ground: Color) {
+        closing.isHearsay
+            ? (Type.hearsay, .secondary, Surface.recessFaint)
+            : (Type.fact, Palette.refused, Surface.washFaint(Palette.refused))
     }
 
     /// What the `gh` side draws, or `nil` while there is nothing to say yet.

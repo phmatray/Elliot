@@ -434,9 +434,12 @@ public actor RunScheduler: RunLaunching {
             // that has silently disappeared until the next launch sweep.
             updated.state = .failed
             updated.endedAt = Date()
-            updated.resultText = repoReadError.map {
+            // `.elliot`, not the agent: nothing was spawned, so there is no
+            // agent to attribute this to. Recording it as prose is what put a
+            // sentence Elliot wrote under the panel's "IT SAID" caption (#288).
+            updated.setClosing(.elliot(repoReadError.map {
                 "Elliot could not read this run's repository: \($0.localizedDescription)"
-            } ?? "The repository this run belongs to no longer exists."
+            } ?? "The repository this run belongs to no longer exists."))
             try? await store.saveRun(updated)
             continuation.yield(.runFinished(
                 runID: run.id, cardID: run.cardID, state: .failed, outcome: nil
@@ -482,7 +485,9 @@ public actor RunScheduler: RunLaunching {
             inFlight[run.id] = nil
             updated.state = .failed
             updated.endedAt = Date()
-            updated.resultText = error.localizedDescription
+            // The spawn itself failed, so this is Elliot reporting a `Process`
+            // that never started — not an agent's account of anything.
+            updated.setClosing(.elliot(error.localizedDescription))
             try? await store.saveRun(updated)
             continuation.yield(.runFinished(
                 runID: run.id, cardID: run.cardID, state: .failed, outcome: nil
@@ -540,7 +545,12 @@ public actor RunScheduler: RunLaunching {
         var updated = (try? await store.run(id: run.id)) ?? run
         updated.endedAt = Date()
         updated.exitCode = outcome?.exitCode
-        updated.resultText = outcome?.result?.text ?? outcome?.stderr
+        // The `??` this used to be lives in `ClosingRemark.of` now, because
+        // choosing between the agent's words and the process's *is* the
+        // attribution — and settling it here left the panel to assume it (#288).
+        updated.setClosing(
+            .of(agentText: outcome?.result?.text, stderr: outcome?.stderr)
+        )
         updated.totalCostUSD = outcome?.result?.totalCostUSD
         updated.numTurns = outcome?.result?.numTurns
         updated.permissionDenials = outcome?.result?.permissionDenials.map(\.toolName) ?? []

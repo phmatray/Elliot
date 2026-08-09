@@ -52,7 +52,10 @@ public struct Reconciler: Sendable {
                 var orphan = run
                 orphan.state = .failed
                 orphan.endedAt = Date()
-                orphan.resultText = "Elliot stopped while this run was in flight."
+                // Elliot's own words about a child that died with it. The agent
+                // never got to say anything, which is precisely the point of
+                // the sentence — so it must not be dressed as its prose (#288).
+                orphan.setClosing(.elliot("Elliot stopped while this run was in flight."))
 
                 if run.isAnalysis {
                     // The artifact may well have been written before the app

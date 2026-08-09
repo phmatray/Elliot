@@ -51,7 +51,7 @@ struct NotificationPolicyTests {
             logPath: "/tmp/a.ndjson", stderrPath: "/tmp/a.stderr",
             verifiedOutcome: outcome, createdAt: .distantPast
         )
-        run.resultText = resultText
+        run.setClosing(resultText.map { ClosingRemark(text: $0, source: .agent) })
         return run
     }
 

@@ -280,6 +280,14 @@ struct EndToEndTests {
         #expect(run.state == .failed)
         #expect(run.exitCode == 3)
         #expect(run.resultText?.contains("simulated failure") == true)
+        // ⛔ And it is recorded as the process's, not the agent's. This is the
+        // whole of #288 measured through a real spawn: the child died before
+        // any terminal event, so what survives is stderr, and the panel used to
+        // caption it "IT SAID" in demoted italic — an inversion of the board's
+        // central rule inside the one block built to show it.
+        #expect(run.resultSource == .stderr)
+        #expect(run.closing?.isHearsay == false)
+        #expect(RunVerdict.of(run).itSaid == nil)
     }
 
     @Test("Cancelling a run stops it and records the cancellation")
@@ -367,6 +375,11 @@ struct EndToEndTests {
         let recovered = try #require(try await stack.store.run(id: orphan.id))
         #expect(recovered.state == .failed)
         #expect(recovered.resultText?.contains("Elliot stopped") == true)
+        // Elliot's own sentence about a child that died with it. The agent
+        // never spoke — that is what the sentence *says* — so it must not be
+        // attributed to it (#288).
+        #expect(recovered.resultSource == .elliot)
+        #expect(RunVerdict.of(recovered).itSaid == nil)
         // gh is unavailable here, so the outcome is honestly "unverified"
         // rather than a guess.
         if case .unverified = recovered.verifiedOutcome {} else {

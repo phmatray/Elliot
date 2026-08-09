@@ -83,9 +83,20 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     public var exitCode: Int32?
     public var logPath: String
     public var stderrPath: String
-    /// The `result` field of the terminal event. Display only — never parsed
-    /// for issue or PR numbers.
-    public var resultText: String?
+    /// The run's closing text. Display only — never parsed for issue or PR
+    /// numbers.
+    ///
+    /// ⛔ `private(set)`, together with `resultSource` below: the two are one
+    /// fact and setting them apart is the defect. It was a plain `var`, four
+    /// writers assigned it, and only one of those four was storing the agent's
+    /// prose — the other three stored stderr or a sentence Elliot had written,
+    /// and the panel captioned all four "IT SAID" (#288). `setClosing(_:)` is
+    /// the only way in, and it cannot be called without naming a source.
+    public private(set) var resultText: String?
+    /// Whose words `resultText` is. `nil` for a run that finished before this
+    /// column existed — see `ClosingRemark.source`, which is where that absence
+    /// is reasoned about and where it degrades.
+    public private(set) var resultSource: RunResultSource?
     public var totalCostUSD: Double?
     public var numTurns: Int?
     public var permissionDenials: [String]
@@ -112,7 +123,7 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         exitCode: Int32? = nil,
         logPath: String,
         stderrPath: String,
-        resultText: String? = nil,
+        closing: ClosingRemark? = nil,
         totalCostUSD: Double? = nil,
         numTurns: Int? = nil,
         permissionDenials: [String] = [],
@@ -135,7 +146,8 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         self.exitCode = exitCode
         self.logPath = logPath
         self.stderrPath = stderrPath
-        self.resultText = resultText
+        resultText = closing?.text
+        resultSource = closing?.source
         self.totalCostUSD = totalCostUSD
         self.numTurns = numTurns
         self.permissionDenials = permissionDenials
@@ -147,6 +159,33 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
 
 public extension SkillRun {
     var isAnalysis: Bool { kind == .analyzeRepo }
+}
+
+public extension SkillRun {
+    /// The closing text and its attribution, put back together.
+    ///
+    /// The pair is stored as two columns because that is what an additive
+    /// migration can do to a table already in the field, and read as one value
+    /// because they are one fact. A row saved before `resultSource` existed
+    /// comes back `.unattributed`, which is an absence of a record rather than
+    /// a claim about what the text is.
+    var closing: ClosingRemark? {
+        guard let resultText else { return nil }
+        guard let resultSource else { return .unattributed(resultText) }
+        return ClosingRemark(text: resultText, source: resultSource)
+    }
+
+    /// The one write path for what a run has to say for itself.
+    ///
+    /// ⛔ There is deliberately no way to set the text alone. Four writers used
+    /// to assign `resultText` directly and only one of them held the agent's
+    /// prose; the panel believed all four (#288). A fifth writer now has to
+    /// answer *whose words are these* before the code compiles, which is the
+    /// difference between a rule and a convention.
+    mutating func setClosing(_ remark: ClosingRemark?) {
+        resultText = remark?.text
+        resultSource = remark?.source
+    }
 }
 
 public extension SkillRun {
@@ -167,7 +206,7 @@ public extension SkillRun {
         exitCode: Int32? = nil,
         logPath: String,
         stderrPath: String,
-        resultText: String? = nil,
+        closing: ClosingRemark? = nil,
         totalCostUSD: Double? = nil,
         numTurns: Int? = nil,
         permissionDenials: [String] = [],
@@ -178,7 +217,7 @@ public extension SkillRun {
             id: id, cardID: cardID, repoID: repoID, analysisID: nil, analysisAngle: nil,
             kind: kind, prompt: prompt, argv: argv, cwd: cwd, state: state,
             startedAt: startedAt, endedAt: endedAt, exitCode: exitCode,
-            logPath: logPath, stderrPath: stderrPath, resultText: resultText,
+            logPath: logPath, stderrPath: stderrPath, closing: closing,
             totalCostUSD: totalCostUSD, numTurns: numTurns, permissionDenials: permissionDenials,
             verifiedOutcome: verifiedOutcome, analysisReport: nil, createdAt: createdAt
         )
@@ -201,7 +240,7 @@ public extension SkillRun {
         exitCode: Int32? = nil,
         logPath: String,
         stderrPath: String,
-        resultText: String? = nil,
+        closing: ClosingRemark? = nil,
         totalCostUSD: Double? = nil,
         numTurns: Int? = nil,
         permissionDenials: [String] = [],
@@ -212,7 +251,7 @@ public extension SkillRun {
             id: id, cardID: nil, repoID: repoID, analysisID: analysisID, analysisAngle: analysisAngle,
             kind: .analyzeRepo, prompt: prompt, argv: argv, cwd: cwd, state: state,
             startedAt: startedAt, endedAt: endedAt, exitCode: exitCode,
-            logPath: logPath, stderrPath: stderrPath, resultText: resultText,
+            logPath: logPath, stderrPath: stderrPath, closing: closing,
             totalCostUSD: totalCostUSD, numTurns: numTurns, permissionDenials: permissionDenials,
             verifiedOutcome: nil, analysisReport: analysisReport, createdAt: createdAt
         )

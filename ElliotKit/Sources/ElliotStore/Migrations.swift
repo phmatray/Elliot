@@ -227,6 +227,39 @@ enum Migrations {
             }
         }
 
+        // v11, additive: whose words a run's `resultText` holds.
+        //
+        // The column exists because one field held two kinds of thing —  the
+        // agent's closing prose and, when the process died before emitting a
+        // terminal event, its stderr — and recorded which of them nowhere, so
+        // the panel captioned a machine's diagnosis "IT SAID" and set it in the
+        // demoted face (#288).
+        //
+        // **Nullable, with no default**, and both halves are deliberate — the
+        // same trade v10 made one table over, for the same reason.
+        //
+        // Nullable because `SkillRun.resultSource` is an `Optional`, and it has
+        // to be so `openReadOnly` keeps tolerating a database older than the
+        // helper, where an added column reads as absent.
+        //
+        // No default of `'agent'`, which is the tempting one: it is the
+        // commonest case, and every row it touched would then *assert* an
+        // author nobody recorded. ⛔ Nor may the source be inferred from a
+        // proxy — `numTurns IS NULL`, a state of `failed`, an exit code —
+        // because a guess written into the database is indistinguishable
+        // afterwards from a measurement, and guessing is the whole of what this
+        // column exists to stop. NULL means "nobody recorded it", and
+        // `ClosingRemark` degrades that to the wording these rows already had
+        // rather than claiming stderr for history it cannot know.
+        //
+        // No backfill for the same reason v9 had none: nothing anywhere has
+        // ever recorded where an existing run's text came from.
+        migrator.registerMigration("v11_runResultSource") { db in
+            try db.alter(table: "skillRun") { t in
+                t.add(column: "resultSource", .text)
+            }
+        }
+
         return migrator
     }
 
