@@ -1295,10 +1295,21 @@ public final class AppModel {
     /// What moving this card to that column *would* do, decided now, without
     /// touching the database.
     ///
-    /// This is the same `evaluateMove` `BoardService` commits with, so the
-    /// caption a column shows and the thing that actually happens cannot come
-    /// apart. Pure by design — the rule engine takes no clock and no I/O
-    /// precisely so a view can ask it during layout.
+    /// This is the same `evaluateMove` `BoardService` commits with, so every
+    /// `MoveBlock` this function can report — a disabled repo, an active run,
+    /// the same column, a merge waiting on `providedFollowUps` — matches what
+    /// `commitMove` actually does with it. Pure by design — the rule engine
+    /// takes no clock and no I/O precisely so a view can ask it during layout.
+    ///
+    /// ⚠️ It does **not** predict every refusal. `BoardService.makeRun`
+    /// resolves the repository's method and throws `BoardError.unknownMethod`
+    /// or `.methodHasNoStep` *after* `evaluateMove` has already answered
+    /// `.action` — `MoveContext` carries no `MethodPack`, so this function has
+    /// nothing to check those two against. For a repo on an unknown method, or
+    /// a pack with no step for the transition, `preview` reads ready and
+    /// `commitMove` refuses anyway. It fails closed — nothing spawns, no card
+    /// moves — but the caption is a wrong second opinion until the resolved
+    /// pack joins `MoveContext`, which is a wave-2 change, not this one.
     public func preview(_ card: Card, to column: ElliotModel.Column) -> MoveOutcome {
         evaluateMove(
             from: card.column,
@@ -1308,9 +1319,9 @@ public final class AppModel {
                 repoIsEnabled: repo(for: card)?.isEnabled ?? false,
                 // The persisted verdict, not `repoChecks` — the same value
                 // `BoardService` will read when the drop is committed. Reading
-                // the in-memory dictionary here would make the caption a second
-                // opinion about the drop, which is the one thing `preview`
-                // exists not to be.
+                // the in-memory dictionary here would make this field its own
+                // second opinion about the drop; see the doc comment above for
+                // the one place `preview` already is one, for a different reason.
                 repoPreflight: repo(for: card)?.preflightVerdict ?? .notChecked,
                 activeRunID: activeRuns[card.id]?.id,
                 allowSideEffects: true,
