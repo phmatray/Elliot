@@ -2459,6 +2459,50 @@ public final class AppModel {
         try? await store?.saveRepo(repo)
     }
 
+    /// Change one repository's run terms — the only writer either field has.
+    ///
+    /// Both are v1 columns, read at spawn and reported by `board_list_repos`,
+    /// and until #333 nothing ever assigned them: every registration took
+    /// `bypassPermissions` and `[]` permanently, so a drag in *any* registered
+    /// repository started `claude -p` accepting every tool call and asking
+    /// nobody. Preflight already carries the other two brakes on what that
+    /// costs — `Runs at once` and `Spending` — and this is the only one that
+    /// bounds what a run may *do* rather than how much of it there may be.
+    ///
+    /// ⛔ Not `try?`, unlike ``setRepoEnabled(_:enabled:)`` beside it. A lost
+    /// write here leaves the row on `bypassPermissions` while the picker shows
+    /// the tightened value — the screen and the spawn disagreeing about a
+    /// safety control, silently, which is the whole failure mode. The sentence
+    /// follows `record`'s precedent and its comment.
+    ///
+    /// The edit arrives as one ``RunTermsEdit`` rather than two optional
+    /// parameters, so "called with neither" is not a shape this function can be
+    /// handed, and `applied(to:)` normalises on the way in.
+    ///
+    /// The edit is applied to the row **re-read here**, not to the `repo` the
+    /// view was rendering. Otherwise this is the hazard `saveRepoPreflight`
+    /// exists to close, pointed the other way: a whole-row write built from a
+    /// copy that may have aged. A failed read is a refusal and not a licence to
+    /// write the stale copy anyway — "I could not find out" is not "nothing has
+    /// changed".
+    public func setRunTerms(_ repo: Repo, _ edit: RunTermsEdit) async {
+        guard let store else { return }
+        do {
+            guard let current = try await store.repo(id: repo.id) else {
+                // Preflight carries a Forget button, so this is reachable
+                // rather than theoretical: the row can go while the disclosure
+                // holding its picker is open.
+                status = "\(repo.displayName) is no longer registered."
+                return
+            }
+            try await store.saveRepo(edit.applied(to: current))
+            status = edit.sentence(for: current)
+        } catch {
+            status = "Could not change \(repo.displayName)'s run terms: "
+                + error.localizedDescription
+        }
+    }
+
     /// A forget waiting for an answer.
     ///
     /// One optional rather than a per-screen flag: both screens present the same
@@ -2580,10 +2624,15 @@ public final class AppModel {
         repoChecks[repo.id] = results
         let verdict: PreflightState = PreflightService.isBlocking(results) ? .failing : .passing
         guard repo.preflightVerdict != verdict, let store else { return }
-        var updated = repo
-        updated.preflight = verdict
         do {
-            try await store.saveRepo(updated)
+            // `saveRepoPreflight`, not `saveRepo(updated)`. `repo` was captured
+            // before `preflight.repoChecks(repo)`, which shells out to `gh` and
+            // `git` — seconds, not microseconds — so writing the whole row back
+            // reverts anything saved during that window. Since #333 that window
+            // can swallow a repository's run terms, and a safety control that
+            // quietly returns to `bypassPermissions` while the screen shows
+            // otherwise is worse than none.
+            try await store.saveRepoPreflight(id: repo.id, verdict: verdict)
         } catch {
             // Not `try?`. If this write is lost the board silently goes on
             // permitting moves in a repository Elliot has just diagnosed as

@@ -350,6 +350,7 @@ public struct PreflightView: View {
                 .truncationMode(.middle)
                 .textSelection(.enabled)
             checkList(model.repoChecks[repo.id] ?? [])
+            RunTermsRow(repo: repo)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)

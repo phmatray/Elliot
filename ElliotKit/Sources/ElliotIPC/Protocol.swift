@@ -64,7 +64,11 @@ import Foundation
 /// ⚠️ The issue that asked for this said "bump from 6", read off a base that
 /// had since reached 7. Writing 7 would have left the number unchanged while
 /// the wire moved. Read this constant, never a plan.
-public let elliotProtocolVersion = 8
+///
+/// **9** — `RepoDTO` carries `extraAllowedTools` (#333). Until then a
+/// repository's run terms could not be *written* at all, so every row reported
+/// the same defaults and half a reply looked exactly like the whole of one.
+public let elliotProtocolVersion = 9
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
@@ -703,6 +707,16 @@ public struct RepoDTO: Codable, Sendable, Hashable {
     /// see that before it moves anything.
     public var permissionMode: String
 
+    /// The other half of the terms a run in this repository gets.
+    ///
+    /// Reported beside the mode rather than left out because the tool's own
+    /// description tells an agent to read the terms before moving a card for
+    /// the first time, and a reply carrying half of them invites a conclusion
+    /// drawn from the half that arrived. Empty is the common answer and is
+    /// rendered as an empty array, never as a missing key: "allows nothing
+    /// extra" and "this reply does not say" must not look the same.
+    public var extraAllowedTools: [String]
+
     public init(repo: Repo) {
         id = repo.id
         nameWithOwner = repo.nameWithOwner
@@ -711,6 +725,7 @@ public struct RepoDTO: Codable, Sendable, Hashable {
         defaultBranch = repo.defaultBranch
         isEnabled = repo.isEnabled
         permissionMode = repo.permissionMode.rawValue
+        extraAllowedTools = repo.extraAllowedTools
     }
 
     public init(
@@ -720,7 +735,8 @@ public struct RepoDTO: Codable, Sendable, Hashable {
         path: String,
         defaultBranch: String,
         isEnabled: Bool,
-        permissionMode: String
+        permissionMode: String,
+        extraAllowedTools: [String] = []
     ) {
         self.id = id
         self.nameWithOwner = nameWithOwner
@@ -729,6 +745,7 @@ public struct RepoDTO: Codable, Sendable, Hashable {
         self.defaultBranch = defaultBranch
         self.isEnabled = isEnabled
         self.permissionMode = permissionMode
+        self.extraAllowedTools = extraAllowedTools
     }
 }
 

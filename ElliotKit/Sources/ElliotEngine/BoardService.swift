@@ -262,6 +262,15 @@ public actor BoardService: SystemMoving {
         /// the common path — the New-story sheet with nothing ticked,
         /// `board_create_card`, the GitHub import — is unchanged.
         labels: [String] = [],
+        /// What an appraisal established about this card's value, when one
+        /// already had. Defaulted for the same reason `angle` is: every caller
+        /// that makes a card the board asked for — the New-story sheet,
+        /// `board_create_card`, the GitHub import — says nothing about value,
+        /// and `nil` here is the third state (nobody has read this) rather than
+        /// a zero.
+        effort: Effort? = nil,
+        evidence: [Evidence]? = nil,
+        appraisedAt: Date? = nil,
         idempotencyKey: String? = nil
     ) async throws -> CreatedCard {
         guard try await store.repo(id: repoID) != nil else { throw BoardError.repoNotFound(repoID) }
@@ -289,7 +298,10 @@ public actor BoardService: SystemMoving {
             columnEnteredAt: now,
             createdAt: now,
             updatedAt: now,
-            idempotencyKey: key
+            idempotencyKey: key,
+            effort: effort,
+            evidence: evidence,
+            appraisedAt: appraisedAt
         )
         do {
             try await store.saveCard(card)

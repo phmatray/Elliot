@@ -1814,13 +1814,15 @@ Put the file back to its parent commit instead — run these from the **reposito
 git rev-parse --abbrev-ref HEAD
 BEFORE="$(git log -1 --format=%H -- ElliotKit/Sources/ElliotEngine/AnalysisService.swift)^"
 git checkout "$BEFORE" -- ElliotKit/Sources/ElliotEngine/AnalysisService.swift
-git diff --stat ElliotKit/Sources/ElliotEngine/AnalysisService.swift    # must NOT be empty
+git diff HEAD --stat ElliotKit/Sources/ElliotEngine/AnalysisService.swift    # must NOT be empty
 (cd ElliotKit && swift test --filter CardValueFromProposalTests)
 git checkout HEAD -- ElliotKit/Sources/ElliotEngine/AnalysisService.swift
-git diff --stat ElliotKit/Sources/ElliotEngine/AnalysisService.swift    # must be empty again
+git diff HEAD --stat ElliotKit/Sources/ElliotEngine/AnalysisService.swift    # must be empty again
 ```
 
-The two `git diff --stat` lines are the point: the first proves the revert landed, the second proves it was undone. Without them this is the stash trap again, one command over.
+The two checks are the point: the first proves the revert landed, the second proves it was undone. Without them this is the stash trap again, one command over.
+
+⛔ **`git diff HEAD`, not a bare `git diff` — and this correction was itself paid for.** It shipped as `git diff --stat`, which is *guaranteed* to be empty here on every machine, so the check that says "must NOT be empty" always failed. `git checkout --help`: *"When the `<tree-ish>` is given, overwrite **both the index and the working tree** with the contents at the `<tree-ish>`."* A bare `git diff` compares the working tree to the index, and this form has just made them agree. So the check read exactly like the stash trap it was written to prevent — a revert that had genuinely landed, reporting that it had not. `git diff HEAD` compares against the commit, which is the question actually being asked, and it answers correctly after **both** checkouts.
 
 Expected while the file is reverted: FAIL, with **four** expectations failing rather than one. Without Task 7 no card carries an appraisal, so both cards come back `.neverAppraised`, and everything before `accept` still passes:
 

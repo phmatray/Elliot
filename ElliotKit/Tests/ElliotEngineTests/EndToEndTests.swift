@@ -389,6 +389,60 @@ struct EndToEndTests {
         #expect(run.exitCode == 143)
     }
 
+    /// Criterion 2 of #333, asserted end to end for the first time.
+    ///
+    /// `RunScheduler` has always read `repo.permissionMode` and
+    /// `repo.extraAllowedTools` at spawn, and `ClaudeInvocation.arguments()` has
+    /// always emitted both flags — but nothing ever *wrote* either column, so
+    /// every run in the suite's history was made under the same defaults and the
+    /// path was never exercised with anything else. This pins the half of the
+    /// feature that was already built.
+    ///
+    /// Asserted positionally rather than with `contains`, because an argument
+    /// landing next to the wrong flag is exactly what `contains` cannot see.
+    @Test("A repository's run terms reach the spawn")
+    func runTermsReachTheSpawn() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var repo = stack.repo
+        repo.permissionMode = .acceptEdits
+        repo.extraAllowedTools = ["Read", "Bash(git status *)"]
+        try await stack.store.saveRepo(repo)
+
+        let card = try await stack.board.createCard(repoID: repo.id, title: "Tightened").card
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
+        let run = try await stack.awaitRun(cardID: card.id)
+
+        let mode = try #require(run.argv.firstIndex(of: "--permission-mode"))
+        #expect(run.argv[mode + 1] == "acceptEdits")
+
+        let tools = try #require(run.argv.firstIndex(of: "--allowedTools"))
+        #expect(run.argv[tools + 1] == "Read,Bash(git status *)")
+    }
+
+    /// The other half of the same criterion, and the reason `ExtraAllowedTools`
+    /// exists: an empty list must produce **no flag at all**, so a list holding
+    /// one blank string is not "no tools" but `--allowedTools ""`.
+    @Test("A repository allowing no extra tools passes no such flag")
+    func noExtraToolsMeansNoFlag() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var repo = stack.repo
+        repo.extraAllowedTools = ExtraAllowedTools.normalise(["  ", ""])
+        try await stack.store.saveRepo(repo)
+
+        let card = try await stack.board.createCard(repoID: repo.id, title: "Untightened").card
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
+        let run = try await stack.awaitRun(cardID: card.id)
+
+        #expect(!run.argv.contains("--allowedTools"))
+        #expect(!run.argv.contains(""))
+    }
+
     @Test("A move that triggers nothing spawns nothing")
     func inertMoveSpawnsNothing() async throws {
         let stack = try await Stack.make(fixture: "create-issue-success.ndjson")

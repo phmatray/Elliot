@@ -37,7 +37,7 @@ struct ProposalDecoderTests {
         let harvest = ProposalDecoder.decode(artifact: FixturePaths.analysis("messy.json"), maxStories: 8)
         #expect(harvest.stories.count == 1)
         #expect(harvest.stories[0].title == "Keep this one")
-        #expect(Effort.parse(harvest.stories[0].effort) == .medium)
+        #expect(Effort.parse(harvest.stories[0].effort) == .unstated)
         #expect(harvest.dropped.count == 2)
         #expect(harvest.dropped.contains { $0.contains("No benefit") })
         #expect(harvest.dropped.contains { $0.contains("No evidence") })
