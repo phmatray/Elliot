@@ -97,9 +97,11 @@ struct MethodPromptTests {
             return
         }
         guard let other = contrastingPack(against: base, at: .createIssue) else {
-            // ⚠️ Wave 1's catalogue may genuinely contain no such pack — GSD and
-            // Spec Kit both declare only `.createIssue`. Say so rather than pass
-            // in silence, so the gap is visible the day it can be closed.
+            // Unreachable today — GSD and Spec Kit both declare `.createIssue`
+            // with commands that differ from the default's, so `contrastingPack`
+            // always finds one of them at this kind. Kept anyway, for the same
+            // reason `contrastingPack`'s own doc gives the `nil` branch: it says
+            // so out loud if a future catalogue ever stops contrasting anywhere.
             // Hoisted into a `let`: `Issue.record` takes a `Comment`, which is
             // `ExpressibleByStringLiteral`, so a `+` between two literals in the
             // argument position resolves against `Sequence` and fails to compile.
