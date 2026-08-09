@@ -143,6 +143,68 @@ struct AnalysisPanelViewSourceTests {
         }
     }
 
+    // MARK: - A lens you cannot untick
+
+    /// ⛔ **A tile marked busy is still tickable.**
+    ///
+    /// #151 removed a `.disabled` from the Analyse toggle on the argument that a
+    /// control you cannot switch off is worse than one that opens onto an
+    /// explanation, and a lens you cannot untick is that trap one screen in —
+    /// unticking it is the reader's *whole* remedy for a clash. It is worse
+    /// here than there: `busy` comes from a snapshot and can be wrong in both
+    /// directions, so a disabled tile takes a control away on the strength of a
+    /// hint (#293).
+    ///
+    /// A source gate for the reason `CLAUDE.md` gives — `swift test` cannot see
+    /// a view, so a `.disabled(model.lensBusy(angle) != nil)` added here would
+    /// leave every other test in this file green while the grid quietly stopped
+    /// accepting a click.
+    @Test("A busy lens tile can still be ticked — nothing in it is disabled")
+    func theLensTileIsNeverDisabled() throws {
+        let body = try Self.body(of: "struct LensTile: View", in: try Self.panelCode())
+
+        // A negative needs its positive witness: a renamed or restructured tile
+        // would make the claim below vacuously true.
+        #expect(
+            body.contains("Button(action: toggle)"),
+            "LensTile no longer wraps its content in the toggle button this gate is about")
+
+        #expect(
+            !body.contains(".disabled("),
+            """
+            LensTile carries a `.disabled(…)`. A lens the reader cannot untick is the trap #151 \
+            removed from the Analyse toggle, and here the value driving it is a snapshot that can \
+            be wrong — `AnalysisService.start` is the authority, the seal is a hint (#293).
+            """)
+    }
+
+    /// ⛔ **The grid asks the model which lenses are busy.**
+    ///
+    /// `busy:` has no default, so *forgetting* it is a compile error — what this
+    /// pins is the step after that: a call site passing `nil`, or reaching for
+    /// the store itself and doing its own repository scoping. `AppModel.lensBusy`
+    /// is where the scoping lives (`BusyLenses` refuses to answer about a
+    /// repository it was not read for), and a view that re-derived it would be
+    /// free to re-derive it wrongly.
+    ///
+    /// The gap this closes is the one `CaretAnchorTests` was written for: the
+    /// arithmetic either side is pinned, and the *step between* — three values
+    /// reaching one reader — had no test at all, so everything stayed green
+    /// while nothing appeared on screen.
+    @Test("The lens grid asks the model whether each lens is already reading")
+    func theGridAsksWhichLensesAreBusy() throws {
+        let source = try Self.panelCode()
+
+        #expect(source.contains("LensTile("), "the setup grid no longer builds a LensTile")
+        #expect(
+            source.contains("busy: model.lensBusy("),
+            """
+            no LensTile is being handed AppModel.lensBusy(_:). Passing `nil`, or asking the store \
+            directly, loses the repository scoping that stops one repository's reading being drawn \
+            under another's header (#213's axis, #293).
+            """)
+    }
+
     /// ⛔ **The rejected disclosure is a sibling of `if proposed.isEmpty`, never
     /// inside its `else`.**
     ///

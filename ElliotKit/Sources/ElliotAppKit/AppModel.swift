@@ -2679,6 +2679,69 @@ public final class AppModel {
         return nil
     }
 
+    /// The lenses already reading, as last read — private, so nothing can draw
+    /// it without going through the two scoped accessors below.
+    ///
+    /// ⛔ **Not a `Set<AnalysisAngle>`, and not readable without naming a
+    /// repository.** ``startFailure`` is computed against ``selectedRepoID`` for
+    /// exactly this reason, one sentence over: the panel's subject can move
+    /// while a read is in flight, and a value that does not carry the
+    /// repository it was read for is a value that will eventually be drawn
+    /// under the wrong header with nothing saying so (#213). Here the guard is
+    /// `BusyLenses`'s own — it answers with nothing when asked about a
+    /// repository it was not read for — so the view never sees a mismatch it
+    /// could render.
+    private var busyLensReading: BusyLenses?
+
+    /// Re-reads which lenses are busy in the repository the panel is about.
+    ///
+    /// Called from the panel's `.task`, which is keyed on ``analysisRepoID`` and
+    /// cancelled when the panel is hidden. Failure is silence rather than a
+    /// banner: this is a courtesy on a screen that already has three things to
+    /// say, and losing it costs the reader a hint, not an act — `Start` still
+    /// gets its answer from `AnalysisService`.
+    public func refreshBusyLenses() async {
+        guard let analysisService, let repoID = analysisRepoID else {
+            busyLensReading = nil
+            return
+        }
+        let reading = try? await analysisService.busyLenses(repoID: repoID)
+        // The picker can have moved while that was in flight. Dropping a
+        // mismatched reading here is belt to `BusyLenses`'s braces — the
+        // accessors below would refuse it anyway — but it keeps a stale
+        // repository's snapshot from sitting in the model waiting for the
+        // picker to come back to it.
+        guard reading?.repoID == analysisRepoID else { return }
+        busyLensReading = reading
+    }
+
+    /// How far along the run holding `angle` is, in the repository the panel is
+    /// about — or `nil` when that lens is free, unread, or the reading belongs
+    /// to another repository.
+    ///
+    /// ⚠️ **A hint.** It was true when it was read; `AnalysisService.start` is
+    /// what decides whether a Start goes. Nothing may be disabled on this.
+    public func lensBusy(_ angle: AnalysisAngle) -> LensBusy? {
+        busyLensReading?.state(of: angle, in: analysisRepoID)
+    }
+
+    /// The armed lenses in the strip's own order.
+    ///
+    /// One expression, because three places need the same list in the same
+    /// order: what Start hands the service, what the footer names in a
+    /// sentence, and what the clash check is measured against. It was written
+    /// out in the view's Start closure and would have been written out twice
+    /// more here.
+    public var armedAngles: [AnalysisAngle] {
+        AnalysisAngle.allCases.filter(analysisAngles.contains)
+    }
+
+    /// The armed lenses the last reading says are already busy — the ones that
+    /// would make Start refuse the whole set.
+    public var clashingLenses: [AnalysisAngle] {
+        busyLensReading?.clashes(with: armedAngles, in: analysisRepoID) ?? []
+    }
+
     public func startAnalysis(
         repoID: UUID, angles: [AnalysisAngle], instructions: String, maxStories: Int
     ) async {
