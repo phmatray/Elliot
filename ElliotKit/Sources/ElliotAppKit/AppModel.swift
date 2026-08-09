@@ -398,8 +398,23 @@ public final class AppModel {
     public var analysisAngles: Set<AnalysisAngle> = [.bugs, .quickWins]
     public var analysisInstructions = ""
     public var analysisMaxStories = 8
+
     /// The proposals staged for the footer's Accept / Reject.
-    public var analysisSelection: Set<UUID> = []
+    ///
+    /// ⚠️ **Stored on the session, not here** — the three above are setup state
+    /// and outlive an analysis on purpose; this one belongs to the analysis and
+    /// outliving it was #290. The `@State`-versus-model argument in the comment
+    /// above is about surviving a *hide*; this is about not surviving a
+    /// *Finish*, and the two pull in opposite directions. The session lives on
+    /// this model, so the hide stays lossless either way.
+    ///
+    /// Reads as empty and swallows a write when no analysis is open. That is the
+    /// correct answer rather than a silent failure: in setup there are no
+    /// proposals to stage, so there is nothing a write could mean.
+    public var analysisSelection: Set<UUID> {
+        get { analysis?.selection ?? [] }
+        set { analysis?.selection = newValue }
+    }
 
     /// Which rows of a run log the panel is showing.
     ///
