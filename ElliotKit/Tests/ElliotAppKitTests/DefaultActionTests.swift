@@ -148,6 +148,55 @@ struct DefaultActionTests {
         return found
     }
 
+    /// ⛔ **The covered-target list is itself gated, and that was found by
+    /// break-testing rather than by design.**
+    ///
+    /// Deleting `ElliotApp` from `targets` left the whole suite green: every
+    /// other test here asks *"is what we walked sanctioned"*, and none of them
+    /// can notice that less was walked. Removing coverage is exactly the edit
+    /// nobody would flag in review, since it deletes a line rather than adding
+    /// a claim — the same shape as #251 itself, one level up.
+    ///
+    /// The criterion is mechanical rather than a second hand-written list: a
+    /// target that imports SwiftUI can put a control on screen, and every such
+    /// target must be walked. Adding a new UI target therefore fails here until
+    /// it is covered, instead of quietly starting out unguarded the way
+    /// `ElliotApp` did.
+    @Test("Every target that can draw a control is walked")
+    func coverageIsComplete() throws {
+        let sources = Self.targets[0].url.deletingLastPathComponent()
+        let drawing = try FileManager.default
+            .contentsOfDirectory(atPath: sources.path)
+            .filter { name in
+                var isDirectory: ObjCBool = false
+                let path = sources.appendingPathComponent(name).path
+                guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+                    isDirectory.boolValue
+                else { return false }
+                let files = (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
+                return files.contains { file in
+                    guard file.hasSuffix(".swift") else { return false }
+                    let source = try? String(
+                        contentsOf: sources.appendingPathComponent(name).appendingPathComponent(file),
+                        encoding: .utf8)
+                    return source?.contains("import SwiftUI") ?? false
+                }
+            }
+
+        let covered = Set(Self.targets.map(\.name))
+        let uncovered = Set(drawing).subtracting(covered)
+        #expect(
+            uncovered.isEmpty,
+            Comment(
+                rawValue:
+                    "\(uncovered.sorted().joined(separator: ", ")) import SwiftUI and are not "
+                    + "walked by this gate, so a `.keyboardShortcut(.defaultAction)` added there "
+                    + "would go unnoticed. Add them to `targets`."))
+        // And the list must not name a target that no longer draws anything —
+        // a stale entry is a claim of coverage that buys nothing.
+        #expect(covered.subtracting(Set(drawing)).isEmpty)
+    }
+
     @Test("Every default action belongs to a control DefaultAction sanctions")
     func everyClaimIsSanctioned() throws {
         let sanctioned = DefaultAction.sanctionedLabels
