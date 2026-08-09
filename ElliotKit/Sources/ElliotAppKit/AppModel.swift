@@ -676,7 +676,13 @@ public final class AppModel {
 
             status = "Checking your setup…"
             let preflight = PreflightService(environment: environment, config: config)
-            globalChecks = await preflight.globalChecks(layout: layout)
+            // The packs the registered repositories actually run, read from the
+            // store rather than from `repos`: this runs inside `start()`, before
+            // the repo observation has published anything, so `repos` is still
+            // empty here. `packsInUse` folds the default in either way.
+            let registered = (try? await store.repos()) ?? []
+            globalChecks = await preflight.globalChecks(
+                layout: layout, packs: PreflightService.packsInUse(registered))
 
             let presenter = NotificationPresenter(
                 delivery: makeNotificationDelivery(),

@@ -38,7 +38,8 @@ struct PreflightFixTests {
                 ),
                 .seedCard(
                     repoID: repoID, title: "Decide a taxonomy",
-                    story: UserStory(role: "r", want: "w", benefit: "b")
+                    story: UserStory(role: "r", want: "w", benefit: "b"),
+                    key: nil
                 ),
             ]
         )
@@ -65,7 +66,8 @@ struct PreflightFixTests {
         #expect(
             CheckFix.seedCard(
                 repoID: repoID, title: "t",
-                story: UserStory(role: "r", want: "w", benefit: "b")
+                story: UserStory(role: "r", want: "w", benefit: "b"),
+                key: nil
             ).repoID == repoID
         )
     }
