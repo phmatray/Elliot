@@ -549,7 +549,7 @@ git commit -m "feat(model): one predicate decides what an unattended agent may m
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
 - Produces:
-  - `MoveOrigin.autoDev(sessionID: UUID)` — a sixth origin, `Codable, Sendable, Hashable`.
+  - `MoveOrigin.autoDev(sessionID: UUID)` — a seventh origin, `Codable, Sendable, Hashable`.
   - `MoveOrigin.allowsSideEffects` stays `Bool` and becomes an exhaustive `switch`: `true` for `.userDrag`, `.mcp`, `.autoDev`; `false` for `.system`.
   - `MoveOrigin.arrivalNote` returns a sentence for `.autoDev` (it returned `nil` for anything but `.system`).
   - `MoveOrigin.historyLabel` returns `"Auto-dev"` for `.autoDev`.
@@ -567,7 +567,7 @@ import Testing
 /// The one property that decides whether an unattended agent starts.
 ///
 /// It had no test at all, and it was written as `if case .system = self { return
-/// false }; return true` — a shape in which a sixth origin inherits `true` in
+/// false }; return true` — a shape in which a seventh origin inherits `true` in
 /// silence. The switch below the fix is the real guard; this file is its
 /// witness, and it is a witness worth having because the thing being granted is
 /// a `claude -p` at `bypassPermissions` inside a real checkout.
@@ -799,7 +799,7 @@ git add ElliotKit/Sources/ElliotModel/SkillRun.swift \
         ElliotKit/Sources/ElliotAppKit/Consequence.swift \
         ElliotKit/Tests/ElliotModelTests/MoveOriginTests.swift \
         ElliotKit/Tests/ElliotAppKitTests/MoveHistoryTests.swift
-git commit -m "feat(model,app): a sixth move origin, and a switch that cannot hand it side effects"
+git commit -m "feat(model,app): a seventh move origin, and a switch that cannot hand it side effects"
 ```
 
 ---

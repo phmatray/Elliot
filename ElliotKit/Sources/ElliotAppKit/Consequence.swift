@@ -107,13 +107,24 @@ extension MoveOrigin {
     /// In Review is the only column Elliot fills by itself, and a card that
     /// appeared there explained nothing about how it arrived. Display copy, not
     /// a rule: the decision was `PRWatcher`'s and is already recorded.
+    ///
+    /// Exhaustive since auto-dev. The old `guard case .system` would have
+    /// swallowed the new case and left a card that an unattended session moved
+    /// explaining nothing at all about how it got there — which is the one
+    /// column caption a reader who was not in the room actually needs.
     var arrivalNote: String? {
-        guard case .system(let reason) = self else { return nil }
-        switch reason {
-        case .prBecameReady: return "Elliot moved this here — the pull request went ready."
-        case .prMergedExternally: return "Elliot moved this here — it was merged on GitHub."
-        case .reconciliation: return "Elliot moved this here — recovered after a restart."
-        case .githubImport: return "Elliot placed this here — imported from GitHub."
+        switch self {
+        case .userDrag, .mcp:
+            return nil
+        case .autoDev:
+            return "Elliot moved this here — an unattended session is advancing this card."
+        case .system(let reason):
+            switch reason {
+            case .prBecameReady: return "Elliot moved this here — the pull request went ready."
+            case .prMergedExternally: return "Elliot moved this here — it was merged on GitHub."
+            case .reconciliation: return "Elliot moved this here — recovered after a restart."
+            case .githubImport: return "Elliot placed this here — imported from GitHub."
+            }
         }
     }
 
@@ -139,6 +150,11 @@ extension MoveOrigin {
             // still reachable from an older row, and must not leave a dangling
             // separator pointing at nothing.
             return client.isEmpty ? "MCP" : "MCP · \(client)"
+        case .autoDev:
+            // The session id is deliberately not rendered: this is one column of
+            // a tabular line, and a UUID there would push the rest off the
+            // panel. PR5's report band is where a session is named.
+            return "Auto-dev"
         case .system(let reason):
             return "Elliot: \(reason.historyPhrase)"
         }

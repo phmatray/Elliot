@@ -43,8 +43,12 @@ struct MoveHistoryTests {
     ]
 
     private static var allOrigins: [MoveOrigin] {
-        [.userDrag, .mcp(client: "elliot-mcp")] + systemReasons.map { .system(reason: $0) }
+        [.userDrag, .mcp(client: "elliot-mcp"), .autoDev(sessionID: autoDevSession)]
+            + systemReasons.map { .system(reason: $0) }
     }
+
+    /// Fixed rather than fresh, so a failure message names the same value twice.
+    private static let autoDevSession = UUID(uuidString: "00000000-0000-0000-0000-00000000AD00")!
 
     // MARK: - Order
 
@@ -170,10 +174,15 @@ struct MoveHistoryTests {
     /// untouched: `arrivalNote` was never a summary of the newest move. It is
     /// silent for a drag and for MCP, so it could not have covered the history
     /// even if someone wanted it to.
-    @Test("The arrival sentence still speaks only for system moves")
-    func arrivalNoteRemainsSystemOnly() {
+    @Test("The arrival sentence speaks for every move nobody made by hand")
+    func arrivalNoteSpeaksForUnmadeMoves() {
+        // It was "system moves only" until auto-dev, and the boundary was never
+        // the `.system` case: it is whether the reader could have been the one
+        // who moved the card. A drag and a `board_move_card` are gestures
+        // somebody made and watched happen; an auto-dev move is not.
         #expect(MoveOrigin.userDrag.arrivalNote == nil)
         #expect(MoveOrigin.mcp(client: "agent-x").arrivalNote == nil)
+        #expect(MoveOrigin.autoDev(sessionID: UUID()).arrivalNote != nil)
         for reason in Self.systemReasons {
             #expect(MoveOrigin.system(reason: reason).arrivalNote != nil)
         }
