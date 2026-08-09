@@ -1261,12 +1261,26 @@ public final class AppModel {
             //
             // Marked in place rather than re-read, and that is not an
             // optimisation: the scheduler yields this update *before* it awaits
-            // `markStalled`, so a refresh racing it reads the row as it was and
-            // writes `.running` back over the answer. The guard below is
-            // `markStalled`'s own, so the two cannot disagree about which runs
-            // may stall.
-            markStalled(runID: runID)
+            // its write, so a refresh racing it reads the row as it was and
+            // writes `.running` back over the answer. The guard is
+            // `RunState.applying`, which the scheduler's own write calls too, so
+            // the two cannot disagree about which runs may stall.
+            mark(.wentQuiet, runID: runID)
             notify(runID: runID, stalled: true)
+        case .runResumed(let runID):
+            // The mirror, and the whole of this issue: the mark used to be
+            // one-way, so a `merge-pr` that waited twenty-one minutes on CI and
+            // then produced its next tool call kept the attention tint and "No
+            // output for a while" until it exited.
+            //
+            // Deliberately no `notify`. `NotificationEvent` has `.runStalled`
+            // and `.runFinished` because both ask the reader for a decision; "it
+            // is talking again" asks for nothing, and a banner per recovery on a
+            // run that goes quiet between tool calls is noise. The stall's own
+            // banner is not withdrawn either — `UNUserNotificationCenter` is
+            // reachable only from a launched bundle, so that is unverifiable
+            // from `swift test` and is left alone rather than half-done.
+            mark(.startedTalkingAgain, runID: runID)
         case .runFinished(let runID, let cardID, _, _):
             // A run takes minutes and nobody watches it for all of them. One
             // Dock bounce, only when Elliot is not the front app — no
@@ -1284,7 +1298,7 @@ public final class AppModel {
         }
     }
 
-    /// Marks one run stalled in every copy the screen draws from.
+    /// Applies a silence notice to every copy of the run the screen draws from.
     ///
     /// Four collections hold runs and any of them can be the one on screen:
     /// `activeRuns` feeds the card's `RunningStrip`, `runsByCard` the selected
@@ -1292,25 +1306,17 @@ public final class AppModel {
     /// window. Marking three of four is a stall that shows on some screens and
     /// not others, which is worse than one that shows nowhere — so this walks
     /// all four, through one function.
-    func markStalled(runID: UUID) {
-        activeRuns = activeRuns.mapValues { Self.stalling(runID, $0) }
-        recentRuns = recentRuns.map { Self.stalling(runID, $0) }
-        runsByCard = runsByCard.mapValues { runs in runs.map { Self.stalling(runID, $0) } }
-        analysis?.markStalled(runID)
-    }
-
-    /// The rule itself: **only a run that is still running can stall.**
     ///
-    /// Pure and static so `swift test` can hold it, and written once rather than
-    /// four times. The guard is `RunScheduler.markStalled`'s, deliberately
-    /// spelled the same way: a run that finished between the idle watcher
-    /// noticing the silence and this arriving must keep the outcome it reached,
-    /// not be dragged back to a non-terminal state by a late notice.
-    nonisolated static func stalling(_ runID: UUID, _ run: SkillRun) -> SkillRun {
-        guard run.id == runID, run.state == .running else { return run }
-        var stalled = run
-        stalled.state = .stalled
-        return stalled
+    /// ⛔ **One walk for both directions, not two walks.** A `markResumed` beside
+    /// a `markStalled` would be four more `mapValues` to keep in step, and a
+    /// fifth collection added later would have to be remembered twice. Taking
+    /// the direction as an argument is what makes "the mirror was never written"
+    /// impossible to repeat: there is nothing left to write.
+    func mark(_ notice: RunSilence, runID: UUID) {
+        activeRuns = activeRuns.mapValues { $0.applying(notice, ifID: runID) }
+        recentRuns = recentRuns.map { $0.applying(notice, ifID: runID) }
+        runsByCard = runsByCard.mapValues { runs in runs.map { $0.applying(notice, ifID: runID) } }
+        analysis?.mark(notice, runID)
     }
 
     /// One event collapsed to one line, for `CardView`'s running strip and
