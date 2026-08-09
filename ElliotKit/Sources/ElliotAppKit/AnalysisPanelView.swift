@@ -1055,7 +1055,14 @@ struct ProposalEditor: View {
                 Button("Save") {
                     let edited = draft.applied(to: proposal)
                     Task {
-                        await model.updateProposal(edited)
+                        // ⛔ **Closes only when the write landed.** It used to
+                        // close unconditionally, so a failed save dismissed the
+                        // editor exactly like a successful one and the reader's
+                        // next sight was the old text — which reads as the app
+                        // having forgotten rather than as a write having failed
+                        // (#223). The panel's note carries the reason; the
+                        // editor staying open is what makes it findable.
+                        guard await model.updateProposal(edited) == nil else { return }
                         done()
                     }
                 }
