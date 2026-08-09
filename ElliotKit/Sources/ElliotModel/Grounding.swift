@@ -54,3 +54,19 @@ public enum Grounding: Sendable, Hashable {
         return missing == 0 ? .grounded : .missing(count: missing)
     }
 }
+
+public extension Grounding {
+    /// What the citations are worth. Data, like the other two weights.
+    var valueWeight: Double {
+        switch self {
+        // Unreachable from `CardValue.of`, which refuses an uncited card rather
+        // than scoring it — the same trade `Effort.unstated` makes.
+        case .notCited: 0.0
+        // A story whose citations do not check out may still be right, but it
+        // was not checkable, and an unattended queue is the last place to spend
+        // an agent on that.
+        case .missing: 0.3
+        case .grounded: 1.0
+        }
+    }
+}

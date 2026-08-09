@@ -107,6 +107,25 @@ public enum Effort: String, Codable, CaseIterable, Sendable, Hashable {
     }
 }
 
+public extension Effort {
+    /// What this size is worth: cheaper is worth more, because the queue is
+    /// spending a whole unattended agent per card either way.
+    ///
+    /// Data, like `AnalysisAngle.valueWeight`, and beside its own type so a new
+    /// size cannot reach the score without somebody choosing a number for it.
+    var valueWeight: Double {
+        switch self {
+        case .small: 1.0
+        case .medium: 0.6
+        case .large: 0.3
+        // Unreachable from `CardValue.of`, which refuses an unstated effort
+        // rather than scoring it. Zero rather than a plausible middle so that a
+        // caller that scores it anyway gets an obviously wrong answer.
+        case .unstated: 0.0
+        }
+    }
+}
+
 /// A place in the repository a proposal points at.
 ///
 /// The only objective fact available about an opinion: either the file is there

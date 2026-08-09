@@ -149,3 +149,37 @@ public enum AnalysisAngle: String, Codable, CaseIterable, Sendable, Hashable {
         }
     }
 }
+
+public extension AnalysisAngle {
+    /// What a card found through this lens is worth to a queue nobody is
+    /// watching.
+    ///
+    /// Data, exactly like `briefing`: adding a lens stays a case and a number,
+    /// and no code path anywhere branches on which lens a card came through. A
+    /// weight buried in a comparator would be the opposite — a rule you have to
+    /// go and find, in a file about sorting rather than about lenses.
+    var valueWeight: Double {
+        switch self {
+        case .bugs: 1.0
+        case .quickWins: 0.9
+        case .tests: 0.7
+        case .features: 0.6
+        case .uxAndUI: 0.6
+        case .techDebt: 0.5
+        case .docsAndDX: 0.4
+        case .bestPractices: 0.3
+        }
+    }
+
+    /// What a card that came through no lens is worth.
+    ///
+    /// Strictly inside the range rather than at the bottom of it: a card written
+    /// by hand or imported from GitHub was chosen by a person, and putting every
+    /// one of those below every machine-found card is the same failure
+    /// `CardValue.neverAppraised` exists to prevent, arriving one field over.
+    static let unlensedWeight: Double = 0.6
+
+    /// The name a `Signal` carries for a card with no lens. Not a lens name, and
+    /// not empty: an unnamed signal reads as a missing one.
+    static let unlensedCode = "no_lens"
+}
