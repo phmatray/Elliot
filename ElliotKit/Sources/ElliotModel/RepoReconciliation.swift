@@ -461,8 +461,26 @@ public enum RepoReconciler {
                 fixes: [.register(path: actual)])
         }
 
+        // ⛔ **Not `detail: actual`.** The path is carried by `path`, and this
+        // was the one verdict of ten whose `detail` was not a sentence — so a
+        // row rendered straight from the reconciler showed the same path twice,
+        // in two faces (#218).
+        //
+        // ⚠️ It is deliberately **not** "Up to date." That is
+        // `RepoRegistryService.explain`'s sentence for the *probe's* `.ok`, and
+        // the two `.ok`s do not mean the same thing: the probe has fetched and
+        // found the clone clean, attached and level with upstream, whereas this
+        // one has only established that the repository is registered and cloned
+        // where the layout says it belongs. Copying that sentence here would be
+        // a claim about git made by code that never ran it.
+        //
+        // Fixed here rather than by having the view suppress a `detail` equal to
+        // `path`: that is a reader compensating for a writer, and it leaves the
+        // duplicate in the model for the next reader to meet. Same argument as
+        // #191, one type over.
         return RepoRow(
             id: name, nameWithOwner: name, path: actual, repoID: repo.id,
-            visibility: remote.repoVisibility, issue: .ok, detail: actual)
+            visibility: remote.repoVisibility, issue: .ok,
+            detail: "Cloned where it belongs.")
     }
 }

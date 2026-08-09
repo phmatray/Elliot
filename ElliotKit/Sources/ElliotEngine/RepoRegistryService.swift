@@ -303,6 +303,13 @@ public struct RepoRegistryService: Sendable {
     /// The observation is what git actually saw — "Up to date." — which is the
     /// half worth reporting. Where git overruled, the two are the same value and
     /// this is exactly the behaviour an `.ok` row has always had.
+    ///
+    /// ⚠️ The `!= .ok` arm still **discards** the reconciler's sentence, and
+    /// since #218 that is a judgement rather than a tidy-up. It used to drop a
+    /// duplicate of the row's own path; it now drops *"Cloned where it
+    /// belongs."*, which "Up to date." already implies — the probe fetched, so
+    /// it knows strictly more. Every other probeable verdict keeps its sentence
+    /// because the reconciler's half is not implied by git's.
     private static func detail(observed: RepoIssue, refining row: RepoRow, path: String) -> String {
         guard row.issue.isProbeable, row.issue != .ok else { return explain(observed, path: path) }
         return "\(explain(observed, path: path)) \(row.detail)"
