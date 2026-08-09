@@ -41,3 +41,53 @@ public struct Spend: Codable, Sendable, Hashable {
         return "\(amount) — at least; \(unknownCost) of \(runs) runs never reported a cost"
     }
 }
+
+/// A `Spend` together with the runs it could not have counted.
+///
+/// `BoardStore.spend(since:)` keys on `endedAt`, so a run still going
+/// contributes nothing — stated at the query and then lost, because the only
+/// thing a screen could ask was `Spend.isComplete`, which counts *finished*
+/// runs whose cost went unrecorded and is therefore `true` throughout an
+/// eight-lens analysis. The day read near zero while the money was being spent.
+///
+/// So the pair is the thing a reader is shown, for the reason `CardOutcome`
+/// exists: a caller that could render the figure and forget the caveat is the
+/// bug the type prevents. It is **not** stored and not sent anywhere —
+/// `RepoBoardTally` still holds a bare `Spend`, and widening the wire for a
+/// number that is only true for one instant would be worse than useless.
+///
+/// ⛔ **Never a dollar estimate for a run still going.** A count is a fact; a
+/// projected cost is the invention `unknownCost` exists to prevent.
+public struct SpendFigure: Sendable, Equatable {
+    public var spend: Spend
+    /// Runs going right now, which by definition have no `endedAt` yet.
+    public var inFlight: Int
+
+    public init(spend: Spend, inFlight: Int) {
+        self.spend = spend
+        self.inFlight = inFlight
+    }
+
+    /// The bare number, for the place a glance lands first.
+    public func amount(locale: Locale = .current) -> String {
+        MoneyFormat.usd(spend.totalUSD, locale: locale)
+    }
+
+    /// Whether the figure accounts for everything — asked here rather than of
+    /// `Spend`, which can only answer the narrower half.
+    public var isComplete: Bool { spend.isComplete && inFlight == 0 }
+
+    /// One sentence covering both reasons a total can be a floor.
+    public func sentence(locale: Locale = .current) -> String {
+        guard inFlight > 0 else { return spend.sentence(locale: locale) }
+        let flight =
+            inFlight == 1
+            ? "1 run in flight is not in this figure yet"
+            : "\(inFlight) runs in flight are not in this figure yet"
+        guard spend.unknownCost > 0 else {
+            return "\(amount(locale: locale)) — at least; \(flight)"
+        }
+        return
+            "\(amount(locale: locale)) — at least; \(spend.unknownCost) of \(spend.runs) runs never reported a cost, and \(flight)"
+    }
+}

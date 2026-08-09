@@ -896,11 +896,14 @@ struct StatusBar: View {
                 )
             }
 
+            // `todayFigure`, not `spentToday`: the store's query keys on
+            // `endedAt`, so the runs going right now are absent from this
+            // number and the sentence is the only place that can say so.
             figure(
-                text: MoneyFormat.usd(model.spentToday.totalUSD),
+                text: model.todayFigure.amount(),
                 tint: model.isOverDailyCeiling ? Palette.refused : Palette.quiet,
-                help: "Spent today — \(model.spentToday.sentence()). Click to set a ceiling.",
-                spoken: "spent today, \(model.spentToday.sentence())",
+                help: "Spent today — \(model.todayFigure.sentence()). Click to set a ceiling.",
+                spoken: "spent today, \(model.todayFigure.sentence())",
                 face: .operations
             )
 

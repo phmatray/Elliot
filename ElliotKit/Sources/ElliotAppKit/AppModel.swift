@@ -66,6 +66,17 @@ public final class AppModel {
     public private(set) var spentToday: Spend = .nothing
     public private(set) var isOverDailyCeiling = false
 
+    /// Today's spend *and* the runs it cannot have counted — the pair, because
+    /// `spentToday` alone reads as complete while the money is being spent.
+    ///
+    /// The store's query keys on `endedAt`, so an eight-lens analysis
+    /// contributes nothing to this figure until it finishes and then lands on it
+    /// all at once. Every screen showing the day's total reads this rather than
+    /// `spentToday`, so there is one answer to "is that the whole bill".
+    public var todayFigure: SpendFigure {
+        SpendFigure(spend: spentToday, inFlight: occupancy.writers + occupancy.analyses)
+    }
+
     /// One row per repository of the configured owners: GitHub's list, the disk
     /// and the store, reconciled. The judgement is `RepoReconciler`'s — the page
     /// renders it and never decides anything itself.
@@ -1728,6 +1739,23 @@ public final class AppModel {
         await refreshOccupancy()
     }
 
+    /// Discards **one** waiting run.
+    ///
+    /// The engine could always do this — `cancel` drops the id and writes
+    /// `.cancelled` with an `endedAt`, so the launch sweep cannot revive it —
+    /// and no UI reached it, which left "Discard all" as the only way to clear
+    /// one stuck entry. Nothing new is decided here; this is the missing door.
+    ///
+    /// Only ever called for a **queued** run. Cancelling a running one is a
+    /// SIGTERM and belongs to the band that shows what is running, so the two
+    /// are not offered by the same button.
+    public func cancelQueued(runID: UUID) async {
+        guard let scheduler else { return }
+        await scheduler.cancel(runID: runID)
+        status = "Discarded 1 queued run. Nothing running was stopped."
+        await refreshOccupancy()
+    }
+
     /// Saves the ceiling and applies it, in that order, for the same reason
     /// `updateLimits` does: a failed write must not leave the running scheduler
     /// enforcing something the store will not restore.
@@ -1780,6 +1808,55 @@ public final class AppModel {
                 activeRunIDs: activeRuns.mapValues(\.id)
             )
         )
+    }
+
+    /// Which repository Up next is showing, and whether it shows blocked rows.
+    ///
+    /// On `AppModel` rather than in the view, and not because a menu needs it:
+    /// the Up next list is on its way to being a pane inside the board window,
+    /// and hiding a pane destroys the view. `@State` here would silently reset
+    /// the reader's filter every time the pane closed — the lesson the analysis
+    /// panel's own state already records.
+    public var nextStepsRepoFilter: UUID?
+    public var nextStepsShowsBlocked = true
+
+    /// `nextSteps` as the reader asked to see it.
+    ///
+    /// ⛔ The repository choice filters the **candidates**, so the board is
+    /// asked a smaller question rather than given a smaller answer. The blocked
+    /// toggle cannot: whether a step is blocked *is* `evaluateMove`'s verdict,
+    /// which only exists once the ranking has run — so it is applied after, by
+    /// `nextStepsWindow`, which reads that verdict and never forms one.
+    ///
+    /// `nextSteps` itself stays unfiltered on purpose: it is what `board_next`
+    /// answers, and the Operations band summarises the board rather than this
+    /// screen's view of it.
+    public var nextStepsView: NextStepsWindow {
+        let candidates = nextCandidates(
+            cards: nextStepsRepoFilter.map { id in cards.filter { $0.repoID == id } } ?? cards,
+            repos: repos,
+            activeRunIDs: activeRuns.mapValues(\.id)
+        )
+        return nextStepsWindow(rankNextSteps(candidates), showsBlocked: nextStepsShowsBlocked)
+    }
+
+    /// The repositories worth offering as a filter — those with a card the board
+    /// could advance. Offering one that can only ever answer "nothing" is a
+    /// choice that punishes the reader for making it.
+    public var nextStepsRepoChoices: [Repo] {
+        let live = Set(nextSteps.map(\.card.repoID))
+        return repos.filter { live.contains($0.id) }.sorted { $0.nameWithOwner < $1.nameWithOwner }
+    }
+
+    /// The chosen repository's name, or nil when nothing is chosen **or** the
+    /// choice no longer names a repository the board knows.
+    ///
+    /// The second half is the distinction four MCP tools each had to be taught
+    /// separately: an unknown repository is not "no filter". Here it decides
+    /// whether an empty list says "this repository has nothing" or "the filter
+    /// points at a repository that is gone".
+    public var nextStepsRepoFilterName: String? {
+        nextStepsRepoFilter.flatMap { id in repos.first { $0.id == id }?.nameWithOwner }
     }
 
     /// One query for the whole board rather than one per card.
