@@ -56,3 +56,167 @@ struct ValueWeightsTests {
         #expect(Grounding.notCited.valueWeight == 0)
     }
 }
+
+private let then = Date(timeIntervalSince1970: 1_700_000_000)
+
+private func appraised(
+    title: String = "Bound the await",
+    angle: AnalysisAngle? = .bugs,
+    effort: Effort? = .small,
+    evidence: [Evidence]? = [Evidence(path: "Sources/A.swift", line: 1, exists: true)],
+    appraisedAt: Date? = then,
+    createdAt: Date = then
+) -> Card {
+    Card(
+        repoID: UUID(), title: title, angle: angle,
+        columnEnteredAt: createdAt, createdAt: createdAt, updatedAt: createdAt,
+        effort: effort, evidence: evidence, appraisedAt: appraisedAt
+    )
+}
+
+@Suite("Card value")
+struct CardValueTests {
+
+    /// The third state, and the reason `appraisedAt` is a column of its own.
+    /// Without it, "nobody has ever appraised this card" and "this card was
+    /// appraised and had no signal" are the same value.
+    @Test("A card nothing has read is never appraised, not a zero")
+    func nothingReadIsNeverAppraised() {
+        #expect(CardValue.of(appraised(appraisedAt: nil, createdAt: then)) == .neverAppraised)
+        // Even when the other two happen to be filled: the timestamp is the one
+        // that says a reading happened, and content alone cannot say it.
+        let odd = appraised(effort: .small, evidence: [], appraisedAt: nil)
+        #expect(CardValue.of(odd) == .neverAppraised)
+    }
+
+    /// The verdict is decided on content, never on the column: a card that was
+    /// read and cited nothing is refused, and it is refused for the reason it
+    /// actually has.
+    @Test("A card that cites nothing is ungradeable, not badly ranked")
+    func uncitedIsUngradeable() {
+        #expect(CardValue.of(appraised(evidence: [])) == .ungradeable(because: .notCited))
+        #expect(CardValue.of(appraised(evidence: nil)) == .ungradeable(because: .notCited))
+    }
+
+    /// The other trigger. A `.grounded` payload on an `.ungradeable` can only
+    /// mean the effort was the problem, because the grounding was checked first
+    /// and was fine — which is what lets one sentence say the truth about two
+    /// different causes.
+    @Test("A card whose effort was never stated is ungradeable, and says so")
+    func unstatedEffortIsUngradeable() {
+        let card = appraised(effort: .unstated)
+        #expect(CardValue.of(card) == .ungradeable(because: .grounded))
+        #expect(CardValue.of(card).summary.contains("effort"))
+        #expect(CardValue.of(appraised(effort: nil)) == .ungradeable(because: .grounded))
+
+        let uncited = appraised(evidence: [])
+        #expect(CardValue.of(uncited).summary.contains("cited"))
+    }
+
+    /// Citations that do not check out lower the score; they do not disqualify.
+    /// A story whose files moved may still be right, and refusing it outright
+    /// would make a rename look like an invention.
+    @Test("Missing files are ranked lower, not refused")
+    func missingFilesAreRankedLower() throws {
+        let grounded = appraised()
+        let broken = appraised(
+            evidence: [Evidence(path: "Sources/Nowhere.swift", line: 9, exists: false)]
+        )
+
+        let high = try #require(CardValue.of(grounded).rankable)
+        let low = try #require(CardValue.of(broken).rankable)
+        #expect(high > low)
+    }
+
+    /// The score *is* the sum of what is listed, so the number and its reason
+    /// cannot drift: a weight that is not in `because` is not in the score.
+    @Test("A ranked card explains its own number")
+    func scoreIsTheSumOfItsSignals() throws {
+        guard case .ranked(let score, let because) = CardValue.of(appraised()) else {
+            Issue.record("a fully appraised card must rank")
+            return
+        }
+        #expect(because.count == 3)
+        #expect(abs(score - because.reduce(0) { $0 + $1.weight }) < 0.000_001)
+        #expect(because.map(\.name).contains("bugs"))
+        #expect(because.map(\.name).contains("small"))
+        #expect(because.map(\.name).contains("grounded"))
+        #expect(because.allSatisfy { !$0.name.isEmpty })
+    }
+
+    @Test("A card with no lens still ranks, under a name of its own")
+    func unlensedCardStillRanks() throws {
+        guard case .ranked(_, let because) = CardValue.of(appraised(angle: nil)) else {
+            Issue.record("a hand-written card that was appraised must still rank")
+            return
+        }
+        #expect(because.map(\.name).contains(AnalysisAngle.unlensedCode))
+    }
+
+    // MARK: - What may never enter a comparator
+
+    /// The claim this whole type exists for. A sort has to put an absence
+    /// *somewhere*, and both places are wrong: at the bottom, auto-dev never
+    /// engages a hand-written card; at the top, it engages first what nobody has
+    /// measured. So an absence is refused by name and never given a position.
+    @Test("Neither ungradeable nor never-appraised carries a number a sort could use")
+    func absenceHasNoNumber() {
+        #expect(CardValue.neverAppraised.rankable == nil)
+        #expect(CardValue.ungradeable(because: .notCited).rankable == nil)
+        #expect(CardValue.ungradeable(because: .grounded).rankable == nil)
+        #expect(CardValue.ungradeable(because: .missing(count: 2)).rankable == nil)
+    }
+
+    @Test("Ranking keeps the refusals out of the order entirely")
+    func refusalsNeverJoinTheOrder() {
+        let cheap = appraised(title: "Cheap and grounded", effort: .small)
+        let dear = appraised(title: "Large and grounded", effort: .large)
+        let silent = appraised(title: "Cited nothing", evidence: [])
+        let unread = appraised(title: "Never read", appraisedAt: nil)
+
+        let ranking = CardRanking.rank([silent, dear, unread, cheap])
+
+        #expect(ranking.ranked.map(\.card.title) == ["Cheap and grounded", "Large and grounded"])
+        #expect(ranking.ranked.allSatisfy { $0.value.rankable != nil })
+        #expect(ranking.refused.map(\.card.title) == ["Cited nothing", "Never read"])
+        #expect(ranking.refused.allSatisfy { $0.value.rankable == nil })
+    }
+
+    /// And the refusals keep the order they were given rather than acquiring one
+    /// — which is the difference between "these cannot be ranked" and "these
+    /// ranked last".
+    @Test("The refused list is the caller's order, never a value order")
+    func refusalsAreNotSorted() {
+        let silent = appraised(title: "Cited nothing", evidence: [])
+        let unread = appraised(title: "Never read", appraisedAt: nil)
+
+        #expect(CardRanking.rank([silent, unread]).refused.map(\.card.title)
+            == ["Cited nothing", "Never read"])
+        #expect(CardRanking.rank([unread, silent]).refused.map(\.card.title)
+            == ["Never read", "Cited nothing"])
+    }
+
+    /// Two cards that score the same must come back in the same order every
+    /// time. An unstable sort here reshuffles the queue between two reads of an
+    /// unchanged board, which reads as the board changing its mind.
+    @Test("Equal scores are broken by age, then by id — the order is total")
+    func tiesAreBrokenDeterministically() {
+        let older = appraised(title: "Older", createdAt: then)
+        let newer = appraised(title: "Newer", createdAt: then.addingTimeInterval(60))
+
+        #expect(CardRanking.rank([newer, older]).ranked.map(\.card.title) == ["Older", "Newer"])
+        #expect(CardRanking.rank([older, newer]).ranked.map(\.card.title) == ["Older", "Newer"])
+    }
+
+    @Test("Every verdict says one sentence")
+    func everyVerdictSpeaks() {
+        let sentences = [
+            CardValue.of(appraised()).summary,
+            CardValue.of(appraised(evidence: [])).summary,
+            CardValue.of(appraised(effort: .unstated)).summary,
+            CardValue.neverAppraised.summary,
+        ]
+        #expect(sentences.allSatisfy { $0.hasSuffix(".") })
+        #expect(Set(sentences).count == 4)
+    }
+}
