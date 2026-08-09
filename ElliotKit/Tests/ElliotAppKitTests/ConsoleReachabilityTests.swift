@@ -106,15 +106,17 @@ struct ConsoleReachabilityTests {
     /// A ratchet, not a description. It fails in **both** directions on purpose:
     /// forwards it says which screens still owe a migration, and backwards it
     /// catches a face quietly reverting to a window.
-    @Test("Operations and Up next are faces; the rest are still scenes")
+    @Test("Four screens are faces; Archive and New story are still scenes")
     func theMigrationIsWhereItSaysItIs() throws {
         let app = try Self.source("ElliotApp", "ElliotApp.swift")
         let board = try Self.source("ElliotAppKit", "BoardView.swift")
 
-        #expect(Self.reachableFaces(in: [app, board]) == [.operations, .nextSteps])
+        #expect(
+            Self.reachableFaces(in: [app, board])
+                == [.operations, .nextSteps, .preflight, .repositories])
         #expect(
             Self.declaredScenes(in: app)
-                == ["board", "repositories", "preflight", "archive", "newStory"],
+                == ["board", "archive", "newStory"],
             "when the last of these becomes a face this is [\"board\"], and #232 closes"
         )
     }

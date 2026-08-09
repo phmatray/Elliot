@@ -26,7 +26,7 @@ public enum ElliotWindows {
     /// *that* is constant — a screen may change how it is reached and may not
     /// stop existing.
     public static let all = [
-        "board", "repositories", "preflight", "archive", "newStory",
+        "board", "archive", "newStory",
     ]
 
     /// For prose: `"board, repositories, …"`.

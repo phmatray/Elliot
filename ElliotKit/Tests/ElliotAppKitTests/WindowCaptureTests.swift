@@ -212,7 +212,7 @@ struct WindowCaptureTests {
         ))
         // A declared scene that is simply shut: the answer names what *is* open,
         // and does not name the one that was asked for.
-        #expect(AppKitWindowCapture.failure(for: "preflight", among: open) == .notOpen(open: ["board"]))
+        #expect(AppKitWindowCapture.failure(for: "archive", among: open) == .notOpen(open: ["board"]))
         // And a window that is open is not a failure at all.
         #expect(AppKitWindowCapture.failure(for: "board", among: open) == nil)
     }
@@ -330,23 +330,24 @@ struct WindowCaptureTests {
 
     @Test("A capture reports the window it photographed, not the one it was asked for")
     func capturedFieldsDescribeTheWindow() async throws {
-        // Any window that is not the board serves; this said `operations` until
-        // that screen became a `ConsoleFace` and its scene was deleted, at which
-        // point the capture correctly refused an id it no longer knows. The
-        // claim under test is about the *fields*, not about which screen.
-        let window = makeWindow(id: "preflight", title: "Preflight")
+        // ⚠️ **`board`, deliberately, and it has moved twice already.** This said
+        // `operations`, then `preflight`, and each time the console retired that
+        // scene the capture correctly refused an id it no longer knows. The claim
+        // under test is about the *fields*, not about which screen — so it is
+        // pinned to the one scene the whole migration leaves standing.
+        let window = makeWindow(id: "board", title: "Elliot")
         window.layoutIfNeeded()
 
         let capture = AppKitWindowCapture(windows: { [window] })
         guard case .success(let dto) = await capture.capture(
-            window: "preflight", maxInlineBytes: 8 * 1024 * 1024
+            window: "board", maxInlineBytes: 8 * 1024 * 1024
         ) else {
             Issue.record("expected a capture")
             return
         }
 
-        #expect(dto.window == "preflight")
-        #expect(dto.title == "Preflight")
+        #expect(dto.window == "board")
+        #expect(dto.title == "Elliot")
         #expect(dto.width > 0)
         #expect(dto.height > 0)
         #expect(dto.scale >= 1)

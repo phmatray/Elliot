@@ -104,10 +104,6 @@ struct ElliotApp: App {
         // does: `RepositoriesView` and `PreflightView` were written as
         // `NavigationLink` destinations and still carry `.navigationTitle` and
         // `.safeAreaInset`, both of which want that container.
-        Window("Repositories", id: "repositories") {
-            NavigationStack { RepositoriesView() }.environment(model)
-        }
-        .defaultSize(width: 900, height: 700)
 
         // Operations and Up next were windows here until the console landed.
         // They are `ConsoleFace` cases now, unfolded above the status bar in
@@ -120,10 +116,6 @@ struct ElliotApp: App {
         // this one answers `board_screenshot` with `window_not_open`, because
         // opening one takes a click and an agent has no click.
 
-        Window("Preflight", id: "preflight") {
-            NavigationStack { PreflightView() }.environment(model)
-        }
-        .defaultSize(width: 820, height: 720)
 
         // Everything the board's Done horizon is not drawing. Wrapped, like
         // Repositories and Operations: it carries a `.navigationTitle` and a
@@ -342,8 +334,8 @@ private struct OpenWindowButtons: View {
         Button("Up Next") { model.showConsoleFace(.nextSteps) }
         // No Analysis entry: it is not a window any more (#151). Show/Hide
         // Analysis lives with the other View items, beside Show/Hide Details.
-        Button("Repositories") { openWindow(id: "repositories") }
-        Button("Preflight") { openWindow(id: "preflight") }
+        Button("Repositories") { model.showConsoleFace(.repositories) }
+        Button("Preflight") { model.showConsoleFace(.preflight) }
         Button("Archive") { openWindow(id: "archive") }
     }
 }

@@ -81,7 +81,47 @@ struct EscapeRouteTests {
         }
     }
 
-    // MARK: - 3. Handledness
+    // MARK: - 3. A dialog outranks everything
+
+    /// ⛔ The case #265 introduced. `ForgetConfirmation` was presented by the
+    /// Preflight and Repositories *windows*, so it could not coexist with the
+    /// board; as console faces it is presented inside this very window. Escape
+    /// must reach the dialog, not fold the console out from under it.
+    @Test("An open dialog takes Escape, whatever else is on the board")
+    func aDialogOutranksTheConsoleAndTheSelection() {
+        for consoleIsOpen in [true, false] {
+            for hasSelectedCard in [true, false] {
+                let route = EscapeRoute.next(
+                    consoleIsOpen: consoleIsOpen, hasSelectedCard: hasSelectedCard,
+                    hasOpenDialog: true)
+                #expect(
+                    route == .ignored,
+                    """
+                    console=\(consoleIsOpen) selected=\(hasSelectedCard) resolved to \(route) \
+                    with a dialog up — the question would be left attached to a screen that had \
+                    just folded away
+                    """
+                )
+            }
+        }
+    }
+
+    @Test("With no dialog the order is unchanged, so the parameter defaults safely")
+    func theDialogParameterDefaultsToTodaysBehaviour() {
+        for consoleIsOpen in [true, false] {
+            for hasSelectedCard in [true, false] {
+                #expect(
+                    EscapeRoute.next(
+                        consoleIsOpen: consoleIsOpen, hasSelectedCard: hasSelectedCard)
+                        == EscapeRoute.next(
+                            consoleIsOpen: consoleIsOpen, hasSelectedCard: hasSelectedCard,
+                            hasOpenDialog: false)
+                )
+            }
+        }
+    }
+
+    // MARK: - 4. Handledness
 
     @Test("Only the route that does nothing reports itself as unhandled")
     func handlednessFollowsWhetherAnythingHappened() {
