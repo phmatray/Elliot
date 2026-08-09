@@ -81,6 +81,9 @@ private func rewindToV1(_ url: URL) throws {
         try db.execute(sql: #"DROP INDEX "card_on_repo_pr""#)
         try db.execute(sql: #"DROP TABLE "dismissedExternal""#)
         try db.execute(sql: #"ALTER TABLE "card" DROP COLUMN "angle""#)
+        try db.execute(sql: #"ALTER TABLE "card" DROP COLUMN "effort""#)
+        try db.execute(sql: #"ALTER TABLE "card" DROP COLUMN "evidence""#)
+        try db.execute(sql: #"ALTER TABLE "card" DROP COLUMN "appraisedAt""#)
         // Every post-v1 migration this file undoes, and asserted rather than
         // assumed: `DELETE` of a row that is not there succeeds, so a stale
         // identifier here would leave this whole file testing an upgrade that
@@ -90,13 +93,13 @@ private func rewindToV1(_ url: URL) throws {
                 DELETE FROM "grdb_migrations"
                 WHERE "identifier" IN (
                     'v2_repositoryLayout', 'v3_cardIdempotencyKey', 'v5_githubImport',
-                    'v7_cardAngle'
+                    'v7_cardAngle', 'v12_cardAppraisal'
                 )
                 """
         )
         precondition(
-            db.changesCount == 4,
-            "rewindToV1 removed \(db.changesCount) migration rows, expected 4"
+            db.changesCount == 5,
+            "rewindToV1 removed \(db.changesCount) migration rows, expected 5"
         )
     }
 }
@@ -427,6 +430,208 @@ struct SchemaUpgradeTests {
 
         let back = try await store.cards(repoID: repository.id)
         #expect(back.first { $0.id == accepted.id }?.angle == .bugs)
+    }
+
+    /// The v12 migration, over rows that were already there — and its backfill,
+    /// which is v7's precedent exactly. `storyProposal` has carried the effort,
+    /// the resolved citations and the moment they were resolved since v4, next
+    /// to the id of the card it produced, so this reads a fact rather than
+    /// inferring one. Without it every existing board would read as never
+    /// appraised, and the feature would look like a feature that does not work.
+    @Test("A board upgraded to v12 gets its accepted cards' appraisal back")
+    func migrationBackfillsAppraisalOverExistingRows() async throws {
+        let scratch = try Scratch()
+        let repository = repo()
+        let accepted = card(repoID: repository.id, title: "Bound the await")
+        let orphan = card(repoID: repository.id, title: "Written by hand")
+
+        do {
+            let old = try BoardStore.open(at: scratch.database)
+            try await old.saveRepo(repository)
+            let analysis = Analysis(repoID: repository.id, angles: [.techDebt], createdAt: then)
+            try await old.saveAnalysis(analysis)
+            try await old.saveCard(accepted)
+            try await old.saveCard(orphan)
+            try await old.saveProposal(
+                StoryProposal(
+                    analysisID: analysis.id, runID: UUID(), repoID: repository.id,
+                    angle: .techDebt, title: "Bound the await",
+                    story: UserStory(
+                        role: "maintainer", want: "a bounded wait", benefit: "no hangs"
+                    ),
+                    evidence: [Evidence(path: "Sources/A.swift", line: 7, exists: true)],
+                    effort: .large,
+                    status: .accepted, acceptedCardID: accepted.id, createdAt: then
+                )
+            )
+        }
+        try rewindToV1(scratch.database)
+        // The rewind has to have actually happened, or this upgrades a database
+        // that already had the columns and proves nothing — the same guard the
+        // idempotency-key and lens tests above use, for the same reason.
+        #expect(!(try columnNames(of: "card", at: scratch.database).contains("appraisedAt")))
+
+        let upgraded = try BoardStore.open(at: scratch.database)
+
+        let back = try await upgraded.cards(repoID: repository.id)
+        let filled = try #require(back.first { $0.id == accepted.id })
+        #expect(filled.effort == .large)
+        #expect(filled.evidence?.count == 1)
+        #expect(filled.evidence?.first?.path == "Sources/A.swift")
+        #expect(filled.evidence?.first?.line == 7)
+        #expect(filled.evidence?.first?.exists == true)
+        // The moment the citations were resolved, not the moment of the upgrade:
+        // dating the reading to the migration would make every old board look
+        // freshly measured.
+        #expect(filled.appraisedAt == then)
+
+        // Absent rather than defaulted, and all three together: nothing ever
+        // read this card, which is the third state the columns exist to carry.
+        let untouched = try #require(back.first { $0.id == orphan.id })
+        #expect(untouched.effort == nil)
+        #expect(untouched.evidence == nil)
+        #expect(untouched.appraisedAt == nil)
+    }
+
+    /// The backfill must not overwrite an appraisal the card already carries.
+    ///
+    /// `backfillCardAppraisals` is public and idempotent by design, and the same
+    /// statement runs again on every upgrade path that replays migrations. A
+    /// card re-appraised since would otherwise be silently reset to whatever its
+    /// original proposal said — the identical trade `WHERE "angle" IS NULL`
+    /// makes one migration up.
+    @Test("Re-running the appraisal backfill leaves an appraisal that is already set alone")
+    func appraisalBackfillDoesNotOverwrite() async throws {
+        let scratch = try Scratch()
+        let store = try BoardStore.open(at: scratch.database)
+        let repository = repo()
+        try await store.saveRepo(repository)
+
+        let analysis = Analysis(repoID: repository.id, angles: [.techDebt], createdAt: then)
+        try await store.saveAnalysis(analysis)
+
+        var accepted = card(repoID: repository.id, title: "Bound the await")
+        accepted.effort = .small
+        accepted.evidence = []
+        accepted.appraisedAt = then.addingTimeInterval(60)
+        try await store.saveCard(accepted)
+
+        try await store.saveProposal(
+            StoryProposal(
+                analysisID: analysis.id, runID: UUID(), repoID: repository.id,
+                angle: .techDebt, title: "Bound the await",
+                story: UserStory(role: "maintainer", want: "a bounded wait", benefit: "no hangs"),
+                evidence: [Evidence(path: "Sources/A.swift", line: 7, exists: true)],
+                effort: .large,
+                status: .accepted, acceptedCardID: accepted.id, createdAt: then
+            )
+        )
+
+        try await store.backfillCardAppraisals()
+        try await store.backfillCardAppraisals()
+
+        let back = try await store.cards(repoID: repository.id)
+        #expect(back.first { $0.id == accepted.id }?.effort == .small)
+        #expect(back.first { $0.id == accepted.id }?.appraisedAt == then.addingTimeInterval(60))
+    }
+
+    /// The measurement the schema decision rests on, taken rather than assumed.
+    ///
+    /// `evidence` is `[Evidence]?` and not `[]` because a file written before v12
+    /// has no column at all, and GRDB decodes an absent optional as `nil` — the
+    /// reasoning written at `BoardStore.openReadOnly`. That reasoning is not
+    /// allowed into a pull request body until this has run: rewind a store below
+    /// v12, open it with **this** build through `openReadOnly` — which never
+    /// migrates, so the columns really are absent at read time — and read the
+    /// cards back.
+    ///
+    /// `openReadOnly` and not `open` is the whole configuration: `open` would
+    /// migrate the file and add the columns before anything read them, which is
+    /// exactly the measurement that proves nothing.
+    @Test("A build that knows the appraisal columns reads a file that has none")
+    func appraisalColumnsAreAbsentRatherThanFatal() async throws {
+        let scratch = try Scratch()
+        let repository = repo()
+        let kept = card(repoID: repository.id, title: "Written before the appraisal")
+
+        do {
+            let old = try BoardStore.open(at: scratch.database)
+            try await old.saveRepo(repository)
+            try await old.saveCard(kept)
+        }
+        try rewindToV1(scratch.database)
+        let columns = try columnNames(of: "card", at: scratch.database)
+        #expect(!columns.contains("effort"))
+        #expect(!columns.contains("evidence"))
+        #expect(!columns.contains("appraisedAt"))
+
+        let helper = try BoardStore.openReadOnly(at: scratch.database)
+        let back = try await helper.cards(repoID: repository.id)
+
+        #expect(back.count == 1)
+        #expect(back[0].title == "Written before the appraisal")
+        // Absent, not defaulted, and not fatal. Nothing could have written a
+        // value the column did not exist to hold, so `nil` is the truth.
+        #expect(back[0].effort == nil)
+        #expect(back[0].evidence == nil)
+        #expect(back[0].appraisedAt == nil)
+    }
+
+    /// The row guard and the assignment guard the same thing, which is the one
+    /// place this statement is not v7's shape.
+    ///
+    /// `backfillCardAnglesSQL` writes the single column it filters on, so it is
+    /// structurally incapable of destroying anything: a row it visits has NULL
+    /// there by definition. This one filters on `appraisedAt` and assigns three
+    /// columns, so a card with an effort but no `appraisedAt` — and no proposal
+    /// to read one from — would have had that effort assigned NULL by a subquery
+    /// with nothing to return. `EXISTS` is what keeps the two guards aligned.
+    ///
+    /// The appraised card is here so the fix cannot be mistaken for switching the
+    /// backfill off: the statement must still fill in the card that has a
+    /// proposal while leaving the one that has none alone.
+    @Test("The appraisal backfill blanks no card it has nothing to say about")
+    func appraisalBackfillDoesNotBlankACardWithNoProposal() async throws {
+        let scratch = try Scratch()
+        let store = try BoardStore.open(at: scratch.database)
+        let repository = repo()
+        try await store.saveRepo(repository)
+
+        let analysis = Analysis(repoID: repository.id, angles: [.techDebt], createdAt: then)
+        try await store.saveAnalysis(analysis)
+
+        let appraised = card(repoID: repository.id, title: "Bound the await")
+        try await store.saveCard(appraised)
+        try await store.saveProposal(
+            StoryProposal(
+                analysisID: analysis.id, runID: UUID(), repoID: repository.id,
+                angle: .techDebt, title: "Bound the await",
+                story: UserStory(role: "maintainer", want: "a bounded wait", benefit: "no hangs"),
+                evidence: [Evidence(path: "Sources/A.swift", line: 7, exists: true)],
+                effort: .large,
+                status: .accepted, acceptedCardID: appraised.id, createdAt: then
+            )
+        )
+
+        // Written by hand, never proposed: an effort and a citation, and no
+        // `appraisedAt`, which is exactly the row the filter selects.
+        var handwritten = card(repoID: repository.id, title: "Written by hand", orderIndex: 2048)
+        handwritten.effort = .small
+        handwritten.evidence = [Evidence(path: "Sources/B.swift", line: 3, exists: true)]
+        try await store.saveCard(handwritten)
+
+        try await store.backfillCardAppraisals()
+
+        let back = try await store.cards(repoID: repository.id)
+        let untouched = try #require(back.first { $0.id == handwritten.id })
+        #expect(untouched.effort == .small)
+        #expect(untouched.evidence?.first?.path == "Sources/B.swift")
+        #expect(untouched.appraisedAt == nil)
+
+        // And the card that does have a proposal is still filled in.
+        let filled = try #require(back.first { $0.id == appraised.id })
+        #expect(filled.effort == .large)
+        #expect(filled.appraisedAt == then)
     }
 
     // MARK: - A migration that ran under a name this build no longer registers

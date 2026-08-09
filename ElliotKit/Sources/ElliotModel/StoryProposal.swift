@@ -15,7 +15,7 @@ public struct ProposedStory: Codable, Sendable, Hashable {
     public var rationale: String
     /// `"Sources/ElliotProcess/ClaudeRunner.swift:142"`. At least one required.
     public var evidence: [String]
-    /// `small` | `medium` | `large`; anything else degrades to medium.
+    /// `small` | `medium` | `large`; anything else is recorded as unstated.
     public var effort: String
 
     public init(
@@ -26,7 +26,7 @@ public struct ProposedStory: Codable, Sendable, Hashable {
         acceptanceCriteria: [String] = [],
         rationale: String = "",
         evidence: [String] = [],
-        effort: String = "medium"
+        effort: String = ""
     ) {
         self.title = title
         self.role = role
@@ -59,7 +59,7 @@ public struct ProposedStory: Codable, Sendable, Hashable {
             ?? []
         rationale = try container.decodeIfPresent(String.self, forKey: .rationale) ?? ""
         evidence = try container.decodeIfPresent([String].self, forKey: .evidence) ?? []
-        effort = try container.decodeIfPresent(String.self, forKey: .effort) ?? "medium"
+        effort = try container.decodeIfPresent(String.self, forKey: .effort) ?? ""
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -92,11 +92,37 @@ public struct ProposedStory: Codable, Sendable, Hashable {
 
 public enum Effort: String, Codable, CaseIterable, Sendable, Hashable {
     case small, medium, large
+    /// The model said nothing an effort could be read out of.
+    ///
+    /// Its own case rather than a fold onto `.medium`: "somebody sized this as
+    /// medium" and "nobody sized this" are different facts, and only the first
+    /// one may feed a queue that engages cards with nobody watching. `.medium`
+    /// survives as a size a model can state, never as one Elliot invents.
+    case unstated
 
-    /// Anything unrecognised becomes `.medium`. A wrong size is a nuisance; a
-    /// dropped story is a loss.
+    /// Anything unrecognised becomes `.unstated`. A wrong size is a nuisance; a
+    /// size nobody chose, presented as one somebody did, is worse than either.
     public static func parse(_ raw: String) -> Effort {
-        Effort(rawValue: raw.trimmed().lowercased()) ?? .medium
+        Effort(rawValue: raw.trimmed().lowercased()) ?? .unstated
+    }
+}
+
+public extension Effort {
+    /// What this size is worth: cheaper is worth more, because the queue is
+    /// spending a whole unattended agent per card either way.
+    ///
+    /// Data, like `AnalysisAngle.valueWeight`, and beside its own type so a new
+    /// size cannot reach the score without somebody choosing a number for it.
+    var valueWeight: Double {
+        switch self {
+        case .small: 1.0
+        case .medium: 0.6
+        case .large: 0.3
+        // Unreachable from `CardValue.of`, which refuses an unstated effort
+        // rather than scoring it. Zero rather than a plausible middle so that a
+        // caller that scores it anyway gets an obviously wrong answer.
+        case .unstated: 0.0
+        }
     }
 }
 
@@ -185,7 +211,13 @@ public struct StoryProposal: Identifiable, Codable, Sendable, Hashable {
         story: UserStory,
         rationale: String = "",
         evidence: [Evidence] = [],
-        effort: Effort = .medium,
+        // `.unstated`, never `.medium`: this is public API, so "no live path
+        // omits it today" is a statement about today. `AnalysisService.accept`
+        // copies `effort` onto the card *and* sets `appraisedAt`, so a caller
+        // that omitted the argument would produce a card `CardValue.of` ranks
+        // on a size nobody chose — the one failure this type exists to prevent,
+        // arriving through the last door left open.
+        effort: Effort = .unstated,
         status: ProposalStatus = .proposed,
         acceptedCardID: UUID? = nil,
         duplicateOf: DuplicateHint? = nil,
@@ -207,10 +239,19 @@ public struct StoryProposal: Identifiable, Codable, Sendable, Hashable {
         self.createdAt = createdAt
     }
 
+    /// What this proposal's citations turned out to be worth.
+    public var grounding: Grounding {
+        Grounding.of(evidence: evidence)
+    }
+
     /// True when every cited file was found. The fastest signal that a story
     /// was found rather than invented.
+    ///
+    /// A reader of `grounding`, not a second definition of it: the panel's seal
+    /// and the wire's `grounded` flag both come through here, and a copy of the
+    /// `allSatisfy` would be free to drift the first time either is corrected.
     public var isGrounded: Bool {
-        !evidence.isEmpty && evidence.allSatisfy(\.exists)
+        grounding == .grounded
     }
 
     /// Whether the *Rejected* list should offer to put this one back.
