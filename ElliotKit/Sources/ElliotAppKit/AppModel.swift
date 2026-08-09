@@ -490,12 +490,23 @@ public final class AppModel {
 
     public func isDayCollapsed(_ start: Date) -> Bool { collapsedDays.contains(start) }
 
-    public func toggleDay(_ start: Date) {
-        if collapsedDays.contains(start) {
-            collapsedDays.remove(start)
-        } else {
+    /// Fold or unfold a day — said, rather than flipped.
+    ///
+    /// ⚠️ The board draws a folded day **open** while it holds the selection
+    /// (`ColumnRows.build`), so at that one heading what the reader sees and
+    /// what this set holds disagree, and a flip would *unfold* a day they had
+    /// just asked to fold. Done therefore says which way it means; the Archive,
+    /// which has no selection and so no disagreement, keeps ``toggleDay(_:)``.
+    public func setDay(_ start: Date, folded: Bool) {
+        if folded {
             collapsedDays.insert(start)
+        } else {
+            collapsedDays.remove(start)
         }
+    }
+
+    public func toggleDay(_ start: Date) {
+        setDay(start, folded: !collapsedDays.contains(start))
     }
 
     /// Which rows of a run log the panel is showing.
@@ -613,15 +624,11 @@ public final class AppModel {
     /// The card that most recently landed somewhere, so the board can scroll to
     /// it.
     ///
-    /// The stamp is load-bearing: a bare `UUID?` would not fire `onChange` when
-    /// the same card lands twice in a row, which is the ordinary case of
-    /// walking one card across the board.
-    public struct Landing: Equatable, Sendable {
-        public var cardID: UUID
-        public var stamp: UUID
-    }
-
-    public private(set) var lastLanded: Landing?
+    /// ``CardLanding`` is top-level rather than nested here, and the reason is
+    /// written on it: this class is `@MainActor`, a nested type inherits that,
+    /// and `ColumnFocus` — the rule that decides what a column scrolls to — has
+    /// to be able to read `cardID` without one.
+    public private(set) var lastLanded: CardLanding?
 
     /// What the last repository fix actually did.
     ///
@@ -1498,7 +1505,7 @@ public final class AppModel {
             switch result {
             case .moved(let runID):
                 refusal = nil
-                lastLanded = Landing(cardID: cardID, stamp: UUID())
+                lastLanded = CardLanding(cardID: cardID, stamp: UUID())
                 if runID == nil {
                     status = "Moved to \(column.displayName). Nothing ran."
                 } else {
