@@ -478,6 +478,70 @@ struct EndToEndTests {
         ])
     }
 
+    /// A resume that finds no conversation never had a turn, so its closing
+    /// prose is the CLI complaining about a missing transcript. Copy that into
+    /// `.noIssueCreated(reason:)` and the card says the idea was already covered
+    /// — which is exactly the sentence an unattended loop reads as "nothing to
+    /// do here", on a card for which nothing whatsoever was attempted.
+    @Test("A resume that finds no conversation is not recorded as a duplicate skip")
+    func sessionGoneIsNotADuplicateSkip() async throws {
+        let stack = try await Stack.make(
+            fixture: "resume-session-gone.ndjson",
+            // `gh` has to answer, so the title sweep reaches the sentence: with
+            // no FAKE_GH_ISSUES the fake prints `[]`, which is what `gh` returns
+            // for a repository with nothing matching.
+            ghPath: TestPaths.fakeGH
+        )
+        defer { stack.cleanUp() }
+
+        let card = try await stack.board.createCard(
+            repoID: stack.repo.id, title: "Stream the run log inside the card").card
+        let now = Date()
+
+        let first = SkillRun.card(
+            cardID: card.id, repoID: stack.repo.id, kind: .createIssue,
+            prompt: "/ai-migration-kit:create-issue Stream the run log inside the card",
+            cwd: stack.repo.path,
+            state: .failed,
+            startedAt: now.addingTimeInterval(-1_800),
+            endedAt: now.addingTimeInterval(-1_700),
+            logPath: stack.home.appendingPathComponent("runs/gone-first.ndjson").path,
+            stderrPath: stack.home.appendingPathComponent("runs/gone-first.log").path,
+            createdAt: now.addingTimeInterval(-1_800)
+        )
+        try await stack.store.saveRun(first)
+
+        let resumed = SkillRun.card(
+            cardID: card.id, repoID: stack.repo.id, kind: .createIssue,
+            prompt: "/ai-migration-kit:create-issue Stream the run log inside the card",
+            cwd: stack.repo.path,
+            resumedFrom: first.id,
+            logPath: stack.home.appendingPathComponent("runs/gone-resumed.ndjson").path,
+            stderrPath: stack.home.appendingPathComponent("runs/gone-resumed.log").path,
+            createdAt: now
+        )
+        try await stack.store.saveRun(resumed)
+        await stack.scheduler.launch(runID: resumed.id)
+
+        let run = try await stack.awaitRun(cardID: card.id)
+        #expect(run.id == resumed.id)
+        // `is_error`, so the run failed; `num_turns: 0`, so it never started.
+        // Exit code zero throughout — the state comes from the result, not the
+        // shell.
+        #expect(run.state == .failed)
+        #expect(run.exitCode == 0)
+        #expect(run.numTurns == 0)
+        // The prose exists, and is exactly what must NOT become the reason.
+        #expect(run.resultText?.hasPrefix("No conversation found") == true)
+        // The CLI's complaint travels through the terminal event's `result`
+        // field, so `ClosingRemark.of` attributes it to the agent — never to
+        // stderr, and never unattributed.
+        #expect(run.resultSource == .agent)
+
+        #expect(run.verifiedOutcome == .noIssueCreated(
+            reason: "The conversation this run tried to resume no longer exists, so nothing ran."))
+    }
+
     @Test("The launch sweep admits runs that died with the app")
     func reconcilerAdmitsOrphans() async throws {
         let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
