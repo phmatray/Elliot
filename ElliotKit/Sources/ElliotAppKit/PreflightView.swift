@@ -187,12 +187,27 @@ public struct PreflightView: View {
                     }
                 }
 
-                HStack {
-                    Button("Add a repository…", systemImage: "folder.badge.plus") { choose() }
-                    Button("Check again", systemImage: "arrow.clockwise") {
-                        Task { await model.refreshRepoChecks() }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Button("Add a repository…", systemImage: "folder.badge.plus") { choose() }
+                        Button("Check again", systemImage: "arrow.clockwise") {
+                            Task { await model.refreshRepoChecks() }
+                        }
+                        Spacer()
                     }
-                    Spacer()
+                    // Registration can now refuse — a directory with no `.git`
+                    // never becomes a row. Said here, under the button that
+                    // asked, because a refusal that leaves no mark reads exactly
+                    // like a success and the repository simply never appears.
+                    if let outcome = model.lastAddRepoOutcome {
+                        Text(outcome.detail)
+                            .font(Type.prose)
+                            .foregroundStyle(
+                                outcome.succeeded ? Palette.verified : Palette.refused
+                            )
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
                 }
             }
             .padding(18)
