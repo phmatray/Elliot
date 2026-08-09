@@ -1352,6 +1352,48 @@ public final class AppModel {
 
     // MARK: - Board actions
 
+    /// ⛔ **Deliberately not memoised, and that is a measured answer rather than
+    /// an omission (#282).**
+    ///
+    /// The proposal was to cache the per-column, repo-filtered slice under
+    /// `@ObservationIgnored`, exactly as `parsedBodies` below caches a parsed
+    /// issue body. Its own *What to watch* said to measure first, so
+    /// `CardsInColumnCostTests` does — versioned and rerunnable rather than a
+    /// throwaway script whose number outlives its code:
+    ///
+    /// ```
+    /// cd ElliotKit && ELLIOT_MEASURE=1 swift test --filter CardsInColumnCostTests
+    /// ```
+    ///
+    /// Release build, Apple silicon, 20 repositories, picker on "All
+    /// repositories", 2026-08-09:
+    ///
+    /// | cards on the board | one `cards(in:)` | one board pass |
+    /// |---|---|---|
+    /// | 100 | 8.8 µs | 232 µs |
+    /// | 500 | 36 µs | 565 µs |
+    /// | 2 000 | 169 µs | 1.9 ms |
+    /// | 10 000 | 854 µs | 9.0 ms |
+    ///
+    /// A *board pass* is all five columns rebuilding the list they draw —
+    /// grouping and Done's day bucketing included — which is what a selection
+    /// change, a keystroke in the analysis panel or a one-second `RunningStrip`
+    /// tick causes. At the sizes this board is used at that is a small fraction
+    /// of a 16.7 ms frame. The cache would buy nothing anyone can feel, and cost
+    /// a key that has to name **every** input: miss one and a moved card keeps
+    /// drawing in its old column, which is a correctness bug traded for speed
+    /// nobody could see.
+    ///
+    /// ⚠️ It would also be aimed at the smaller half. Even at 10 000 cards, five
+    /// `cards(in:)` calls are 4.3 ms of that 9.0 ms — the rest is `groupByRepo`
+    /// and `shippingLog`, which the proposal does not cache. If this ever has to
+    /// get cheaper, that is where to look, and the table above is to be re-run
+    /// first on the board that actually hurt.
+    ///
+    /// Debug is roughly 2.5× slower throughout (22 µs and 376 µs at 100 cards),
+    /// and debug is what `swift test` and a bare `./Scripts/build-app.sh` give
+    /// you — so a slow-feeling board is worth re-measuring in release before it
+    /// is believed.
     public func cards(in column: ElliotModel.Column) -> [Card] {
         cards
             .filter { $0.column == column && (selectedRepoID == nil || $0.repoID == selectedRepoID) }
