@@ -8,8 +8,6 @@ public struct PreflightView: View {
 
     @Environment(AppModel.self) private var model
     @State private var copied = false
-    /// Per-check override of the default open-if-failing state.
-    @State private var expansion: [String: Bool] = [:]
 
     /// How many runs may go at once, and how many are going.
     ///
@@ -165,12 +163,34 @@ public struct PreflightView: View {
     }
 
     public var body: some View {
+        // The reader arrives here from a card's *Blocked:* badge as well as from
+        // the door, and a screen that opened on its first section would leave
+        // them to find the repository themselves — the same false negative as a
+        // panel that opens off-screen.
+        ScrollViewReader { proxy in
+            page
+                // `initial: true` covers arrival: the face is built when the
+                // console unfolds, so the focus is already set by then and there
+                // is no change left to observe.
+                .onChange(of: model.preflightFocus, initial: true) { _, focus in
+                    guard let focus else { return }
+                    // Deferred by one turn of the main actor, for the reason
+                    // `BoardView.frame` records: `onChange` runs inside the
+                    // update that changed the value, so a scroll issued here
+                    // aims at the layout as it was before the section it is
+                    // aiming at was placed.
+                    Task { @MainActor in proxy.scrollTo(focus, anchor: .top) }
+                }
+        }
+    }
+
+    private var page: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 identity
                 summary
 
-                section("This machine", results: model.globalChecks)
+                section("This machine", results: model.globalChecks, repoID: nil)
                 runLimits
                 spendCeiling
                 integration
@@ -193,6 +213,14 @@ public struct PreflightView: View {
                         Button("Check again", systemImage: "arrow.clockwise") {
                             Task { await model.refreshRepoChecks() }
                         }
+                        // A sweep already running refuses a second one, so the
+                        // button says so rather than looking dead — the whole of
+                        // what made this control read as broken.
+                        .disabled(model.isCheckingRepos)
+                        .help(model.isCheckingRepos
+                            ? "Reading every repository — eight at a time."
+                            : "Re-read every repository's checks")
+                        if model.isCheckingRepos { ProgressView().controlSize(.small) }
                         Spacer()
                     }
                     // Registration can now refuse — a directory with no `.git`
@@ -244,19 +272,24 @@ public struct PreflightView: View {
 
     /// The verdict first. A wall of green ticks makes you hunt for the one
     /// thing that is wrong.
+    ///
+    /// The arithmetic — and above all the rule that a repository nobody read
+    /// cannot be counted as one that passed — is `PreflightSummary`'s, so it can
+    /// be asserted. This renders what it gets.
     private var summary: some View {
-        let all = model.globalChecks + model.repos.flatMap { model.repoChecks[$0.id] ?? [] }
-        let failing = all.filter { $0.status == .fail }
-        let warning = all.filter { $0.status == .warn }
+        let verdict = PreflightSummary.of(
+            machine: model.globalChecks,
+            repositories: model.repos.map { model.repoReadings[$0.id] }
+        )
 
         return HStack(spacing: 8) {
-            Image(systemName: failing.isEmpty ? (warning.isEmpty ? "checkmark.seal.fill" : "exclamationmark.triangle.fill") : "xmark.seal.fill")
+            Image(systemName: verdict.symbol)
                 .font(.system(size: 20))
-                .foregroundStyle(failing.isEmpty ? (warning.isEmpty ? Palette.verified : Palette.attention) : Palette.refused)
+                .foregroundStyle(verdict.tint)
             VStack(alignment: .leading, spacing: 1) {
-                Text(headline(failing: failing.count, warning: warning.count))
+                Text(verdict.headline)
                     .font(Type.cardTitle)
-                Text("\(all.count) checks across this machine and \(model.repos.count) repositor\(model.repos.count == 1 ? "y" : "ies").")
+                Text(verdict.countLine)
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
             }
@@ -266,12 +299,6 @@ public struct PreflightView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Surface.recess)
         .clipShape(RoundedRectangle(cornerRadius: Metric.panelRadius))
-    }
-
-    private func headline(failing: Int, warning: Int) -> String {
-        if failing > 0 { return "\(failing) check\(failing == 1 ? "" : "s") failing — runs will not work" }
-        if warning > 0 { return "\(warning) warning\(warning == 1 ? "" : "s")" }
-        return "Everything Elliot needs is here"
     }
 
     private var integration: some View {
@@ -324,6 +351,19 @@ public struct PreflightView: View {
                     Fact(text: repo.nameWithOwner, tint: Palette.quiet, small: true)
                 }
                 Spacer()
+                // How old this verdict is. A reading from twenty minutes ago
+                // drawn exactly like one from a second ago is the same silence
+                // the unread case above removes, one dimension over — and this
+                // screen's verdicts really do age, because the sweep runs at
+                // launch and on demand and never on a timer. `Date.now` is read
+                // during `body`, so it refreshes on the next render rather than
+                // on a clock; at this granularity that is enough.
+                if let reading = model.repoReadings[repo.id] {
+                    Fact(
+                        text: "checked \(Elapsed.age(of: reading.checkedAt))",
+                        tint: Palette.quiet, small: true
+                    )
+                }
                 Toggle("Enabled", isOn: Binding(
                     get: { repo.isEnabled },
                     set: { value in Task { await model.setRepoEnabled(repo, enabled: value) } }
@@ -349,7 +389,23 @@ public struct PreflightView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
-            checkList(model.repoChecks[repo.id] ?? [])
+            // ⛔ **An absent reading draws a sentence, never an empty space.**
+            // `checkList([])` rendered nothing at all, so a repository nobody
+            // had swept looked exactly like one whose every check passed — on
+            // the screen whose whole job is to say what is wrong. It is the
+            // `RepoIssue.notChecked` case, one screen over, with the same symbol
+            // and the same tint so the two read alike.
+            if let reading = model.repoReadings[repo.id] {
+                checkList(reading.results, repoID: repo.id)
+            } else {
+                Label(
+                    PreflightSummary.unreadLine(isChecking: model.isCheckingRepos),
+                    systemImage: "questionmark.circle.dashed"
+                )
+                .font(Type.prose)
+                .foregroundStyle(Palette.attention)
+                .fixedSize(horizontal: false, vertical: true)
+            }
             RunTermsRow(repo: repo)
         }
         .padding(12)
@@ -357,19 +413,26 @@ public struct PreflightView: View {
         .background(Surface.recess)
         .clipShape(RoundedRectangle(cornerRadius: Metric.panelRadius))
         .opacity(repo.isEnabled ? 1 : 0.6)
+        // What a card's badge scrolls to.
+        .id(repo.id)
     }
 
-    private func section(_ title: String, results: [CheckResult]) -> some View {
+    private func section(_ title: String, results: [CheckResult], repoID: UUID?) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ConsoleLabel(text: title)
-            checkList(results)
+            checkList(results, repoID: repoID)
         }
     }
 
-    private func checkList(_ results: [CheckResult]) -> some View {
+    /// One repository's checks — or the machine's, with `repoID` nil.
+    ///
+    /// The id is threaded through rather than inferred because the disclosure
+    /// state is keyed on the pair: `CheckResult.id` repeats across repositories,
+    /// so a key without it collapses `Labels` on every repository at once.
+    private func checkList(_ results: [CheckResult], repoID: UUID?) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(results) { result in
-                DisclosureGroup(isExpanded: expansion(for: result)) {
+                DisclosureGroup(isExpanded: expansion(for: result, in: repoID)) {
                     VStack(alignment: .leading, spacing: 4) {
                         // The detail lives here, not in the label: it was
                         // `lineLimit(1)` on a row that also carried the title,
@@ -443,12 +506,18 @@ public struct PreflightView: View {
         }
     }
 
-    /// Open on arrival when the check is failing — that is the one you came
-    /// for — and remembers your own collapse afterwards.
-    private func expansion(for result: CheckResult) -> Binding<Bool> {
-        Binding(
-            get: { expansion[result.id] ?? (result.status == .fail) },
-            set: { expansion[result.id] = $0 }
+    /// Open on arrival when the check is failing — that is the one you came for
+    /// — and remembers your own collapse afterwards.
+    ///
+    /// The state lives on `AppModel`, not here: folding the console destroys
+    /// this view, and a card's badge has to be able to open a disclosure on a
+    /// screen that is not showing yet. The rule itself is `isCheckExpanded`'s,
+    /// where a test can reach it.
+    private func expansion(for result: CheckResult, in repoID: UUID?) -> Binding<Bool> {
+        let address = CheckAddress(repoID: repoID, checkID: result.id)
+        return Binding(
+            get: { model.isCheckExpanded(address, failing: result.status == .fail) },
+            set: { model.setCheckExpanded(address, $0) }
         )
     }
 

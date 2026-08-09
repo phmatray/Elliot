@@ -26,7 +26,23 @@ public final class AppModel {
     public private(set) var prStatuses: [UUID: PRStatus] = [:]
     public private(set) var runsByCard: [UUID: [SkillRun]] = [:]
     public private(set) var globalChecks: [CheckResult] = []
-    public private(set) var repoChecks: [UUID: [CheckResult]] = [:]
+
+    /// What Preflight last read about each repository.
+    ///
+    /// ⛔ **A reading, not an array of checks, and the absence of one is the
+    /// point.** This was `[UUID: [CheckResult]]`, read as `repoChecks[id] ?? []`
+    /// — and `isBlocking([])` is `false`, so every screen reported a repository
+    /// nobody had swept exactly as it reported one that passed. `Repo.preflight`
+    /// had learned to say `notChecked` in #249; the screens had not (#302).
+    public private(set) var repoReadings: [UUID: PreflightReading] = [:]
+
+    /// Whether the per-repository sweep is running right now.
+    ///
+    /// It is a real question rather than a spinner: the sweep shells out to `gh`
+    /// and `git` several times per repository, so on a handful of them *Check
+    /// again* was a button that looked dead for tens of seconds. It is also the
+    /// re-entrancy guard — see ``refreshRepoChecks(using:)``.
+    public private(set) var isCheckingRepos = false
 
     /// What the card editor may claim about each repository's labels.
     ///
@@ -2670,37 +2686,94 @@ public final class AppModel {
         }
     }
 
+    /// Re-reads every registered repository's checks, eight at a time.
+    ///
+    /// ⛔ **One sweep at a time.** The launch sweep and *Check again* reach this
+    /// same method, and a second pass started over the first would run every
+    /// `gh` and `git` call twice for nothing and land two readings per
+    /// repository in an order neither caller chose. The guard is the flag the
+    /// button is disabled by, so the refusal is visible rather than silent.
+    ///
+    /// Eight in flight, matching `RepoRegistryService.probe` and
+    /// `repo-audit/repo_sync.py`: one repository costs about six subprocesses,
+    /// one of which is a networked `gh label list`, and this is the screen most
+    /// likely to meet GitHub's rate limit. Serial, it was tens of seconds on a
+    /// handful of repositories with nothing on screen saying so.
+    ///
+    /// ⚠️ It does **not** carry `probe`'s input-order guarantee, and that is a
+    /// decision rather than an omission: `probe` returns an array the page draws
+    /// in place, so completion order would make every refresh jump. These land
+    /// in a dictionary keyed by repository and are drawn in `repos` order
+    /// whatever happens, so arrival order is not observable — and recording each
+    /// as it lands is what makes the screen fill in progressively instead of all
+    /// at once at the end.
     public func refreshRepoChecks(using service: PreflightService? = nil) async {
-        guard let toolConfig else { return }
+        // The tool configuration is what *builds* the default service, so a
+        // caller that brought its own does not need one. Written this way round
+        // rather than as a leading `guard let toolConfig`, which made the whole
+        // sweep — the guard, the fan-out, the recording — unreachable from a
+        // test even with a service in hand.
+        let preflight: PreflightService
+        if let service {
+            preflight = service
+        } else {
+            guard let toolConfig else { return }
+            preflight = PreflightService(
+                environment: LoginShellEnvironment(
+                    variables: toolConfig.environment, capturedVia: "session"
+                ),
+                config: toolConfig
+            )
+        }
+        guard !isCheckingRepos else { return }
+        isCheckingRepos = true
+        defer { isCheckingRepos = false }
         // Cleared on an explicit refresh, the way `reloadRepoRows` clears the
         // Repositories page's. A sentence about a fix, still sitting under a row
         // the user has just re-checked, describes a board state that may no
         // longer hold.
         lastCheckFix = nil
-        let environment = LoginShellEnvironment(
-            variables: toolConfig.environment, capturedVia: "session"
-        )
-        let preflight = service ?? PreflightService(environment: environment, config: toolConfig)
-        for repo in repos {
-            await record(await preflight.repoChecks(repo), for: repo)
+        // Captured once: `repos` is observed and can be republished mid-sweep,
+        // and an index into a collection that changed under the task group is a
+        // reading recorded against the wrong repository.
+        let targets = repos
+        await withTaskGroup(of: (Int, [CheckResult]).self) { group in
+            let window = min(8, targets.count)
+            for index in 0..<window {
+                group.addTask { (index, await preflight.repoChecks(targets[index])) }
+            }
+            var next = window
+            while let (index, results) = await group.next() {
+                await record(results, for: targets[index])
+                if next < targets.count {
+                    let pending = next
+                    group.addTask { (pending, await preflight.repoChecks(targets[pending])) }
+                    next += 1
+                }
+            }
         }
     }
 
     /// Records a sweep's results in the two places that need them.
     ///
-    /// `repoChecks` is what the screens read; `Repo.preflight` is what the rule
-    /// engine reads, through the row `BoardService.proposeMove` already loads.
-    /// One method rather than two assignments at each of the two sweep sites,
-    /// because the whole defect being fixed here is a verdict that existed in
-    /// one place and was unreachable from the other — writing it twice by hand
-    /// is how it would become unreachable again.
+    /// `repoReadings` is what the screens read; `Repo.preflight` is what the
+    /// rule engine reads, through the row `BoardService.proposeMove` already
+    /// loads. One method rather than two assignments at each of the two sweep
+    /// sites, because the whole defect being fixed here is a verdict that
+    /// existed in one place and was unreachable from the other — writing it
+    /// twice by hand is how it would become unreachable again.
+    ///
+    /// The reading carries the moment it was taken, and this is the only thing
+    /// that builds one: a caller cannot record checks without recording that
+    /// somebody looked.
     ///
     /// The write is skipped when the verdict has not moved. The repo table is
     /// observed, so an unconditional save on every sweep would republish every
     /// row and reload the board for nothing.
     private func record(_ results: [CheckResult], for repo: Repo) async {
-        repoChecks[repo.id] = results
-        let verdict: PreflightState = PreflightService.isBlocking(results) ? .failing : .passing
+        let reading = PreflightReading(results: results, checkedAt: .now)
+        repoReadings[repo.id] = reading
+        let verdict = reading.verdict
         guard repo.preflightVerdict != verdict, let store else { return }
         do {
             // `saveRepoPreflight`, not `saveRepo(updated)`. `repo` was captured
@@ -2721,8 +2794,68 @@ public final class AppModel {
         }
     }
 
-    public func isBlocked(_ repo: Repo) -> Bool {
-        PreflightService.isBlocking(repoChecks[repo.id] ?? [])
+    /// Why this repository's cards cannot move, and where to read about it — or
+    /// `nil` when they can.
+    ///
+    /// ⛔ **Decided on `Repo.preflightVerdict`, the value `evaluateMove` reads,
+    /// never on the reading.** This was `PreflightService.isBlocking(repoChecks[…]
+    /// ?? [])`, which is a *second opinion about the drop* — the mistake
+    /// `preview` names in as many words one screen over. The two genuinely
+    /// disagree for the first seconds of every launch: the verdict is persisted
+    /// and the readings are not, so a repository that failed last session
+    /// refused every drag while its cards drew no badge at all.
+    ///
+    /// The reading supplies only *which* check, when there is one to name.
+    ///
+    /// `allowsMoves` rather than `== .failing`, so that the day `notChecked`
+    /// starts refusing a move — which `PreflightState` says is one line in
+    /// `evaluateMove` — the badge follows it instead of having to be found.
+    func blockedBadge(for repo: Repo) -> BlockedBadge? {
+        guard !repo.preflightVerdict.allowsMoves else { return nil }
+        return BlockedBadge(repoID: repo.id, check: repoReadings[repo.id]?.blocking)
+    }
+
+    /// The repository Preflight should scroll to when it next appears.
+    ///
+    /// Written by ``openPreflight(_:)`` and read by `PreflightView`. It is not
+    /// cleared once honoured, deliberately: re-opening Preflight lands on the
+    /// last finding a card sent the reader to, which is where they were.
+    private(set) var preflightFocus: UUID?
+
+    /// Which check disclosures the reader has opened or closed.
+    ///
+    /// ⚠️ **On the model rather than in `PreflightView`, and not for tidiness.**
+    /// Preflight is a console face, so folding the console destroys the view and
+    /// takes its `@State` with it — the lesson `AnalysisPanelView` paid for with
+    /// four values. And a card's badge has to be able to open a disclosure in a
+    /// screen that is not on screen yet, which state living inside that screen
+    /// cannot do.
+    private var checkExpansion: [CheckAddress: Bool] = [:]
+
+    /// Whether this check's disclosure is open.
+    ///
+    /// Open on arrival when the check is failing — that is the one you came for
+    /// — and the reader's own collapse wins afterwards. The rule is here rather
+    /// than in the binding because `swift test` can hold this and cannot hold a
+    /// `Binding` built inside a `body`.
+    func isCheckExpanded(_ address: CheckAddress, failing: Bool) -> Bool {
+        checkExpansion[address] ?? failing
+    }
+
+    func setCheckExpanded(_ address: CheckAddress, _ open: Bool) {
+        checkExpansion[address] = open
+    }
+
+    /// Takes the reader from a card to the finding that is holding it.
+    ///
+    /// Three acts, one call, because two of them without the third is a
+    /// no-op the reader has to explain to themselves: unfolding Preflight,
+    /// aiming it at the repository, and opening the check. Only the scrolling
+    /// happens in the view, which is the one part `swift test` cannot see.
+    func openPreflight(_ badge: BlockedBadge) {
+        console.show(.preflight)
+        preflightFocus = badge.repoID
+        if let address = badge.address { setCheckExpanded(address, true) }
     }
 
     /// What the last **Preflight** fix did, and **which fix it was**.
@@ -2849,7 +2982,12 @@ public final class AppModel {
             return "Pick a single repository to analyse."
         }
         if !repo.isEnabled { return Consequence.reason(.repoDisabled) }
-        if isBlocked(repo) {
+        // The persisted verdict, through `blockedBadge`, for the reason that
+        // method gives: reading the in-memory checks made this gate answer
+        // "fine" for the whole of every launch in a repository whose every drag
+        // was being refused. An analysis is eight unattended runs; it should be
+        // gated on the same value the board is.
+        if blockedBadge(for: repo) != nil {
             return "A Preflight check is failing for this repository — fix it there first."
         }
         return nil
@@ -3206,14 +3344,20 @@ public final class AppModel {
         selectedRepoID = nil
     }
 
-    /// The same trick for one repository's preflight verdict.
+    /// The same trick for one repository's preflight reading.
     ///
-    /// `repoChecks` is filled by a real preflight sweep, and the rule that needs
-    /// it — "an analysis must not start in a repository Preflight has refused" —
-    /// is exactly the one #151 broke by deleting the toolbar's `.disabled`. A
-    /// rule whose only failing case cannot be seeded is a rule with no test.
-    func testOnlySeedChecks(repo: UUID, _ checks: [CheckResult]) {
-        repoChecks[repo] = checks
+    /// `repoReadings` is filled by a real preflight sweep, and the rules that
+    /// need it — which check a card's badge names, what a section says about a
+    /// repository nobody has read — are exactly the ones no unit test can reach
+    /// without shelling out to `gh` and `git`.
+    ///
+    /// ⚠️ It seeds the **reading only**, never `Repo.preflight`. That is the
+    /// pair `blockedBadge` is about: the verdict decides *whether* a card is
+    /// blocked and the reading decides *what it says*, and a helper that wrote
+    /// both would make the one case that shipped broken — a persisted failure
+    /// with no reading — unseedable.
+    func testOnlySeedChecks(repo: UUID, _ checks: [CheckResult], at checkedAt: Date = .now) {
+        repoReadings[repo] = PreflightReading(results: checks, checkedAt: checkedAt)
     }
 
     /// The same trick for the four collections that hold runs.
