@@ -106,7 +106,11 @@ struct AnalysisPanelView: View {
                 proposalCount: model.analysis.map { proposed($0).count }
             )
         )
-        .task { past = await model.recentAnalyses() }
+        // Keyed, because without an `id:` this ran once when the panel first
+        // appeared and never again — so *Earlier analyses* listed whatever
+        // repository happened to be picked at that instant, permanently, and
+        // no later change could correct it (#213).
+        .task(id: model.analysisRepoID) { past = await model.recentAnalyses() }
     }
 
     /// The panel's silhouette, used as a background fill and as a border — never
@@ -131,7 +135,7 @@ struct AnalysisPanelView: View {
             if !past.isEmpty, model.analysis == nil {
                 Menu {
                     ForEach(past) { analysis in
-                        Button(label(for: analysis)) { model.openAnalysis(id: analysis.id) }
+                        Button(label(for: analysis)) { model.openAnalysis(analysis) }
                     }
                 } label: {
                     Label("Earlier analyses", systemImage: "clock.arrow.circlepath")
@@ -158,7 +162,17 @@ struct AnalysisPanelView: View {
     }
 
     private var repoName: String { repo?.displayName ?? "…" }
-    private var repo: Repo? { model.repos.first { $0.id == model.selectedRepoID } }
+
+    /// Which repository this panel is about — the header, the run rows, the
+    /// evidence links and the Start button all resolve through here.
+    ///
+    /// ⛔ **Not `selectedRepoID`.** That is the board's toolbar picker, which
+    /// the reader can move while this panel is open, and it says nothing about
+    /// which repository the open analysis read. `AppModel.analysisRepo` answers
+    /// from the session while there is one and from the picker only in setup;
+    /// `AnalysisPanelViewSourceTests` fails if the picker comes back into this
+    /// file (#213).
+    private var repo: Repo? { model.analysisRepo }
 
     /// Says what the analysis looked at and what came back, rather than a date
     /// beside a row of emoji.
@@ -496,7 +510,10 @@ struct AnalysisPanelView: View {
 
             if model.analysis == nil {
                 Button("Start \(model.analysisAngles.count) run\(model.analysisAngles.count == 1 ? "" : "s")") {
-                    guard let repoID = model.selectedRepoID else { return }
+                    // In this branch `model.analysis` is nil, so this *is* the
+                    // picker — read through the one property anyway, so a later
+                    // edit cannot split the answer in two again.
+                    guard let repoID = model.analysisRepoID else { return }
                     Task {
                         await model.startAnalysis(
                             repoID: repoID,

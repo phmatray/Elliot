@@ -1130,7 +1130,7 @@ struct AppModelTests {
         // The header's *Earlier analyses* menu. What is on screen afterwards is
         // an analysis that did run; a sentence about one that did not would be
         // read as belonging to it.
-        model.openAnalysis(id: UUID())
+        model.openAnalysis(analysisFixture(repoID: UUID()))
 
         #expect(model.startFailure == nil)
     }
@@ -1194,7 +1194,7 @@ struct AppModelTests {
         // `failureSurvivesTogglingLenses` above is where the teeth are.
         let model = AppModel()
         model.testOnlySeed(repos: [], cards: [])
-        model.openAnalysis(id: UUID())
+        model.openAnalysis(analysisFixture(repoID: UUID()))
 
         model.closeAnalysis()
 
