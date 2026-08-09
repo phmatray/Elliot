@@ -84,6 +84,39 @@ extension ArchiveState {
     /// No horizon — the archive is the whole history, which is the case that
     /// parameter exists for, and it is also what makes `partialDay` able to
     /// answer at all (it refuses a horizon-limited log by design).
+    ///
+    /// ## Measured, and deliberately **not** cached (#231)
+    ///
+    /// `shippingLog` buckets and sorts every loaded card, and the view calls
+    /// this once per `body` pass — i.e. once per keystroke in the search field.
+    /// #229 declined to cache it and #231 asked for the number rather than
+    /// another guess. Release, Apple silicon, one call:
+    ///
+    /// | loaded rows | per call | how you get there |
+    /// |---|---|---|
+    /// | 25 | 0.15 ms | the first page |
+    /// | 250 | 0.74 ms | nine *Load more*s |
+    /// | 2 500 | 9.9 ms | ninety-nine of them |
+    /// | 10 000 | 42 ms | four hundred |
+    ///
+    /// **The decision is: leave it.** The session #231 describes — first page,
+    /// three *Load more*s, ten keystrokes — holds 100 rows, where a keystroke
+    /// costs about a third of a millisecond. A cache would have to carry a key
+    /// that survives midnight (the buckets are `calendar.startOfDay` in the
+    /// reader's own calendar, so a cache outliving it keeps yesterday's labels
+    /// and freezes *Today*) and invalidate on both a *Load more* and a term
+    /// change — real machinery, to fix a cost that only becomes a dropped frame
+    /// past roughly 2 000 loaded rows, which takes eighty deliberate presses.
+    ///
+    /// ⚠️ **Revisit if paging changes.** The reason this is safe is `pageSize`
+    /// = 25 and a button, not a property of the arithmetic: anything that loads
+    /// the archive eagerly, raises the page size, or scrolls infinitely lands
+    /// straight in the 10 ms column. The curve is super-linear past 250, so
+    /// interpolating it is not safe either — re-measure:
+    ///
+    /// ```
+    /// cd ElliotKit && ELLIOT_MEASURE=1 swift test -c release --filter ArchiveDayRowsCostTests
+    /// ```
     func dayRows(now: Date, calendar: Calendar) -> [ShipDayRow] {
         let log = shippingLog(cards, now: now, calendar: calendar, horizonDays: nil)
         let cut = log.partialDay(moreToLoad: canLoadMore)

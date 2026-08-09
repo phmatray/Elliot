@@ -32,10 +32,15 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**2006 tests in 230 suites**, 5 of 5 samples on
-  `feat/333-repo-run-terms` on 2026-08-09 at `297e9bf`, on a wiped `.build` off `main` at `4977250`;
-  the base measured **1974 in 226**, so the whole of this line's +32/+4 is this branch's own four
-  suites — read off the runs, never added to the previous figure;
+- **Full test:** `cd ElliotKit && swift test` (**2138 tests in 245 suites**, 5 of 5 samples on
+  `feat/231-archive-dayrows-cost` on 2026-08-10 at `d2d4da9`+1, on a wiped `.build`;
+  ⚠️ **this line was corrected twice in one evening and the second correction is the interesting
+  one.** It went in at 2006/230 off `feat/333-repo-run-terms`, honestly measured — and was stale
+  within the hour, because four pull requests landed in sequence and `main` measured **2135 in 244**
+  before this branch added a line. That is not the `#138` drift (a value right, a stamp behind); it
+  is the value going wrong *while nobody edited it*, which is what a busy afternoon does to any
+  number written down in prose. Filled from a `PLACEHOLDER` overwritten by the run, per the ⛔ bullet
+  below;
   needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
