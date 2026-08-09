@@ -31,29 +31,30 @@
 - **PR4 (the loop) has NOT landed, by design.** The design's delivery order puts PR4 *after* PR5. Consequences this plan owns and states out loud:
   - The value types this plan declares in `ElliotModel` (Task 1) are the ones PR4 persists. PR4 adds the `Records.swift` conformance and the migration; it changes nothing in Task 1's file.
 
-    🔴 **That last sentence is not true of PR4's plan as written, and it has to be arbitrated before
-    either pull request is executed.** PR4's Task 3 creates the *same file*,
-    `ElliotKit/Sources/ElliotModel/AutoDev.swift`, and declares its own per-card row —
-    **`AutoDevCardState`** with **`DispositionCode { retry, wait, held, settled, aborted }`** —
-    beside a transient policy verdict `Disposition`. This plan declares **`AutoDevEngagement`** with
-    **`AutoDevDisposition { engaged, merged, blocked }`**, plus `AutoDevTally`, which PR4 does not
-    declare at all. Two per-card row types, one rendered here and one persisted there, with nothing
-    joining them. The full table and the recommended resolution — keep this plan's names, keep PR4's
-    `Disposition` as transient, and decide whether the policy's code survives as a second persisted
-    column — are written at the head of PR4's Task 3. ⚠️ It is a **decision**, not a merge: reading
-    only this plan, the collision is invisible.
+    ✅ **Arbitrated 2026-08-09, and the sentence now holds.** PR4's plan as written created the
+    same file with its own per-card row — `AutoDevCardState` and
+    `DispositionCode { retry, wait, held, settled, aborted }` — which would have left one row type
+    rendered here and a different one persisted there, with nothing joining them. **This plan's
+    names win**: `AutoDevEngagement`, `AutoDevDisposition { engaged, merged, blocked }` and
+    `AutoDevTally` are the persisted *and* rendered types, because three suites, the band, the
+    status-bar figure and the card mark already read them and `AutoDevTally` has no counterpart on
+    PR4's side. PR4 keeps its `Disposition` as a **transient** policy verdict and adds a total
+    mapping onto `AutoDevDisposition`; **`DispositionCode` is deleted.**
 
-  - **PR4 does not mention `AutoDevDriving`.** Task 4 below declares that protocol and records that
-    "PR4 conforms `AutoDevService` to it"; PR4's Tasks 11–14 never name it, and its actor's surface
-    is a different one — `start(session: AutoDevSession, preflightChecks: [CheckResult])`,
-    `advance()`, `hasRunningSession()`, `finish(_:)` — against this protocol's
-    `start(repoID:cardLimit:)`, `pause/resume/stop(sessionID:)`, `engagements(sessionID:)`. PR4 also
-    writes `AppModel.autoDev: AutoDevService?` while this plan writes `AppModel.autoDev:
-    AutoDevSession?` — **the same property name, two types.** Either PR4 grows an
-    `extension AutoDevService: AutoDevDriving` that composes the card selection this protocol's
-    `start(repoID:cardLimit:)` implies, or this protocol is rewritten to PR4's surface and
-    `AppModel` gains a separately-named driver property. Both are small; neither is discoverable
-    from one plan.
+    ⚠️ **One consequence lands in PR4 and is not optional**: PR4's `Disposition.settle` carries only
+    `reason: String` today, so separating *merged* from *blocked* through the mapping would mean
+    pattern-matching prose. `.settle` must carry its outcome as a value. The full table is at the
+    head of PR4's Task 3.
+
+  - **`AutoDevDriving` — arbitrated 2026-08-09: PR4 conforms to this protocol.** PR4's plan never
+    named it, and its actor exposed a different surface — `start(session:preflightChecks:)`,
+    `advance()`, `hasRunningSession()`, `finish(_:)` — while also writing
+    `AppModel.autoDev: AutoDevService?` against this plan's `AppModel.autoDev: AutoDevSession?`,
+    the same property name with two types, which `AppModel.swift` being union-merge would have
+    carried all the way to `swift build`. The resolution is
+    `extension AutoDevService: AutoDevDriving` in PR4, which is the smaller diff and which means
+    **PR4 adds no `AppModel` property at all** — the collision disappears rather than being
+    renamed around.
   - `AutoDevDriving` (Task 4) has **no conformer until PR4**. `AppModel.autoDevRefusal` therefore answers *"Auto-dev is not wired into this build yet."*, the Start button is disabled with that sentence beside it, and the band renders its idle state. That is the #151 shape — a control that opens onto an explanation rather than one that cannot be switched off — and it is the honest cost of the arbitrated delivery order.
   - The on-screen pass (Task 8) therefore seeds a session through a **temporary, reverted** patch to `AppModel.start()`, rather than shipping a seam PR4 would immediately make redundant. ⚠️ Do **not** describe this as what #209 did — its pull request (#211) records something different and better, and Task 8 Step 5 names it: it never patched `AppModel`, it hosted the view in an `NSHostingView` inside an `NSWindow` against a real seeded `BoardStore` and rendered *that* with `AppKitWindowCapture.render`, because neither Accessibility nor Screen Recording was granted to that session either.
 
@@ -985,21 +986,35 @@ git commit -m "feat(app): every sentence the auto-dev band says, decided once"
 **Interfaces:**
 - Consumes: `AutoDevSession`, `AutoDevEngagement`, `AutoDevTally`, `AutoDevDisposition` (Task 1); `AutoDevBand.figureText(session:tally:)` (Task 3, in one assertion); and, existing: `Consequence.reason(_:)`, `AppModel.isBlocked(_:)`, `AppModel.selectedRepoID`, `AppModel.repos`, `AppModel.status`, `AppModel.testOnlySeed(repos:cards:)`, `AppModel.testOnlySeedChecks(repo:_:)`, `AppModel.testOnlySeedRuns(active:byCard:recent:analysis:)`, `ElliotModel.SkillRun`, `ElliotEngine.CheckResult`.
 - Produces:
-  - `public protocol AutoDevDriving: Sendable` in `ElliotEngine`, with `start(repoID:cardLimit:) async throws -> AutoDevSession`, `pause(sessionID:) async -> AutoDevSession?`, `resume(sessionID:) async -> AutoDevSession?`, `stop(sessionID:) async -> AutoDevSession?`, `engagements(sessionID:) async -> [AutoDevEngagement]`
+  - `public protocol AutoDevDriving: Sendable` in `ElliotEngine`, with
+    `start(repoID:selection:) async throws -> AutoDevSession`,
+    `pause(sessionID:) async -> AutoDevSession?`, `resume(sessionID:) async -> AutoDevSession?`,
+    `stop(sessionID:) async -> AutoDevSession?`,
+    `engagements(sessionID:) async -> [AutoDevEngagement]`
+  - `public enum AutoDevSelection: Sendable, Hashable { case automatic(limit: Int); case explicit([UUID]) }`
+    in `ElliotEngine`, beside the protocol.
 
-> ⚠️ **Cross-plan: `cardLimit` is a count, and nothing in the six plans says *which* cards.**
+> ✅ **Card selection — arbitrated 2026-08-09, and this is why the signature above is
+> `start(repoID:selection:)` rather than `start(repoID:cardLimit:)`.**
+>
 > The design promises "optional automatic selection of the highest-value cards", and PR2 delivers
-> the whole apparatus for it — `CardValue.of(_:)`, `CardValue.rankable`, and `CardRanking.rank(_:)`
-> returning `(ranked:refused:)` — with the rule that a card which is not `.ranked` is **refused, not
-> ranked low**. **No plan consumes any of it.** This protocol's `start(repoID:cardLimit:)` says only
-> "at most `cardLimit` Backlog cards"; PR4's `AutoDevService.start(session:preflightChecks:)` takes
-> the ids already chosen and validates that they belong to the repository. So the selection sits in
-> the seam between the two, and each plan reads as though the other owned it.
-> **This is a gap to close, not a note to carry.** The natural home is the conformer's
-> `start(repoID:cardLimit:)` — `CardRanking.rank(backlogCards).ranked.prefix(cardLimit)` — which is
-> in PR4, and PR4's Prerequisites currently declare PR2 *"not required"*. Whoever arbitrates the
-> `AutoDevDriving` question above should settle this in the same breath, because the answer decides
-> whether PR4 depends on PR2 at all.
+> the whole apparatus — `CardValue.of(_:)`, `CardValue.rankable`, `CardRanking.rank(_:)` returning
+> `(ranked:refused:)`, with the rule that a card which is not `.ranked` is **refused, not ranked
+> low**. As the six plans were first written, **no plan consumed any of it**: this protocol passed
+> a bare count and PR4 received ids already chosen, so each read as though the other owned the
+> choice, and `CardValue` would have shipped as dead code — the same objection the design raises
+> against shipping PR6 after PR5.
+>
+> **The selection lives in the conformer, in `ElliotEngine`.** `AutoDevSelection` makes the
+> automatic half genuinely optional, which is what was asked for: `.automatic(limit:)` runs
+> `CardRanking.rank` over the repository's Backlog and engages the ranked cards in order, naming
+> the refused ones rather than sorting them to the bottom; `.explicit([UUID])` engages exactly what
+> it is given. Putting it here rather than in `AppModel` means no caller can hand the loop a badly
+> chosen set, and a future MCP start tool inherits the rule instead of re-deriving it.
+>
+> ⚠️ **Consequence for PR4: PR2 is now a hard prerequisite of it**, where PR4's Prerequisites
+> declared PR2 *"not required"*. PR5 itself does not consume `CardValue` — it only stops pretending
+> a count is a choice.
   - `AppModel.autoDev: AutoDevSession?` (`public private(set)`)
   - `AppModel.autoDevEngagements: [AutoDevEngagement]` (`public private(set)`)
   - `AppModel.autoDevEngagedCardIDs: Set<UUID>` (`public private(set)`)
@@ -1033,7 +1048,7 @@ private actor FakeAutoDev: AutoDevDriving {
     private var rows: [AutoDevEngagement] = []
     /// What `start` was asked for, so a test can tell "the command reached the
     /// driver" from "the model changed its own mind".
-    private(set) var startedWith: (repoID: UUID, cardLimit: Int)?
+    private(set) var startedWith: (repoID: UUID, selection: AutoDevSelection)?
     /// Whether `stop` was called — the one command that must also cancel the
     /// run already going.
     private(set) var stopped = false
@@ -1050,11 +1065,18 @@ private actor FakeAutoDev: AutoDevDriving {
         var errorDescription: String? { "The driver refused." }
     }
 
-    func start(repoID: UUID, cardLimit: Int) async throws -> AutoDevSession {
-        startedWith = (repoID, cardLimit)
+    func start(repoID: UUID, selection: AutoDevSelection) async throws -> AutoDevSession {
+        startedWith = (repoID, selection)
         if failsToStart { throw Refused() }
+        // The fake does not rank: ranking is PR2's pure function, exercised by
+        // PR2's own suite and by PR4's conformer. Here `.automatic` means "take
+        // the first `limit`", which is enough to prove the command travelled.
+        let engaged: [UUID] = switch selection {
+        case .automatic(let limit): Array(cards.prefix(limit))
+        case .explicit(let ids): ids
+        }
         let made = AutoDevSession(
-            repoID: repoID, engagedCardIDs: Array(cards.prefix(cardLimit)),
+            repoID: repoID, engagedCardIDs: engaged,
             maxAttemptsPerCard: 3, patience: 900,
             startedAt: Date(timeIntervalSince1970: 1_770_000_000)
         )
@@ -1191,7 +1213,7 @@ struct AutoDevStateTests {
         // control that promises one thing and does another.
         let asked = await driver.startedWith
         #expect(asked?.repoID == subject.id)
-        #expect(asked?.cardLimit == 2)
+        #expect(asked?.selection == .automatic(limit: 2))
 
         let session = try #require(model.autoDev)
         #expect(session.repoID == subject.id)
@@ -1373,10 +1395,26 @@ import Foundation
 /// The three mutating calls hand back the session they produced rather than
 /// `Void`, so the board's copy and the loop's cannot come apart while nobody is
 /// pushing updates. PR4 may add a push; nothing here forbids one.
+/// How a session's cards are chosen. The automatic half is what makes
+/// "optional automatic selection of the highest-value cards" optional: a caller
+/// that has already decided passes `.explicit`, and the ranking never runs.
+///
+/// The choice lives behind this protocol rather than in the caller so that no
+/// caller can hand the loop a badly chosen set, and so a future MCP start tool
+/// inherits the rule instead of re-deriving it.
+public enum AutoDevSelection: Sendable, Hashable {
+    /// Rank the repository's Backlog and engage at most `limit` of the cards
+    /// that are rankable. Cards nothing has measured are **refused and named**,
+    /// never sorted to the bottom — see `CardRanking.rank` (PR2).
+    case automatic(limit: Int)
+    /// Engage exactly these, in this order.
+    case explicit([UUID])
+}
+
 public protocol AutoDevDriving: Sendable {
-    /// Engages at most `cardLimit` Backlog cards of `repoID` and starts driving
-    /// them. The engaged list is closed here and never grows.
-    func start(repoID: UUID, cardLimit: Int) async throws -> AutoDevSession
+    /// Engages the Backlog cards `selection` names and starts driving them.
+    /// The engaged list is closed here and never grows.
+    func start(repoID: UUID, selection: AutoDevSelection) async throws -> AutoDevSession
 
     /// Engages no further move. The run already going finishes.
     func pause(sessionID: UUID) async -> AutoDevSession?
@@ -1456,7 +1494,11 @@ In `ElliotKit/Sources/ElliotAppKit/AppModel.swift`, add a new section immediatel
         guard autoDevRefusal == nil, let driver = autoDevDriver, let repoID = selectedRepoID
         else { return }
         do {
-            let session = try await driver.start(repoID: repoID, cardLimit: autoDevCardLimit)
+            // `.automatic`: the band's stepper asks for a count, and the rule
+            // that turns a count into a set of cards lives behind the protocol,
+            // never here. A view dispatches; it does not judge.
+            let session = try await driver.start(
+                repoID: repoID, selection: .automatic(limit: autoDevCardLimit))
             adopt(session, engagements: await driver.engagements(sessionID: session.id))
         } catch {
             // Said out loud *and* logged: a visible message and a logged one are

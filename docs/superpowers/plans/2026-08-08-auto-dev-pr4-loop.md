@@ -44,18 +44,25 @@ PR4 requires, and Task 1 proves by compiling:
 | PR1 | `BoardService.proposeMove(cardID:to:origin:followUps:orderIndex:requiresVerifiedGreen:)` | `requiresVerifiedGreen` last, **`= false`** — corrected against PR1's plan, which ships the default deliberately so every headless construction keeps compiling. The "no default" rule PR1 applies is to `MoveContext`'s two fields, not to this parameter, and PR4 needs only that the label exists in that position |
 | PR1 | `BoardService.move(cardID:to:origin:followUps:orderIndex:requiresVerifiedGreen:)` | the same parameter, in the same position, also `= false`. `move` is `proposeMove` + `commitMove` (`BoardService.swift:153-165`); PR1 has it **take** the parameter and forward it, which is what Task 6's third test relies on |
 
-PR2 (`CardValue`, `effort`, `evidence`) and PR3 (`resumeFrom`, `ResumeVerdict`) are **not** required: the engaged card ids are supplied by the caller, and PR3's fork-refusal spin is cut by the same patience window that bounds every other wait (Task 4).
+> 🔴 **Arbitrated 2026-08-09 — PR2 IS a hard prerequisite of this plan.** An earlier draft of this
+> paragraph said PR2 was "not required: the engaged card ids are supplied by the caller". That was
+> true of this plan read alone and **false of the set**: the only caller is PR5's
+> `AutoDevDriving.start`, which passed a *count* and not ids. PR2 ships
+> `CardRanking.rank(_:) -> (ranked:refused:)` and `CardValue` precisely to turn one into the other,
+> with the rule that an unappraised card is **refused rather than ranked low** — and no plan called
+> it, so the design's "optional automatic selection of the highest-value cards" was delivered by
+> nobody and `CardValue` would have shipped dead.
+>
+> **The selection lives in this actor's `AutoDevDriving` conformance** (Task 14), so:
 
-> ⚠️ **Cross-plan: "the engaged card ids are supplied by the caller" is true of this plan and false
-> of the set.** The only caller is PR5's `AutoDevDriving.start(repoID:cardLimit:)`, which passes a
-> **count**, not ids, and whose own documentation says "engages at most `cardLimit` Backlog cards"
-> without saying which. PR2 ships `CardRanking.rank(_:) -> (ranked:refused:)` and `CardValue`
-> precisely to answer that, with the rule that an unappraised card is **refused rather than ranked
-> low** — and **no plan in the set calls it.** So the design's "optional automatic selection of the
-> highest-value cards" is delivered by nobody. If the arbitration puts the selection in this actor's
-> `AutoDevDriving` conformance, PR2 becomes a hard prerequisite of PR4 and this paragraph is wrong;
-> if it puts it in `AppModel`, PR2 becomes a prerequisite of PR5 instead. Either way it has an owner
-> and today it does not.
+| Prerequisite | Symbol | What this plan needs from it |
+|---|---|---|
+| **PR2** | `CardValue.of(_:)`, `CardValue.rankable` | to tell a rankable card from one nothing has measured |
+| **PR2** | `CardRanking.rank(_:) -> (ranked: [Card], refused: [(Card, String)])` | `.automatic(limit:)` engages `ranked.prefix(limit)` and reports `refused` **by name** in the session's report — never by sorting them last |
+| **PR5** | `AutoDevSelection { automatic(limit: Int), explicit([UUID]) }` | the parameter `start` takes |
+
+PR3 (`resumeFrom`, `ResumeVerdict`) is still **not** required: its fork-refusal spin is cut by the
+same patience window that bounds every other wait (Task 4).
 
 PR 0·3 (#179, the concurrent `pump()` race) is strongly recommended: auto-dev multiplies drains by construction — every `commitMove` triggers one, every `finish` triggers one. It is not a compile-time dependency.
 
@@ -90,7 +97,7 @@ treat the number as a hint at where to start looking.**
 | File | Responsibility |
 |---|---|
 | `ElliotKit/Sources/ElliotModel/NonBuildChecks.swift` | The data list of check names whose green judges no code, and `CIState.hasBuildVerdict`. ⚠️ **PR1 creates this file; under the arbitrated order it already exists here.** See Task 2 Step 0 — this row survives only for the case where PR4 is executed without PR1, which is itself a stop condition. |
-| `ElliotKit/Sources/ElliotModel/AutoDev.swift` | `AutoDevSession`, `AutoDevSession.State`, `AutoDevCardState`, `Disposition`, `DispositionCode`, `PRReading` — pure values, no policy. ⚠️ **PR5 creates this same file first, with an overlapping and partly differently-named set of types.** Read the reconciliation block at the head of Task 3 before writing a line of it. |
+| `ElliotKit/Sources/ElliotModel/AutoDev.swift` | ⚠️ **PR5 creates this file first and owns `AutoDevSession`, `AutoDevSession.State`, `AutoDevEngagement`, `AutoDevDisposition` and `AutoDevTally`.** This plan *adds* to it: `Disposition` (transient), `PRReading`, and `AutoDevEngagement.isSettled` — pure values, no policy. Read the arbitration block at the head of Task 3 before writing a line of it. |
 | `ElliotKit/Sources/ElliotModel/AutoDevPolicy.swift` | `AutoDevPolicy.disposition(…)` and `AutoDevPolicy.held(…)`. Pure, clock injected. |
 | `ElliotKit/Sources/ElliotEngine/RunQueueReading.swift` | The two-method protocol that lets auto-dev read *why* the scheduler is holding a run. |
 | `ElliotKit/Sources/ElliotEngine/RoundTriggering.swift` | The one-method protocol `RunScheduler` and `PRWatcher` call to say "something moved". |
@@ -112,7 +119,7 @@ treat the number as a hint at where to start looking.**
 | `ElliotKit/Sources/ElliotModel/SkillRun.swift:47-207` | `requiresVerifiedGreen: Bool?` + `demandsVerifiedGreen`, threaded through the memberwise init and `SkillRun.card`. |
 | `ElliotKit/Sources/ElliotAppKit/PRStatusBlock.swift:111` | reads the label array instead of a count. |
 | `ElliotKit/Sources/ElliotStore/Migrations.swift:153` | `v9_autoDev` registered after `v8_prStatus`. |
-| `ElliotKit/Sources/ElliotStore/Records.swift` | `AutoDevSession` and `AutoDevCardState` conformance — both halves. |
+| `ElliotKit/Sources/ElliotStore/Records.swift` | `AutoDevSession` and `AutoDevEngagement` conformance — both halves, and `databaseUUIDEncodingStrategy(for:)` is a **`func`**, never a `static var`. |
 | `ElliotKit/Sources/ElliotStore/BoardStore.swift` | six auto-dev accessors, one of them a transaction. |
 | `ElliotKit/Sources/ElliotEngine/BoardService.swift:5-12,85-116,136-148,167-183` | `MoveProposal` carries `requiresVerifiedGreen` and `prVerdict`; `commitMove`'s `.action` branch passes the flag down; `makeRun` writes it onto the run. |
 | `ElliotKit/Sources/ElliotEngine/RunScheduler.swift:32,140,198-241,249-270,274-302,449-452` | `MergeAdmission`, the third refusal branch, the per-drain pre-pass, `RunQueueReading`, the round hook, `testOnlyClearInFlight`. |
@@ -598,27 +605,74 @@ git commit -m "feat(model,app): a passing check carries its name, so a green can
 > the failure mode is not a merge conflict — it is two per-card row types, one rendered and one
 > persisted, with nothing joining them.
 >
-> **Recommended resolution, and it needs a human decision before either PR is executed.** Keep
-> PR5's names, because they are already read by `AutoDevBand`, `AppModel.autoDevEngagements`,
-> `AppModel.autoDevTally`, the status-bar figure and the card mark, and because `AutoDevTally` has
-> no counterpart here:
+> ✅ **ARBITRATED 2026-08-09. PR5's names win.** They are already read by `AutoDevBand`,
+> `AppModel.autoDevEngagements`, `AppModel.autoDevTally`, the status-bar figure, the card mark and
+> three test suites, and `AutoDevTally` has no counterpart here. Apply all four points below to
+> Tasks 3, 5, 11, 12 and 13, each of which still names the retired types:
 >
-> - persist **`AutoDevEngagement`** (PR5's) and delete `AutoDevCardState` from this task, moving its
->   `var isSettled: Bool` onto `AutoDevEngagement` as an extension;
-> - persist **`AutoDevDisposition`** (PR5's `engaged | merged | blocked`) in the row, and keep
->   `Disposition` here as the **transient** policy verdict it is, adding one total mapping —
->   `var engagement: AutoDevDisposition` — so `.retry`/`.wait`/`.held` map to `.engaged`,
->   `.settle` maps to `.merged` or `.blocked` on its own reason, and `.abortSession` maps to
->   `.blocked`. ⚠️ `Disposition.settle` currently carries only a `reason: String`; splitting merged
->   from blocked on a **string** is the shape this repository refuses everywhere else, so the
->   mapping needs `settle` to carry the outcome, not to be pattern-matched on prose;
-> - `DispositionCode` then either disappears or survives as the *diagnostic* column beside the
->   disposition — the reason `AutoDevPolicy` gave, which the report band wants and the tally does
->   not. **That is the arbitration to make: one persisted enum or two.** Task 5's schema, Task 11's
->   `saveAutoDevSession(_:cards:)` and Task 12's per-card write all follow from the answer.
+> 1. **Persist `AutoDevEngagement`** (PR5's). **Delete `AutoDevCardState`** from this task; move its
+>    `var isSettled: Bool` onto `AutoDevEngagement` as an extension in *this* pull request, since
+>    PR5 has no use for it.
+> 2. **Persist `AutoDevDisposition`** (`engaged | merged | blocked`) in the row. Keep `Disposition`
+>    here as the **transient** policy verdict it is.
+> 3. ⛔ **`Disposition.settle` must carry its outcome, not a sentence.** It reads
+>    `settle(reason: String)` in this plan, and mapping *merged* versus *blocked* out of a **string**
+>    is the shape this repository refuses everywhere else — it is `resultText = result?.text ??
+>    stderr` one type over. Change it to carry the outcome as a value, e.g.
+>    `case settle(AutoDevDisposition, reason: String)` where the first element is `.merged` or
+>    `.blocked`. Every construction site of `.settle` in Tasks 4 and 12 states which.
+> 4. **`DispositionCode` is deleted.** One persisted enum, not two. The policy's own reason survives
+>    where it is useful — in the row's `reason: String`, which the report band renders — and nothing
+>    reads a second code.
 >
-> Nothing below is executable until that is settled. Tasks 3, 5, 11, 12 and 13 all name
-> `AutoDevCardState` / `DispositionCode`.
+> Then add the total mapping on `Disposition`:
+>
+> ```swift
+> extension AutoDevPolicy.Disposition {
+>     /// What this verdict means for the persisted row. Total by construction —
+>     /// a `switch` with no `default`, so a sixth disposition is a compile error
+>     /// rather than a card silently reported as still engaged.
+>     var engagement: AutoDevDisposition {
+>         switch self {
+>         case .retry, .wait, .held: .engaged
+>         case .settle(let outcome, _): outcome
+>         case .abortSession: .blocked
+>         }
+>     }
+> }
+> ```
+>
+> Task 5's schema, Task 11's `saveAutoDevSession(_:cards:)` and Task 12's per-card write all follow
+> from this, and each stores `AutoDevDisposition`.
+>
+> ### The substitution, stated once
+>
+> The code blocks in Tasks 3, 5, 11, 12, 13 and 14 were written before this arbitration and still
+> spell the retired names — about thirty sites. **Apply this table uniformly rather than deciding
+> per site**, and verify with the greps at the end:
+>
+> | written in the blocks below | write instead |
+> |---|---|
+> | `AutoDevCardState` | `AutoDevEngagement` |
+> | `disposition: DispositionCode` | `disposition: AutoDevDisposition` |
+> | `DispositionCode.retry` / `.wait` / `.held` | `AutoDevDisposition.engaged` |
+> | `DispositionCode.settled` | `AutoDevDisposition.merged` **or** `.blocked` — take it from `Disposition.settle`'s first element; never from its `reason` string |
+> | `DispositionCode.aborted` | `AutoDevDisposition.blocked` |
+> | `Disposition.settle(reason:)` | `Disposition.settle(_ outcome: AutoDevDisposition, reason: String)` |
+> | `var code: DispositionCode` on `Disposition` | delete — replaced by `var engagement: AutoDevDisposition` above |
+> | `AutoDevCardState.Columns.…` | `AutoDevEngagement.Columns.…` |
+>
+> ⚠️ **`AutoDevEngagement` is PR5's type, so this plan does not declare it** — it declares the
+> `Records.swift` conformance, the migration, `var isSettled`, and nothing else about its shape.
+> Task 3's `Produces` below is corrected; the code blocks are not.
+>
+> Two greps say whether the substitution is complete. Both must return nothing before Task 14's
+> commit:
+>
+> ```bash
+> grep -rn 'AutoDevCardState\|DispositionCode' ElliotKit/Sources ElliotKit/Tests
+> grep -rn 'case settle(reason:' ElliotKit/Sources
+> ```
 
 **Files:**
 - Create: `ElliotKit/Sources/ElliotModel/AutoDev.swift`
@@ -629,9 +683,10 @@ git commit -m "feat(model,app): a passing check carries its name, so a green can
 - Produces:
   - `public struct AutoDevSession: Identifiable, Codable, Sendable, Hashable` with `id, repoID, engagedCardIDs: [UUID], maxAttemptsPerCard: Int, patience: TimeInterval, startedAt: Date, endedAt: Date?, state: AutoDevSession.State`
   - `public enum AutoDevSession.State: String, Codable, CaseIterable, Sendable, Hashable { case running, paused, finished }`
-  - `public struct AutoDevCardState: Identifiable, Codable, Sendable, Hashable` with `sessionID, cardID, attempts: Int, disposition: DispositionCode, reason: String, updatedAt: Date`, and `var isSettled: Bool`
-  - `public enum DispositionCode: String, Codable, CaseIterable, Sendable, Hashable { case retry, wait, held, settled, aborted }`
-  - `public enum Disposition: Sendable, Hashable { case retry; case wait(reason: String); case held(QueueRefusal); case settle(reason: String); case abortSession(reason: String) }` with `var code: DispositionCode`, `var reason: String`, `var isSettled: Bool`
+  - `extension AutoDevEngagement { var isSettled: Bool }` — the row itself is **PR5's**, declared in
+    its Task 1 as `sessionID, cardID, attempts: Int, disposition: AutoDevDisposition, reason: String,
+    updatedAt: Date`, with `var id: UUID { cardID }`. This plan adds only the extension.
+  - `public enum Disposition: Sendable, Hashable { case retry; case wait(reason: String); case held(QueueRefusal); case settle(AutoDevDisposition, reason: String); case abortSession(reason: String) }` with `var engagement: AutoDevDisposition`, `var reason: String`, `var isSettled: Bool`
   - `public enum PRReading: Sendable, Hashable { case noReading; case read(ResolvedPRStatus) }`
 
 - [ ] **Step 1: Write the failing test**
@@ -2939,8 +2994,10 @@ git commit -m "feat(engine): keep reading a pull request while its merge waits t
   - `AutoDevService.hasRunningSession() async -> Bool`
   - `AutoDevService.advance() async` — declared here as a no-op body, filled in by Task 12
 
-> 🔴 **Cross-plan: PR6 already moved this exact rule into one place, and this task writes a fourth
-> copy of it.** PR6's Task 12 creates `ElliotModel/UnattendedStartRefusal.swift` —
+> ✅ **ARBITRATED 2026-08-09: apply this rewrite. It is not optional.** PR6 already moved this exact
+> rule into one place, and this task, as first written, wrote a fourth copy of it.
+>
+> PR6's Task 12 creates `ElliotModel/UnattendedStartRefusal.swift` —
 > `refusal(repo: Repo, preflightBlocks: Bool) -> UnattendedStartRefusal?`, with cases
 > `noRepositoryChosen | repoDisabled | preflightBlocked` and a `sentence` — precisely because *"an
 > appraisal passes through no transition, so `evaluateMove`, `allowsSideEffects` and `repoPreflight`
@@ -4215,10 +4272,57 @@ git commit -m "feat(engine): a session that ends lets go of the runs its cards w
 - Consumes: `AutoDevService.advance()` (Task 12); `AutoDevService.hasRunningSession()` (Task 11);
   `RunScheduler.setRoundTrigger(_:)` (Task 9); `PRWatcher.setRoundTrigger(_:)` and
   `PRWatcher.setSessionProbe(_:)` (Task 10); `Reconciler.sweep()` (`Reconciler.swift:37-78`).
-- Produces: `AppModel.autoDev: AutoDevService?`, built beside `analysisService`, with its hooks
-  registered **after** `reconciler.sweep()` has returned.
+- Produces:
+  - `extension AutoDevService: AutoDevDriving` (`ElliotEngine`), conforming to the protocol PR5
+    already shipped — `start(repoID:selection:)`, `pause/resume/stop(sessionID:)`,
+    `engagements(sessionID:)`.
+  - **No new `AppModel` property.** The actor is built beside `analysisService` and handed to the
+    model through the production twin of `testOnlyAttachAutoDev(_:)`, with its hooks registered
+    **after** `reconciler.sweep()` has returned.
 
-> 🔴 **Cross-plan: `AppModel.autoDev` is already taken, by PR5, with a different type.** PR5's Task 4
+> ✅ **ARBITRATED 2026-08-09: `AutoDevService` conforms to `AutoDevDriving`, and this task adds no
+> `AppModel` property.** An earlier draft produced `AppModel.autoDev: AutoDevService?` — the same
+> property name PR5 already uses for a different type.
+>
+> The conformance is where the card selection lands, and it is the only place in the set that calls
+> PR2:
+>
+> ```swift
+> extension AutoDevService: AutoDevDriving {
+>     /// Turns a selection into a closed set of engaged cards, then starts.
+>     ///
+>     /// `.automatic` is the design's "optional automatic selection of the
+>     /// highest-value cards". The ranking is PR2's pure function; this actor
+>     /// performs the I/O and holds the answer. A card nothing has measured is
+>     /// **refused and named** in the session's report — never ranked low, which
+>     /// is the collapse `CardValue`'s three cases exist to prevent.
+>     public func start(repoID: UUID, selection: AutoDevSelection) async throws -> AutoDevSession {
+>         let backlog = try await store.cards(repoID: repoID).filter { $0.column == .backlog }
+>         let engaged: [UUID]
+>         let refused: [(Card, String)]
+>         switch selection {
+>         case .automatic(let limit):
+>             let ranking = CardRanking.rank(backlog)
+>             engaged = ranking.ranked.prefix(limit).map(\.id)
+>             refused = ranking.refused
+>         case .explicit(let ids):
+>             engaged = ids
+>             refused = []
+>         }
+>         return try await start(
+>             session: makeSession(repoID: repoID, engaged: engaged, refused: refused),
+>             preflightChecks: await preflight.checks(repoID: repoID)
+>         )
+>     }
+> }
+> ```
+>
+> ⚠️ **`refused` is carried into the session, not dropped.** A session that engages three of eleven
+> cards and says nothing about the other eight reads as a session that found only three — the
+> report must say *"8 cards carry no signal"*. That is one field on `AutoDevSession` and one line
+> in the report; adding it here is far cheaper than discovering it on screen.
+>
+> The retired collision, kept for the record: PR5's Task 4
 > ships a whole `// MARK: - Auto-dev` section on `AppModel` — `autoDev: AutoDevSession?`
 > (`public private(set)`, the **session value** the band renders), `autoDevEngagements`,
 > `autoDevEngagedCardIDs`, `autoDevTally`, `autoDevCardLimit`, `autoDevRefusal`, five commands and
@@ -4227,12 +4331,11 @@ git commit -m "feat(engine): a session that ends lets go of the runs its cards w
 > declarations and the compiler will reject the redeclaration; a union merge hides this until
 > `swift build`.
 >
-> The fix follows whichever way the `AutoDevDriving` question is arbitrated (see PR5's Prerequisites
-> and this plan's Task 3 header): if `AutoDevService` conforms to `AutoDevDriving`, this task adds
-> **no property at all** — it builds the actor, calls `model.testOnlyAttachAutoDev(service)`'s
-> production twin, and registers the two hooks. That is also the smaller diff. What it must **not**
-> do is introduce a second property under the same name, and it must not quietly rename PR5's, which
-> six call sites across `OperationsView`, `BoardView`, `CardView` and three test suites read.
+> Under the arbitration this task adds **no property at all**: it builds the actor, calls the
+> production twin of `model.testOnlyAttachAutoDev(service)`, and registers the two hooks. What it
+> must **not** do is introduce a second property under the same name, and it must not quietly
+> rename PR5's, which six call sites across `OperationsView`, `BoardView`, `CardView` and three
+> test suites read.
 >
 > ⚠️ The line numbers above (`:432`, `:546-561`) are read against `main`; PR1's Task 8 and PR5's
 > Tasks 2 and 4 both edit `AppModel.swift` before this branch. Locate `start()` and the

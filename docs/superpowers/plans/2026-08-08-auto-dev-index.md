@@ -55,22 +55,31 @@ reverse the numbering, and each reversal has a measured reason recorded in the s
    re-read has an owner. Shipping PR4 on PR1 alone ships a loop that merges on stale readings
    in exactly the configuration the design imposes.
 
-## Open before executing anything: four cross-plan items
+## Four cross-plan items — all arbitrated 2026-08-09
 
-Each plan was written and verified in isolation, so none of its readers could see these. Two are
-**decisions**, not edits; all four are recorded in full inside the plans they touch.
+Each plan was written and verified in isolation, so none of its readers could see these; a
+cross-plan critic found them and returned `retravail-necessaire`. All four are now settled, and
+each plan carries the decision at the task it changes. They are recorded here because **the reason
+matters more than the answer**: three of the four were two plans each assuming the other owned an
+artefact, which is the failure mode a per-plan reviewer structurally cannot catch.
 
-| # | What | Where the detail is | Owner |
-|---|---|---|---|
-| 1 | 🔴 **`ElliotModel/AutoDev.swift` is created twice.** PR5 ships `AutoDevEngagement` + `AutoDevDisposition {engaged, merged, blocked}` + `AutoDevTally`; PR4 ships `AutoDevCardState` + `DispositionCode {retry, wait, held, settled, aborted}` in the same file. Two per-card row types, one rendered and one persisted, nothing joining them | header of PR4 Task 3; PR5 Prerequisites | **human** |
-| 2 | 🔴 **`AutoDevDriving` has no conformer, and `AppModel.autoDev` is declared twice with two types.** PR5 declares the protocol and says PR4 conforms; PR4 never names it and exposes a different surface | PR5 Prerequisites; PR4 Task 14 | **human** |
-| 3 | ⚠️ **Nobody selects the cards.** PR2 builds `CardValue` / `CardRanking.rank`; no plan calls either. PR5 passes a `cardLimit`, PR4 receives ids already chosen | PR5 Task 4; PR4 Prerequisites | **human** |
-| 4 | ⚠️ **PR4 hand-writes a fourth copy of the unattended-start rule** PR6 unified into `UnattendedStartRefusal` one PR earlier | PR4 Task 11 | mechanical, once 1–3 are settled |
+| # | What was wrong | Decision |
+|---|---|---|
+| 1 | **`ElliotModel/AutoDev.swift` was created twice**, with two per-card row types — one rendered (PR5), one persisted (PR4) — and nothing joining them | **PR5's names win.** `AutoDevEngagement` + `AutoDevDisposition {engaged, merged, blocked}` + `AutoDevTally` are persisted *and* rendered. PR4's `Disposition` stays transient with a total mapping; **`DispositionCode` is deleted**. ⛔ `Disposition.settle` must carry its outcome as a value — splitting *merged* from *blocked* on a `String` is `resultText ?? stderr` one type over |
+| 2 | **`AutoDevDriving` had no conformer**, and `AppModel.autoDev` was declared twice with two types — which union-merge would have carried to `swift build` | **`extension AutoDevService: AutoDevDriving`.** Smaller diff, and **PR4 adds no `AppModel` property at all**, so the collision disappears rather than being renamed around |
+| 3 | **Nobody selected the cards.** PR2 built `CardValue` / `CardRanking.rank`; no plan called either, so the feature the design promises would have shipped as dead code | **Selection lives in the conformer**, behind `AutoDevSelection { automatic(limit:), explicit([UUID]) }` — which is what makes the automatic half genuinely optional. No caller can hand the loop a badly chosen set, and a future MCP start tool inherits the rule. **PR2 is now a hard prerequisite of PR4** |
+| 4 | **PR4 hand-wrote a fourth copy** of the unattended-start rule PR6 unifies into `UnattendedStartRefusal` one pull request earlier | **Apply PR6's rule.** Not optional: this is the one site that fires `bypassPermissions` N times into a repository Preflight refused |
 
-Three smaller ones are already corrected in place and need no decision: PR1's two `MoveBlock`
-shadows had to learn PR 0·2's `repoBlocked`; the `--add-dir` seam PR3 and PR6 both claim in
-`ClaudeInvocation.arguments()` now has a stated order (extra directories first, then the resume
-tokens); and PR6's `finish` routing has to keep PR3's `resume:` argument on `completeCardRun`.
+One consequence of #3 that is easy to lose: **the refused cards travel into the session's report.**
+A session that engages three of eleven and says nothing about the other eight reads as a session
+that found only three. That is one field and one line, and it is far cheaper here than on screen.
+
+Three smaller items were corrected in place by the critic and needed no decision: PR1's two
+`MoveBlock` shadows had to learn PR 0·2's `repoBlocked`; the `--add-dir` seam PR3 and PR6 both
+claim in `ClaudeInvocation.arguments()` now has a stated order (extra directories first, then the
+resume tokens) — neither plan's tests would have caught the wrong one, since each leaves the
+other's input empty; and PR6's `finish` routing has to keep PR3's `resume:` argument on
+`completeCardRun`.
 
 ## The shared resource: migration numbers
 
