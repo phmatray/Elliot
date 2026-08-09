@@ -136,7 +136,14 @@ switch; the compiler will ask for it.
 carries `(id, to, followUps)` (`Protocol.swift:107`), `MoveDTO` carries no
 origin (`:667-697`), and `MCPRequestHandler.moveCard` hardcodes
 `.mcp(client:)` (`MCPRequestHandler.swift:302`). **No protocol bump.**
-`elliotProtocolVersion` stays 6 (`Protocol.swift:46`).
+
+⚠️ **Corrected 2026-08-09.** This read "`elliotProtocolVersion` stays 6
+(`Protocol.swift:46`)". No bump is right and is the claim that matters; **6 is
+not**. `origin/main` carries **7**, and has since before PR1 was written — the
+number was read off a merge base twenty-three commits behind, exactly the
+mistake that made PR1's whole prerequisite premise false. A wire version quoted
+in a document that does not change it is a number nothing keeps true. Read it
+from `Protocol.swift`.
 
 It *is* persisted, as JSON text in `moveAudit.origin`
 (`Migrations.swift:344`), through the synthesised `Codable`. A new case is
@@ -190,7 +197,7 @@ The payload is therefore the reason, total by construction:
 
 ```swift
 public enum NotGreenReason: Equatable, Sendable, Hashable {
-    case noReading                 // no `PRStatus` row at all
+    case noReading                 // nothing came back: no row, or `gh` unreachable
     case sign(PRSign)              // a sign names it; `PRSign.summary` already says it well
     case notClean(MergeState)      // read, and not `.clean` — `.unstable` above all
     case noBuildVerdict            // read, clean, unsigned, and every green is an analyser
@@ -198,6 +205,18 @@ public enum NotGreenReason: Equatable, Sendable, Hashable {
 ```
 
 `code` stays `"not_verified_green"`.
+
+⚠️ **Corrected 2026-08-09, in the final review of PR1.** `noReading` was
+implemented — and commented here — as covering a **stale** reading too. It must
+not. Stale means the stored row describes a commit that is no longer the head:
+somebody pushed while the board was deciding. That is the *most likely* refusal
+in production, and it is not "nothing has been read"; it is the same defect that
+turned this payload from a `PRSign?` into a reason, one layer further in. It
+answers `.sign(.unknown)`, whose sentence already exists and is already right —
+`resolved(now:)` stamps a stale row `sign: .unknown`, and `PRSign.unknown.summary`
+reads *"Not established — the reading is missing, aged out, or from an older
+commit."* `noReading` keeps the two facts it genuinely cannot separate: no row at
+all, and a row `PRVerdictReader` could not check because `gh` was unreachable.
 
 `code` is `"not_verified_green"` and `"system_owned_transition"` — snake_case,
 per the rule written at `Protocol.swift:398-401`. The first sentence is written

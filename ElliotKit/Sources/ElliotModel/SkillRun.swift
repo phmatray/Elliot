@@ -232,13 +232,21 @@ public enum MoveOrigin: Codable, Sendable, Hashable {
     /// run from the next.
     ///
     /// **Persisted, and there is no downgrade path.** `moveAudit.origin` is a
-    /// JSON column (`Migrations.swift:344`) written through the synthesised
-    /// `Codable`, so this case is additive for reading rows an older build
-    /// wrote, and unreadable by an older build that meets a row this one wrote.
-    /// It does **not** travel the IPC wire: `ElliotRequest.moveCard` carries
-    /// `(id, to, followUps)`, `MoveDTO` carries no origin, and
-    /// `MCPRequestHandler.moveCard` hardcodes `.mcp(client:)` — so
-    /// `elliotProtocolVersion` stays 6.
+    /// JSON column (`Migrations.swift`, the v1 schema) written through the
+    /// synthesised `Codable`, so this case is additive for reading rows an older
+    /// build wrote, and unreadable by an older build that meets a row this one
+    /// wrote. It does **not** travel the IPC wire: `ElliotRequest.moveCard`
+    /// carries `(id, to, followUps)`, `MoveDTO` carries no origin, and
+    /// `MCPRequestHandler.moveCard` hardcodes `.mcp(client:)` — so this change
+    /// does not bump `elliotProtocolVersion`.
+    ///
+    /// ⚠️ This said "`elliotProtocolVersion` stays 6" until the branch was
+    /// merged with `origin/main`, where it is **7**. The claim that mattered —
+    /// no bump — was right; the number was read off a base twenty-three commits
+    /// behind, which is the same mistake, one field over, as the premise this
+    /// whole branch was planned on. A version written down beside the code that
+    /// does not change it is a number nothing keeps true: say *this does not
+    /// bump it*, and let `Protocol.swift` hold the value.
     case autoDev(sessionID: UUID)
 
     public enum SystemReason: String, Codable, Sendable, Hashable {

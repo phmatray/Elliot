@@ -713,8 +713,8 @@ public enum MoveOrigin: Codable, Sendable, Hashable {
     /// wrote, and unreadable by an older build that meets a row this one wrote.
     /// It does **not** travel the IPC wire: `ElliotRequest.moveCard` carries
     /// `(id, to, followUps)`, `MoveDTO` carries no origin, and
-    /// `MCPRequestHandler.moveCard` hardcodes `.mcp(client:)` — so
-    /// `elliotProtocolVersion` stays 6.
+    /// `MCPRequestHandler.moveCard` hardcodes `.mcp(client:)` — so this change
+    /// does not bump `elliotProtocolVersion`.
     case autoDev(sessionID: UUID)
 
     public enum SystemReason: String, Codable, Sendable, Hashable {
@@ -1225,6 +1225,10 @@ git commit -m "feat(model): every move states whether it needs a verified green,
 - Consumes: `PRSign` (already in `ElliotModel`, `Sendable, Hashable`, with `var summary: String` at `PRStatus.swift:182-202`).
 - Produces:
   - `MoveBlock.notVerifiedGreen(sign: PRSign?)` with `code == "not_verified_green"`.
+    ⚠️ **The payload is `reason: NotGreenReason`, not `sign: PRSign?`** — arbitrated on
+    2026-08-09 and explained at the head of Task 7, which is where the correction was written.
+    Every `.notVerifiedGreen(sign:)` in *this* task's code blocks below carries the retired
+    shape too; read them through that note.
   - `MoveBlock.systemOwnedTransition` with `code == "system_owned_transition"`.
   - `Consequence.reason(_:)` and `MoveBlockText.explain(_:)` / `.hint(_:)` answer both.
   - `MoveBlockCase` in `ElliotAppKitTests`: `enum MoveBlockCase: CaseIterable { var sample: MoveBlock; static func of(_ block: MoveBlock) -> MoveBlockCase; static var allBlocks: [MoveBlock] }`.
@@ -1247,6 +1251,30 @@ git commit -m "feat(model): every move states whether it needs a verified green,
 >   shadow, and expect `RefusalWordingTests.everyBlockIsWordedTwice` to cover nine blocks rather
 >   than ten. PR 0·2 then has to add the case back to both shadows in its own diff, exactly as it
 >   adds the arm to `Consequence.reason` and `MoveBlockText.explain`.
+
+> 🔴 **Corrected 2026-08-09, after the branch was merged with `origin/main`. The block above is
+> right; the branch took its wrong fork.**
+>
+> The grep was run — and run against **this worktree**, whose merge base is twenty-three commits
+> behind. It printed nothing, so the "has **not** landed" fork was taken and the three
+> `repoBlocked` lines were deleted from both shadows. PR 0·2 had in fact landed as `a29d019`
+> (#250) fifty-six minutes after that merge base and eighteen hours before this branch's first
+> commit.
+>
+> ⚠️ **The prescribed command cannot answer the question it is asked.** `RuleEngine.swift` in a
+> worktree is a *rendering* of the branch, not of the portfolio; the source is `origin`. Written
+> so it can only be right:
+>
+> ```bash
+> git fetch origin && git show origin/main:ElliotKit/Sources/ElliotModel/RuleEngine.swift \
+>     | grep -n 'case repoBlocked'
+> ```
+>
+> What actually held the line was the shadows themselves: `MoveBlockCase.of` and
+> `WireBlockCase.of` are exhaustive with no `default:`, so the merge named all three deleted arms
+> as build failures and nothing reached a green suite unnamed. **The measured arity is `MoveBlock`
+> 8 → 10** — the 7 originals plus `.repoBlocked`, then `.notVerifiedGreen` and
+> `.systemOwnedTransition` — not 7 → 9, and `everyBlockIsWordedTwice` covers ten.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1646,12 +1674,13 @@ git commit -m "feat(model,ipc,app): two refusals that name their cause, and list
 > | input | answer |
 > |---|---|
 > | `nil` | `.noReading` |
-> | `isStale` | `.noReading` — the row exists but describes a commit no longer under review, which is *not* a reading of this pull request |
+> | `isStale` | ~~`.noReading`~~ → **`.sign(.unknown)`**, corrected 2026-08-09 in the final review. The row exists and describes a commit no longer under review — that is somebody pushing, not nobody looking, and it is the likeliest refusal in production. `.noReading` told that reader nothing had been read about a pull request that *was* read: the same defect that turned this payload from a `PRSign?` into a reason. `resolved(now:)` already stamps a stale row `sign: .unknown`, so the accurate sentence was already written once. |
 > | `sign != nil` | `.sign(sign)` |
 > | `merge != .clean` | `.notClean(merge)` |
 > | otherwise | `.noBuildVerdict` — the only conjunct left |
 >
-> ⚠️ The last row is a claim, not a default: it is reachable **only** when `!isStale`,
+> ⚠️ The last row is a claim, not a default: it is reachable **only** when the reading came back,
+> `!isStale`,
 > `sign == nil` and `merge == .clean`, so `ci.hasBuildVerdict` is the only thing that can have
 > failed. Assert that in the test rather than trusting the reading — if a fifth conjunct is ever
 > added to `isMergeableUnattended`, this arm starts lying and nothing else will notice.
