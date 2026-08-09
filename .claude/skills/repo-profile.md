@@ -501,8 +501,13 @@ above within seconds.
     first here rather than a fallback. ⚠️ It cannot draw
     sheets, popovers **or the toolbar's controls** — the last one is measured, not theoretical, and
     the toolbar is a conflict hot-spot in the table above. Every reply lists what it left out in
-    `not_included`; read that before believing something is missing. Keep `ELLIOT_HOME` short or the
-    unix socket exceeds `sun_path`'s 104 bytes and the helper reports a running app as absent.
+    `not_included`; read that before believing something is missing. **Keep `ELLIOT_HOME` short** —
+    over `sun_path`'s 104 bytes the app cannot bind its socket, so the helper cannot reach it. Since
+    #168 that is a named refusal (`app_unavailable`, quoting the byte count and `ELLIOT_HOME`) rather
+    than the old `source: offline-db`, *"Elliot is not running"*, and #193 widened it to every cause
+    a path can be unbindable for — a missing, non-directory or read-only parent, each named
+    separately. `CLAUDE.md` § *A long `ELLIOT_HOME` silently costs you the MCP socket* has the
+    measurement; the constraint here is unchanged, only the symptom is.
   - **Which grants *you* hold is a two-line answer** — `AXIsProcessTrusted()` and
     `CGPreflightScreenCaptureAccess()`, neither of which prompts. `CLAUDE.md` § *Looking and touching
     are two different grants* has those probes, the ancestry walk that names the identity they speak
