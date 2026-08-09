@@ -388,6 +388,17 @@ enum Migrations {
     /// deliberately idempotent, so without the guard a re-run would overwrite an
     /// appraisal that had since been redone with whatever the original proposal
     /// said.
+    ///
+    /// The `EXISTS` is not redundant with the subqueries, and it is the one
+    /// place this statement is not v7's shape. `backfillCardAnglesSQL` writes
+    /// the single column it filters on, so a row it visits has NULL there by
+    /// definition and nothing can be destroyed. This one filters on
+    /// `appraisedAt` and assigns **three** columns: a card carrying an effort
+    /// but no `appraisedAt`, with no proposal to read one from, is selected by
+    /// the filter and then has that effort assigned the NULL of a subquery with
+    /// nothing to return. `EXISTS` keeps the row guard and the assignment
+    /// talking about the same thing. It only ever removes rows that could have
+    /// received NULLs, so it changes no outcome that was already right.
     static let backfillCardAppraisalsSQL = """
         UPDATE "card" SET
             "effort" = (
@@ -403,6 +414,9 @@ enum Migrations {
                 WHERE "p"."acceptedCardID" = "card"."id" LIMIT 1
             )
         WHERE "appraisedAt" IS NULL
+          AND EXISTS (
+            SELECT 1 FROM "storyProposal" "p" WHERE "p"."acceptedCardID" = "card"."id"
+          )
         """
 
     /// The original schema. Named so a test can build a v1 database and prove

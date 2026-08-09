@@ -535,6 +535,63 @@ struct SchemaUpgradeTests {
         #expect(back.first { $0.id == accepted.id }?.appraisedAt == then.addingTimeInterval(60))
     }
 
+    /// The row guard and the assignment guard the same thing, which is the one
+    /// place this statement is not v7's shape.
+    ///
+    /// `backfillCardAnglesSQL` writes the single column it filters on, so it is
+    /// structurally incapable of destroying anything: a row it visits has NULL
+    /// there by definition. This one filters on `appraisedAt` and assigns three
+    /// columns, so a card with an effort but no `appraisedAt` — and no proposal
+    /// to read one from — would have had that effort assigned NULL by a subquery
+    /// with nothing to return. `EXISTS` is what keeps the two guards aligned.
+    ///
+    /// The appraised card is here so the fix cannot be mistaken for switching the
+    /// backfill off: the statement must still fill in the card that has a
+    /// proposal while leaving the one that has none alone.
+    @Test("The appraisal backfill blanks no card it has nothing to say about")
+    func appraisalBackfillDoesNotBlankACardWithNoProposal() async throws {
+        let scratch = try Scratch()
+        let store = try BoardStore.open(at: scratch.database)
+        let repository = repo()
+        try await store.saveRepo(repository)
+
+        let analysis = Analysis(repoID: repository.id, angles: [.techDebt], createdAt: then)
+        try await store.saveAnalysis(analysis)
+
+        let appraised = card(repoID: repository.id, title: "Bound the await")
+        try await store.saveCard(appraised)
+        try await store.saveProposal(
+            StoryProposal(
+                analysisID: analysis.id, runID: UUID(), repoID: repository.id,
+                angle: .techDebt, title: "Bound the await",
+                story: UserStory(role: "maintainer", want: "a bounded wait", benefit: "no hangs"),
+                evidence: [Evidence(path: "Sources/A.swift", line: 7, exists: true)],
+                effort: .large,
+                status: .accepted, acceptedCardID: appraised.id, createdAt: then
+            )
+        )
+
+        // Written by hand, never proposed: an effort and a citation, and no
+        // `appraisedAt`, which is exactly the row the filter selects.
+        var handwritten = card(repoID: repository.id, title: "Written by hand", orderIndex: 2048)
+        handwritten.effort = .small
+        handwritten.evidence = [Evidence(path: "Sources/B.swift", line: 3, exists: true)]
+        try await store.saveCard(handwritten)
+
+        try await store.backfillCardAppraisals()
+
+        let back = try await store.cards(repoID: repository.id)
+        let untouched = try #require(back.first { $0.id == handwritten.id })
+        #expect(untouched.effort == .small)
+        #expect(untouched.evidence?.first?.path == "Sources/B.swift")
+        #expect(untouched.appraisedAt == nil)
+
+        // And the card that does have a proposal is still filled in.
+        let filled = try #require(back.first { $0.id == appraised.id })
+        #expect(filled.effort == .large)
+        #expect(filled.appraisedAt == then)
+    }
+
     // MARK: - A migration that ran under a name this build no longer registers
 
     /// The board that ran `v2_analysis` before it was renamed to `v4_analysis`.
