@@ -34,7 +34,7 @@ enum ColumnRowID: Hashable, Sendable {
 /// One row of a column's list, in the order the column draws it.
 enum ColumnRow: Identifiable, Equatable, Sendable {
     /// A repository's heading. `folded` is whether it is *drawn* folded, which
-    /// is not always what the reader asked for — see ``ColumnRows/build(_:foldedRepoIDs:foldedDays:selection:)``.
+    /// is not always what the reader asked for — see `ColumnRows.build`.
     case repository(CardGroup, folded: Bool)
     /// A day's heading in Done, with the same distinction.
     case day(ShipDay, folded: Bool)

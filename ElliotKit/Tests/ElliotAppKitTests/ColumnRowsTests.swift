@@ -236,7 +236,9 @@ struct ColumnRowsTests {
                 columnEnteredAt: at, createdAt: at, updatedAt: at)
         }
         let model = AppModel()
-        model.testOnlySeed(repos: [elliot], cards: [shipped("fresh", daysAgo: 0), shipped("ancient", daysAgo: 40)])
+        model.testOnlySeed(
+            repos: [elliot],
+            cards: [shipped("fresh", daysAgo: 0), shipped("ancient", daysAgo: 40)])
 
         let rows = ColumnRows.of(.done, model: model, foldedRepoIDs: [])
         #expect(titles(rows) == ["fresh"])
