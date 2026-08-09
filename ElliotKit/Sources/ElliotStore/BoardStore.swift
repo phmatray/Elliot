@@ -86,6 +86,24 @@ public final class BoardStore: Sendable {
         return writer
     }
 
+    /// Raw SQL, for tests only.
+    ///
+    /// **`internal`, so only `@testable import` reaches it** — the app and the
+    /// MCP helper cannot call this, which is the point. It exists because some
+    /// claims are about rows the *type system cannot write*: a `skillRun` whose
+    /// `kind` is a skill this build has never heard of is what a newer build
+    /// leaves behind, and `daySpend`'s two-statement shape is written for
+    /// exactly that row. There is no way to produce it through `saveRun`, so
+    /// without this the reasoning in that comment could only be asserted.
+    ///
+    /// ⛔ Not a general escape hatch. Anything a test can express through the
+    /// typed API belongs there: raw SQL passes straight through the schema, so
+    /// it can also create rows no migration would ever produce, which is a test
+    /// proving something about a database that cannot exist.
+    func testOnlyExecute(_ sql: String) async throws {
+        try await requireWriter().write { db in try db.execute(sql: sql) }
+    }
+
     // MARK: - Repos
 
     public func saveRepo(_ repo: Repo) async throws {
@@ -332,6 +350,30 @@ public final class BoardStore: Sendable {
                 )
             }
         }
+    }
+
+    /// The day's spend, total and split by skill, from **one** boundary.
+    ///
+    /// The two aggregates above were both public and both took a `since`, and
+    /// the only caller that wants both — a screen showing a total with its
+    /// breakdown under it — had to read the clock twice. Across midnight those
+    /// are two different days: the split would then not add up to the total
+    /// beside it, silently, on the one screen whose subject is money.
+    ///
+    /// So the boundary is taken once here and travels in the answer. Nothing is
+    /// computed that the two queries did not already compute; what this method
+    /// adds is that the pair cannot be assembled from two midnights.
+    ///
+    /// Two statements rather than one grouped query with a rollup: the total
+    /// must keep counting runs whose `kind` no longer decodes, which a `GROUP BY`
+    /// summed in Swift would quietly drop — `spendByKind` skips an unknown raw
+    /// value, and it is right to.
+    public func daySpend(since: Date) async throws -> DaySpend {
+        DaySpend(
+            since: since,
+            total: try await spend(since: since),
+            byKind: try await spendByKind(since: since)
+        )
     }
 
     /// What one analysis cost, across all of its lenses.
