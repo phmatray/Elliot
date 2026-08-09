@@ -90,11 +90,11 @@ extension AnalysisSession {
         session?.id == analysisID
     }
 
-    /// Marks one run stalled — the fourth of the four collections
-    /// `AppModel.markStalled` walks. The rule itself stays in `AppModel`, so
-    /// all four ask the same question.
-    mutating func markStalled(_ runID: UUID) {
-        runs = runs.map { AppModel.stalling(runID, $0) }
+    /// Applies a silence notice — the fourth of the four collections
+    /// `AppModel.mark` walks. The rule itself is `SkillRun.applying` in
+    /// `ElliotModel`, so all four ask the same question, in both directions.
+    mutating func mark(_ notice: RunSilence, _ runID: UUID) {
+        runs = runs.map { $0.applying(notice, ifID: runID) }
     }
 }
 

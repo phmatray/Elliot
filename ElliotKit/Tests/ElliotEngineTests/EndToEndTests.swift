@@ -64,7 +64,7 @@ private struct Stack {
 
     static func make(
         fixture: String, extraEnv: [String: String] = [:], gitPath: String = "/usr/bin/false",
-        ghPath: String = "/usr/bin/false"
+        ghPath: String = "/usr/bin/false", idleTimeout: Duration = ClaudeRun.defaultIdleTimeout
     ) async throws -> Stack {
         let home = TestHome.scratch("board-e2e")
         try FileManager.default.createDirectory(
@@ -88,7 +88,8 @@ private struct Stack {
             environment: environment
         )
         let scheduler = RunScheduler(
-            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config))
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)),
+            idleTimeout: idleTimeout
         )
         let board = BoardService(store: store, launcher: scheduler)
         await scheduler.setSystemMover(board)
@@ -197,6 +198,69 @@ struct EndToEndTests {
         let audits = try await stack.store.audits(cardID: card.id)
         #expect(audits.first?.origin == .userDrag)
         #expect(audits.first?.runID == runID)
+    }
+
+    @Test("A run that goes quiet and talks again is announced to the board both ways")
+    func silenceAndRecoveryReachTheBoard() async throws {
+        // The step between `ClaudeRun`'s stream and the board: `consume` routes
+        // a notice to a `SchedulerUpdate` and to the row. Only `.stalled` had a
+        // route, so the mark could be put on and never taken off — a `merge-pr`
+        // that waited twenty-one minutes on CI and then produced its next tool
+        // call kept the attention tint until it exited.
+        //
+        // ⛔ Nothing here measures a duration. The fixture's own pace makes the
+        // silences — `FAKE_CLAUDE_DELAY_MS` sleeps after every line, so eight
+        // lines give seven gaps that are followed by more output — the window is
+        // short so the watchdog looks inside them, and what is asserted is the
+        // *order* of what arrived.
+        let stack = try await Stack.make(
+            fixture: "create-issue-success.ndjson",
+            extraEnv: ["FAKE_CLAUDE_DELAY_MS": "150"],
+            idleTimeout: .milliseconds(20)
+        )
+        defer { stack.cleanUp() }
+
+        // Hoisted out of the closure below: the stream is `Sendable`, the whole
+        // stack is not, and this is the only member the collector needs.
+        let updates = stack.scheduler.updates
+
+        let card = try await stack.board.createCard(
+            repoID: stack.repo.id,
+            title: "A run that talks after a long silence",
+            story: UserStory(
+                role: "developer",
+                want: "a stalled run to stop being stalled when it talks again",
+                benefit: "silence still means something",
+                acceptanceCriteria: ["the mark clears"]
+            )
+        ).card
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
+
+        let silences = try await withTimeout(.seconds(45)) { () -> [RunSilence] in
+            var seen: [RunSilence] = []
+            for await update in updates {
+                switch update {
+                case .runStalled: seen.append(.wentQuiet)
+                case .runResumed: seen.append(.startedTalkingAgain)
+                case .runFinished: return seen
+                // Written out rather than `default`, so a case added to
+                // `SchedulerUpdate` has to be considered here rather than
+                // silently ignored by a collector that judges an ordering.
+                case .runStarted, .runOutput, .queueChanged: break
+                }
+            }
+            return seen
+        }
+
+        #expect(!silences.isEmpty, "the watchdog never looked inside a gap")
+        #expect(
+            silences.contains(.startedTalkingAgain),
+            Comment(rawValue: "the run talked again and the board heard only \(silences)")
+        )
+        #expect(silences.first == .wentQuiet, "a recovery cannot precede a silence")
+        let alternates = zip(silences, silences.dropFirst()).allSatisfy { $0 != $1 }
+        #expect(alternates, Comment(rawValue: "notices did not alternate: \(silences)"))
     }
 
     /// Pins the behaviour the scheduler already had, so the refactor that moves
