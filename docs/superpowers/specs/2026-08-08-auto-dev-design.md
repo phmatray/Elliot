@@ -171,9 +171,33 @@ constructions refuse to build until each has stated its answer. The template is
 ### `MoveBlock` gains a case that carries its cause
 
 ```swift
-case notVerifiedGreen(sign: PRSign?)
+case notVerifiedGreen(reason: NotGreenReason)
 case systemOwnedTransition
 ```
+
+⚠️ **This carried `sign: PRSign?` until it was implemented, and that was wrong** — found by a
+reviewer working beside its own task, on 2026-08-09, after the case had already landed and
+passed review. `nil` was documented here as *nothing was read*, while `PRSign` documents `nil`
+as *everything known is fine* (`PRStatus.swift:160-162`): the same optional, opposite meanings,
+two files apart.
+
+It was not academic. `isMergeableUnattended` refuses **while `sign == nil`** in exactly the two
+holes it exists to close — `merge == .unstable`, and an analyser-only green — and in both the
+pull request *was* read. The feature's two flagship refusals would have rendered as "nothing has
+been read about this pull request".
+
+The payload is therefore the reason, total by construction:
+
+```swift
+public enum NotGreenReason: Equatable, Sendable, Hashable {
+    case noReading                 // no `PRStatus` row at all
+    case sign(PRSign)              // a sign names it; `PRSign.summary` already says it well
+    case notClean(MergeState)      // read, and not `.clean` — `.unstable` above all
+    case noBuildVerdict            // read, clean, unsigned, and every green is an analyser
+}
+```
+
+`code` stays `"not_verified_green"`.
 
 `code` is `"not_verified_green"` and `"system_owned_transition"` — snake_case,
 per the rule written at `Protocol.swift:398-401`. The first sentence is written
@@ -205,7 +229,7 @@ case (.inReview, .done):
     guard let pr = card.prNumber else { return .blocked(.missingPRNumber) }
     if context.requiresVerifiedGreen {
         guard let verdict = context.prVerdict, verdict.isMergeableUnattended
-        else { return .blocked(.notVerifiedGreen(sign: context.prVerdict?.sign)) }
+        else { return .blocked(.notVerifiedGreen(reason: verdictRefusal(context.prVerdict))) }
     }
     guard let followUps = context.providedFollowUps else {
         return .needsInput(.followUps(prNumber: pr))

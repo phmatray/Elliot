@@ -1616,6 +1616,50 @@ git commit -m "feat(model,ipc,app): two refusals that name their cause, and list
 
 ## Task 7: the two `evaluateMove` branches
 
+> 🔴 **Corrected 2026-08-09, after task 6 had already landed and passed review.** This task's
+> code blocks below were written against `MoveBlock.notVerifiedGreen(sign: PRSign?)`. That shape
+> was wrong and has been replaced by `notVerifiedGreen(reason: NotGreenReason)`.
+>
+> **Why**, because it decides what this task must build: `nil` meant *nothing was read* in
+> `MoveBlock`, and *everything known is fine* in `PRSign` (`PRStatus.swift:160-162`) — the same
+> optional, opposite meanings. And `isMergeableUnattended` refuses **while `sign == nil`** in
+> exactly the two holes it exists to close (`merge == .unstable`, and an analyser-only green),
+> where the pull request *was* read. Writing `sign: context.prVerdict?.sign` would have made the
+> feature's two flagship refusals say "nothing has been read about this pull request".
+>
+> `NotGreenReason` as it landed in `RuleEngine.swift`:
+>
+> ```swift
+> public enum NotGreenReason: Equatable, Sendable, Hashable {
+>     case noReading
+>     case sign(PRSign)
+>     case notClean(MergeState)
+>     case noBuildVerdict
+> }
+> ```
+>
+> **This task therefore owns one thing the plan never specified: the derivation.** Add
+> `NotGreenReason.of(_ verdict: ResolvedPRStatus?) -> NotGreenReason` beside the enum, pure and
+> total, and pin it with its own test. It must answer in the order the predicate refuses in, so
+> that the reason a reader is given is the *first* thing actually wrong:
+>
+> | input | answer |
+> |---|---|
+> | `nil` | `.noReading` |
+> | `isStale` | `.noReading` — the row exists but describes a commit no longer under review, which is *not* a reading of this pull request |
+> | `sign != nil` | `.sign(sign)` |
+> | `merge != .clean` | `.notClean(merge)` |
+> | otherwise | `.noBuildVerdict` — the only conjunct left |
+>
+> ⚠️ The last row is a claim, not a default: it is reachable **only** when `!isStale`,
+> `sign == nil` and `merge == .clean`, so `ci.hasBuildVerdict` is the only thing that can have
+> failed. Assert that in the test rather than trusting the reading — if a fifth conjunct is ever
+> added to `isMergeableUnattended`, this arm starts lying and nothing else will notice.
+>
+> Every `.notVerifiedGreen(sign:)` in the blocks below becomes
+> `.notVerifiedGreen(reason:)` with the matching reason, including in the expected-failure text.
+
+
 **Files:**
 - Modify: `ElliotKit/Sources/ElliotModel/RuleEngine.swift:106-131` (the transition `switch`)
 - Test: `ElliotKit/Tests/ElliotModelTests/RuleEngineTests.swift`
@@ -1842,7 +1886,7 @@ In `ElliotKit/Sources/ElliotModel/RuleEngine.swift`, replace the whole `switch (
         // that spins. Every refusal it can meet here is therefore a `.blocked`.
         if context.requiresVerifiedGreen {
             guard let verdict = context.prVerdict, verdict.isMergeableUnattended
-            else { return .blocked(.notVerifiedGreen(sign: context.prVerdict?.sign)) }
+            else { return .blocked(.notVerifiedGreen(reason: NotGreenReason.of(context.prVerdict))) }
         }
         guard let followUps = context.providedFollowUps else {
             return .needsInput(.followUps(prNumber: pr))
@@ -1877,6 +1921,19 @@ git commit -m "feat(model): a mover with no human merges only on a verified gree
 ---
 
 ## Task 8: one reader of the verdict, with the real head
+
+> 🔴 **Corrected 2026-08-09.** `MoveBlock.notVerifiedGreen` carries a `NotGreenReason`, not a
+> `PRSign?` — see the block at the head of Task 7 for why, and for the `NotGreenReason.of(_:)`
+> derivation that task adds. Every `.notVerifiedGreen(sign: …)` in this task's blocks becomes
+> `.notVerifiedGreen(reason: …)`.
+>
+> One consequence lands squarely here: this task's reader returns `nil` when `gh` cannot be
+> reached, and `evaluateMove` then sees `prVerdict == nil` and refuses with `.noReading`. Check
+> that the sentence a person gets in that case is honest — **"we could not ask" and "nothing has
+> judged it" are different facts**, and if `.noReading` cannot tell them apart, say so in your
+> report rather than papering over it. It is the same family as everything else in this pull
+> request.
+
 
 **Files:**
 - Create: `ElliotKit/Sources/ElliotEngine/PRVerdictReader.swift`
