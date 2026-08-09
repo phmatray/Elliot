@@ -165,6 +165,20 @@ public struct Evidence: Codable, Sendable, Hashable {
 
 public enum ProposalStatus: String, Codable, CaseIterable, Sendable, Hashable {
     case proposed, accepted, rejected
+
+    /// What the review picker calls this group (#331).
+    ///
+    /// Beside the cases rather than in the panel, on `Column.displayName`'s
+    /// precedent: the three groups are named once, so the tab, its empty state
+    /// and anything that comes later cannot end up calling the same rows two
+    /// different things.
+    public var reviewTitle: String {
+        switch self {
+        case .proposed: "Proposed"
+        case .accepted: "Accepted"
+        case .rejected: "Rejected"
+        }
+    }
 }
 
 /// What a proposal appears to collide with. A hint, never a refusal: the

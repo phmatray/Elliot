@@ -243,38 +243,121 @@ struct AnalysisPanelViewSourceTests {
         }
     }
 
-    /// ⛔ **The rejected disclosure is a sibling of `if proposed.isEmpty`, never
-    /// inside its `else`.**
+    /// ⛔ **The review picker is a sibling of `if rows.isEmpty`, never inside its
+    /// `else`.**
     ///
-    /// The state the section exists for is *"I rejected the wrong one"* — and
-    /// rejecting the last open proposal empties the triage list, so a section
-    /// nested under `!proposed.isEmpty` would hide the undo in precisely the
-    /// case that needs it most while looking perfectly correct in every case
-    /// anyone would think to try (#292).
+    /// This gate is #292's, moved with the shape it guards. #292 put the
+    /// rejected rows in a disclosure below the triage list; #331 made all three
+    /// groups readable through one picker, and the disclosure went with it —
+    /// two mechanisms for reading the same rows is two mechanisms to keep in
+    /// agreement. The **argument** did not change: the state the decided groups
+    /// exist for is *"I rejected the wrong one"*, and rejecting the last open
+    /// proposal empties the triage list, so a picker rendered only when the
+    /// current group has rows would vanish in precisely the case that needs it
+    /// most while looking perfectly correct in every case anyone would think to
+    /// try.
     ///
-    /// A source gate because `swift test` cannot see a view: the arithmetic, the
-    /// filter and the store's refusal are all pinned by ordinary tests and every
+    /// A source gate because `swift test` cannot see a view: the fold, the
+    /// counts and the store's refusal are all pinned by ordinary tests and every
     /// one of them stays green with the call moved one level in. This is the
     /// idiom `CaretAnchorTests` reaches for on the same grounds — when a test
     /// builds its own model of the code, ask what it would say if the code
     /// changed underneath it, and if the answer is "nothing", pin the shape
     /// where the shape lives.
-    @Test("The rejected disclosure renders whether or not anything is left to decide")
-    func theUndoIsNotHiddenByAnEmptyList() throws {
+    @Test("The review picker renders whether or not the chosen group has rows")
+    func theDecidedGroupsAreNotHiddenByAnEmptyList() throws {
         let body = try Self.body(of: "private func proposalList(", in: try Self.panelCode())
         // A negative needs its positive witness: a renamed helper would make
         // every claim below vacuously true.
-        #expect(body.contains("rejectedSection("), "proposalList no longer renders the disclosure")
+        #expect(body.contains("reviewPicker("), "proposalList no longer renders the picker")
 
-        let branch = try Self.depth(of: "if proposed.isEmpty", in: body)
-        let disclosure = try Self.depth(of: "rejectedSection(", in: body)
+        let branch = try Self.depth(of: "if rows.isEmpty", in: body)
+        let picker = try Self.depth(of: "reviewPicker(", in: body)
         #expect(
-            disclosure == branch,
+            picker == branch,
             Comment(
                 rawValue:
-                    "rejectedSection sits \(disclosure - branch) brace level(s) deeper than the "
-                    + "`if proposed.isEmpty` it must be a sibling of. Inside that branch it "
-                    + "disappears exactly when every proposal has been rejected — which is when "
-                    + "the reader needs it (#292)."))
+                    "reviewPicker sits \(picker - branch) brace level(s) deeper than the "
+                    + "`if rows.isEmpty` it must be a sibling of. Inside that branch it "
+                    + "disappears exactly when the group on screen is empty — which is when the "
+                    + "reader most needs to see that the other two are not (#292, #331)."))
+    }
+
+    // MARK: - Three groups, read; one narrowing, gone
+
+    /// ⛔ **The panel does not narrow the session to one status of its own
+    /// accord.**
+    ///
+    /// `observeProposals` tracks every status — its query is built with
+    /// `status: nil` — so all three groups have always been in memory, and the
+    /// whole of #331 was one line at the top of this file throwing two of them
+    /// away. A `filter { $0.status == … }` reintroduced anywhere in these files
+    /// puts it back, and every behavioural test would stay green: the model's
+    /// fold would go on returning the right rows to a caller that no longer
+    /// asks it.
+    ///
+    /// The **switch** in `actions(for:)` is deliberately not caught by this. It
+    /// maps a status onto what a row may be asked to do, exhaustively and with
+    /// no `default`, which is the opposite of narrowing — it is what makes an
+    /// accepted row unable to carry an Accept button.
+    @Test("No analysis screen filters the session down to one status")
+    func theGroupingIsTheModelsFold() throws {
+        let files = try Self.analysisSources()
+        #expect(!files.isEmpty, "found no Analysis*.swift under Sources/ElliotAppKit")
+        #expect(
+            files.contains { $0.name == "AnalysisPanelView.swift" },
+            """
+            AnalysisPanelView.swift was not among \(files.map(\.name)) — this gate is reading the \
+            wrong directory, or the panel has been renamed
+            """)
+
+        // A positive witness for the fold actually being used, so the negatives
+        // below cannot pass on a panel that renders no proposals at all.
+        #expect(
+            files.contains { $0.source.contains("ProposalReview.group(") },
+            "no analysis screen asks ProposalReview for its rows any more (#331)")
+
+        for file in files {
+            let offenders = file.source
+                .components(separatedBy: "\n")
+                .enumerated()
+                .filter { Self.code($0.element).contains("status == .") }
+                .map { "\(file.name):\($0.offset + 1): \($0.element.trimmingCharacters(in: .whitespaces))" }
+
+            #expect(
+                offenders.isEmpty,
+                """
+                an analysis screen is comparing a proposal's status by hand. Grouping is \
+                ProposalReview.group(_:_:), and a filter written here is what threw two thirds of \
+                the session away for as long as it did — the accepted and rejected rows were \
+                always in memory (#331). Sites: \(offenders.joined(separator: " · "))
+                """
+            )
+        }
+    }
+
+    /// ⛔ **The lens summary counts the harvest; the group header counts the
+    /// group.**
+    ///
+    /// Criterion 5, and a *non-regression* rather than a change — which is
+    /// exactly why it needs a gate. `lensSummary` reads each run's
+    /// `analysisReport.kept`, and the tempting simplification once a picker
+    /// exists is `session.proposals.count`: right today, and wrong the moment a
+    /// tab is selected, because the summary would then count what is on screen
+    /// instead of what the runs actually kept.
+    @Test("The lens summary counts what the runs harvested, never the rows on screen")
+    func theLensSummaryCountsTheHarvest() throws {
+        let summary = try Self.body(of: "private func lensSummary(", in: try Self.panelCode())
+
+        #expect(
+            summary.contains("analysisReport"),
+            "lensSummary no longer reads the runs' own reports (#331 criterion 5)")
+        #expect(
+            !summary.contains("proposals"),
+            """
+            lensSummary is counting rows rather than the harvest. `kept` is what each run reported \
+            keeping; session.proposals is what is currently on screen, and the two part company \
+            the moment the reader switches the review picker (#331 criterion 5).
+            """)
     }
 }

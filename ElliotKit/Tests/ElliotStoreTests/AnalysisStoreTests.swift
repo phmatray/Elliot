@@ -70,6 +70,47 @@ struct AnalysisStoreTests {
         #expect(try await store.proposals(repoID: repo.id, status: .accepted).map(\.title) == ["B"])
     }
 
+    /// One lens's rows, which is what a repeat harvest has to be able to ask
+    /// before it writes anything (#330).
+    @Test("Proposals filter by run, and an unknown run matches nothing")
+    func filteringByRun() async throws {
+        let (store, repo) = try await seededStore()
+        let analysis = Analysis(repoID: repo.id, angles: [.bugs, .tests], createdAt: Date())
+        try await store.saveAnalysis(analysis)
+        let bugsRun = UUID()
+        let testsRun = UUID()
+
+        func make(_ title: String, _ runID: UUID, _ status: ProposalStatus = .proposed) -> StoryProposal {
+            StoryProposal(
+                analysisID: analysis.id, runID: runID, repoID: repo.id, angle: .bugs,
+                title: title,
+                story: UserStory(role: "dev", want: "w", benefit: "b"),
+                status: status, createdAt: Date()
+            )
+        }
+        try await store.saveProposals([
+            make("bugs one", bugsRun),
+            make("bugs two", bugsRun, .rejected),
+            make("tests one", testsRun),
+        ])
+
+        #expect(
+            Set(try await store.proposals(runID: bugsRun).map(\.title)) == ["bugs one", "bugs two"])
+        #expect(try await store.proposals(runID: testsRun).map(\.title) == ["tests one"])
+        // It composes with the filters already there rather than replacing them.
+        #expect(try await store.proposals(runID: bugsRun, status: .rejected).map(\.title) == ["bugs two"])
+        #expect(
+            try await store.proposals(analysisID: analysis.id, runID: testsRun).count == 1,
+            "runID must narrow the analysis filter, not fight it")
+
+        // ⛔ **An unknown run is empty, never unfiltered.** Collapsing those two
+        // is what made a typo return the whole board under `isError: false`
+        // (#141), and here it would be worse than a wrong answer: the repeat
+        // harvest refuses when this comes back non-empty, so "unknown run" read
+        // as "every proposal" would make the recovery permanently unreachable.
+        #expect(try await store.proposals(runID: UUID()).isEmpty)
+    }
+
     // MARK: - Claiming a proposal
 
     /// Seeds one proposal in whatever state the claim under test needs.

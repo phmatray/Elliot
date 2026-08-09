@@ -168,10 +168,9 @@ struct AnalysisPanelStateTests {
     /// - `lensesExpanded` is a disclosure preference with a computed default.
     /// - `showingDropped` is a disclosure toggle over a report the run owns.
     /// - `showingCriteria` is the same, over the proposal's own criteria.
-    /// - `rejectedExpanded` is the same again, over rows the store holds (#292).
     /// - `hovering` is pointer state, recomputed by the next mouse move.
     ///
-    /// The line these five sit on the right side of: they are *views of data
+    /// The line these four sit on the right side of: they are *views of data
     /// that is intact*, so re-showing the panel redraws them from the source. A
     /// draft is not — the characters exist nowhere else.
     ///
@@ -182,12 +181,18 @@ struct AnalysisPanelStateTests {
     /// ✅ This gate earned its place again in #292: the *Rejected* disclosure's
     /// open/closed flag was written as `@State` and the suite went red naming
     /// it, which is the review conversation happening in the build rather than
-    /// in somebody's memory. It stays here because a folded disclosure is not
-    /// typed and reopens onto the same rows — not because it was inconvenient
-    /// to move.
+    /// in somebody's memory. It was allowed to stay because a folded disclosure
+    /// is not typed and reopens onto the same rows.
+    ///
+    /// ⚠️ **It is gone again in #331, and the second gate is why this entry is
+    /// worth reading.** The disclosure became one of the review picker's three
+    /// groups, so `rejectedExpanded` had nothing left to fold — and the
+    /// *sibling* test below, which refuses an allow-list entry naming a property
+    /// that no longer exists, went red the moment it was removed. Which group is
+    /// on screen is a **choice**, so it did not inherit the exemption: it lives
+    /// on `AnalysisSession` (#290's home), where it dies with its analysis.
     private static let allowed: Set<String> = [
-        "past", "lensesExpanded", "showingDropped", "showingCriteria", "rejectedExpanded",
-        "hovering",
+        "past", "lensesExpanded", "showingDropped", "showingCriteria", "hovering",
     ]
 
     /// ⚠️ **The whole file, not just `AnalysisPanelView`** — and the scan itself

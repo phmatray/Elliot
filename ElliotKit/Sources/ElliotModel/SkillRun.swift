@@ -185,6 +185,26 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
 
 public extension SkillRun {
     var isAnalysis: Bool { kind == .analyzeRepo }
+
+    /// A finished analysis run whose harvest kept nothing — the crash case and
+    /// the parsed-nothing case, which are the two a re-harvest recovers (#330).
+    ///
+    /// **Not gated on `.succeeded`.** The orphan `Reconciler.sweep` writes is
+    /// `.failed`, and it is the case with the *best* chance of a complete
+    /// artifact: the file was written before the app died, and the report says
+    /// only that Elliot never got round to reading it.
+    ///
+    /// **`analysisReport != nil` is required**, and that is the half worth
+    /// stating. A terminal analysis run with no report at all has never been
+    /// through `completeAnalysisRun` — nothing in the codebase produces one —
+    /// so offering the action for it would be guessing about a state that does
+    /// not exist. `(analysisReport?.kept ?? 0) == 0` would have answered `true`
+    /// for it, which is the two-valued answer to a three-valued question this
+    /// project keeps paying for.
+    var offersReharvest: Bool {
+        guard isAnalysis, state.isTerminal, let report = analysisReport else { return false }
+        return report.kept == 0
+    }
 }
 
 public extension SkillRun {

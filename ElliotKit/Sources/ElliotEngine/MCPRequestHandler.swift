@@ -160,6 +160,20 @@ public struct MCPRequestHandler: Sendable {
                     message: error.localizedDescription,
                     hint: "Poll board_list_runs and try again when it finishes."
                 )
+            case .runNotFound, .notAnAnalysisRun, .runStillRunning, .alreadyHarvested,
+                 .reharvestInFlight:
+                // The five refusals of a repeat harvest (#330). **No wire case
+                // reaches them today** — `board_reharvest_run` is that issue's
+                // named non-goal, and a write case would have to refuse offline
+                // as well, which is a second design. They are classified anyway
+                // rather than swept into a `default`, because a `default` here
+                // is what would silently give a *new* analysis refusal whichever
+                // answer the shortest spelling happened to produce.
+                return .failure(
+                    code: .analysisRefused,
+                    message: error.localizedDescription,
+                    hint: "Harvest again from the lens row in Elliot's analysis panel."
+                )
             }
         } catch {
             return .failure(code: .internalError, message: error.localizedDescription, hint: nil)

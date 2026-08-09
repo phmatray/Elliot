@@ -652,6 +652,262 @@ struct AnalysisServiceTests {
         }
     }
 
+    // MARK: - Harvesting again, from the file already on disk (#330)
+
+    /// The crash state, **seeded rather than simulated**: a terminal analysis
+    /// run carrying the `kept: 0` report `Reconciler.sweep` writes, and a
+    /// `stories.json` sitting at the path `StoreLocation` promises it is kept at.
+    private struct Orphan {
+        var analysis: Analysis
+        var run: SkillRun
+        var artifactURL: URL
+    }
+
+    private func seedOrphanedRun(
+        _ fixture: Fixture,
+        stories: String = """
+            [
+              {"title":"Bound the await","role":"dev","want":"a bound","benefit":"no hangs",
+               "evidence":["Sources/Real.swift:3"],"effort":"small"},
+              {"title":"Drain under the lock","role":"dev","want":"one drain","benefit":"no lost tails",
+               "evidence":["Sources/Real.swift:9"],"effort":"medium"}
+            ]
+            """,
+        report: AnalysisRunReport? = AnalysisRunReport(
+            harvestSource: .none, dropped: ["Elliot stopped before this analysis was harvested."]
+        ),
+        state: RunState = .failed
+    ) async throws -> Orphan {
+        let started = try await fixture.service.start(
+            repoID: fixture.repo.id, angles: [.bugs], origin: .manual
+        )
+        var run = started.runs[0]
+        run.state = state
+        run.analysisReport = report
+        try await fixture.store.saveRun(run)
+
+        let artifactURL = StoreLocation.analysisArtifactURL(
+            analysisID: started.analysis.id, runID: run.id
+        )
+        try FileManager.default.createDirectory(
+            at: artifactURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try stories.write(to: artifactURL, atomically: true, encoding: .utf8)
+
+        return Orphan(analysis: started.analysis, run: run, artifactURL: artifactURL)
+    }
+
+    /// Criterion 2 and 3 together, and the whole point of the feature: the file
+    /// the run was *told* to write is still the fact, an hour later.
+    @Test("A finished lens can be harvested again from the artifact it already wrote")
+    func reharvestReadsTheFile() async throws {
+        let fixture = try await makeFixture()
+        let orphan = try await seedOrphanedRun(fixture)
+        defer { try? FileManager.default.removeItem(at: orphan.artifactURL) }
+
+        let report = try await fixture.service.reharvest(runID: orphan.run.id)
+
+        #expect(report.harvestSource == .artifact)
+        #expect(report.kept == 2)
+
+        let landed = try await fixture.store.proposals(runID: orphan.run.id)
+        #expect(Set(landed.map(\.title)) == ["Bound the await", "Drain under the lock"])
+        #expect(landed.allSatisfy { $0.analysisID == orphan.analysis.id })
+        #expect(landed.allSatisfy { $0.angle == .bugs })
+
+        // Criterion 3: the run's own row carries the new report, not only the
+        // value handed back. A report that never reached SQLite would be gone
+        // at the next launch, which is exactly the state this recovers from.
+        let stored = try #require(try await fixture.store.run(id: orphan.run.id))
+        #expect(stored.analysisReport?.harvestSource == .artifact)
+        #expect(stored.analysisReport?.kept == 2)
+        #expect(
+            stored.analysisReport?.dropped.isEmpty == true,
+            "the previous harvest's complaint about a file it never opened must not survive it")
+    }
+
+    /// Criterion 2 — *"spawns no process"* — turned into an assertion rather
+    /// than a hope. `LaunchSpy` is the existing recorder; the run table is the
+    /// second witness, because a launch that somehow got through would leave a
+    /// row behind even if the spy were wired wrong.
+    @Test("Harvesting again launches nothing and adds no run")
+    func reharvestSpawnsNothing() async throws {
+        let fixture = try await makeFixture()
+        let orphan = try await seedOrphanedRun(fixture)
+        defer { try? FileManager.default.removeItem(at: orphan.artifactURL) }
+
+        // `start` launched exactly one run to set this up; nothing after it may.
+        let launchedBefore = await fixture.spy.ids()
+        #expect(launchedBefore == [orphan.run.id])
+
+        _ = try await fixture.service.reharvest(runID: orphan.run.id)
+
+        #expect(await fixture.spy.ids() == launchedBefore)
+        let runs = try await fixture.store.runs(analysisID: orphan.analysis.id)
+        #expect(runs.count == 1)
+        #expect(runs[0].id == orphan.run.id)
+        #expect(runs[0].startedAt == orphan.run.startedAt)
+        #expect(runs[0].endedAt == orphan.run.endedAt)
+    }
+
+    /// Criterion 5, at the layer that writes the row. The rule is
+    /// `AnalysisRunReport.inheritingSentinel(from:)`'s and `ReharvestRuleTests`
+    /// holds it; this is the assertion that `reharvest` actually calls it —
+    /// re-deriving `false` here is one line away and reads as tidier.
+    @Test("A repeat harvest never invents a sentinel reading, and never loses one")
+    func reharvestCarriesTheSentinel() async throws {
+        let unchecked = try await makeFixture()
+        let orphan = try await seedOrphanedRun(unchecked)
+        defer { try? FileManager.default.removeItem(at: orphan.artifactURL) }
+
+        let report = try await unchecked.service.reharvest(runID: orphan.run.id)
+        #expect(report.kept == 2, "the fixture must actually have harvested something")
+        #expect(
+            report.workingTreeChanged == nil,
+            """
+            a repeat harvest claimed a `git status` it never ran. The baseline lived in the \
+            scheduler's memory and died with the app — `false` here launders an orphan into a \
+            verified-clean run (#39's tri-state, #330 criterion 5)
+            """)
+        #expect(try await unchecked.store.run(id: orphan.run.id)?
+            .analysisReport?.workingTreeChanged == nil)
+
+        // And the other direction: a run that edited the repository must not
+        // become clean by being read again.
+        let dirty = try await makeFixture()
+        let edited = try await seedOrphanedRun(
+            dirty,
+            report: AnalysisRunReport(
+                harvestSource: .none, kept: 0,
+                workingTreeChanged: true, workingTreeDiff: " M Sources/Real.swift"
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: edited.artifactURL) }
+
+        let carried = try await dirty.service.reharvest(runID: edited.run.id)
+        #expect(carried.workingTreeChanged == true)
+        #expect(carried.workingTreeDiff == " M Sources/Real.swift")
+    }
+
+    /// Criterion 4. The ids are asserted, not the count: a replace-with-two
+    /// would pass a count check while having deleted the rows the reader has
+    /// already been deciding on.
+    @Test("Harvesting a run that already produced proposals is refused, and changes nothing")
+    func reharvestRefusesAnAlreadyHarvestedRun() async throws {
+        let fixture = try await makeFixture()
+        let orphan = try await seedOrphanedRun(fixture)
+        defer { try? FileManager.default.removeItem(at: orphan.artifactURL) }
+
+        _ = try await fixture.service.reharvest(runID: orphan.run.id)
+        let first = try await fixture.store.proposals(runID: orphan.run.id)
+        #expect(first.count == 2)
+
+        await #expect(throws: AnalysisError.alreadyHarvested) {
+            try await fixture.service.reharvest(runID: orphan.run.id)
+        }
+
+        let after = try await fixture.store.proposals(runID: orphan.run.id)
+        #expect(Set(after.map(\.id)) == Set(first.map(\.id)))
+    }
+
+    /// The concurrent half of criterion 4, which the store read alone cannot
+    /// close: this actor is reentrant, so two callers can both be past that
+    /// read before either writes.
+    @Test("Two simultaneous re-harvests land one set of proposals")
+    func reharvestRacesToOneSet() async throws {
+        let fixture = try await makeFixture()
+        let orphan = try await seedOrphanedRun(fixture)
+        defer { try? FileManager.default.removeItem(at: orphan.artifactURL) }
+
+        let service = fixture.service
+        let runID = orphan.run.id
+        let outcomes = await withTaskGroup(of: Bool.self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    (try? await service.reharvest(runID: runID)) != nil
+                }
+            }
+            var results: [Bool] = []
+            for await result in group { results.append(result) }
+            return results
+        }
+
+        #expect(outcomes.filter { $0 }.count == 1, "exactly one caller may harvest")
+        #expect(try await fixture.store.proposals(runID: runID).count == 2)
+    }
+
+    @Test("The refusals name what is wrong")
+    func reharvestRefusals() async throws {
+        let fixture = try await makeFixture()
+
+        await #expect(throws: AnalysisError.self) {
+            try await fixture.service.reharvest(runID: UUID())
+        }
+
+        // A card run has no artifact to read.
+        let card = try await fixture.board.createCard(repoID: fixture.repo.id, title: "By hand")
+        let cardRun = SkillRun.card(
+            cardID: card.card.id, repoID: fixture.repo.id, kind: .createIssue,
+            prompt: "/create-issue", cwd: "/tmp",
+            logPath: "/tmp/a.ndjson", stderrPath: "/tmp/a.log", createdAt: Date()
+        )
+        try await fixture.store.saveRun(cardRun)
+        await #expect(throws: AnalysisError.notAnAnalysisRun) {
+            try await fixture.service.reharvest(runID: cardRun.id)
+        }
+
+        // A run still in flight will be harvested by `completeAnalysisRun`, and
+        // its sentinel baseline is still alive in the scheduler's memory.
+        let running = try await seedOrphanedRun(fixture, state: .running)
+        defer { try? FileManager.default.removeItem(at: running.artifactURL) }
+        await #expect(throws: AnalysisError.runStillRunning) {
+            try await fixture.service.reharvest(runID: running.run.id)
+        }
+    }
+
+    /// The forgotten repository, which is the one refusal that has to happen
+    /// *before* anything is written rather than after.
+    @Test("A run whose repository has been forgotten is refused, and writes nothing")
+    func reharvestRefusesAForgottenRepository() async throws {
+        let fixture = try await makeFixture()
+        let orphan = try await seedOrphanedRun(fixture)
+        defer { try? FileManager.default.removeItem(at: orphan.artifactURL) }
+        try await fixture.store.deleteRepo(id: fixture.repo.id)
+
+        await #expect(throws: AnalysisError.self) {
+            try await fixture.service.reharvest(runID: orphan.run.id)
+        }
+    }
+
+    /// Criterion 3 **in failure**, which is the half that is easy to get wrong:
+    /// the artifact the sweep deleted is gone, and the honest outcome is a
+    /// *replaced* report saying so — not the old one left standing.
+    @Test("With the artifact swept away the report is still replaced, and says why")
+    func reharvestWithNoArtifactStillReplacesTheReport() async throws {
+        let fixture = try await makeFixture()
+        let orphan = try await seedOrphanedRun(
+            fixture,
+            report: AnalysisRunReport(
+                harvestSource: .none, dropped: ["Elliot stopped before this analysis was harvested."])
+        )
+        try FileManager.default.removeItem(at: orphan.artifactURL)
+
+        let report = try await fixture.service.reharvest(runID: orphan.run.id)
+
+        #expect(report.harvestSource == .none)
+        #expect(report.kept == 0)
+        #expect(
+            report.dropped.contains { $0.contains(orphan.artifactURL.path) },
+            "the reader is told which file was not there: \(report.dropped)")
+        #expect(
+            !report.dropped.contains("Elliot stopped before this analysis was harvested."),
+            "the previous complaint is replaced, not merged")
+        #expect(try await fixture.store.proposals(runID: orphan.run.id).isEmpty)
+        // Still offered, so a reader who restores the file from a backup can try
+        // again rather than being told the recovery has been used up.
+        let stored = try #require(try await fixture.store.run(id: orphan.run.id))
+        #expect(stored.offersReharvest)
+    }
+
     @Test("An edited proposal is what becomes the card")
     func editsWinOverTheModel() async throws {
         let fixture = try await makeFixture()

@@ -9,6 +9,11 @@ public enum AnalysisError: Error, LocalizedError, Equatable {
     case noAngles
     case angleAlreadyRunning(AnalysisAngle)
     case analysisNotFound(UUID)
+    case runNotFound(UUID)
+    case notAnAnalysisRun
+    case runStillRunning
+    case alreadyHarvested
+    case reharvestInFlight
 
     public var errorDescription: String? {
         switch self {
@@ -17,6 +22,11 @@ public enum AnalysisError: Error, LocalizedError, Equatable {
         case .noAngles: "Pick at least one angle to read the repository through."
         case .angleAlreadyRunning(let angle): "A \(angle.title) analysis is already running on this repository."
         case .analysisNotFound(let id): "No analysis with id \(id)."
+        case .runNotFound(let id): "No run with id \(id)."
+        case .notAnAnalysisRun: "That run read no repository, so there is no artifact to re-read."
+        case .runStillRunning: "This lens is still reading. It will be harvested when it finishes."
+        case .alreadyHarvested: "This lens already landed proposals; re-reading it would duplicate them."
+        case .reharvestInFlight: "This lens is already being harvested again."
         }
     }
 }
@@ -31,12 +41,29 @@ public actor AnalysisService {
     private let launcher: any RunLaunching
     private let board: BoardService
     private let gh: GHClient
+    /// The **same** harvester `RunScheduler` holds, built here from the two
+    /// collaborators this service already has — so no call site changes, and
+    /// `ProposalHarvester.harvest` stays the one thing that turns an artifact
+    /// into proposals. A second *holder* is not a second implementation, which
+    /// is what the invariant protects.
+    private let harvester: ProposalHarvester
+    /// Re-harvests past their first `await` and not yet finished.
+    ///
+    /// This actor is **reentrant**: every guard in `reharvest` suspends, so two
+    /// taps can both be past the store read that says "no proposals yet" before
+    /// either has written any. The store read settles the *sequential* repeat —
+    /// a stale view, a report claiming `kept: 0` while rows exist — and this
+    /// settles the concurrent one. Neither closes the other's hole, which is
+    /// the same pairing `claimProposal`'s comment spells out at length, and the
+    /// same shape `start` already uses for `(repoID, angle)`.
+    private var reharvesting: Set<UUID> = []
 
     public init(store: BoardStore, launcher: any RunLaunching, board: BoardService, gh: GHClient) {
         self.store = store
         self.launcher = launcher
         self.board = board
         self.gh = gh
+        harvester = ProposalHarvester(store: store, gh: gh)
     }
 
     public struct Started: Sendable {
@@ -138,6 +165,82 @@ public actor AnalysisService {
         for run in runs { await launcher.launch(runID: run.id) }
 
         return Started(analysis: analysis, runs: runs)
+    }
+
+    // MARK: - Harvesting again
+
+    /// Reads a finished lens's `stories.json` a second time, from the file
+    /// Elliot already kept.
+    ///
+    /// `StoreLocation.analysisRunDirectory` has always promised this — *"kept
+    /// beside the run's log so a harvest can be repeated from disk without
+    /// spawning anything"* — and until #330 nothing repeated it. Two ways to
+    /// lose a harvest both leave the file intact: the app dying mid-run, which
+    /// `Reconciler.sweep` records as `.none` with *"Elliot stopped before this
+    /// analysis was harvested"*, and a parse that kept nothing. The only
+    /// recovery was Start, i.e. another `claude -p` at `bypassPermissions` and
+    /// another full read of the repository, to re-derive a file already on disk.
+    ///
+    /// ⛔ **It launches nothing, and it lives here rather than on
+    /// `RunScheduler` for exactly that reason.** The scheduler's whole job is
+    /// starting children; a deliberately spawn-free action placed inside it is
+    /// one "while we're here, if the artifact is missing, just re-run it" away
+    /// from violating its own point. `harvest` does still ask `gh issue list`
+    /// for duplicate hints — already `try?`-wrapped, so an unreachable GitHub
+    /// costs hints and not proposals — because hobbling that would make a
+    /// recovered harvest strictly worse than the original for no benefit.
+    ///
+    /// ⚠️ **Deliberately not gated on `repo.isEnabled`, unlike `start`.** This
+    /// reads Elliot's own disk; a repository disabled or blocked in Preflight is
+    /// precisely the case where re-running is worst and recovering the file
+    /// already written is best. The only repository access is a
+    /// `FileManager.fileExists` per evidence citation.
+    @discardableResult
+    public func reharvest(runID: UUID) async throws -> AnalysisRunReport {
+        // Claimed **before the first `await`**, so no other call can reach the
+        // guards below while this one is between them. Released in a `defer`,
+        // which also covers every `throw` under it.
+        guard !reharvesting.contains(runID) else { throw AnalysisError.reharvestInFlight }
+        reharvesting.insert(runID)
+        defer { reharvesting.remove(runID) }
+
+        guard var run = try await store.run(id: runID) else {
+            throw AnalysisError.runNotFound(runID)
+        }
+        guard run.isAnalysis, let analysisID = run.analysisID else {
+            throw AnalysisError.notAnAnalysisRun
+        }
+        // A run still in flight has a live sentinel baseline in the scheduler's
+        // memory and will be harvested by `completeAnalysisRun`. Re-harvesting
+        // under it is how one report acquires two writers.
+        guard run.state.isTerminal else { throw AnalysisError.runStillRunning }
+        guard let analysis = try await store.analysis(id: analysisID) else {
+            throw AnalysisError.analysisNotFound(analysisID)
+        }
+        guard let repo = try await store.repo(id: run.repoID) else {
+            throw AnalysisError.repoNotFound(run.repoID)
+        }
+
+        // ⛔ **The store is the authority on whether this run already landed
+        // rows, never the report.** `analysisReport.kept` is what the last
+        // harvest *said*; this is what is actually in the table, which is the
+        // only thing that can stop one story growing two proposals.
+        guard try await store.proposals(runID: runID, limit: 1).isEmpty else {
+            throw AnalysisError.alreadyHarvested
+        }
+
+        let fresh = await harvester.harvest(
+            run: run,
+            analysis: analysis,
+            repo: repo,
+            artifactURL: StoreLocation.analysisArtifactURL(analysisID: analysisID, runID: runID)
+        )
+        // Replaced, not merged — and the sentinel carried rather than recomputed.
+        // Both halves are one decision, made once, in `ElliotModel`.
+        let report = fresh.inheritingSentinel(from: run.analysisReport)
+        run.analysisReport = report
+        try await store.saveRun(run)
+        return report
     }
 
     /// Board titles and open issue titles, newest first.

@@ -56,14 +56,6 @@ struct AnalysisPanelView: View {
     @State private var past: [Analysis] = []
     /// `nil` until the reader opens or closes the strip themselves.
     @State private var lensesExpanded: Bool?
-    /// Whether the *N rejected* disclosure is open.
-    ///
-    /// `@State` is right here where it is wrong for the four values above: the
-    /// rule that sends those to `AppModel` is that hiding the panel destroys
-    /// this view, so nothing the reader has **typed** may live in it. A folded
-    /// disclosure is neither typed nor lossy to reopen — the same call
-    /// `lensesExpanded` and `LensRunRow.showingDropped` already make.
-    @State private var rejectedExpanded = false
 
     /// The open editor's draft, bound through the model.
     ///
@@ -126,10 +118,14 @@ struct AnalysisPanelView: View {
         .accessibilityElement(children: .contain)
         // Applied here rather than from the board: `accessibilityLabel` resolves
         // innermost-first, so an outer one would be silently inert.
+        // ⚠️ The **undecided** count, whichever group is on screen. This
+        // announces what there is left to decide; a number that followed the
+        // picker would say "3 proposals" while sitting on a tab where none of
+        // them can be acted on (#331).
         .accessibilityLabel(
             BoardAccessibility.analysisPanelLabel(
                 repoName: repo?.displayName,
-                proposalCount: model.analysis.map { proposed($0).count }
+                proposalCount: model.analysis.map { undecided($0).count }
             )
         )
         // Keyed, because without an `id:` this ran once when the panel first
@@ -167,9 +163,14 @@ struct AnalysisPanelView: View {
         }
     }
 
-    /// The proposals still open for decision — the same filter the list renders.
+    /// The proposals still open for decision.
+    ///
+    /// ⚠️ Deliberately **not** the rows the list is currently showing. An edit
+    /// is only ever valid on an undecided proposal, so switching the picker to
+    /// *Accepted* must not read as "the proposal you were editing was decided
+    /// elsewhere" and drop a draft that is still perfectly good (#331).
     private var openProposalIDs: Set<UUID> {
-        Set((model.analysis.map(proposed) ?? []).map(\.id))
+        Set((model.analysis.map(undecided) ?? []).map(\.id))
     }
 
     /// The panel's silhouette, used as a background fill and as a border — never
@@ -391,113 +392,167 @@ struct AnalysisPanelView: View {
         }
     }
 
-    private func proposed(_ session: AnalysisSession) -> [StoryProposal] {
-        session.proposals.filter { $0.status == .proposed }
+    /// The rows the list is showing: one of the three groups, chosen by the
+    /// session's own picker.
+    ///
+    /// The observation this session is fed by fetches **every** status — its
+    /// query is built with `status: nil` — so all three groups have always been
+    /// in memory and nothing on screen could reach two of them (#331). This is a
+    /// reading that was thrown away one layer from the screen; no store, engine
+    /// or wire change was involved in getting it back.
+    private func rows(_ session: AnalysisSession) -> [StoryProposal] {
+        ProposalReview.group(session.proposals, session.review)
     }
 
-    /// What was turned down, in the order it was found.
+    /// The undecided group, whatever the picker is showing.
     ///
-    /// The observation this session is fed by fetches every status, so these
-    /// rows have always been in memory — nothing on screen could reach them
-    /// (#292). Ordered by `createdAt` like the open list, because *when it was
-    /// rejected* is not recorded and inventing an order would be a claim.
-    private func rejected(_ session: AnalysisSession) -> [StoryProposal] {
-        session.proposals.filter { $0.status == .rejected }
+    /// Three things still mean *what is left to decide* rather than *what is on
+    /// screen*: the panel's accessibility label, the editor's staleness check,
+    /// and the footer's Edit… button.
+    private func undecided(_ session: AnalysisSession) -> [StoryProposal] {
+        ProposalReview.group(session.proposals, .proposed)
     }
 
     private func proposalList(_ session: AnalysisSession) -> some View {
-        let proposed = self.proposed(session)
+        let rows = self.rows(session)
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
-                if proposed.isEmpty {
-                    emptyReview
+                // ⛔ **A sibling of the `if` below, never inside its `else`.**
+                // This is where #292's rejected disclosure went, and its
+                // argument came with it: the state the decided groups exist for
+                // is *"I rejected the wrong one"*, and rejecting the last open
+                // proposal empties the triage list — so a picker rendered only
+                // when the current group has rows would vanish in precisely the
+                // case that needs it most, while looking perfectly correct in
+                // every case anyone would think to try. `swift test` cannot see
+                // a view, so nothing would have failed.
+                reviewPicker(session)
+
+                if rows.isEmpty {
+                    emptyReview(session)
                 } else {
-                    selectionBar(proposed)
+                    // Proposed only, and that is not an oversight: the bar
+                    // stages rows for the footer's Accept and Reject, and
+                    // neither verb means anything for a row already decided.
+                    let isTriage = session.review == .proposed
+                    if isTriage { selectionBar(rows) }
                     ForEach(AnalysisAngle.allCases, id: \.self) { angle in
-                        let group = proposed.filter { $0.angle == angle }
+                        let group = rows.filter { $0.angle == angle }
                         if !group.isEmpty {
-                            angleSection(angle, group)
+                            angleSection(angle, group, isTriage: isTriage)
                         }
                     }
                 }
-
-                // ⛔ **A sibling of that `if`, never inside its `else`.** The
-                // state this section exists for is "I rejected the wrong one",
-                // and rejecting the last open proposal empties the list — so
-                // nesting it under `!proposed.isEmpty` would hide the undo in
-                // precisely the case that needs it most, while looking correct
-                // in every case anyone would think to try. `swift test` cannot
-                // see a view, so nothing would have failed.
-                rejectedSection(session)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             // Accepting or rejecting a row made it vanish instantly, so a list
             // of twelve became a list of eleven with no sign of which one went.
-            .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: proposed.map(\.id))
+            .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: rows.map(\.id))
         }
     }
 
-    /// What was turned down, folded away, with one act on each row: Restore.
+    /// Which group the list is showing, with all three counts visible without
+    /// switching.
     ///
-    /// Closed by default and rendered nowhere when nothing has been rejected:
-    /// this is a footnote to the triage, not a second list to work through. It
-    /// is also the answer to the footer's *"Rejected 12 proposals."* — a
-    /// sentence that until now named a number with nothing behind it, after a
-    /// bulk Reject that clears the selection before it commits and so leaves no
-    /// record of which twelve went.
-    @ViewBuilder
-    private func rejectedSection(_ session: AnalysisSession) -> some View {
-        let rejected = self.rejected(session)
-        if !rejected.isEmpty {
-            DisclosureGroup(isExpanded: $rejectedExpanded) {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(rejected) { proposal in
-                        ProposalRow(
-                            proposal: proposal,
-                            // The rule is the model's; this only asks it. The
-                            // store's conditional UPDATE is the fact — see
-                            // `StoryProposal.isRestorable`, and the note that
-                            // reports the disagreement when there is one.
-                            actions: proposal.isRestorable
-                                ? .restore({ Task { await model.restoreProposals(ids: [proposal.id]) } })
-                                : .settled,
-                            repoPath: repo?.path
-                        )
-                    }
-                }
-                .padding(.top, 4)
-            } label: {
-                Label(
-                    rejected.count == 1 ? "1 rejected" : "\(rejected.count) rejected",
-                    systemImage: "xmark.bin"
-                )
-                .font(Type.prose)
-                .foregroundStyle(.secondary)
+    /// The counts are `ProposalReview.counts`, which emits **every** case
+    /// including zero — a tab that disappeared when its group emptied would be
+    /// one more surface unable to tell "nothing was rejected" from "nobody
+    /// looked", which is the ambiguity this whole reading closes.
+    private func reviewPicker(_ session: AnalysisSession) -> some View {
+        @Bindable var model = model
+        let counts = ProposalReview.counts(session.proposals)
+        return Picker("Show", selection: $model.analysisReview) {
+            ForEach(ProposalStatus.allCases, id: \.self) { group in
+                Text("\(group.reviewTitle) \(counts[group] ?? 0)").tag(group)
             }
         }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .accessibilityLabel("Which proposals to show")
+        .help(
+            "The analysis keeps everything it found. Rejecting marks a proposal rather than "
+                + "deleting it, and accepting one names the card it became.")
     }
 
-    private func angleSection(_ angle: AnalysisAngle, _ group: [StoryProposal]) -> some View {
+    /// What a row may be asked to do, decided by the one thing that knows:
+    /// the proposal's own status.
+    ///
+    /// **Exhaustive, with no `default`** — the reason `RunState.isUnderway`
+    /// gives. A fourth status would otherwise inherit whichever answer the
+    /// shorter spelling happened to give, and here that answer decides whether
+    /// a row carries an *Accept* button.
+    private func actions(for proposal: StoryProposal) -> ProposalRowActions {
+        switch proposal.status {
+        case .proposed:
+            return .decide(
+                isSelected: model.analysisSelection.contains(proposal.id),
+                toggle: {
+                    if model.analysisSelection.contains(proposal.id) {
+                        model.analysisSelection.remove(proposal.id)
+                    } else {
+                        model.analysisSelection.insert(proposal.id)
+                    }
+                },
+                edit: { model.beginEditingProposal(proposal) },
+                accept: { Task { await model.acceptProposals(ids: [proposal.id]) } },
+                reject: { Task { await model.rejectProposals(ids: [proposal.id]) } }
+            )
+        case .accepted:
+            // Resolved through `AppModel.card(id:)`, which searches the
+            // **unfiltered** cards — so a card in a repository the board's
+            // toolbar picker has filtered out still resolves and still gets
+            // named. A nil card is a real state and is not "not accepted";
+            // `ProposalReview.cardLabel` is where that is decided.
+            return .accepted(
+                ProposalReview.cardLabel(
+                    for: proposal, card: model.card(id: proposal.acceptedCardID)))
+        case .rejected:
+            // The rule is the model's; this only asks it. The store's
+            // conditional UPDATE is the fact — see `StoryProposal.isRestorable`,
+            // and the note that reports the disagreement when there is one.
+            return proposal.isRestorable
+                ? .restore({ Task { await model.restoreProposals(ids: [proposal.id]) } })
+                : .settled
+        }
+    }
+
+    /// One lens's rows inside whichever group is on screen.
+    ///
+    /// `isTriage` is passed rather than re-derived from the rows: the rows are
+    /// already the group the picker chose, and a section that asked them again
+    /// what status they are would be the narrowing this reading exists to
+    /// remove, one function further in.
+    private func angleSection(
+        _ angle: AnalysisAngle, _ group: [StoryProposal], isTriage: Bool
+    ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Text(angle.symbol)
                 ConsoleLabel(text: angle.title, tint: .primary)
+                // Heads the rows below it, so it counts the group it heads —
+                // which is the one counter of the four that the picker moves.
+                // The lens strip's `N kept` counts the harvest and never this.
                 Fact(text: "\(group.count)", tint: Palette.quiet, small: true)
                 Spacer()
-                Button(allSelected(group) ? "Clear" : "Select all") {
-                    let ids = group.map(\.id)
-                    if allSelected(group) {
-                        ids.forEach { model.analysisSelection.remove($0) }
-                    } else {
-                        model.analysisSelection.formUnion(ids)
+                // Selecting stages rows for the footer's Accept / Reject, so it
+                // is offered only where those verbs mean something.
+                if isTriage {
+                    Button(allSelected(group) ? "Clear" : "Select all") {
+                        let ids = group.map(\.id)
+                        if allSelected(group) {
+                            ids.forEach { model.analysisSelection.remove($0) }
+                        } else {
+                            model.analysisSelection.formUnion(ids)
+                        }
                     }
+                    // No accent: choosing rows starts nothing and merges
+                    // nothing. The five accents mean consequence, and spending
+                    // three of them on triage controls is what made them stop
+                    // reading as one.
+                    .buttonStyle(.plain)
+                    .font(Type.prose)
                 }
-                // No accent: choosing rows starts nothing and merges nothing.
-                // The five accents mean consequence, and spending three of them
-                // on triage controls is what made them stop reading as one.
-                .buttonStyle(.plain)
-                .font(Type.prose)
             }
 
             ForEach(group) { proposal in
@@ -518,22 +573,7 @@ struct AnalysisPanelView: View {
                     .id(proposal.id)
                 } else {
                     ProposalRow(
-                        proposal: proposal,
-                        actions: .decide(
-                            isSelected: model.analysisSelection.contains(proposal.id),
-                            toggle: {
-                                if model.analysisSelection.contains(proposal.id) {
-                                    model.analysisSelection.remove(proposal.id)
-                                } else {
-                                    model.analysisSelection.insert(proposal.id)
-                                }
-                            },
-                            edit: { model.beginEditingProposal(proposal) },
-                            accept: { Task { await model.acceptProposals(ids: [proposal.id]) } },
-                            reject: { Task { await model.rejectProposals(ids: [proposal.id]) } }
-                        ),
-                        repoPath: repo?.path
-                    )
+                        proposal: proposal, actions: actions(for: proposal), repoPath: repo?.path)
                 }
             }
         }
@@ -585,26 +625,26 @@ struct AnalysisPanelView: View {
         }
     }
 
-    @ViewBuilder
-    private var emptyReview: some View {
-        let waiting = model.runningAngles
-        VStack(alignment: .leading, spacing: 6) {
-            if waiting.isEmpty {
-                Label("Nothing left to decide.", systemImage: "checkmark.circle")
-                    .font(Type.cardTitle)
-                Text("Every proposal has been accepted or rejected. Close this window and the accepted ones are waiting in Backlog.")
-                    .font(Type.prose)
-                    .foregroundStyle(.secondary)
-            } else {
-                Label(
-                    "Reading — \(waiting.map(\.title).joined(separator: ", "))",
-                    systemImage: "hourglass"
-                )
+    /// What an empty group means — decided in `ElliotModel`, rendered here.
+    ///
+    /// ⚠️ **`harvested` is the runs' own `kept` total, never `rows.count`.**
+    /// That is the whole of this reading's *so that*: a list of zero undecided
+    /// rows is the same list whether the lens found nothing or you decided
+    /// everything, and only the harvest can tell the two apart. This slot used
+    /// to assert *"Every proposal has been accepted or rejected"* in both cases,
+    /// two inches under a lens strip reading `0 kept` (#331).
+    private func emptyReview(_ session: AnalysisSession) -> some View {
+        let message = ProposalReview.emptyMessage(
+            for: session.review,
+            harvested: session.runs.compactMap(\.analysisReport).reduce(0) { $0 + $1.kept },
+            running: model.runningAngles.map(\.title)
+        )
+        return VStack(alignment: .leading, spacing: 6) {
+            Label(message.title, systemImage: message.symbol)
                 .font(Type.cardTitle)
-                Text("Proposals appear here lens by lens, as each run finishes. You can accept the first ones while the rest are still reading.")
-                    .font(Type.prose)
-                    .foregroundStyle(.secondary)
-            }
+            Text(message.detail)
+                .font(Type.prose)
+                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 20)
@@ -740,7 +780,7 @@ struct AnalysisPanelView: View {
                 // of which a keyboard can open on macOS.
                 Button("Edit…") {
                     guard
-                        let proposal = (model.analysis.map(proposed) ?? [])
+                        let proposal = (model.analysis.map(undecided) ?? [])
                             .first(where: { model.analysisSelection.contains($0.id) })
                     else { return }
                     model.beginEditingProposal(proposal)
@@ -975,6 +1015,20 @@ struct LensRunRow: View {
                     Button("Cancel") { Task { await model.cancelRun(id: run.id) } }
                         .controlSize(.small)
                 }
+                // The recovery, offered exactly where the loss is visible: this
+                // row is the thing that reads `0 kept`. The condition is
+                // `SkillRun.offersReharvest`'s, not an inline `report.kept == 0`
+                // — the rule is pure and `ReharvestRuleTests` holds it, and a
+                // second spelling here would be free to disagree about the run
+                // that carries no report at all (#330).
+                if run.offersReharvest {
+                    Button("Harvest again") { Task { await model.reharvest(runID: run.id) } }
+                        .controlSize(.small)
+                        .help("Re-reads the file this run already wrote. Starts nothing.")
+                        .accessibilityLabel(
+                            "Harvest \(run.analysisAngle?.title ?? "this lens") again "
+                                + "from the file it already wrote")
+                }
             }
 
             if let report = run.analysisReport {
@@ -1087,7 +1141,17 @@ enum ProposalRowActions {
         reject: () -> Void
     )
 
-    /// Turned down, and able to come back. The one act the disclosure offers.
+    /// Taken, and on the board. Carries the sentence naming the card it became
+    /// — a `String` rather than a `Card?`, so a row cannot be handed a card and
+    /// then decide for itself what an absent one means (#331).
+    ///
+    /// It offers **no verbs at all**, which is the point of it being its own
+    /// case rather than `.settled` with different text: a card exists for this
+    /// story, so Accept would make a second one and Reject would be a decision
+    /// about something already decided.
+    case accepted(String)
+
+    /// Turned down, and able to come back. The one act the rejected group offers.
     case restore(() -> Void)
 
     /// Turned down, and *not* able to come back: it produced a Backlog card
@@ -1099,6 +1163,40 @@ enum ProposalRowActions {
     case settled
 }
 
+extension ProposalRowActions {
+    /// Whether this row was turned down.
+    ///
+    /// Drives the demotion — recessed ground, struck-through title — so the
+    /// list a reader is triaging and the record of what they turned down cannot
+    /// be mistaken for each other at a glance.
+    ///
+    /// ⛔ **Exhaustive, and `.accepted` is deliberately on the other side.** It
+    /// lived in `ProposalRow` as `if case .decide { false } else { true }`,
+    /// which strikes through an accepted row — saying the story was thrown away
+    /// while its card sits on the board. A decided row is not automatically a
+    /// refused one, and that distinction arrived with the accepted group (#331).
+    ///
+    /// On the value rather than in the view for the reason the type's own
+    /// comment gives about the closures: what a row *is* travels with what it
+    /// may *do*, so a fifth case has to answer both questions at once.
+    var isRefusal: Bool {
+        switch self {
+        case .decide, .accepted: false
+        case .restore, .settled: true
+        }
+    }
+
+    /// Whether this row is staged for the footer's bulk Accept / Reject.
+    ///
+    /// Only `.decide` can be, by construction — the selection travels *inside*
+    /// that case precisely so a decided row cannot enter
+    /// `AppModel.analysisSelection` at all.
+    var isStaged: Bool {
+        if case .decide(let isSelected, _, _, _, _) = self { return isSelected }
+        return false
+    }
+}
+
 struct ProposalRow: View {
     let proposal: StoryProposal
     let actions: ProposalRowActions
@@ -1107,20 +1205,9 @@ struct ProposalRow: View {
     @State private var hovering = false
     @State private var showingCriteria = false
 
-    /// Whether this row is being read back rather than decided.
-    ///
-    /// Drives the demotion — recessed ground, struck-through title — so the
-    /// list a reader is triaging and the footnote of what they turned down
-    /// cannot be mistaken for each other at a glance.
-    private var isRejected: Bool {
-        if case .decide = actions { return false }
-        return true
-    }
-
-    private var isSelected: Bool {
-        if case .decide(let isSelected, _, _, _, _) = actions { return isSelected }
-        return false
-    }
+    /// Both read off the one value that knows — see ``ProposalRowActions``.
+    private var isRejected: Bool { actions.isRefusal }
+    private var isSelected: Bool { actions.isStaged }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -1155,7 +1242,7 @@ struct ProposalRow: View {
                             Button("Restore", action: restore)
                                 .buttonStyle(.plain)
                                 .font(Type.prose)
-                        case .settled:
+                        case .accepted, .settled:
                             EmptyView()
                         }
                     }
@@ -1230,8 +1317,20 @@ struct ProposalRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                // The card this story became, named. Without it an accepted row
+                // is a row with no verbs and nothing to say, which reads as the
+                // list being broken rather than as the record it is — and the
+                // sentence is `ProposalReview.cardLabel`'s, so the case where
+                // the card cannot be found still reads as an acceptance (#331).
+                if case .accepted(let cardLabel) = actions {
+                    Label(cardLabel, systemImage: "tray.and.arrow.down.fill")
+                        .font(Type.prose)
+                        .foregroundStyle(Palette.verified)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 // Why this one row carries no Restore, said in words. Without
-                // it the disclosure has a row that simply does nothing on
+                // it the rejected group has a row that simply does nothing on
                 // hover, which reads as the feature being broken rather than as
                 // the refusal it is.
                 if case .settled = actions {
@@ -1320,9 +1419,10 @@ private struct ProposalRowMenu: ViewModifier {
                 }
                 .accessibilityElement(children: .contain)
                 .accessibilityAction(named: "Restore to the list", restore)
-        case .settled:
+        case .accepted, .settled:
             // No menu at all. See the ⚠️ above: an empty one is a popover with
-            // nothing in it, which is worse than none.
+            // nothing in it, which is worse than none. Both of these rows are
+            // records rather than decisions.
             content.accessibilityElement(children: .contain)
         }
     }

@@ -70,6 +70,25 @@ public struct AnalysisSession: Sendable {
     /// analysis it belongs to. An edit cannot outlive its proposals.
     public var edit: ProposalEdit?
 
+    /// Which decided group the review list is showing (#331).
+    ///
+    /// The eighth member, and the default is the mechanism rather than a
+    /// convenience: `openAnalysis` is **one assignment of a whole new session**,
+    /// so a member defaulting to `.proposed` re-defaults on every open —
+    /// including from *Earlier analyses*, the path that never goes through
+    /// `startAnalysis`. There is no reset line to forget, and `closeAnalysis()`
+    /// is `analysis = nil`, so there is nothing to clear either.
+    ///
+    /// ⛔ **Not `@State` in `AnalysisPanelView`**, for the reason `selection`
+    /// and `edit` are here: hiding the panel removes `.analysis` from
+    /// `PanelLayout.boardOrder` and tears the view down.
+    ///
+    /// ⛔ **And not on `AppModel` beside `analysisAngles`**, which is the
+    /// *opposite* error and the one #290 was: a free-standing member outlives
+    /// Finish and `openAnalysis`, so you would reopen last week's analysis onto
+    /// the *rejected* tab because that is where you left a different one.
+    public var review: ProposalStatus = .proposed
+
     /// Whatever the window needs to say about the last action.
     public var note: String?
     /// The live proposal observation, held so that letting go of the session

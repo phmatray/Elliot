@@ -160,7 +160,7 @@ public final class BoardStore: Sendable {
                 .filter(Analysis.Columns.repoID == repoID.databaseKey)
                 .fetchCount(db)
             let proposals = try Self
-                .proposalQuery(analysisID: nil, repoID: repoID, status: nil)
+                .proposalQuery(analysisID: nil, repoID: repoID, runID: nil, status: nil)
                 .fetchCount(db)
             return ForgetImpact(
                 cards: cards, runs: runs, analyses: analyses, proposals: proposals)
@@ -1036,21 +1036,27 @@ public final class BoardStore: Sendable {
         try await reader.read { db in try StoryProposal.fetchOne(db, key: id.databaseKey) }
     }
 
+    /// Every filter is `nil`-means-unfiltered and they compose, so
+    /// `proposals(runID:)` answers "what did *this lens* land" — which is what
+    /// a repeat harvest has to know before it writes anything (#330).
     public func proposals(
         analysisID: UUID? = nil,
         repoID: UUID? = nil,
+        runID: UUID? = nil,
         status: ProposalStatus? = nil,
         limit: Int = 500
     ) async throws -> [StoryProposal] {
         try await reader.read { db in
-            try Self.proposalQuery(analysisID: analysisID, repoID: repoID, status: status)
-                .limit(limit)
-                .fetchAll(db)
+            try Self.proposalQuery(
+                analysisID: analysisID, repoID: repoID, runID: runID, status: status
+            )
+            .limit(limit)
+            .fetchAll(db)
         }
     }
 
     private static func proposalQuery(
-        analysisID: UUID?, repoID: UUID?, status: ProposalStatus?
+        analysisID: UUID?, repoID: UUID?, runID: UUID?, status: ProposalStatus?
     ) -> QueryInterfaceRequest<StoryProposal> {
         var request = StoryProposal.all()
         if let analysisID {
@@ -1058,6 +1064,9 @@ public final class BoardStore: Sendable {
         }
         if let repoID {
             request = request.filter(StoryProposal.Columns.repoID == repoID.databaseKey)
+        }
+        if let runID {
+            request = request.filter(StoryProposal.Columns.runID == runID.databaseKey)
         }
         if let status {
             request = request.filter(StoryProposal.Columns.status == status.rawValue)
@@ -1070,7 +1079,9 @@ public final class BoardStore: Sendable {
     public func observeProposals(analysisID: UUID) -> AsyncValueObservation<[StoryProposal]> {
         ValueObservation
             .tracking { db in
-                try Self.proposalQuery(analysisID: analysisID, repoID: nil, status: nil).fetchAll(db)
+                try Self.proposalQuery(
+                    analysisID: analysisID, repoID: nil, runID: nil, status: nil
+                ).fetchAll(db)
             }
             .removeDuplicates()
             .values(in: reader)
