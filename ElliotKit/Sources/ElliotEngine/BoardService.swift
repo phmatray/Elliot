@@ -99,7 +99,12 @@ public actor BoardService: SystemMoving {
             repoIsEnabled: repo.isEnabled,
             activeRunID: activeRun?.id,
             allowSideEffects: origin.allowsSideEffects,
-            providedFollowUps: followUps
+            providedFollowUps: followUps,
+            // Task 8 fills these from `PRVerdictReader`. Until then the board
+            // answers what it has always answered: a drag and an MCP move are
+            // watched by a human and are not held to a verdict.
+            requiresVerifiedGreen: false,
+            prVerdict: nil
         )
         let outcome = evaluateMove(from: card.column, to: column, card: card, context: context)
         let index: Double

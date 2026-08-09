@@ -70,16 +70,44 @@ public struct MoveContext: Equatable, Sendable, Hashable {
     /// empty array means "no follow-ups" and lets the merge proceed.
     public var providedFollowUps: [String]?
 
+    /// This move must not merge on anything short of a verified green.
+    ///
+    /// Named for the rule, not for the caller: `.mcp` and `.userDrag` set it
+    /// false today, and a future caller that wants the restraint asks for it by
+    /// name rather than by claiming to be unwatched. It is **set explicitly by
+    /// the caller** rather than derived from `MoveOrigin`, because the word
+    /// "unattended" already has a settled meaning in this package — about
+    /// twenty uses in `Sources`, all naming the *child process* — under which a
+    /// drag is the canonical unattended gesture.
+    public var requiresVerifiedGreen: Bool
+
+    /// What `gh` established about the pull request, already resolved against
+    /// the clock and the current head. `nil` is *nothing established*, which is
+    /// not a green.
+    public var prVerdict: ResolvedPRStatus?
+
+    /// ⛔ **The last two parameters have no default values, on purpose.**
+    ///
+    /// Every other parameter here defaults, so two defaulted ones would compile
+    /// at every existing construction and nothing would catch the next one. The
+    /// three production sites — `AppModel.preview`, `BoardService.proposeMove`
+    /// and `nextCandidates` below — and roughly twenty test constructions each
+    /// had to state an answer before this built, and so will the fourth. The
+    /// template is `providedFollowUps`, whose two sites diverge deliberately.
     public init(
         repoIsEnabled: Bool = true,
         activeRunID: UUID? = nil,
         allowSideEffects: Bool = true,
-        providedFollowUps: [String]? = nil
+        providedFollowUps: [String]? = nil,
+        requiresVerifiedGreen: Bool,
+        prVerdict: ResolvedPRStatus?
     ) {
         self.repoIsEnabled = repoIsEnabled
         self.activeRunID = activeRunID
         self.allowSideEffects = allowSideEffects
         self.providedFollowUps = providedFollowUps
+        self.requiresVerifiedGreen = requiresVerifiedGreen
+        self.prVerdict = prVerdict
     }
 }
 
@@ -225,7 +253,20 @@ public func nextCandidates(
                 // report every inReview card as needing input, when the move an
                 // agent can actually make — merge, filing nothing after it — is
                 // available to it right now.
-                providedFollowUps: []
+                providedFollowUps: [],
+                // `board_next` answers what an *agent* can do, and an agent is
+                // a human's proxy with a human behind it. The restraint belongs
+                // to the caller that has nobody: `AutoDevService` builds its own
+                // context rather than borrowing this one.
+                //
+                // And the helper could not honour it if it were true:
+                // `OfflineResponder` reads a snapshot and can reach neither
+                // `gh` nor the network, so its answer would *mean* "I could not
+                // ask" while *encoding* as "the CI is not green" — and
+                // `OfflineParityTests` compares encoded bytes, so it would hold
+                // on exactly that disagreement.
+                requiresVerifiedGreen: false,
+                prVerdict: nil
             )
         )
     }

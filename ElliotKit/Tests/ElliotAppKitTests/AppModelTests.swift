@@ -203,7 +203,10 @@ struct AppModelTests {
                 from: backlog.column, to: column, card: backlog,
                 context: MoveContext(
                     repoIsEnabled: true, activeRunID: nil,
-                    allowSideEffects: true, providedFollowUps: nil
+                    allowSideEffects: true, providedFollowUps: nil,
+                    // The same answer `AppModel.preview` gives, and this test
+                    // exists to prove the two agree rather than to restate one.
+                    requiresVerifiedGreen: false, prVerdict: nil
                 )
             )
             #expect(model.preview(backlog, to: column) == expected, "disagreed about \(column)")

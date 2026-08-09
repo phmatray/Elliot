@@ -33,6 +33,29 @@ private let triggerTransitions: Set<[Column]> = [
     [.inReview, .done],
 ]
 
+/// The context every test in this file that is *not* about the green guard
+/// wants: a move somebody is watching, with no reading of a pull request.
+///
+/// `MoveContext` deliberately defaults nothing for the last two parameters —
+/// that is the guard on production call sites, and it is doing its job here by
+/// having forced this file to state an answer once. Written once rather than
+/// twenty times so the suite stays about the rules.
+private func watched(
+    repoIsEnabled: Bool = true,
+    activeRunID: UUID? = nil,
+    allowSideEffects: Bool = true,
+    providedFollowUps: [String]? = nil
+) -> MoveContext {
+    MoveContext(
+        repoIsEnabled: repoIsEnabled,
+        activeRunID: activeRunID,
+        allowSideEffects: allowSideEffects,
+        providedFollowUps: providedFollowUps,
+        requiresVerifiedGreen: false,
+        prVerdict: nil
+    )
+}
+
 @Suite("Rule engine")
 struct RuleEngineTests {
 
@@ -41,7 +64,7 @@ struct RuleEngineTests {
     @Test("Backlog to To Do files an issue from a plain card's title and body")
     func backlogToTodoCreatesIssue() {
         let card = makeCard(title: "Add a dark mode toggle", body: "Respect the system setting.")
-        let outcome = evaluateMove(from: .backlog, to: .todo, card: card, context: MoveContext())
+        let outcome = evaluateMove(from: .backlog, to: .todo, card: card, context: watched())
         #expect(outcome == .action(.createIssue(
             idea: "Add a dark mode toggle. Respect the system setting."
         )))
@@ -56,7 +79,7 @@ struct RuleEngineTests {
             benefit: "I can diagnose a failure without opening a terminal",
             acceptanceCriteria: ["the log streams live", "the log survives a relaunch"]
         )
-        let outcome = evaluateMove(from: .backlog, to: .todo, card: card, context: MoveContext())
+        let outcome = evaluateMove(from: .backlog, to: .todo, card: card, context: watched())
         #expect(outcome == .action(.createIssue(
             idea: "As a developer, I want to see the run log inside the card, so that I can "
                 + "diagnose a failure without opening a terminal. Acceptance criteria: "
@@ -68,21 +91,21 @@ struct RuleEngineTests {
     func incompleteStoryBlocked() {
         var card = makeCard(title: "Run log")
         card.story = UserStory(role: "developer", want: "to see the run log", benefit: "  ")
-        let outcome = evaluateMove(from: .backlog, to: .todo, card: card, context: MoveContext())
+        let outcome = evaluateMove(from: .backlog, to: .todo, card: card, context: watched())
         #expect(outcome == .blocked(.incompleteStory))
     }
 
     @Test("To Do to In Progress implements the card's issue")
     func todoToInProgressImplements() {
         let card = makeCard(column: .todo, issueNumber: 47)
-        let outcome = evaluateMove(from: .todo, to: .inProgress, card: card, context: MoveContext())
+        let outcome = evaluateMove(from: .todo, to: .inProgress, card: card, context: watched())
         #expect(outcome == .action(.implementIssue(issueNumber: 47)))
     }
 
     @Test("In Review to Done merges once follow-ups are settled")
     func inReviewToDoneMerges() {
         let card = makeCard(column: .inReview, prNumber: 279)
-        let context = MoveContext(providedFollowUps: ["add snapshot tests"])
+        let context = watched(providedFollowUps: ["add snapshot tests"])
         let outcome = evaluateMove(from: .inReview, to: .done, card: card, context: context)
         #expect(outcome == .action(.mergePR(prNumber: 279, followUps: ["add snapshot tests"])))
     }
@@ -90,7 +113,7 @@ struct RuleEngineTests {
     @Test("In Progress to In Review fires nothing — implement-issue already did the work")
     func inProgressToInReviewIsInert() {
         let card = makeCard(column: .inProgress, issueNumber: 47, prNumber: 279)
-        let outcome = evaluateMove(from: .inProgress, to: .inReview, card: card, context: MoveContext())
+        let outcome = evaluateMove(from: .inProgress, to: .inReview, card: card, context: watched())
         #expect(outcome == .noAction)
     }
 
@@ -100,7 +123,7 @@ struct RuleEngineTests {
     func sameColumnBlocked() {
         for column in Column.allCases {
             let outcome = evaluateMove(
-                from: column, to: column, card: makeCard(column: column), context: MoveContext()
+                from: column, to: column, card: makeCard(column: column), context: watched()
             )
             #expect(outcome == .blocked(.sameColumn))
         }
@@ -109,14 +132,14 @@ struct RuleEngineTests {
     @Test("Implementing without an issue number is refused")
     func todoToInProgressWithoutIssue() {
         let card = makeCard(column: .todo, issueNumber: nil)
-        let outcome = evaluateMove(from: .todo, to: .inProgress, card: card, context: MoveContext())
+        let outcome = evaluateMove(from: .todo, to: .inProgress, card: card, context: watched())
         #expect(outcome == .blocked(.missingIssueNumber))
     }
 
     @Test("Merging without a PR number is refused")
     func inReviewToDoneWithoutPR() {
         let card = makeCard(column: .inReview, prNumber: nil)
-        let context = MoveContext(providedFollowUps: [])
+        let context = watched(providedFollowUps: [])
         let outcome = evaluateMove(from: .inReview, to: .done, card: card, context: context)
         #expect(outcome == .blocked(.missingPRNumber))
     }
@@ -124,13 +147,13 @@ struct RuleEngineTests {
     @Test("A card with nothing in it cannot become an issue", arguments: ["", "   ", "\n\t "])
     func backlogToTodoWithBlankIdea(title: String) {
         let card = makeCard(title: title, body: "")
-        let outcome = evaluateMove(from: .backlog, to: .todo, card: card, context: MoveContext())
+        let outcome = evaluateMove(from: .backlog, to: .todo, card: card, context: watched())
         #expect(outcome == .blocked(.emptyIdea))
     }
 
     @Test("A disabled repo refuses every move")
     func disabledRepoBlocks() {
-        let context = MoveContext(repoIsEnabled: false)
+        let context = watched(repoIsEnabled: false)
         let card = makeCard(column: .todo, issueNumber: 47)
         let outcome = evaluateMove(from: .todo, to: .inProgress, card: card, context: context)
         #expect(outcome == .blocked(.repoDisabled))
@@ -139,7 +162,7 @@ struct RuleEngineTests {
     @Test("A card with a run in flight refuses every move")
     func activeRunBlocks() {
         let runID = UUID()
-        let context = MoveContext(activeRunID: runID)
+        let context = watched(activeRunID: runID)
         let card = makeCard(column: .todo, issueNumber: 47)
         let outcome = evaluateMove(from: .todo, to: .inProgress, card: card, context: context)
         #expect(outcome == .blocked(.runAlreadyInFlight(runID: runID)))
@@ -150,7 +173,7 @@ struct RuleEngineTests {
     @Test("A card that already has an issue is not filed again")
     func backlogToTodoWithExistingIssueIsInert() {
         let card = makeCard(issueNumber: 47)
-        let outcome = evaluateMove(from: .backlog, to: .todo, card: card, context: MoveContext())
+        let outcome = evaluateMove(from: .backlog, to: .todo, card: card, context: watched())
         #expect(outcome == .noAction)
     }
 
@@ -159,7 +182,7 @@ struct RuleEngineTests {
     @Test("Merging asks for follow-ups when they have not been collected")
     func inReviewToDoneNeedsFollowUps() {
         let card = makeCard(column: .inReview, prNumber: 279)
-        let context = MoveContext(providedFollowUps: nil)
+        let context = watched(providedFollowUps: nil)
         let outcome = evaluateMove(from: .inReview, to: .done, card: card, context: context)
         #expect(outcome == .needsInput(.followUps(prNumber: 279)))
     }
@@ -167,7 +190,7 @@ struct RuleEngineTests {
     @Test("An explicit empty follow-up list means 'none', and merges")
     func emptyFollowUpsIsAnAnswer() {
         let card = makeCard(column: .inReview, prNumber: 279)
-        let context = MoveContext(providedFollowUps: [])
+        let context = watched(providedFollowUps: [])
         let outcome = evaluateMove(from: .inReview, to: .done, card: card, context: context)
         #expect(outcome == .action(.mergePR(prNumber: 279, followUps: [])))
     }
@@ -182,7 +205,7 @@ struct RuleEngineTests {
         // Fully-populated card: every trigger's precondition is satisfied, so
         // only `allowSideEffects` can be what holds the action back.
         let card = makeCard(column: from, issueNumber: 47, prNumber: 279)
-        let context = MoveContext(allowSideEffects: false, providedFollowUps: [])
+        let context = watched(allowSideEffects: false, providedFollowUps: [])
         let outcome = evaluateMove(from: from, to: to, card: card, context: context)
 
         if from == to {
@@ -197,7 +220,7 @@ struct RuleEngineTests {
         // The PR watcher sees the PR go ready while implement-issue is still
         // wrapping up. That move must land, not wait for the run to exit.
         let card = makeCard(column: .inProgress, issueNumber: 47, prNumber: 279)
-        let context = MoveContext(activeRunID: UUID(), allowSideEffects: false)
+        let context = watched(activeRunID: UUID(), allowSideEffects: false)
         let outcome = evaluateMove(from: .inProgress, to: .inReview, card: card, context: context)
         #expect(outcome == .noAction)
     }
@@ -210,7 +233,7 @@ struct RuleEngineTests {
     )
     func onlyDeclaredTransitionsAct(from: Column, to: Column) {
         let card = makeCard(column: from, issueNumber: 47, prNumber: 279)
-        let context = MoveContext(providedFollowUps: [])
+        let context = watched(providedFollowUps: [])
         let outcome = evaluateMove(from: from, to: to, card: card, context: context)
 
         let isTrigger = triggerTransitions.contains([from, to])
@@ -236,6 +259,6 @@ struct RuleEngineTests {
         // A bare card: no issue, no PR, nothing collected. Exercises the
         // refusal paths across the whole matrix.
         let card = makeCard(column: from)
-        _ = evaluateMove(from: from, to: to, card: card, context: MoveContext())
+        _ = evaluateMove(from: from, to: to, card: card, context: watched())
     }
 }

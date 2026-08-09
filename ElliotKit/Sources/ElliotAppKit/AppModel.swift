@@ -1040,7 +1040,14 @@ public final class AppModel {
                 allowSideEffects: true,
                 // Left uncollected on purpose: the merge really does stop to
                 // ask, and the caption says so.
-                providedFollowUps: nil
+                providedFollowUps: nil,
+                // A caption is drawn for somebody who is looking at it, so it
+                // previews the move *they* would make. A preview held to an
+                // unattended rule would read "not a verified green" at a person
+                // who is perfectly entitled to merge, and this runs inside
+                // `body` — it cannot read a verdict without doing I/O in layout.
+                requiresVerifiedGreen: false,
+                prVerdict: nil
             )
         )
     }
