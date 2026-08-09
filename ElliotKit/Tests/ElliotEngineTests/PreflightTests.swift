@@ -114,9 +114,9 @@ struct PreflightTests {
         let check = await service(["FAKE_GH_LABELS": Paths.fixture("labels.json")])
             .labelsCheck(repo, required: LabelPolicy.default)
 
-        // `warn`, never `fail`: `isBlocking` treats any `.fail` as "cards cannot
-        // be dragged", and a missing `documentation` label must not freeze a
-        // board.
+        // `warn`, never `fail`: `PreflightReading.verdict` calls any `.fail`
+        // "cards cannot be dragged", and a missing `documentation` label must
+        // not freeze a board.
         #expect(check.status == .warn)
         // Each one named. "Some labels are missing" sends the reader to GitHub
         // to work out which.
@@ -173,7 +173,9 @@ struct PreflightTests {
     @Test("A missing label never blocks a board")
     func missingLabelsAreNotBlocking() async {
         let check = await service().labelsCheck(repo, required: LabelPolicy.default)
-        #expect(!PreflightService.isBlocking([check]))
+        let reading = PreflightReading(results: [check], checkedAt: .now)
+        #expect(reading.verdict == .passing)
+        #expect(reading.blocking == nil)
     }
 
     // MARK: - Performing a fix

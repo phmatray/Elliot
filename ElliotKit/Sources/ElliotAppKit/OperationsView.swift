@@ -91,7 +91,7 @@ public struct OperationsView: View {
 
     /// A failing check, and which repository it is about.
     ///
-    /// The repository name is not decoration. `repoChecks` is keyed by
+    /// The repository name is not decoration. The readings are keyed by
     /// repository and several can fail the *same* check, so without it the band
     /// draws two identical rows and reads as a rendering bug rather than as two
     /// repositories with the same problem. Seen on screen before this shipped.
@@ -109,8 +109,12 @@ public struct OperationsView: View {
             .filter { $0.status == .fail }
             .map { FailingCheck(key: "global.\($0.id)", repoName: nil, check: $0) }
 
+        // A repository with no reading contributes nothing, and that is the
+        // honest answer here rather than the silence it is elsewhere: this band
+        // lists what *is* failing, and nobody has looked. What that costs is
+        // said on Preflight, which is where the sweep lives.
         let perRepo = model.repos.flatMap { repo in
-            (model.repoChecks[repo.id] ?? [])
+            (model.repoReadings[repo.id]?.results ?? [])
                 .filter { $0.status == .fail }
                 .map {
                     FailingCheck(
