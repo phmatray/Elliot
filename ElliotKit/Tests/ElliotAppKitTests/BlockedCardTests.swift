@@ -178,11 +178,25 @@ struct BlockedCardTests {
             to one fixed line for seven different failures.
             """
         )
+        // ⚠️ **Counted, not merely present, and that is not fussiness — the
+        // first draft of this gate asserted presence and a break-test walked
+        // straight through it.** Deleting the badge's `Button` entirely, leaving
+        // a plain `Label`, left the `.accessibilityActions` twin behind: one
+        // call site still matched, the whole suite stayed green, and the card
+        // had silently gone back to naming a check with no way to reach it.
+        //
+        // Two, because the card is `.accessibilityElement(children: .combine)`:
+        // a button nested inside a combined element is readable and not
+        // pressable, so the same act has to be offered twice or it is offered to
+        // half the readers. A third would be a second control for one act.
+        let opens = code.components(separatedBy: "model.openPreflight(badge)").count - 1
         #expect(
-            code.contains("model.openPreflight(badge)"),
+            opens == 2,
             """
-            CardView draws the blocked badge and nothing opens Preflight from it, so the card \
-            names the failing check and still leaves the reader to find it.
+            CardView reaches `openPreflight` \(opens) times; it needs exactly two — the \
+            badge's own Button, and its `.accessibilityActions` twin. At one, either the \
+            badge names the failing check with no way to reach it, or it is reachable by \
+            pointer only.
             """
         )
     }
