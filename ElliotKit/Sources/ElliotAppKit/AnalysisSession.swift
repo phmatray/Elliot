@@ -39,6 +39,24 @@ public struct AnalysisSession: Sendable {
 
     public var runs: [SkillRun] = []
     public var proposals: [StoryProposal] = []
+
+    /// The proposals staged for the footer's Accept / Reject.
+    ///
+    /// The sixth member that did not travel when this type was created, and the
+    /// only one whose absence was a *bug* rather than a tidiness problem. As a
+    /// free-standing `AppModel.analysisSelection` it outlived both Finish —
+    /// whose own tooltip says "Undecided proposals stay in the store" — and
+    /// `openAnalysis`. So: stage five, press Finish, start a fresh analysis, and
+    /// the footer read "5 selected" over an empty new list; pressing Accept 5
+    /// handed the *previous* analysis's ids to `acceptProposals`, `claimProposal`
+    /// found them still `.proposed`, and five cards landed in Backlog from an
+    /// analysis nobody was looking at.
+    ///
+    /// Here it cannot: `openAnalysis` is one assignment of a whole new session
+    /// and `closeAnalysis` is `analysis = nil`, so the staging is created and
+    /// destroyed with the thing it stages. Setup state has no session and
+    /// therefore no selection, which is correct — there are no proposals yet.
+    public var selection: Set<UUID> = []
     /// Whatever the window needs to say about the last action.
     public var note: String?
     /// The live proposal observation, held so that letting go of the session

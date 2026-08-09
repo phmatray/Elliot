@@ -230,6 +230,14 @@ struct AppModelAnalysisSessionTests {
         model.analysisAngles = [.bugs, .tests, .docsAndDX]
         model.analysisInstructions = "Focus on the store layer."
         model.analysisMaxStories = 20
+
+        // ⚠️ Seeded **through a session**, which it was not until #290. The
+        // staging belongs to an analysis, so staging with no analysis open is
+        // not a state a reader can reach — and asserting it survived a hide was
+        // asserting the wrong thing about the right value. The claim under test
+        // is unchanged and still true: the session lives on the model, so
+        // hiding the panel loses nothing.
+        model.openAnalysis(analysisFixture(repoID: UUID()))
         let staged = UUID()
         model.analysisSelection = [staged]
 
@@ -240,6 +248,45 @@ struct AppModelAnalysisSessionTests {
         #expect(model.analysisInstructions == "Focus on the store layer.")
         #expect(model.analysisMaxStories == 20)
         #expect(model.analysisSelection == [staged])
+    }
+
+    /// The defect the move exists to make unrepresentable.
+    ///
+    /// Stage five proposals, press Finish — whose own tooltip says "Undecided
+    /// proposals stay in the store" — start a fresh analysis, and the footer
+    /// read "5 selected" over an empty new list. Pressing Accept 5 then handed
+    /// the *previous* analysis's ids to `acceptProposals`; `claimProposal` found
+    /// them still `.proposed`, and five cards landed in Backlog from an analysis
+    /// nobody was looking at.
+    @Test("Staging does not outlive the analysis it stages")
+    func selectionDiesWithItsAnalysis() {
+        let model = AppModel()
+        let repoID = UUID()
+        model.openAnalysis(analysisFixture(repoID: repoID))
+        model.analysisSelection = [UUID(), UUID(), UUID(), UUID(), UUID()]
+        #expect(model.analysisSelection.count == 5)
+
+        // Finish.
+        model.closeAnalysis()
+        #expect(model.analysisSelection.isEmpty)
+
+        // And a *second* analysis starts clean rather than inheriting the
+        // staging of the first — `openAnalysis` is one assignment of a whole
+        // new session, so this cannot be forgotten in a future edit.
+        model.openAnalysis(analysisFixture(repoID: repoID))
+        #expect(model.analysisSelection.isEmpty)
+    }
+
+    /// In setup there are no proposals, so there is nothing a write could mean.
+    /// Reading empty is the correct answer, not a swallowed failure.
+    @Test("With no analysis open there is no selection to hold")
+    func setupHasNoSelection() {
+        let model = AppModel()
+        #expect(model.analysis == nil)
+        #expect(model.analysisSelection.isEmpty)
+
+        model.analysisSelection = [UUID()]
+        #expect(model.analysisSelection.isEmpty)
     }
 
     @Test("The analysis panel is hidden at launch and three columns wide")

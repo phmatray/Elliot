@@ -299,6 +299,15 @@ struct AnalysisPanelView: View {
         HStack(spacing: 8) {
             Fact(text: "\(session.runs.count) lenses", small: true)
             Fact(text: "\(kept) kept", tint: Palette.verified, small: true)
+            // The number the setup footer promised, surviving the collapse the
+            // reader spends the whole triage inside. `Palette.quiet` is
+            // greyscale and spends none of the five consequence accents —
+            // `armed` here would give a sixth meaning to the colour that means
+            // "this starts an agent".
+            if let spend = AnalysisSpend.of(session.runs) {
+                Fact(text: AnalysisSpend.label(spend), tint: Palette.quiet, small: true)
+                    .help(AnalysisSpend.help(spend))
+            }
             if dropped > 0 {
                 Fact(text: "\(dropped) dropped", tint: Palette.attention, small: true)
             }
@@ -469,6 +478,20 @@ struct AnalysisPanelView: View {
                     .foregroundStyle(message.tone.tint)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+                    // The clamp is right — this slot is one line of a footer —
+                    // but the failures that land here are
+                    // `error.localizedDescription` from a thrown start, the
+                    // longest strings the slot ever shows and the ones whose
+                    // tail carries the actionable part. Without this the tail is
+                    // *unreadable*: it reaches `os_log`, and as of 2026-08-07
+                    // nothing from this subsystem comes back out of `log show`
+                    // at any level. Deferred deliberately in #216; this is it.
+                    //
+                    // `message.text` verbatim. A second wording here would be a
+                    // second thing to keep in agreement with the value that
+                    // decides the sentence — which is why `AnalysisFooterMessage`
+                    // gains no member for it.
+                    .help(message.text)
                     // A second identical failure must transition rather than
                     // look like the first one never went away.
                     .id(message.text)
@@ -485,6 +508,10 @@ struct AnalysisPanelView: View {
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    // Same clamp, same loss, same remedy. Criterion 2: the note
+                    // is not a lesser string — "Rejected 12 proposals." is short,
+                    // but a note carrying a store error is not.
+                    .help(note)
                     .id(note)
                     // Driven by the `.animation(reduceMotion ? nil : …, value:
                     // fadingMessages)` at the foot of this footer, which carries
