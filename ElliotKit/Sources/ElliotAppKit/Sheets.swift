@@ -82,8 +82,10 @@ public struct NewCardWindow: View {
         guard let repoID else { return }
         Task {
             await model.createCard(
-                repoID: repoID, title: draft.title, story: draft.story, body: draft.body,
-                labels: draft.labels
+                // `trimmedTitle`, not `title` — see `CardDraft.trimmedTitle`:
+                // the gate and the write are one expression (#202).
+                repoID: repoID, title: draft.trimmedTitle, story: draft.story,
+                body: draft.body, labels: draft.labels
             )
             model.closeConsole()
         }

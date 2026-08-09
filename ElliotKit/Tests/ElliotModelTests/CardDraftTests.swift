@@ -250,6 +250,66 @@ struct CardDraftTests {
         #expect(edited.title == "Still renamed")
         #expect(edited.story == proposal.story, "a note has no story to write")
     }
+
+    // MARK: - The title is cleaned like everything else (#202)
+
+    /// The padded title passed Save and was stored with its padding, becoming a
+    /// board label with a leading space and a trailing newline — while a
+    /// criterion typed with exactly the same padding was silently cleaned one
+    /// field away. A `TextField` renders both identically, so nothing on screen
+    /// showed the difference.
+    @Test("A padded title is stored trimmed, exactly like a padded criterion")
+    func aPaddedTitleIsCleanedOnTheWayOut() {
+        let proposal = Self.proposal()
+        var draft = CardDraft(proposal: proposal)
+        draft.title = "  Edit a proposal \n"
+        draft.criteria = ["  a criterion \n", "   ", ""]
+
+        #expect(draft.trimmedTitle == "Edit a proposal")
+        #expect(draft.applied(to: proposal).title == "Edit a proposal")
+        // Stated side by side on purpose: the defect was not that trimming was
+        // missing, it was that one field of the same draft got it and another
+        // did not.
+        #expect(draft.story?.acceptanceCriteria == ["a criterion"])
+    }
+
+    /// ⛔ **The claim that actually holds this shut**, and the reason it is not
+    /// an assertion about `.whitespacesAndNewlines`.
+    ///
+    /// The character set is arguable and cheap to change; what must never
+    /// change is that the rule deciding a title is *acceptable* and the rule
+    /// deciding what is *stored* are the same rule. Pinning the constant would
+    /// let someone widen the gate and leave the write behind — which is the
+    /// defect, restored with a green suite.
+    ///
+    /// Driven over inputs that are whitespace-only in different ways, so a gate
+    /// that trimmed on a *narrower* set than the write (or the reverse) is
+    /// caught rather than assumed away.
+    @Test(
+        "The gate and the write answer on the same characters",
+        arguments: [" ", "\n", "\t", "  \n\t ", "\u{00A0}"]
+    )
+    func theGateAndTheWriteCannotDrift(padding: String) {
+        let proposal = Self.proposal()
+        var draft = CardDraft(proposal: proposal)
+
+        // Padding alone: whatever the set is, "blank after cleaning" and
+        // "refused" have to be the same answer.
+        draft.title = padding
+        #expect(
+            draft.trimmedTitle.isEmpty == !draft.isValid,
+            """
+            a title of \(padding.debugDescription) is \(draft.isValid ? "saveable" : "refused") but \
+            cleans to \(draft.trimmedTitle.debugDescription) — the gate and the write are reading \
+            different characters, which is how a title passes Save and is stored unrecognisable
+            """
+        )
+
+        // And with real text inside it, the stored value is the cleaned one.
+        draft.title = padding + "Real title" + padding
+        #expect(draft.isValid)
+        #expect(draft.applied(to: proposal).title == draft.trimmedTitle)
+    }
 }
 
 @Suite("A draft's labels")
