@@ -455,9 +455,13 @@ struct AnalysisServiceTests {
         #expect(try await fixture.service.restore(proposalIDs: [proposal.id]) == 1)
         #expect(try await fixture.store.proposal(id: proposal.id)?.status == .proposed)
 
+        // `#require`, not `cards[0]`: a broken round trip returns an empty
+        // array, and subscripting it traps — which aborts the whole run with a
+        // signal rather than failing this test, taking every result after it
+        // with it. Found by break-testing this very guarantee.
         let cards = try await fixture.service.accept(proposalIDs: [proposal.id])
         #expect(cards.count == 1)
-        #expect(cards[0].title == "Rejected by mistake")
+        #expect(try #require(cards.first).title == "Rejected by mistake")
     }
 
     /// The count is what the panel's sentence is built from, so it has to be
@@ -516,9 +520,9 @@ struct AnalysisServiceTests {
         // could leave behind before it was fixed, and those rows are in the
         // field.
         let cards = try await fixture.service.accept(proposalIDs: [proposal.id])
-        #expect(cards.count == 1)
+        let card = try #require(cards.first, "the set-up accept did not make a card")
         var stranded = try #require(try await fixture.store.proposal(id: proposal.id))
-        #expect(stranded.acceptedCardID == cards[0].id)
+        #expect(stranded.acceptedCardID == card.id)
         stranded.status = .rejected
         try await fixture.store.saveProposal(stranded)
 
