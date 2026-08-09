@@ -8,12 +8,69 @@ import Foundation
 /// misplaced: `slot(forPath:)` answers `nil` rather than guessing, because the
 /// caller's next move would be to offer to move the directory.
 public struct RepoTreeLayout: Codable, Sendable, Hashable {
-    public var root: String
-    public var owners: [String]
+    /// `private(set)` for the same reason as ``owners``: it is normalised on the
+    /// way in, and a plain `var` let a later `layout.root = "~/x"` put back a
+    /// value the initialiser exists to prevent.
+    public private(set) var root: String
+
+    /// The owners whose folders this layout manages, in the order a reader sees
+    /// them, each at most once.
+    ///
+    /// ⛔ **`private(set)`, and deduplicated at construction, because every
+    /// reader would otherwise have to remember to do it.** `RepoRegistryService`
+    /// fans out one task per element, so `["phmatray", "phmatray"]` made the
+    /// same `gh repo list` call twice — and when it failed, failed twice. #183's
+    /// review found what that produced downstream: the banner's `ForEach` keys
+    /// on the owner, so **two rows carried one id**, which is undefined in
+    /// SwiftUI, and the sentence read *"2 owners could not be listed"* — a count
+    /// of **attempts** wearing the word for **owners**.
+    ///
+    /// That was repaired at the reader (#148). This is the same repair at the
+    /// writer, which is the one place it cannot be forgotten by whatever reads
+    /// `owners` next.
+    public private(set) var owners: [String]
 
     public init(root: String, owners: [String]) {
         self.root = Self.normalise(root)
-        self.owners = owners
+        self.owners = Self.deduplicate(owners)
+    }
+
+    /// Decoding is a **second construction path**, and it is the one that
+    /// carries a legacy duplicate in from disk — a layout stored before this
+    /// rule existed. Funnelled through the memberwise initialiser so a value
+    /// read back is normalised exactly like one built in code, rather than
+    /// throwing at a reader who did nothing wrong.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            root: try container.decode(String.self, forKey: .root),
+            owners: try container.decode([String].self, forKey: .owners)
+        )
+    }
+
+    /// First occurrence wins, so the banner and ``ownerDirectories()`` keep the
+    /// order the reader configured.
+    ///
+    /// ⚠️ **Exact comparison, deliberately, and it is the same rule the three
+    /// readers use** — `expectedPath(nameWithOwner:)`, `slot(forPath:)` and the
+    /// Repositories view all compare exactly. A writer that merged
+    /// `["phmatray", "PhMatray"]` while they went on treating those as two
+    /// owners is precisely the writer/reader split this change exists to close.
+    ///
+    /// GitHub handles are case-insensitive, which argues the other way, and it
+    /// loses to this: `owners` names **directories**. APFS can be formatted
+    /// case-sensitive, so on such a volume `PhMatray/` and `phmatray/` are two
+    /// directories, and a layout that had merged them would resolve paths that
+    /// do not exist. Exact is correct on both kinds of volume; case-insensitive
+    /// is correct on only one.
+    ///
+    /// The cost is stated rather than hidden: on a case-insensitive volume two
+    /// spellings still fan out twice. That is a configuration the reader can see
+    /// and fix in the Repositories window, not a silent merge by a type that
+    /// cannot know which spelling they meant.
+    private static func deduplicate(_ owners: [String]) -> [String] {
+        var seen: Set<String> = []
+        return owners.filter { seen.insert($0).inserted }
     }
 
     /// The default this machine is laid out for.
