@@ -146,6 +146,47 @@ struct BlockedCardTests {
         #expect(!model.isCheckExpanded(CheckAddress(repoID: nil, checkID: "repo.profile"), failing: false))
     }
 
+    /// ⚠️ **The half of #298 that no behavioural test can reach.**
+    ///
+    /// Everything above is about `AppModel`, and `CardView` could stop calling
+    /// any of it — draw the old fixed sentence again, or draw the badge with no
+    /// way to press it — with every other test here still green. That is the
+    /// `CaretAnchorTests` finding restated: the arithmetic was pure, extracted
+    /// and tested, and the decoration still never appeared, because nothing
+    /// pinned the step between the two.
+    ///
+    /// So the claim is about the source, and it is checked in the source.
+    @Test("The card draws the badge's own sentence, and pressing it opens Preflight")
+    func theCardRendersWhatTheModelDecided() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // ElliotAppKitTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // ElliotKit
+            .appendingPathComponent("Sources/ElliotAppKit/CardView.swift")
+        // Comments are stripped first, for the reason every gate in this
+        // repository strips them: the prose beside these lines discusses exactly
+        // what is being looked for.
+        let code = try String(contentsOf: file, encoding: .utf8)
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+
+        #expect(
+            code.contains("badge.sentence"),
+            """
+            CardView no longer draws the sentence `BlockedBadge` decided — the card is back \
+            to one fixed line for seven different failures.
+            """
+        )
+        #expect(
+            code.contains("model.openPreflight(badge)"),
+            """
+            CardView draws the blocked badge and nothing opens Preflight from it, so the card \
+            names the failing check and still leaves the reader to find it.
+            """
+        )
+    }
+
     @Test("A failing check opens on arrival, and the reader's collapse wins after that")
     func theReadersCollapseWins() {
         let model = AppModel()
