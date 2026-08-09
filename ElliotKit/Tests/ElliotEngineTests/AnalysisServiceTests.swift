@@ -208,6 +208,79 @@ struct AnalysisServiceTests {
         #expect(stored.first { $0.title == "Split the file" }?.angle == .techDebt)
     }
 
+    /// The other half of the same loss. The analysis established an effort and
+    /// resolved every citation against the repository root, and both died at
+    /// `accept` — so the Backlog carried almost nothing to rank by.
+    ///
+    /// `appraisedAt` is the proposal's own moment, not `now`: that is when the
+    /// harvest resolved the citations, and dating the reading to whenever
+    /// somebody clicked Accept would make an old proposal look freshly measured.
+    @Test("Accepting a proposal puts its effort, evidence and reading time on the card")
+    func acceptCarriesTheAppraisal() async throws {
+        let fixture = try await makeFixture()
+        let started = try await fixture.service.start(
+            repoID: fixture.repo.id, angles: [.bugs], origin: .manual
+        )
+        let read = Date(timeIntervalSince1970: 1_700_000_000)
+
+        let proposal = StoryProposal(
+            analysisID: started.analysis.id, runID: started.runs[0].id,
+            repoID: fixture.repo.id, angle: .bugs, title: "Bound the await",
+            story: UserStory(role: "maintainer", want: "a bounded wait", benefit: "no hangs"),
+            evidence: [
+                Evidence(path: "Sources/ElliotProcess/ChildProcess.swift", line: 142, exists: true),
+                Evidence(path: "Sources/Nowhere.swift", line: 9, exists: false),
+            ],
+            effort: .large,
+            createdAt: read
+        )
+        try await fixture.store.saveProposals([proposal])
+
+        let cards = try await fixture.service.accept(proposalIDs: [proposal.id])
+
+        #expect(cards.count == 1)
+        #expect(cards[0].effort == .large)
+        #expect(cards[0].evidence?.count == 2)
+        #expect(cards[0].appraisedAt == read)
+
+        // And it is on the row, not only on the value handed back — the card is
+        // read from the store on every launch, and an appraisal that never
+        // reached SQLite would vanish at the next one.
+        let stored = try #require(try await fixture.store.card(id: cards[0].id))
+        #expect(stored.effort == .large)
+        #expect(stored.evidence?.first?.path == "Sources/ElliotProcess/ChildProcess.swift")
+        #expect(stored.evidence?.first?.line == 142)
+        #expect(stored.evidence?.first?.exists == true)
+        // The resolution survives the round trip, which is the only reason
+        // `Grounding` can be computed from the card at all.
+        #expect(stored.evidence?.last?.exists == false)
+        #expect(stored.appraisedAt == read)
+        #expect(CardValue.of(stored) == .ranked(
+            score: AnalysisAngle.bugs.valueWeight
+                + Effort.large.valueWeight
+                + Grounding.missing(count: 1).valueWeight,
+            because: [
+                Signal(name: "bugs", weight: AnalysisAngle.bugs.valueWeight),
+                Signal(name: "large", weight: Effort.large.valueWeight),
+                Signal(name: "files_missing", weight: Grounding.missing(count: 1).valueWeight),
+            ]
+        ))
+    }
+
+    /// A card the board makes for itself still carries no appraisal, because
+    /// nothing read it. `nil` here is the third state, not a zero.
+    @Test("A card created directly has never been appraised")
+    func directCreateHasNoAppraisal() async throws {
+        let fixture = try await makeFixture()
+        let created = try await fixture.board.createCard(
+            repoID: fixture.repo.id, title: "Written by hand"
+        )
+        #expect(created.card.effort == nil)
+        #expect(created.card.evidence == nil)
+        #expect(created.card.appraisedAt == nil)
+        #expect(CardValue.of(created.card) == .neverAppraised)
+    }
+
     /// The other half of the claim: a card the board makes for itself still has
     /// no lens, because it was not found through one.
     @Test("A card created directly has no lens")

@@ -223,7 +223,19 @@ public actor AnalysisService {
                     // this is a *caller* saying what it wants and not a second
                     // writer. `nil` from a lens with no honest label becomes no
                     // label at all, never a guess.
-                    labels: proposal.angle.suggestedLabel.map { [$0] } ?? []
+                    labels: proposal.angle.suggestedLabel.map { [$0] } ?? [],
+                    // And the two signals that die the same way. The analysis
+                    // sized the work and resolved every citation against the
+                    // repository root; without these the Backlog carries almost
+                    // nothing to rank by, and every accepted card reads as
+                    // never appraised.
+                    effort: proposal.effort,
+                    evidence: proposal.evidence,
+                    // The proposal's own moment, not `now`: that is when the
+                    // harvest resolved the citations. Dating the reading to
+                    // whenever somebody clicked Accept would make a week-old
+                    // proposal look freshly measured.
+                    appraisedAt: proposal.createdAt
                 ).card
             } catch {
                 // No card exists yet, so the claim can safely be given back —
