@@ -132,20 +132,22 @@ public struct MCPRequestHandler: Sendable {
             // shipped BMAD pack does by design, and GSD does for every
             // transition but the first.
             //
-            // ⚠️ Deliberately **not** given codes of their own, and the earlier
-            // comment here asked Task 7 to decide that. A new `ElliotErrorCode`
-            // is a wire-format change: the enum is `String`-raw and `Codable`,
-            // so a helper from an older bundle meeting a code it has never seen
-            // fails to decode the reply. That costs a `elliotProtocolVersion`
-            // bump, and nothing yet shows an agent needs to act on these two
-            // differently from any other refusal — the message names which one
-            // it is, and `hint` says the same thing `errorDescription` does
-            // rather than a second, subtly different sentence.
-            case .unknownMethod, .methodHasNoStep:
+            // Both are `.moveBlocked` — the code `moveCard`'s own `.blocked`
+            // case uses below for exactly this shape of fact: a permanent,
+            // by-design refusal, not a malfunction. Reusing it needs no new
+            // `ElliotErrorCode` and so no `elliotProtocolVersion` bump.
+            // `.internalError` would tell an agent Elliot is broken; it is not.
+            case .unknownMethod:
+                // `errorDescription` already ends with "Choose one on the
+                // Repositories page." — a `hint` repeating it would only
+                // duplicate the message.
+                return .failure(code: .moveBlocked, message: error.localizedDescription, hint: nil)
+            case .methodHasNoStep:
                 return .failure(
-                    code: .internalError,
+                    code: .moveBlocked,
                     message: error.localizedDescription,
-                    hint: "Choose one on the Repositories page."
+                    hint: "This transition is not wired for this method in wave 1. Choose another "
+                        + "method on the Repositories page, or move the card back."
                 )
             }
         } catch let error as AnalysisError {

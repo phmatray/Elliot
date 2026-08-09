@@ -328,6 +328,56 @@ struct MCPRequestHandlerTests {
         #expect(sameColumn.message == MoveBlockText.explain(.sameColumn))
     }
 
+    /// I1: both method refusals used to answer `internal_error`, which tells an
+    /// agent Elliot malfunctioned rather than that its move was refused by
+    /// design. `.moveBlocked` is the code `moveBlockedSpeaksTheSharedText`
+    /// above already uses for the same shape of fact.
+    @Test("An unknown method reports move_blocked, not internal_error")
+    func unknownMethodReportsMoveBlocked() async throws {
+        let f = try await Fixture.make()
+        var repo = f.repo
+        repo.methodID = "no-such-method"
+        try await f.store.saveRepo(repo)
+        let card = try await f.board.createCard(repoID: repo.id, title: "Run log", body: "b").card
+
+        let refusal = try #require(failureOf(await f.handler.handle(
+            .moveCard(id: card.id, to: .todo, followUps: [])
+        )))
+        #expect(refusal.code == .moveBlocked)
+        #expect(refusal.message.contains("no-such-method"))
+        // `errorDescription` already ends with "Choose one on the Repositories
+        // page." — a hint repeating it would only duplicate the message.
+        #expect(refusal.hint == nil)
+    }
+
+    @Test("A pack with no step for the transition reports move_blocked with a matching hint")
+    func steplessPackReportsMoveBlocked() async throws {
+        guard let stepless = MethodCatalog.builtIn.first(where: { $0.steps[.implementIssue] == nil })
+        else {
+            Issue.record(Comment(rawValue: "no built-in pack is stepless at .implementIssue"))
+            return
+        }
+
+        let f = try await Fixture.make()
+        var repo = f.repo
+        repo.methodID = stepless.id
+        try await f.store.saveRepo(repo)
+        var card = try await f.board.createCard(repoID: repo.id, title: "Run log", body: "b").card
+        card.column = .todo
+        card.issueNumber = 47
+        try await f.store.saveCard(card)
+
+        let refusal = try #require(failureOf(await f.handler.handle(
+            .moveCard(id: card.id, to: .inProgress, followUps: [])
+        )))
+        #expect(refusal.code == .moveBlocked)
+        #expect(refusal.message.contains(stepless.displayName))
+        #expect(
+            refusal.hint == "This transition is not wired for this method in wave 1. Choose another "
+                + "method on the Repositories page, or move the card back."
+        )
+    }
+
     @Test("moveCard on an unknown card refuses")
     func moveUnknownCard() async throws {
         let f = try await Fixture.make()
