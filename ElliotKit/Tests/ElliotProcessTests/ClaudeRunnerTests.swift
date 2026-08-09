@@ -553,7 +553,13 @@ struct ClaudeRunnerTests {
         )
         let outcome = evaluateMove(
             from: .backlog, to: .todo, card: card,
-            context: MoveContext(repoIsEnabled: true, activeRunID: nil, allowSideEffects: true)
+            context: MoveContext(
+                repoIsEnabled: true, activeRunID: nil, allowSideEffects: true,
+                // A human's move, and backlog → todo besides: the green guard has
+                // nothing to say about filing an issue, and there is no pull
+                // request for it to have read.
+                requiresVerifiedGreen: false, prVerdict: nil
+            )
         )
         guard case .action(let action) = outcome else {
             Issue.record("the move produced no action: \(outcome)")

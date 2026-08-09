@@ -23,6 +23,28 @@ public enum MoveBlockText {
                 + "can be moved. Moving one would start an unattended run inside a checkout "
                 + "Elliot has already diagnosed as broken."
         case .runAlreadyInFlight(let runID): "A run (\(runID)) is already working on this card."
+        case .notVerifiedGreen(let reason):
+            "This move requires a verified green build. " + Self.notGreenPhrase(reason)
+        case .systemOwnedTransition:
+            "That transition has one owner: Elliot makes it when the pull request goes ready."
+        }
+    }
+
+    /// The reason named for each `NotGreenReason`, in the wire's own words.
+    ///
+    /// A separate phrasing from `Consequence.notGreenGap`'s, on purpose — see
+    /// that function's doc. `.sign` is the one case both voices quote
+    /// verbatim, because `PRSign.summary` is the one sentence, written once.
+    private static func notGreenPhrase(_ reason: NotGreenReason) -> String {
+        switch reason {
+        case .noReading:
+            "No reading of the pull request."
+        case .sign(let sign):
+            sign.summary
+        case .notClean(let state):
+            "The merge state is \(state.code), not clean."
+        case .noBuildVerdict:
+            "Every passing check is a non-build analyser."
         }
     }
 
@@ -47,6 +69,11 @@ public enum MoveBlockText {
             // suggests the reading is stale when the usual case is that it is
             // correct.
             "Open Elliot's Preflight screen to see which check is failing, and repair it there."
+        case .notVerifiedGreen:
+            "Wait for the checks, or make the move yourself — a move a person makes is not "
+                + "held to a verified green."
+        case .systemOwnedTransition:
+            "Nothing to do here. Elliot makes this move itself once the pull request is ready."
         case .sameColumn, .emptyIdea:
             nil
         }

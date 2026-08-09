@@ -102,6 +102,32 @@ struct Consequence {
         // for a switch that is already on.
         case .repoBlocked: "Preflight is failing here — repair it before moving cards."
         case .runAlreadyInFlight: "A run is already working on this card."
+        case .notVerifiedGreen(let reason):
+            "Not a verified green — " + Self.notGreenGap(reason)
+        case .systemOwnedTransition:
+            "Elliot fills this column itself; it is not a move to make from here."
+        }
+    }
+
+    /// The gap named for each `NotGreenReason`, in the board's own words.
+    ///
+    /// Written separately from `MoveBlockText`'s wire phrasing on purpose —
+    /// `RefusalWordingTests.theTwoWordingsStayApart` holds the two apart, and a
+    /// shared helper here would collapse them back into one sentence read
+    /// twice. The `.sign` case is the one exception: both voices quote
+    /// `PRSign.summary` verbatim, because that sentence is already written
+    /// once, well, in `ElliotModel` — a second phrasing of it here would be the
+    /// second table of sentences this file's own tests refuse.
+    private static func notGreenGap(_ reason: NotGreenReason) -> String {
+        switch reason {
+        case .noReading:
+            "nothing has been read about this pull request."
+        case .sign(let sign):
+            sign.summary
+        case .notClean(let state):
+            "GitHub does not call this clean (\(state.code))."
+        case .noBuildVerdict:
+            "everything that passed is an analyser, not a build."
         }
     }
 }
@@ -112,13 +138,24 @@ extension MoveOrigin {
     /// In Review is the only column Elliot fills by itself, and a card that
     /// appeared there explained nothing about how it arrived. Display copy, not
     /// a rule: the decision was `PRWatcher`'s and is already recorded.
+    ///
+    /// Exhaustive since auto-dev. The old `guard case .system` would have
+    /// swallowed the new case and left a card that an unattended session moved
+    /// explaining nothing at all about how it got there — which is the one
+    /// column caption a reader who was not in the room actually needs.
     var arrivalNote: String? {
-        guard case .system(let reason) = self else { return nil }
-        switch reason {
-        case .prBecameReady: return "Elliot moved this here — the pull request went ready."
-        case .prMergedExternally: return "Elliot moved this here — it was merged on GitHub."
-        case .reconciliation: return "Elliot moved this here — recovered after a restart."
-        case .githubImport: return "Elliot placed this here — imported from GitHub."
+        switch self {
+        case .userDrag, .mcp:
+            return nil
+        case .autoDev:
+            return "Elliot moved this here — an unattended session is advancing this card."
+        case .system(let reason):
+            switch reason {
+            case .prBecameReady: return "Elliot moved this here — the pull request went ready."
+            case .prMergedExternally: return "Elliot moved this here — it was merged on GitHub."
+            case .reconciliation: return "Elliot moved this here — recovered after a restart."
+            case .githubImport: return "Elliot placed this here — imported from GitHub."
+            }
         }
     }
 
@@ -144,6 +181,11 @@ extension MoveOrigin {
             // still reachable from an older row, and must not leave a dangling
             // separator pointing at nothing.
             return client.isEmpty ? "MCP" : "MCP · \(client)"
+        case .autoDev:
+            // The session id is deliberately not rendered: this is one column of
+            // a tabular line, and a UUID there would push the rest off the
+            // panel. PR5's report band is where a session is named.
+            return "Auto-dev"
         case .system(let reason):
             return "Elliot: \(reason.historyPhrase)"
         }

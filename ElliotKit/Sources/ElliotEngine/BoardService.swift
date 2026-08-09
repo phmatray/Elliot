@@ -1,4 +1,5 @@
 import ElliotModel
+import ElliotProcess
 import ElliotStore
 import Foundation
 
@@ -75,19 +76,45 @@ public struct NextSteps: Sendable, Equatable {
 public actor BoardService: SystemMoving {
     private let store: BoardStore
     private let launcher: any RunLaunching
+    /// The only thing here that can establish a verdict.
+    ///
+    /// Defaulted rather than required so every headless construction keeps
+    /// compiling — and a board built without one refuses every merge asked for
+    /// under `requiresVerifiedGreen`, which is the direction to fail in.
+    private let verdicts: PRVerdictReader
 
-    public init(store: BoardStore, launcher: any RunLaunching) {
+    public init(
+        store: BoardStore,
+        launcher: any RunLaunching,
+        verdicts: PRVerdictReader? = nil
+    ) {
         self.store = store
         self.launcher = launcher
+        self.verdicts = verdicts ?? PRVerdictReader(store: store, gh: nil)
     }
 
     /// Works out what a move would mean, without changing anything.
+    ///
+    /// `requiresVerifiedGreen` is the caller's own claim about itself, not
+    /// something derived from `origin`: a drag is watched by the person making
+    /// it, and an MCP call has a human behind the agent. Only a caller with
+    /// nobody at all asks for the restraint, and it asks by name.
+    ///
+    /// ⛔ **It has no default, for the same reason `MoveContext`'s two fields
+    /// have none** — and the reason is sharper one layer out, because this is
+    /// the boundary a future `AutoDevService` calls. Written `= false`, a call
+    /// spelled `board.move(cardID:to:origin:followUps:)` compiles, runs, and
+    /// merges to a default branch on github.com with nobody watching and no
+    /// gate; branch protection is off in this repository, so nothing downstream
+    /// would catch it either. Omitting the default costs three call sites one
+    /// argument each and makes that omission a build failure instead.
     public func proposeMove(
         cardID: UUID,
         to column: ElliotModel.Column,
         origin: MoveOrigin,
         followUps: [String]? = nil,
-        orderIndex: Double? = nil
+        orderIndex: Double? = nil,
+        requiresVerifiedGreen: Bool
     ) async throws -> MoveProposal {
         guard let card = try await store.card(id: cardID) else { throw BoardError.cardNotFound(cardID) }
         guard let repo = try await store.repo(id: card.repoID) else {
@@ -95,6 +122,15 @@ public actor BoardService: SystemMoving {
         }
 
         let activeRun = try await store.activeRun(cardID: cardID)
+        // Read only when the answer can change the decision: `.establish` spends
+        // a `gh pr list`, and a drop that is not held to a verdict must not cost
+        // one. A card with no pull request number has nothing to read, and the
+        // rule refuses it on `missingPRNumber` before it looks at the verdict.
+        var prVerdict: ResolvedPRStatus?
+        if requiresVerifiedGreen, let prNumber = card.prNumber {
+            prVerdict = try await verdicts.reading(
+                repo: repo, prNumber: prNumber, now: Date(), head: .establish)?.resolved
+        }
         let context = MoveContext(
             repoIsEnabled: repo.isEnabled,
             // Read off the row this method already loaded. That is the whole
@@ -105,7 +141,9 @@ public actor BoardService: SystemMoving {
             repoPreflight: repo.preflightVerdict,
             activeRunID: activeRun?.id,
             allowSideEffects: origin.allowsSideEffects,
-            providedFollowUps: followUps
+            providedFollowUps: followUps,
+            requiresVerifiedGreen: requiresVerifiedGreen,
+            prVerdict: prVerdict
         )
         let outcome = evaluateMove(from: card.column, to: column, card: card, context: context)
         let index: Double
@@ -155,17 +193,23 @@ public actor BoardService: SystemMoving {
     }
 
     /// Propose and commit in one step — what the MCP tool and simple drags use.
+    ///
+    /// `requiresVerifiedGreen` has no default here either, and this is the
+    /// signature that most needed it: `move` is the one-line form, so it is the
+    /// one a caller reaches for, and the one whose omitted argument would merge.
     @discardableResult
     public func move(
         cardID: UUID,
         to column: ElliotModel.Column,
         origin: MoveOrigin,
         followUps: [String]? = nil,
-        orderIndex: Double? = nil
+        orderIndex: Double? = nil,
+        requiresVerifiedGreen: Bool
     ) async throws -> MoveResult {
         let proposal = try await proposeMove(
             cardID: cardID, to: column, origin: origin,
-            followUps: followUps, orderIndex: orderIndex
+            followUps: followUps, orderIndex: orderIndex,
+            requiresVerifiedGreen: requiresVerifiedGreen
         )
         return try await commitMove(proposal)
     }
@@ -492,7 +536,13 @@ public actor BoardService: SystemMoving {
         reason: MoveOrigin.SystemReason
     ) async {
         guard let proposal = try? await proposeMove(
-            cardID: cardID, to: column, origin: .system(reason: reason)
+            cardID: cardID, to: column, origin: .system(reason: reason),
+            // `false`, and it costs nothing: `allowSideEffects` is already
+            // `false` for a system origin, so `evaluateMove` returns `.noAction`
+            // before it reaches any transition arm. Stated anyway, because the
+            // parameter has no default precisely so that every caller says which
+            // it is rather than inheriting an answer.
+            requiresVerifiedGreen: false
         ) else { return }
         _ = try? await commitMove(proposal)
     }

@@ -14,6 +14,78 @@ public enum TriggerAction: Equatable, Sendable, Hashable {
     case mergePR(prNumber: Int, followUps: [String])
 }
 
+/// Why a pull request fell short of a verified green, total by construction.
+///
+/// Not an optional `PRSign`: `PRSign`'s own `nil` means *everything known is
+/// fine* (`PRStatus.swift:160-162`), the opposite of what a refusal needs it
+/// to mean, and `ResolvedPRStatus.isMergeableUnattended` blocks two states —
+/// `.unstable`, and "the only greens are analysers" — precisely where `sign`
+/// reads `nil`. Passing that same optional to a refusal would have told the
+/// reader "nothing was read" about a pull request that was read, resolved,
+/// and found wanting. Each of those two states gets its own case here instead
+/// of borrowing one that already means something else.
+public enum NotGreenReason: Equatable, Sendable, Hashable {
+    /// Nothing came back: either there is no `PRStatus` row at all, or a row
+    /// exists and could not be checked because `gh` was unreachable.
+    ///
+    /// ⚠️ Those two are not the same fact, and this case cannot tell them
+    /// apart — `PRVerdictReader.reading` answers `nil` to both, and widening
+    /// that is a change to an interface this pull request only consumes. What
+    /// this case no longer covers is a **stale** reading: staleness is the row
+    /// describing a commit that is no longer the head, which is somebody
+    /// pushing rather than nobody looking, and it answers `.sign(.unknown)`.
+    case noReading
+    /// A sign names the problem. `PRSign.summary` already says it well.
+    case sign(PRSign)
+    /// Read, and `mergeState` is not `.clean` — `.unstable` above all, which
+    /// `PRSign` deliberately lets through because it is also a display type
+    /// (`MergeableUnattended.swift`'s reason 1).
+    case notClean(MergeState)
+    /// Read, clean, nothing signed — and every passing check is an analyser,
+    /// never a build (`MergeableUnattended.swift`'s reason 2).
+    case noBuildVerdict
+}
+
+public extension NotGreenReason {
+    /// The first thing actually wrong with `verdict`, so the reason a reader
+    /// is given is always the first conjunct that failed rather than
+    /// whichever one this happens to check last.
+    ///
+    /// Answers in exactly the order `ResolvedPRStatus.isMergeableUnattended`
+    /// refuses in: nothing came back, then stale, then a sign, then an unclean
+    /// merge state, then — the only conjunct left once the other four have
+    /// passed — no build verdict. That last arm is a claim, not a default: it
+    /// is reachable only when the reading exists, is not stale, carries no
+    /// sign, and is `.clean`, so `ci.hasBuildVerdict` is the one thing that can
+    /// still have failed.
+    ///
+    /// **Stale answers `.sign(.unknown)`, not `.noReading`** — and this is the
+    /// likeliest refusal in production, not a corner. Stale means the row
+    /// describes a commit that is no longer the head: the ordinary case of
+    /// somebody pushing while the board was deciding. `.noReading` would tell
+    /// that reader nothing had been read, which is false. The accurate sentence
+    /// already exists and is already written once: `resolved(now:)` stamps a
+    /// stale row `sign: .unknown`, and `PRSign.unknown.summary` reads "Not
+    /// established — the reading is missing, aged out, or from an older
+    /// commit." The arm is stated separately rather than left to the `sign`
+    /// arm below because `ResolvedPRStatus` has a public memberwise init, so
+    /// `isStale: true` with `sign: nil` is constructible — the same defensive
+    /// reason `isMergeableUnattended` keeps its own `!isStale` conjunct.
+    ///
+    /// Truthful only when the reading it was given is *not* mergeable —
+    /// called on one that is, it still answers confidently (`.noBuildVerdict`,
+    /// the last arm), because it has no way to know its caller never checked
+    /// `isMergeableUnattended` first. Its one call site today is inside the
+    /// refusal branch of `evaluateMove`, where that is already true.
+    static func of(_ verdict: ResolvedPRStatus?) -> NotGreenReason {
+        guard let verdict else { return .noReading }
+        if verdict.isStale { return .sign(.unknown) }
+        if let sign = verdict.sign { return .sign(sign) }
+        if verdict.merge != .clean { return .notClean(verdict.merge) }
+        return .noBuildVerdict
+    }
+}
+
 /// Why a move was refused. Each case carries enough for the UI to say
 /// something actionable and for the MCP layer to return a machine-readable code.
 public enum MoveBlock: Equatable, Sendable, Hashable {
@@ -32,6 +104,17 @@ public enum MoveBlock: Equatable, Sendable, Hashable {
     /// different remedies — one is turned back on, the other is repaired.
     case repoBlocked
     case runAlreadyInFlight(runID: UUID)
+    /// Nothing established that this pull request is green, and this caller may
+    /// not merge on less. Carries why, as a `NotGreenReason` — see its own doc
+    /// for why that is not an optional `PRSign`.
+    case notVerifiedGreen(reason: NotGreenReason)
+    /// This transition has one owner, and the caller is not it.
+    ///
+    /// Its own case rather than a second use of `notVerifiedGreen`, so the
+    /// refusal is truthful: reusing that one for In Progress → In Review would
+    /// tell the reader the CI is the problem when the real answer is that
+    /// nobody but Elliot makes this move.
+    case systemOwnedTransition
 
     /// Stable identifier surfaced to MCP callers.
     public var code: String {
@@ -44,6 +127,8 @@ public enum MoveBlock: Equatable, Sendable, Hashable {
         case .repoDisabled: "repo_disabled"
         case .repoBlocked: "repo_blocked"
         case .runAlreadyInFlight: "run_already_in_flight"
+        case .notVerifiedGreen: "not_verified_green"
+        case .systemOwnedTransition: "system_owned_transition"
         }
     }
 }
@@ -92,18 +177,46 @@ public struct MoveContext: Equatable, Sendable, Hashable {
     /// empty array means "no follow-ups" and lets the merge proceed.
     public var providedFollowUps: [String]?
 
+    /// This move must not merge on anything short of a verified green.
+    ///
+    /// Named for the rule, not for the caller: `.mcp` and `.userDrag` set it
+    /// false today, and a future caller that wants the restraint asks for it by
+    /// name rather than by claiming to be unwatched. It is **set explicitly by
+    /// the caller** rather than derived from `MoveOrigin`, because the word
+    /// "unattended" already has a settled meaning in this package — about
+    /// twenty uses in `Sources`, all naming the *child process* — under which a
+    /// drag is the canonical unattended gesture.
+    public var requiresVerifiedGreen: Bool
+
+    /// What `gh` established about the pull request, already resolved against
+    /// the clock and the current head. `nil` is *nothing established*, which is
+    /// not a green.
+    public var prVerdict: ResolvedPRStatus?
+
+    /// ⛔ **The last two parameters have no default values, on purpose.**
+    ///
+    /// Every other parameter here defaults, so two defaulted ones would compile
+    /// at every existing construction and nothing would catch the next one. The
+    /// three production sites — `AppModel.preview`, `BoardService.proposeMove`
+    /// and `nextCandidates` below — and roughly twenty test constructions each
+    /// had to state an answer before this built, and so will the fourth. The
+    /// template is `providedFollowUps`, whose two sites diverge deliberately.
     public init(
         repoIsEnabled: Bool = true,
         repoPreflight: PreflightState = .notChecked,
         activeRunID: UUID? = nil,
         allowSideEffects: Bool = true,
-        providedFollowUps: [String]? = nil
+        providedFollowUps: [String]? = nil,
+        requiresVerifiedGreen: Bool,
+        prVerdict: ResolvedPRStatus?
     ) {
         self.repoIsEnabled = repoIsEnabled
         self.repoPreflight = repoPreflight
         self.activeRunID = activeRunID
         self.allowSideEffects = allowSideEffects
         self.providedFollowUps = providedFollowUps
+        self.requiresVerifiedGreen = requiresVerifiedGreen
+        self.prVerdict = prVerdict
     }
 }
 
@@ -165,8 +278,27 @@ public func evaluateMove(
         guard let issue = card.issueNumber else { return .blocked(.missingIssueNumber) }
         return .action(.implementIssue(issueNumber: issue))
 
+    case (.inProgress, .inReview):
+        // Filled by `PRWatcher` alone. A caller that requires a verified green
+        // asking for it is asking to skip the pull request entirely, and
+        // `arrivalNote` could not explain such an arrival — it speaks for moves
+        // whose reason was recorded, and this one would have none.
+        //
+        // Stated as its own arm rather than left to `default`, which answered
+        // `.noAction` for it and would go on answering `.noAction` to a loop.
+        if context.requiresVerifiedGreen { return .blocked(.systemOwnedTransition) }
+        return .noAction
+
     case (.inReview, .done):
         guard let pr = card.prNumber else { return .blocked(.missingPRNumber) }
+        // Before `providedFollowUps`, on purpose. `.needsInput` is information
+        // "only a human (or an explicit tool argument) can supply"; a caller
+        // with no human reads it as "blocked, I will try again", which is a loop
+        // that spins. Every refusal it can meet here is therefore a `.blocked`.
+        if context.requiresVerifiedGreen {
+            guard let verdict = context.prVerdict, verdict.isMergeableUnattended
+            else { return .blocked(.notVerifiedGreen(reason: NotGreenReason.of(context.prVerdict))) }
+        }
         guard let followUps = context.providedFollowUps else {
             return .needsInput(.followUps(prNumber: pr))
         }
@@ -273,7 +405,20 @@ public func nextCandidates(
                 // report every inReview card as needing input, when the move an
                 // agent can actually make — merge, filing nothing after it — is
                 // available to it right now.
-                providedFollowUps: []
+                providedFollowUps: [],
+                // `board_next` answers what an *agent* can do, and an agent is
+                // a human's proxy with a human behind it. The restraint belongs
+                // to the caller that has nobody: `AutoDevService` builds its own
+                // context rather than borrowing this one.
+                //
+                // And the helper could not honour it if it were true:
+                // `OfflineResponder` reads a snapshot and can reach neither
+                // `gh` nor the network, so its answer would *mean* "I could not
+                // ask" while *encoding* as "the CI is not green" — and
+                // `OfflineParityTests` compares encoded bytes, so it would hold
+                // on exactly that disagreement.
+                requiresVerifiedGreen: false,
+                prVerdict: nil
             )
         )
     }

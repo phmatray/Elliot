@@ -39,7 +39,13 @@ struct BlockedRepoTests {
     }
 
     private func context(_ preflight: PreflightState) -> MoveContext {
-        MoveContext(repoIsEnabled: true, repoPreflight: preflight, providedFollowUps: [])
+        // A human's move, and no verdict to carry: this file is about the
+        // preflight gate, which sits ahead of the green guard and answers
+        // whatever the guard would have said.
+        MoveContext(
+            repoIsEnabled: true, repoPreflight: preflight, providedFollowUps: [],
+            requiresVerifiedGreen: false, prVerdict: nil
+        )
     }
 
     /// The three transitions that spawn an agent, and one that does not — all
@@ -130,7 +136,12 @@ struct BlockedRepoTests {
     /// A caller that has not measured cannot assert a pass by omission.
     @Test("MoveContext defaults to not-checked, never to passing")
     func contextDefaultsToNotChecked() {
-        #expect(MoveContext().repoPreflight == .notChecked)
+        // The two arguments stated here have no defaults, by design
+        // (`MoveContext.init`'s ⛔ note); `repoPreflight` is the one under test
+        // and stays omitted, which is the whole assertion.
+        #expect(
+            MoveContext(requiresVerifiedGreen: false, prVerdict: nil).repoPreflight == .notChecked
+        )
     }
 
     /// `board_next` must refuse for the same reason a drag does — one rule

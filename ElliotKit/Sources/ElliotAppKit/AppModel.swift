@@ -670,7 +670,12 @@ public final class AppModel {
                 store: store, toolConfig: config, verifier: verifier,
                 limits: limits, ceiling: ceiling
             )
-            let board = BoardService(store: store, launcher: scheduler)
+            // One reader, shared: the board's merge decision and the MCP
+            // surface's card reads then spend one `gh pr list` between them
+            // rather than one each, and there is one place where "what did `gh`
+            // establish about this pull request" is answered.
+            let verdicts = PRVerdictReader(store: store, gh: ghClient)
+            let board = BoardService(store: store, launcher: scheduler, verdicts: verdicts)
             await scheduler.setSystemMover(board)
             self.scheduler = scheduler
             self.board = board
@@ -703,7 +708,7 @@ public final class AppModel {
                 store: store, launcher: scheduler, board: board, gh: ghClient
             )
             self.analysisService = analysisService
-            startIPC(board: board, store: store, analysis: analysisService)
+            startIPC(board: board, store: store, analysis: analysisService, verdicts: verdicts)
 
             // Put the board back in touch with reality before anything is
             // dragged: runs died when the app last quit.
@@ -798,7 +803,10 @@ public final class AppModel {
         }
     }
 
-    private func startIPC(board: BoardService, store: BoardStore, analysis: AnalysisService) {
+    private func startIPC(
+        board: BoardService, store: BoardStore, analysis: AnalysisService,
+        verdicts: PRVerdictReader
+    ) {
         do {
             let token = try IPCServer.loadOrCreateToken(at: StoreLocation.tokenURL)
             // The one place the app hands the engine a way to look at itself.
@@ -808,7 +816,7 @@ public final class AppModel {
             // reporting a picture of none.
             let handler = MCPRequestHandler(
                 store: store, board: board, analysis: analysis,
-                capture: AppKitWindowCapture()
+                capture: AppKitWindowCapture(), verdicts: verdicts
             )
             let server = IPCServer(
                 socketPath: StoreLocation.socketURL.path,
@@ -1319,7 +1327,14 @@ public final class AppModel {
                 allowSideEffects: true,
                 // Left uncollected on purpose: the merge really does stop to
                 // ask, and the caption says so.
-                providedFollowUps: nil
+                providedFollowUps: nil,
+                // A caption is drawn for somebody who is looking at it, so it
+                // previews the move *they* would make. A preview held to an
+                // unattended rule would read "not a verified green" at a person
+                // who is perfectly entitled to merge, and this runs inside
+                // `body` — it cannot read a verdict without doing I/O in layout.
+                requiresVerifiedGreen: false,
+                prVerdict: nil
             )
         )
     }
@@ -1371,7 +1386,12 @@ public final class AppModel {
         let predicted = card(id: cardID).map { Consequence.of(preview($0, to: column)) }
         do {
             let result = try await board.move(
-                cardID: cardID, to: column, origin: .userDrag, orderIndex: orderIndex)
+                cardID: cardID, to: column, origin: .userDrag, orderIndex: orderIndex,
+                // The drag itself, and `false`: the person who made it is
+                // looking at the board. Stated rather than defaulted — see
+                // `BoardService.proposeMove`'s ⛔ note for what a defaulted
+                // `false` would let a later caller merge by omission.
+                requiresVerifiedGreen: false)
             switch result {
             case .moved(let runID):
                 refusal = nil
@@ -1503,7 +1523,11 @@ public final class AppModel {
         pendingFollowUps = nil
         do {
             let result = try await board.move(
-                cardID: cardID, to: .done, origin: .userDrag, followUps: followUps
+                cardID: cardID, to: .done, origin: .userDrag, followUps: followUps,
+                // The one merge a human performs by hand, having just typed the
+                // follow-ups into the sheet. `false` is the whole point of the
+                // field being named for the rule rather than for the caller.
+                requiresVerifiedGreen: false
             )
             if case .blocked(let block) = result { status = Self.explain(block) }
         } catch {

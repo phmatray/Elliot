@@ -111,10 +111,7 @@ struct NextRenderingTests {
 
     @Test("Every block has words, and the ones with a way out say what it is")
     func everyBlockIsExplained() {
-        let blocks: [MoveBlock] = [
-            .sameColumn, .emptyIdea, .incompleteStory, .missingIssueNumber,
-            .missingPRNumber, .repoDisabled, .runAlreadyInFlight(runID: UUID()),
-        ]
+        let blocks = WireBlockCase.allBlocks
         for block in blocks {
             #expect(!MoveBlockText.explain(block).isEmpty, "\(block.code)")
         }
@@ -214,4 +211,59 @@ struct ElliotBuildTests {
         // The literal must not be in there as well, or the two can disagree.
         #expect(!text.contains("<string>\(ElliotBuild.marketingVersion)</string>"))
     }
+}
+
+/// Every `MoveBlock`, held to the enum by the compiler.
+///
+/// A second copy of `ElliotAppKitTests/MoveBlockCases.swift`, and deliberately
+/// so: `TestSupport` is the only target the suites share, and `Package.swift`
+/// records that it "depends on nothing" on purpose — giving it `ElliotModel`
+/// to host this would trade a twenty-line duplicate for an edge on the one
+/// target that has none. `ElliotIPCTests` does not depend on it either.
+///
+/// `of(_:)` is exhaustive over `MoveBlock` with no `default:`, so a case added
+/// to the model stops this target compiling; `allCases` then grows `allBlocks`.
+private enum WireBlockCase: CaseIterable {
+    case sameColumn
+    case emptyIdea
+    case incompleteStory
+    case missingIssueNumber
+    case missingPRNumber
+    case repoDisabled
+    case repoBlocked
+    case runAlreadyInFlight
+    case notVerifiedGreen
+    case systemOwnedTransition
+
+    var sample: MoveBlock {
+        switch self {
+        case .sameColumn: .sameColumn
+        case .emptyIdea: .emptyIdea
+        case .incompleteStory: .incompleteStory
+        case .missingIssueNumber: .missingIssueNumber
+        case .missingPRNumber: .missingPRNumber
+        case .repoDisabled: .repoDisabled
+        case .repoBlocked: .repoBlocked
+        case .runAlreadyInFlight: .runAlreadyInFlight(runID: UUID())
+        case .notVerifiedGreen: .notVerifiedGreen(reason: .sign(.checksFailing(count: 1)))
+        case .systemOwnedTransition: .systemOwnedTransition
+        }
+    }
+
+    static func of(_ block: MoveBlock) -> WireBlockCase {
+        switch block {
+        case .sameColumn: .sameColumn
+        case .emptyIdea: .emptyIdea
+        case .incompleteStory: .incompleteStory
+        case .missingIssueNumber: .missingIssueNumber
+        case .missingPRNumber: .missingPRNumber
+        case .repoDisabled: .repoDisabled
+        case .repoBlocked: .repoBlocked
+        case .runAlreadyInFlight: .runAlreadyInFlight
+        case .notVerifiedGreen: .notVerifiedGreen
+        case .systemOwnedTransition: .systemOwnedTransition
+        }
+    }
+
+    static var allBlocks: [MoveBlock] { allCases.map(\.sample) }
 }

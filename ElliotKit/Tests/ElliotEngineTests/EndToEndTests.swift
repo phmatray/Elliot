@@ -160,7 +160,8 @@ struct EndToEndTests {
             )
         ).card
 
-        let result = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        let result = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         guard case .moved(let runID?) = result else {
             Issue.record("expected a run, got \(result)")
             return
@@ -234,7 +235,8 @@ struct EndToEndTests {
         card.lastError = "create-issue exited 1"
         try await stack.store.saveCard(card)
 
-        _ = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         let run = try await stack.awaitRun(cardID: card.id)
         #expect(run.state == .succeeded)
 
@@ -252,7 +254,8 @@ struct EndToEndTests {
         defer { stack.cleanUp() }
 
         let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Push something").card
-        _ = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
 
         let run = try await stack.awaitRun(cardID: card.id)
         #expect(run.exitCode == 0)
@@ -270,7 +273,8 @@ struct EndToEndTests {
         defer { stack.cleanUp() }
 
         let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Anything").card
-        _ = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
 
         let run = try await stack.awaitRun(cardID: card.id)
         #expect(run.state == .failed)
@@ -292,7 +296,7 @@ struct EndToEndTests {
 
         let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Long one").card
         guard case .moved(let runID?) = try await stack.board.move(
-            cardID: card.id, to: .todo, origin: .userDrag
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false
         ) else {
             Issue.record("expected a run")
             return
@@ -324,7 +328,8 @@ struct EndToEndTests {
         card.prNumber = 279
         try await stack.store.saveCard(card)
 
-        let result = try await stack.board.move(cardID: card.id, to: .inReview, origin: .userDrag)
+        let result = try await stack.board.move(
+            cardID: card.id, to: .inReview, origin: .userDrag, requiresVerifiedGreen: false)
         #expect(result == .moved(runID: nil))
         try await Task.sleep(for: .milliseconds(200))
         #expect(try await stack.store.runs(cardID: card.id).isEmpty)
