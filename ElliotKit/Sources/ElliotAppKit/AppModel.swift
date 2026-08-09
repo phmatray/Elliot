@@ -416,6 +416,37 @@ public final class AppModel {
         set { analysis?.selection = newValue }
     }
 
+    /// Which shipping days are folded, for **every** surface that draws them.
+    ///
+    /// One set, because there is one thing being folded. Done and the Archive
+    /// each held their own — a `@State` in `BoardView` and a member of
+    /// `ArchiveReader` — over the same `ShipDay.start` keys, with the toggle
+    /// written out twice, verbatim. In a shell that puts the two side by side
+    /// that reads as a bug: fold *Yesterday* in Done and it is still open in
+    /// the Archive two feet to the right, showing the same cards under the same
+    /// heading. This repository has paid three defects for one mechanism
+    /// written twice (#146); this is the cheap instance of it.
+    ///
+    /// ⛔ **Not to be merged with `ColumnView`'s repository-group fold.** A
+    /// repository and a day are different things to have folded, and no column
+    /// shows both — collapsing them would be this very drift, one level up.
+    ///
+    /// ⚠️ The keys are `calendar.startOfDay`, so a set that outlives midnight
+    /// keeps stale ones. Harmless — a day nobody can see stays folded — and
+    /// deliberately not swept: a sweep would need the clock, and this is the
+    /// same midnight hazard #231 names for caching `dayRows`.
+    public var collapsedDays: Set<Date> = []
+
+    public func isDayCollapsed(_ start: Date) -> Bool { collapsedDays.contains(start) }
+
+    public func toggleDay(_ start: Date) {
+        if collapsedDays.contains(start) {
+            collapsedDays.remove(start)
+        } else {
+            collapsedDays.insert(start)
+        }
+    }
+
     /// Which rows of a run log the panel is showing.
     ///
     /// One filter for the pane rather than one per run box: it is a reading
