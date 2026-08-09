@@ -125,7 +125,7 @@ struct CardValueFromProposalTests {
         let realCard = try #require(cards.first { $0.title == "Cited a real file" })
 
         // Refused, and refused for the reason it actually has — not ranked low.
-        #expect(CardValue.of(blankCard) == .ungradeable(because: .notCited))
+        #expect(CardValue.of(blankCard) == .ungradeable(grounding: .notCited))
         #expect(CardValue.of(blankCard).rankable == nil)
         #expect(CardValue.of(realCard).rankable != nil)
 

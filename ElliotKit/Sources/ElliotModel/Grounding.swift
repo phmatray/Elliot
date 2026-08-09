@@ -28,7 +28,13 @@ public enum Grounding: Sendable, Hashable {
         }
     }
 
-    /// One sentence, for the panel's tooltip and the card's refusal note.
+    /// One sentence about the citations, for the panel's tooltip.
+    ///
+    /// **Not a card's refusal note** — that is `CardValue.summary`'s, and the
+    /// two disagree by design: `.grounded` here reads "every cited file was
+    /// found", while a `.grounded` payload on `CardValue.ungradeable` means the
+    /// *effort* was missing. A view rendering this as the reason a card was
+    /// refused would print the opposite of the truth.
     ///
     /// Here rather than in a view for the usual reason: a sentence written in a
     /// SwiftUI body is a claim nothing can test.

@@ -7,9 +7,19 @@ import Foundation
 /// next. `CardValue.ranked` carries these so the number can always be taken
 /// apart.
 public struct Signal: Sendable, Hashable {
-    /// Stable, not prose: `"bugs"`, `"small"`, `"grounded"`. These are the same
-    /// identifiers the wire already uses, so a sentence built from them does not
-    /// have to be translated back.
+    /// Stable, not prose — each name is the stable identifier of the type that
+    /// produced it, so a sentence built from them does not have to be translated
+    /// back: `AnalysisAngle.rawValue` and `AnalysisAngle.unlensedCode` for the
+    /// lens (`"bugs"`, `"docsAndDX"`, `"noLens"`), `Effort.rawValue` for the
+    /// size (`"small"`), `Grounding.code` for the citations (`"grounded"`,
+    /// `"files_missing"`).
+    ///
+    /// They are deliberately **not** one shared spelling convention. The lens
+    /// slot is camelCase because that is what `AnalysisAngle`'s raw values
+    /// already are on the wire; `Grounding.code` is snake_case because that is
+    /// this package's convention for codes that travel to agents, kept by
+    /// `PRSign.code` and `CIState.code`. What each slot owes is one convention
+    /// within itself, which is why `unlensedCode` is `"noLens"`.
     public var name: String
     public var weight: Double
 
@@ -32,7 +42,13 @@ public struct Signal: Sendable, Hashable {
 /// nothing has measured.
 public enum CardValue: Sendable, Hashable {
     case ranked(score: Double, because: [Signal])
-    case ungradeable(because: Grounding)
+    /// The grounding is *not* the reason — it is what the citations turned out
+    /// to be worth, carried along whatever the refusal was. Two of the three
+    /// payloads this case is ever built with (`.grounded`, `.missing`) mean the
+    /// **effort** was missing, so a label reading `because:` would name the
+    /// wrong cause. `summary` is the sentence that says why; this is the
+    /// evidence beside it.
+    case ungradeable(grounding: Grounding)
     case neverAppraised
 }
 
@@ -47,7 +63,7 @@ public extension CardValue {
     /// case in `nothingReadIsNeverAppraised`.
     ///
     /// The two refusal guards below it, in contrast, **commute**: both return
-    /// `.ungradeable(because: grounding)`, so a card that is both uncited and
+    /// `.ungradeable(grounding: grounding)`, so a card that is both uncited and
     /// unstated gets the same answer whichever runs first. What is load-bearing
     /// there is narrower: only `.notCited` triggers the grounding refusal —
     /// `.missing` does not — so a `.grounded` or `.missing` payload on
@@ -57,10 +73,10 @@ public extension CardValue {
         guard card.appraisedAt != nil else { return .neverAppraised }
 
         let grounding = Grounding.of(evidence: card.evidence ?? [])
-        guard grounding != .notCited else { return .ungradeable(because: grounding) }
+        guard grounding != .notCited else { return .ungradeable(grounding: grounding) }
 
         let effort = card.effort ?? .unstated
-        guard effort != .unstated else { return .ungradeable(because: grounding) }
+        guard effort != .unstated else { return .ungradeable(grounding: grounding) }
 
         let signals = [
             Signal(
@@ -103,9 +119,11 @@ public extension CardValue {
                 return "Nothing cited a file, so there is no signal to rank this card by."
             case .grounded:
                 return "The effort was never stated, so there is no signal to rank this card by."
-            case .missing(let count):
-                let files = count == 1 ? "one cited file is" : "\(count) cited files are"
-                return "The effort was never stated, and \(files) not there."
+            case .missing:
+                // Composed from `grounding.summary` rather than re-derived, so
+                // the singular/plural rule lives in one place. A second copy
+                // here was free to drift from the one the panel already reads.
+                return "The effort was never stated. " + grounding.summary
             }
         case .neverAppraised:
             return "Nothing has measured this card."

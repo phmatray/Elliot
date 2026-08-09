@@ -181,5 +181,10 @@ public extension AnalysisAngle {
 
     /// The name a `Signal` carries for a card with no lens. Not a lens name, and
     /// not empty: an unnamed signal reads as a missing one.
-    static let unlensedCode = "no_lens"
+    ///
+    /// Spelled in `rawValue`'s convention rather than in `Grounding.code`'s,
+    /// because it stands in the **lens slot** of a `Signal` and shares that slot
+    /// with eight camelCase raw values. `"no_lens"` there made one signal read
+    /// as though it came from somewhere else entirely.
+    static let unlensedCode = "noLens"
 }
