@@ -110,6 +110,49 @@ struct RepoRunTermsTests {
         #expect(model.status == "Elliot now runs under Plan only.")
     }
 
+    // MARK: - The sweep's write, which no behavioural test can reach
+
+    /// ⚠️ **This gate exists because breaking the fix left the suite green.**
+    ///
+    /// `BoardStoreTests.verdictWriteIsTargeted` proves `saveRepoPreflight`
+    /// writes one column; nothing proved that `AppModel.record` *calls* it.
+    /// Restoring the old `var updated = repo; updated.preflight = verdict; try
+    /// await store.saveRepo(updated)` passed all 2005 tests — the whole hazard
+    /// back, unremarked.
+    ///
+    /// It cannot be caught behaviourally from here. The window only opens while
+    /// `record`'s caller is suspended inside `preflight.repoChecks(repo)`, which
+    /// is a concrete `PreflightService` shelling out to `gh` and `git` with no
+    /// seam to suspend on demand; a test that raced it would assert a timing
+    /// this machine happened to produce. So the claim is about the *source*, and
+    /// it is checked in the source — the same answer `DrainDuplicationTests` and
+    /// `DefaultActionTests` give, for the same reason.
+    @Test("The Preflight sweep writes the verdict alone, never the whole captured row")
+    func theSweepDoesNotCarryTheRow() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/ElliotAppKit/AppModel.swift")
+        let text = try String(contentsOf: source, encoding: .utf8)
+
+        let marker = "private func record(_ results: [CheckResult], for repo: Repo) async {"
+        let start = try #require(
+            text.range(of: marker), "`record` has been renamed; this gate is now checking nothing"
+        )
+        let body = String(text[start.upperBound...].prefix(1400))
+        let code = body.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.hasPrefix("//") }
+            .joined(separator: "\n")
+
+        #expect(code.contains("store.saveRepoPreflight("))
+        #expect(
+            !code.contains("store.saveRepo("),
+            "the sweep writes the whole row again, reverting anything saved while it ran"
+        )
+    }
+
     // MARK: -
 
     static func repo() -> Repo {

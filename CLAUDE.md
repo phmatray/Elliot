@@ -929,8 +929,35 @@ There is no wall-clock kill (`merge-pr` waiting hours on CI is legitimate). What
 **silence**: 20 minutes without output marks the run stalled and asks. Cancellation is a plain SIGTERM —
 Claude Code handles it, aborts the turn, kills its Bash process tree, runs SessionEnd hooks, exits 143.
 
-Runs default to `--permission-mode bypassPermissions`; `permissionMode` is a per-repo column if you want
-to tighten one.
+Runs default to `--permission-mode bypassPermissions`. **Since #333 a single repository can actually be
+tightened** — Preflight ▸ each repository ▸ *Run terms*, holding the mode picker and the extra allowed
+tools, written through `AppModel.setRunTerms` → `saveRepo`.
+
+⚠️ **This line claimed that capability for the whole life of the project and it did not exist.**
+`permissionMode` and `extraAllowedTools` are **v1** columns; `RunScheduler` read both at spawn,
+`ClaudeInvocation.arguments()` emitted both flags, `board_list_repos` reported the mode, and **nothing
+anywhere ever assigned either one**. Every registration took `bypassPermissions` and `[]` permanently,
+so every drag in every registered repository started `claude -p` accepting every tool call and asking
+nobody. Three documents described the knob — this file, `Repo.permissionMode`'s doc comment, and
+`ListReposTool`'s description telling an agent to *"read `permissionMode` before you move a card"* — and
+not one of them was wrong about what the value *meant*; they were wrong that it could ever be anything
+else. It is the milder cousin of the `isBlocking` defect below: not a gate asserted in three places and
+implemented in none, but a setting readable everywhere and writable nowhere. **A column with readers is
+not a feature until something writes it.**
+
+Two things worth keeping from the fix:
+
+- **Only `bypassPermissions` has ever been run.** The picker offers all six tokens `claude --help`
+  accepts and explains exactly one of them, because the CLI documents no semantics for any and this
+  board has exercised no other. The five say so. Inventing their behaviour would be the `x402-dotnet`
+  mistake in miniature — prose that afterwards reads as a measurement.
+- ⛔ **A sweep must not write back a row it captured before a network call.** `refreshRepoChecks`
+  captures `repos`, then per repository awaits `preflight.repoChecks(repo)` — `gh` and `git`, so
+  *seconds* — and used to save the captured row whole. That silently reverted anything saved during the
+  window, and a first sweep after launch opens it for every repository at once. Harmless while the only
+  field at risk was `isEnabled`; not harmless when it is the one bounding what an unattended agent may
+  do. `BoardStore.saveRepoPreflight` writes the verdict column alone, and `setRunTerms` re-reads the row
+  rather than editing the copy the view was rendering — the same hazard pointed the other way.
 
 ### Artefact retention
 
