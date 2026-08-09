@@ -1142,10 +1142,11 @@ struct ColumnView: View {
     }
 
     private var list: some View {
-        // Computed once and passed down, not read four times: this is the
-        // filter, the sort, the grouping and — in Done — the day bucketing, and
-        // the handler below has to be judged against the same list the rows were
-        // built from.
+        // Computed once and read three times below, not computed three times:
+        // this is the filter, the sort, the grouping and — in Done — the day
+        // bucketing. And the scroll handler has to be judged against the very
+        // list the rows were built from, or it can ask for a card this pass did
+        // not draw.
         let rows = rows
         let focus = ColumnFocus.of(
             landing: model.lastLanded, selection: model.selectedCardID, drawn: rows)
