@@ -488,6 +488,17 @@ public final class BoardStore: Sendable {
         }
     }
 
+    /// Runs the v12 backfill again. Idempotent — it only writes a card whose
+    /// `appraisedAt` is still NULL **and** which has a proposal to read one
+    /// from, so it can neither redo an appraisal nor blank one it has nothing
+    /// to say about — and exists so a test can assert what the migration does
+    /// without reaching into `grdb_migrations`.
+    public func backfillCardAppraisals() async throws {
+        try await requireWriter().write { db in
+            try db.execute(sql: Migrations.backfillCardAppraisalsSQL)
+        }
+    }
+
     public func deleteCard(id: UUID) async throws {
         _ = try await requireWriter().write { db in try Card.deleteOne(db, key: id.databaseKey) }
     }

@@ -260,6 +260,54 @@ enum Migrations {
             }
         }
 
+        // v12, additive: what an appraisal established about a card's value.
+        //
+        // ⚠️ **This shipped as `v11_cardAppraisal` and moved to v12 at the
+        // merge** — the second time this file has recorded that sentence, and it
+        // is the rule rather than an exception to it. Two unmerged branches both
+        // claimed v11; `v11_runResultSource` reached `main` first (#344), so it
+        // keeps the number and the unshipped one moves. Renaming the shipped one
+        // instead would run a second, different migration on every database that
+        // had already seen it.
+        //
+        // No `RenamedMigration`, and that half is measured rather than assumed —
+        // twice, because the answer changed underneath the first measurement. A
+        // rename entry records a migration that *actually reached a database*
+        // under the old name; `git log --all -S'cardAppraisal'` finds it on no
+        // ref but this branch, and the developer's own store
+        // (`~/Library/Application Support/Elliot`) holds `v1_initial …
+        // v11_runResultSource` with **zero** rows matching `%cardAppraisal%`
+        // under any number. Nothing was in the field under either name, so
+        // moving it costs nothing — v10's precedent, one migration on.
+        //
+        // Columns on `card` rather than a table of its own, and the criterion is
+        // the one written above v8. A pull request's status is an observation
+        // about an object outside the card, written by a poller, so it got a
+        // table. This is the opposite family: the appraisal run carries a
+        // `cardID`, so `activeRun(cardID:)` holds the card for the run's whole
+        // life and no poller can be half-way through the same row. That makes it
+        // provenance, and v7's columns the right precedent.
+        //
+        // The counterpart is measured and favourable: `observeCards()` already
+        // tracks the whole card row and de-duplicates, so a column write is
+        // observable for free — a separate table would cost a second
+        // `ValueObservation`.
+        //
+        // The backfill is not a guess. `storyProposal` has carried the effort,
+        // the resolved citations and the moment they were resolved since v4,
+        // next to the id of the card it produced, so every accepted card already
+        // carries the answer one join away. Without this the feature would ship
+        // empty on every existing board and look like a feature that does not
+        // work — v7's stated reason, unchanged.
+        migrator.registerMigration("v12_cardAppraisal") { db in
+            try db.alter(table: "card") { t in
+                t.add(column: "effort", .text)
+                t.add(column: "evidence", .text)        // JSON array
+                t.add(column: "appraisedAt", .datetime)
+            }
+            try db.execute(sql: Migrations.backfillCardAppraisalsSQL)
+        }
+
         return migrator
     }
 
@@ -368,6 +416,58 @@ enum Migrations {
             WHERE "p"."acceptedCardID" = "card"."id" LIMIT 1
         )
         WHERE "angle" IS NULL
+        """
+
+    /// The v12 backfill, named for the same reason `backfillCardAnglesSQL` is:
+    /// the migration and the test that proves what it does run the identical
+    /// statement.
+    ///
+    /// Three correlated subqueries rather than one row-value assignment, so it
+    /// reads the way v7's does and depends on nothing beyond what v7 already
+    /// relies on. `LIMIT 1` is belt, for v7's reason: acceptance creates one
+    /// card per proposal, so at most one row can match — but a subquery that
+    /// would return two rows is an error rather than a choice, and a migration
+    /// is a bad place to learn that.
+    ///
+    /// `appraisedAt` takes the proposal's `createdAt` and not the moment of the
+    /// migration: that is when the harvest resolved the citations, and dating
+    /// the reading to the upgrade would make every old board look freshly
+    /// measured.
+    ///
+    /// `WHERE "appraisedAt" IS NULL` is not belt. This statement is also
+    /// reachable through `BoardStore.backfillCardAppraisals()`, which is
+    /// deliberately idempotent, so without the guard a re-run would overwrite an
+    /// appraisal that had since been redone with whatever the original proposal
+    /// said.
+    ///
+    /// The `EXISTS` is not redundant with the subqueries, and it is the one
+    /// place this statement is not v7's shape. `backfillCardAnglesSQL` writes
+    /// the single column it filters on, so a row it visits has NULL there by
+    /// definition and nothing can be destroyed. This one filters on
+    /// `appraisedAt` and assigns **three** columns: a card carrying an effort
+    /// but no `appraisedAt`, with no proposal to read one from, is selected by
+    /// the filter and then has that effort assigned the NULL of a subquery with
+    /// nothing to return. `EXISTS` keeps the row guard and the assignment
+    /// talking about the same thing. It only ever removes rows that could have
+    /// received NULLs, so it changes no outcome that was already right.
+    static let backfillCardAppraisalsSQL = """
+        UPDATE "card" SET
+            "effort" = (
+                SELECT "p"."effort" FROM "storyProposal" "p"
+                WHERE "p"."acceptedCardID" = "card"."id" LIMIT 1
+            ),
+            "evidence" = (
+                SELECT "p"."evidence" FROM "storyProposal" "p"
+                WHERE "p"."acceptedCardID" = "card"."id" LIMIT 1
+            ),
+            "appraisedAt" = (
+                SELECT "p"."createdAt" FROM "storyProposal" "p"
+                WHERE "p"."acceptedCardID" = "card"."id" LIMIT 1
+            )
+        WHERE "appraisedAt" IS NULL
+          AND EXISTS (
+            SELECT 1 FROM "storyProposal" "p" WHERE "p"."acceptedCardID" = "card"."id"
+          )
         """
 
     /// The original schema. Named so a test can build a v1 database and prove

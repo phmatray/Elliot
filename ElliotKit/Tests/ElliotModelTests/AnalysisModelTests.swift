@@ -21,12 +21,34 @@ struct AnalysisModelTests {
         #expect(Set(AnalysisAngle.allCases.map(\.symbol)).count == AnalysisAngle.allCases.count)
     }
 
-    @Test("An unrecognised effort degrades rather than dropping the story", arguments: [
+    /// An unrecognised size is now recorded as unstated rather than folded onto
+    /// `.medium`. For a display badge the fold was a kindness; as an input to an
+    /// unattended ranking it is an invention, and the ranking cannot tell an
+    /// invented medium from a stated one.
+    @Test("An unstated effort is recorded as unstated, never invented", arguments: [
         ("small", Effort.small), ("MEDIUM", .medium), (" large ", .large),
-        ("XL", .medium), ("", .medium), ("trivial", .medium),
+        ("XL", .unstated), ("", .unstated), ("trivial", .unstated),
+        // The case round-trips through its own raw value, so a stored
+        // `.unstated` reads back as itself rather than as an unrecognised word.
+        ("unstated", .unstated),
     ])
     func effortParsing(raw: String, expected: Effort) {
         #expect(Effort.parse(raw) == expected)
+    }
+
+    /// The two decode defaults had to move with `parse`, and leaving either
+    /// behind would keep inventing the answer by a second route: an artifact
+    /// with no `effort` key would decode to `"medium"`, parse cleanly, and
+    /// nothing would ever be marked unstated.
+    @Test("A story that never mentions effort decodes as unstated")
+    func absentEffortIsUnstated() throws {
+        let raw = Data(
+            #"{"title":"T","role":"dev","want":"w","benefit":"b","evidence":["A.swift:1"]}"#.utf8
+        )
+        let decoded = try JSONDecoder().decode(ProposedStory.self, from: raw)
+        #expect(decoded.effort == "")
+        #expect(Effort.parse(decoded.effort) == .unstated)
+        #expect(ProposedStory(title: "T", role: "dev", want: "w", benefit: "b").effort == "")
     }
 
     @Test("Evidence splits on the trailing line number only", arguments: [
