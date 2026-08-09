@@ -561,8 +561,12 @@ struct IPCTests {
     /// red test rather than a version silently standing still — so when it
     /// fails, **read `Protocol.swift` and raise both**, never lower the
     /// constant to match the number written here.
-    @Test("Widening the outcome, and attributing a run's closing text, bumped the version")
-    func protocolVersionIsEight() {
-        #expect(elliotProtocolVersion == 8)
+    /// And again at 9: `RepoDTO` gained `extraAllowedTools` (#333), the other
+    /// half of the terms a run gets. Until then neither term could be *written*,
+    /// so every row reported the same defaults and a reply carrying half of them
+    /// was indistinguishable from the whole.
+    @Test("Widening the outcome, attributing closing text, and reporting run terms, bumped it")
+    func protocolVersionIsNine() {
+        #expect(elliotProtocolVersion == 9)
     }
 }
