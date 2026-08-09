@@ -17,19 +17,35 @@ import Testing
 /// `.keyboardShortcut(.defaultAction)`, one of them merging to a default branch
 /// on github.com. Nothing failed. Nothing could have.
 ///
-/// The gate reads `Sources/ElliotAppKit` only. `ElliotApp` is an
-/// `executableTarget` and cannot be imported, which is the same blind spot that
-/// let `.inspector()` ship three times — so a default action added there is
-/// still unguarded, and that limit is stated here rather than left for someone
-/// to discover.
+/// **It covers `Sources/ElliotAppKit` and `Sources/ElliotApp`** — both targets
+/// that can put a control on screen (#251).
+///
+/// `ElliotApp` used to be outside it, and that was the gap worth closing rather
+/// than merely stating. It is an `executableTarget`, so `swift test` cannot
+/// import it — `Package.swift` records what that costs: *"anything left in here
+/// is unreachable from `swift test`, which is how `.inspector()` shipped three
+/// times without anyone seeing it work."* Its 300-plus lines of `Scene` and
+/// `Commands` include `NewStoryMenuItem` and `OpenWindowButtons`, so a claim
+/// added there was unguarded and the suite would have stayed green.
+///
+/// ⚠️ **Nothing had to be imported to close it.** This gate reads source *text*,
+/// so a second target is a path, not a dependency — the one property that makes
+/// an un-importable target checkable at all. `DefaultAction.claimants` stays the
+/// single list both targets are checked against.
 @Suite("Default action")
 struct DefaultActionTests {
 
-    private static let sources: URL = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()   // ElliotAppKitTests
-        .deletingLastPathComponent()   // Tests
-        .deletingLastPathComponent()   // ElliotKit
-        .appendingPathComponent("Sources/ElliotAppKit")
+    private static let targets: [(name: String, url: URL)] = {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // ElliotAppKitTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // ElliotKit
+            .appendingPathComponent("Sources")
+        return [
+            (name: "ElliotAppKit", url: sources.appendingPathComponent("ElliotAppKit")),
+            (name: "ElliotApp", url: sources.appendingPathComponent("ElliotApp")),
+        ]
+    }()
 
     /// A line with its comment forms stripped, so a gate about code cannot be
     /// tripped — or satisfied — by prose describing it. Several files now
@@ -41,15 +57,34 @@ struct DefaultActionTests {
         return !trimmed.hasPrefix("//") && !trimmed.isEmpty
     }
 
-    private static func swiftFiles() throws -> [String] {
-        try FileManager.default
-            .contentsOfDirectory(atPath: sources.path)
-            .filter { $0.hasSuffix(".swift") }
-            .sorted()
+    /// Every Swift file of every covered target, as `(target, file)`.
+    ///
+    /// ⚠️ A target that lists **no** files is a failure, not an empty walk: a
+    /// renamed directory would otherwise silently reduce this gate's coverage
+    /// while every test still passed — the shape this repository keeps paying
+    /// for, where an instrument that stopped working reads as a clean result.
+    private static func swiftFiles() throws -> [(target: String, file: String)] {
+        var found: [(target: String, file: String)] = []
+        for target in targets {
+            let files = try FileManager.default
+                .contentsOfDirectory(atPath: target.url.path)
+                .filter { $0.hasSuffix(".swift") }
+                .sorted()
+            #expect(
+                !files.isEmpty,
+                Comment(
+                    rawValue:
+                        "\(target.name) contributed no files to the default-action gate. "
+                        + "Its directory is \(target.url.path) — has the target moved or been renamed?"
+                ))
+            found += files.map { (target: target.name, file: $0) }
+        }
+        return found
     }
 
-    private static func lines(of file: String) throws -> [String] {
-        try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
+    private static func lines(of file: String, in target: String) throws -> [String] {
+        guard let url = targets.first(where: { $0.name == target })?.url else { return [] }
+        return try String(contentsOf: url.appendingPathComponent(file), encoding: .utf8)
             .components(separatedBy: "\n")
     }
 
@@ -76,11 +111,14 @@ struct DefaultActionTests {
     /// A claim it cannot attribute is a **failure**, not a skip: an
     /// unattributable claimant is exactly the one nobody would notice, and this
     /// suite exists because nobody noticed.
-    private static func claims() throws -> [(file: String, line: Int, label: String)] {
-        var found: [(file: String, line: Int, label: String)] = []
+    private static func claims() throws -> [(
+        target: String, file: String, line: Int, label: String
+    )] {
+        var found: [(target: String, file: String, line: Int, label: String)] = []
 
-        for file in try swiftFiles() {
-            let body = try lines(of: file)
+        for entry in try swiftFiles() {
+            let (target, file) = (entry.target, entry.file)
+            let body = try lines(of: file, in: target)
             for (index, line) in body.enumerated()
             where isCode(line) && line.contains("keyboardShortcut(.defaultAction)") {
                 // Walk back to the nearest `Button` that opens this modifier
@@ -96,15 +134,15 @@ struct DefaultActionTests {
                 guard let label else {
                     Issue.record(
                         """
-                        \(file):\(index + 1) claims Return but this gate cannot tell which \
-                        control it belongs to. Either the button's label is not a literal, \
+                        \(target)/\(file):\(index + 1) claims Return but this gate cannot tell \
+                        which control it belongs to. Either the button's label is not a literal, \
                         or it is more than 40 lines above. Give the control a literal label \
                         and list it in `DefaultAction.claimants` with what it commits.
                         """
                     )
                     continue
                 }
-                found.append((file, index + 1, label))
+                found.append((target, file, index + 1, label))
             }
         }
         return found
@@ -118,7 +156,7 @@ struct DefaultActionTests {
             #expect(
                 sanctioned.contains(claim.label),
                 """
-                \(claim.file):\(claim.line) — "\(claim.label)" claims Return, and \
+                \(claim.target)/\(claim.file):\(claim.line) — "\(claim.label)" claims Return, and \
                 `DefaultAction` does not sanction it. The rule is that \
                 `.keyboardShortcut(.defaultAction)` may be claimed only by a control that \
                 commits text the reader has typed. If this control does, add it to \
@@ -157,9 +195,10 @@ struct DefaultActionTests {
         #expect(
             claims.count == DefaultAction.expectedClaimCount,
             """
-            ElliotAppKit contains \(claims.count) default actions and `DefaultAction` \
-            lists \(DefaultAction.expectedClaimCount). Found at: \
-            \(claims.map { "\($0.file):\($0.line) (\($0.label))" }.joined(separator: ", ")).
+            ElliotAppKit and ElliotApp contain \(claims.count) default actions between \
+            them and `DefaultAction` lists \(DefaultAction.expectedClaimCount). Found at: \
+            \(claims.map { "\($0.target)/\($0.file):\($0.line) (\($0.label))" }
+                .joined(separator: ", ")).
             """
         )
     }
