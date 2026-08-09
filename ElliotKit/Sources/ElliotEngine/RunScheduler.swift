@@ -644,15 +644,32 @@ public actor RunScheduler: RunLaunching {
         else { return nil }
 
         // Every run of this card, so the verifier can walk `resumedFrom` back to
-        // the attempt the chain started with. This is a page — newest first,
-        // capped at the store's default — which bounds the walk: a chain longer
-        // than the page stops at the oldest row it can see.
-        let cardRuns = (try? await store.runs(cardID: cardID)) ?? []
-
-        // Verify even a cancelled run: implement-issue may well have opened the
-        // pull request before it was stopped, and both skills are resume-safe.
-        let verified = await verifier.verify(
-            run: run, card: card, repo: repo, cardRuns: cardRuns, resume: resume)
+        // the attempt the chain started with — or a refusal, when the read
+        // failed and this run resumed. `ResumeWindow` holds both halves of that
+        // rule and says at length why neither `?? []` nor a blanket refusal is
+        // right.
+        //
+        // What the page bounds is worth stating precisely, because the two
+        // framings have different remedies: it is `BoardStore.runs`' default
+        // **page depth** of 100, not a chain length. The rows are this card's
+        // newest runs of every kind, so a two-link chain is truncated just as
+        // surely once 100 later runs exist on the card — a larger `limit`
+        // answers one framing, a `since`-anchored or chain-following query the
+        // other. Nothing here notices when it happens, though
+        // `BoardStore.runCount(cardID:)` two functions away would make it
+        // detectable.
+        let verified: VerifiedOutcome
+        if let cardRuns = await ResumeWindow.page(resumedFrom: run.resumedFrom, reading: {
+            try await store.runs(cardID: cardID)
+        }) {
+            // Verify even a cancelled run: implement-issue may well have opened
+            // the pull request before it was stopped, and both skills are
+            // resume-safe.
+            verified = await verifier.verify(
+                run: run, card: card, repo: repo, cardRuns: cardRuns, resume: resume)
+        } else {
+            verified = .unverified(reason: ResumeWindow.unknownWindowReason)
+        }
         run.verifiedOutcome = verified
         await apply(verified, to: card)
         return verified

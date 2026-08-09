@@ -73,9 +73,20 @@ private func verifier(issues: String) -> Verifier {
 ///
 /// `resumedResultText` is spelt as a `ClosingRemark` on the way in, because
 /// that is the only way to record a closing text since #288: `resultText` is
-/// `private(set)` and `SkillRun.card(…)` takes `closing:`. `.stderr` is the
-/// faithful source for it — a run that never had a turn produced no agent
-/// prose, so the sentence is the CLI's.
+/// `private(set)` and `SkillRun.card(…)` takes `closing:`.
+///
+/// The source is **immaterial to what is asserted here** — `noIssueReason`
+/// reads `resultText` and never `resultSource`, so all three sources give the
+/// same result. It is `.agent` because that is what production records for
+/// this run, and a fixture that disagreed with the pipeline would be read as
+/// evidence about it: the CLI puts its complaint in the terminal event's
+/// `result` field, `RunResult.text` decodes exactly that key
+/// (`StreamEvent.swift:196`), and `ClosingRemark.of` prefers agent text
+/// whenever it is present (`RunScheduler.swift:599`) — while `ResumeVerdict.of`
+/// cannot say `.sessionGone` without that terminal event existing at all. So a
+/// lost session is filed under the agent's name though no agent ever spoke.
+/// That is a wrinkle of #288's vocabulary, not this test's to fix, and Task 7
+/// drives the real fixture and will record the same `.agent`.
 private func chain(
     title: String, scratch: URL, resumedResultText: String? = nil
 ) -> (card: Card, first: SkillRun, resumed: SkillRun) {
@@ -102,7 +113,7 @@ private func chain(
         startedAt: now,
         logPath: scratch.appendingPathComponent("no-such-log.ndjson").path,
         stderrPath: scratch.appendingPathComponent("no-such-log.log").path,
-        closing: resumedResultText.map { ClosingRemark(text: $0, source: .stderr) },
+        closing: resumedResultText.map { ClosingRemark(text: $0, source: .agent) },
         createdAt: now
     )
     return (card, first, resumed)
@@ -183,5 +194,60 @@ struct ResumeVerificationTests {
         )
         #expect(outcome == .noIssueCreated(
             reason: "The conversation this run tried to resume no longer exists, so nothing ran."))
+    }
+
+    /// ⛔ A page that could not be read must not arrive as an empty one. The two
+    /// are the same value and opposite facts, and the fact the collapse hides
+    /// is the one this suite exists for: `firstAttemptStart` over `[]` returns
+    /// the resumed run's own start — the pre-fix window, back in place with
+    /// nothing on the card and nothing in the log.
+    ///
+    /// `withoutTheChainTheIssueIsMissed` above is what that silently produces,
+    /// which is why the control test and this one are two halves of one
+    /// argument.
+    @Test("An unreadable page refuses for a resumed run")
+    func anUnreadablePageRefusesForAResumedRun() async {
+        let page = await ResumeWindow.page(resumedFrom: UUID()) {
+            throw CocoaError(.fileReadUnknown)
+        }
+        #expect(page == nil)
+    }
+
+    /// The other half, and the reason the refusal is narrow rather than
+    /// uniform: a run that never resumed does not read the page at all, so an
+    /// unreadable one cannot change its answer. Refusing here would cost every
+    /// ordinary run its verification on a transient failure — a larger harm, in
+    /// the far commoner case, than the one being closed.
+    @Test("An unreadable page passes through for a run that never resumed")
+    func anUnreadablePagePassesThroughForAFreshRun() async throws {
+        let scratch = try makeScratch()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let (_, first, _) = chain(title: "Stream the run log inside the card", scratch: scratch)
+        try #require(first.resumedFrom == nil)
+
+        let page = await ResumeWindow.page(resumedFrom: first.resumedFrom) {
+            throw CocoaError(.fileReadUnknown)
+        }
+        #expect(page == [])
+
+        // The claim that makes passing through safe, rather than merely cheap:
+        // for this run the page it is handed does not move the window at all.
+        #expect(ResumeChain.firstAttemptStart(of: first, among: []) == first.startedAt)
+        #expect(ResumeChain.firstAttemptStart(of: first, among: [first]) == first.startedAt)
+    }
+
+    /// A read that succeeds is handed on untouched, including the empty answer
+    /// a card with no rows genuinely has. Without this the refusal above could
+    /// be satisfied by a function that never returns a page at all.
+    @Test("A page that reads is passed through as it is")
+    func aReadablePageIsPassedThrough() async throws {
+        let scratch = try makeScratch()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let (_, first, resumed) = chain(
+            title: "Stream the run log inside the card", scratch: scratch)
+
+        let page = await ResumeWindow.page(resumedFrom: resumed.resumedFrom) { [resumed, first] }
+        #expect(page == [resumed, first])
+        #expect(await ResumeWindow.page(resumedFrom: resumed.resumedFrom) { [] } == [])
     }
 }

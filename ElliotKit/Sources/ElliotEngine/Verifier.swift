@@ -22,8 +22,13 @@ public struct Verifier: Sendable {
     /// has to state what it knows, and a new one cannot be written by accident.
     ///
     /// - Parameters:
-    ///   - cardRuns: every run of this card, so the create-issue window can be
-    ///     anchored on the first attempt of a resume chain. Order is irrelevant.
+    ///   - cardRuns: this card's runs, so the create-issue window can be
+    ///     anchored on the first attempt of a resume chain. Order is irrelevant
+    ///     — a dictionary is built from it. ⚠️ A **page** is accepted rather
+    ///     than the whole history, and that is not free: a page that does not
+    ///     reach the first attempt narrows the window silently, which is the
+    ///     direction that files a second issue. Both callers pass at most
+    ///     `BoardStore.runs`' default of 100 rows.
     ///   - resume: what the run's terminal event said about the session it tried
     ///     to fork. Passed *to* the verification, never used to skip it.
     public func verify(
