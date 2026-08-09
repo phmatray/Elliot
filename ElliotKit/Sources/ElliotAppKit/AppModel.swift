@@ -3178,6 +3178,25 @@ public final class AppModel {
         return failure
     }
 
+    /// Reads a finished lens's `stories.json` again, from the file Elliot
+    /// already kept beside its log (#330).
+    ///
+    /// Through ``analysisWrite`` like the other four, so an absent service is a
+    /// reported failure rather than the silent no-op `analysisService?.…` makes
+    /// of it (#223) — and so a refusal (`alreadyHarvested`, `runStillRunning`,
+    /// a repository since forgotten) lands in the panel's note instead of
+    /// vanishing.
+    ///
+    /// The runs are refreshed afterwards because the report is what the lens row
+    /// draws: without this the row would keep saying `0 kept` beside proposals
+    /// that had just appeared in the list below it.
+    @discardableResult
+    public func reharvest(runID: UUID) async -> AnalysisWriteFailure? {
+        let failure = await analysisWrite { _ = try await $0.reharvest(runID: runID) }
+        await refreshAnalysisRuns()
+        return failure
+    }
+
     /// The angles still working, for the window's header.
     public var runningAngles: [AnalysisAngle] {
         analysis?.runs.filter { !$0.state.isTerminal }.compactMap(\.analysisAngle) ?? []

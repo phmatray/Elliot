@@ -975,6 +975,20 @@ struct LensRunRow: View {
                     Button("Cancel") { Task { await model.cancelRun(id: run.id) } }
                         .controlSize(.small)
                 }
+                // The recovery, offered exactly where the loss is visible: this
+                // row is the thing that reads `0 kept`. The condition is
+                // `SkillRun.offersReharvest`'s, not an inline `report.kept == 0`
+                // — the rule is pure and `ReharvestRuleTests` holds it, and a
+                // second spelling here would be free to disagree about the run
+                // that carries no report at all (#330).
+                if run.offersReharvest {
+                    Button("Harvest again") { Task { await model.reharvest(runID: run.id) } }
+                        .controlSize(.small)
+                        .help("Re-reads the file this run already wrote. Starts nothing.")
+                        .accessibilityLabel(
+                            "Harvest \(run.analysisAngle?.title ?? "this lens") again "
+                                + "from the file it already wrote")
+                }
             }
 
             if let report = run.analysisReport {
