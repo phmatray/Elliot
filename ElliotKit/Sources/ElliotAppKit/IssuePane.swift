@@ -48,20 +48,99 @@ struct IssuePane: View {
         return out
     }
 
+    /// What the pane says when `sections` admits nothing.
+    ///
+    /// The pane cannot be *absent* the way `MoveHistoryBlock` is — it is half
+    /// the panel — so it needs the sentence `RunsPane` grew for the same reason:
+    /// drawn blank across two or three column-widths it reads as broken rather
+    /// than as "nothing has been written".
+    ///
+    /// Two states, and `issueNumber` is what separates them: an issue that is
+    /// filed and whose body GitHub holds is empty is a *finished* state and must
+    /// not be told to go and write one.
+    ///
+    /// ⚠️ **Derived, never tabulated** — the same rule as
+    /// `RunsPane.emptyState`. Where it names a move it reaches it through
+    /// `Column.naturalNext` and `Consequence.of`, so it cannot promise a run for
+    /// a card whose repository Preflight has switched off, and it cannot become
+    /// a third copy of the transition matrix.
+    nonisolated static func emptyState(
+        for card: Card, outcome: MoveOutcome?
+    ) -> (title: String, message: String) {
+        if let number = card.issueNumber {
+            return (
+                "Nothing in the issue body",
+                "Issue #\(number) is filed, and the body GitHub holds for it is empty."
+            )
+        }
+
+        let title = "Nothing written yet"
+
+        guard let next = card.column.naturalNext else {
+            return (
+                title,
+                "No story, and no issue body. \(card.column.displayName) is the end of the board."
+            )
+        }
+        guard let outcome else {
+            // Not reachable from the panel, which previews every move it has.
+            return (title, "Edit the story here, or move it to \(next.displayName).")
+        }
+
+        let consequence = Consequence.of(outcome)
+        if consequence.isRefused {
+            return (
+                title,
+                "Moving it to \(next.displayName) is refused. \(consequence.summary)"
+            )
+        }
+        if case .noAction = outcome {
+            return (
+                title,
+                "Nothing files an issue on the way to \(next.displayName). \(next.standingRule)"
+            )
+        }
+        return (
+            title,
+            "Write the story here, then move it to \(next.displayName). \(consequence.summary)"
+        )
+    }
+
     var body: some View {
         let document = model.issueDocument(for: card)
         let context = MarkdownContext(repo: model.repo(for: card))
+        let sections = Self.sections(for: card, document: document)
 
         VStack(alignment: .leading, spacing: 16) {
-            ForEach(Array(Self.sections(for: card, document: document).enumerated()), id: \.offset) { _, section in
-                switch section {
-                case .story(let story):
-                    storySection(story, context: context)
-                case .body(let blocks):
-                    bodySection(blocks, context: context)
+            if sections.isEmpty {
+                emptyState
+            } else {
+                ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
+                    switch section {
+                    case .story(let story):
+                        storySection(story, context: context)
+                    case .body(let blocks):
+                        bodySection(blocks, context: context)
+                    }
                 }
             }
         }
+    }
+
+    /// The outcome handed to `emptyState` is `model.preview` — the same call the
+    /// next-step button and every column caption make — so the sentence and the
+    /// button cannot disagree about what a move would do.
+    private var emptyState: some View {
+        let next = card.column.naturalNext
+        let copy = IssuePane.emptyState(
+            for: card,
+            outcome: next.map { model.preview(card, to: $0) }
+        )
+
+        return ContentUnavailableView(
+            copy.title, systemImage: "text.page.slash", description: Text(copy.message)
+        )
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - The story Elliot was told

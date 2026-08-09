@@ -1586,8 +1586,17 @@ public final class AppModel {
         await board?.cancelRun(id: id)
     }
 
+    /// How many of a card's runs `refreshRuns` loads.
+    ///
+    /// Named rather than written inline because the number is only meaningful
+    /// beside the note `RunsPane` draws when the read comes back at it: a count
+    /// read at its own cap is a floor, not a total, and the two have to move
+    /// together or the pane will promise completeness it never had.
+    public nonisolated static let runWindow = 20
+
     public func refreshRuns(cardID: UUID) async {
-        runsByCard[cardID] = (try? await store?.runs(cardID: cardID, limit: 20)) ?? []
+        runsByCard[cardID] =
+            (try? await store?.runs(cardID: cardID, limit: Self.runWindow)) ?? []
         // Read here rather than from a new call site: `CardView.task` and the
         // inspector already call this per card.
         //

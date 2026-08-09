@@ -163,7 +163,7 @@ struct RunsPaneLiveTests {
 
                 outputs.append(update)
                 events.append(event)
-                let rows = RunsPane.rows(of: run, events: events)
+                let rows = RunsPane.rows(of: run, events: events).rows
                 for row in rows {
                     kinds.insert(LogRowAccessibility.kind(of: row))
                     if case .toolUse(_, _, _, let outcome) = row, outcome?.isError == false {
@@ -173,7 +173,7 @@ struct RunsPaneLiveTests {
             }
             return LiveCapture(
                 outputs: outputs, kinds: kinds,
-                finalRows: RunsPane.rows(of: run, events: events),
+                finalRows: RunsPane.rows(of: run, events: events).rows,
                 sawNestedSuccess: nested
             )
         }
@@ -224,7 +224,7 @@ struct RunsPaneLiveTests {
         // but not with the model would be green and blind.
         let model = AppModel()
         for update in capture.outputs { model.apply(update) }
-        #expect(RunsPane.rows(of: run, events: model.liveLog[runID] ?? []) == capture.finalRows)
+        #expect(RunsPane.rows(of: run, events: model.liveLog[runID] ?? []).rows == capture.finalRows)
 
         // Finally, let the run land, so the temporary home is not deleted from
         // under a child that is still writing to it.
@@ -283,7 +283,7 @@ struct RunsPaneLiveTests {
 
     @Test("A run with no events at all yields no rows")
     func noEventsNoRows() {
-        #expect(RunsPane.rows(of: Self.run(), events: []).isEmpty)
+        #expect(RunsPane.rows(of: Self.run(), events: []).rows.isEmpty)
     }
 
     // MARK: - The filter, and what it announces
