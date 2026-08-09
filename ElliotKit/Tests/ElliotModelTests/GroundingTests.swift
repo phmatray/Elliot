@@ -49,9 +49,21 @@ struct GroundingTests {
         }
     }
 
-    /// One definition, two readers. `isGrounded` is read by the panel's seal
-    /// and by the wire's `grounded` flag; if it kept its own `allSatisfy` the
-    /// two would be free to drift apart the first time either is corrected.
+    /// The two answers agree on the four shapes that matter, including the two
+    /// the old `Bool` conflated: cited-and-absent, and never-cited.
+    ///
+    /// ⚠️ It does **not** prove that `isGrounded` reads `grounding` rather than
+    /// keeping its own `allSatisfy` — and no behavioural test can. `grounding ==
+    /// .grounded` and `!evidence.isEmpty && evidence.allSatisfy(\.exists)` are
+    /// the same predicate written twice, so they agree on every possible input
+    /// by construction; reverting the body alone leaves all four expectations
+    /// green. This comment said otherwise until it was checked, which is the
+    /// defect one layer up from the one the task fixes.
+    ///
+    /// What it does catch is an `isGrounded` that is trivially wrong. The
+    /// single-definition claim is held by review, and the behaviour being
+    /// preserved by `ProposalHarvesterTests`; holding it mechanically would take
+    /// a source-reading gate in the idiom of `DrainDuplicationTests`.
     @Test("A proposal's grounding and its boolean say the same thing")
     func proposalAgreesWithItsGrounding() {
         func proposal(_ evidence: [Evidence]) -> StoryProposal {
