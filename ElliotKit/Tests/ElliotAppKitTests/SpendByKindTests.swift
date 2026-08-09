@@ -94,6 +94,38 @@ struct SpendByKindTests {
         #expect(columns == model.spentToday.totalUSD)
     }
 
+    /// ⚠️ **Added because breaking `todayFigure` left the suite green.**
+    ///
+    /// Every other test here reads `spentToday` or `daySpend` — the values
+    /// *behind* the screen. `todayFigure` is the one the status bar and the
+    /// Spending band actually render, and its own doc comment says so
+    /// (*"every screen showing the day's total reads this rather than
+    /// `spentToday`"*). Replacing its `spend:` with `Spend.nothing` therefore
+    /// showed `US$ 0.00` on every screen about money while all 2052 tests
+    /// passed.
+    ///
+    /// `spentToday` being derived from `daySpend.total` makes *drift between the
+    /// total and the split* unrepresentable, which is a real guarantee — but it
+    /// is a different one from *the figure on screen is that total*, and only
+    /// the first was held.
+    @Test("The figure the screens render is the day's spend, not a fresh zero")
+    func theRenderedFigureIsTheDaysSpend() async throws {
+        let model = AppModel()
+        let store = try store()
+        let repo = try await repo(store)
+        try await finishedRun(store, repo, kind: .createIssue, cost: 1.25)
+        try await finishedRun(store, repo, kind: .mergePR, cost: 2.75)
+        model.testOnlySeedStore(store)
+
+        await model.refreshSpend()
+
+        #expect(model.todayFigure.spend == model.spentToday)
+        // Non-zero on purpose: `== spentToday` alone passes when both are zero,
+        // which is exactly what the break produced.
+        #expect(model.todayFigure.spend.totalUSD == 4)
+        #expect(model.todayFigure.amount().contains("4"))
+    }
+
     /// ⛔ The claim the column type exists for. Eight lenses in flight have ended
     /// nothing, so `spendByKind` returns nothing for them: without the in-flight
     /// count the analyze-repo column reads `$0.00` and *claims to be complete*
