@@ -905,29 +905,48 @@ public final class BoardStore: Sendable {
         try await saveProposals([proposal])
     }
 
-    /// Flips a proposal from `.proposed` to `status`, atomically: `true` means
-    /// this call won, `false` means it does not exist or another caller
-    /// already decided it first — accepted or rejected, in either direction.
+    /// Moves a proposal along one ``ProposalClaim``, atomically: `true` means
+    /// this call won, `false` means it does not exist or was not in the status
+    /// the claim moves out of — because another caller decided it first, in
+    /// either direction, or because it has already produced a card.
     ///
     /// `AnalysisService` is a reentrant actor — concurrent `accept`/`reject`
-    /// calls for the same id (a double-tap, an MCP retry, or — once Task 13's
-    /// Analysis window ships — an ordinary double-click on *Reject* and
-    /// *→ Backlog* sitting side by side over one multi-selection) can each be
-    /// past a `fetch → check .proposed` read before any of them has written.
-    /// A single conditional `UPDATE` is what makes that safe: SQLite
-    /// serializes every write, so only the first caller whose `UPDATE` still
-    /// finds `status = 'proposed'` changes anything, and every other caller —
-    /// including one deciding the *opposite* way — sees zero rows changed
-    /// rather than a stale read it has no way to know is stale. This is the
-    /// same reason a losing `reject` can never wipe an already-`.accepted`
-    /// row's `acceptedCardID`: it never issues an unconditional write at all.
-    public func claimProposal(id: UUID, to status: ProposalStatus) async throws -> Bool {
+    /// calls for the same id (a double-tap, an MCP retry, or an ordinary
+    /// double-click on *Reject* and *Accept* sitting 6pt apart over one
+    /// multi-selection) can each be past a `fetch → check .proposed` read
+    /// before any of them has written. A single conditional `UPDATE` is what
+    /// makes that safe: SQLite serializes every write, so only the first caller
+    /// whose `UPDATE` still finds the expected status changes anything, and
+    /// every other caller — including one deciding the *opposite* way — sees
+    /// zero rows changed rather than a stale read it has no way to know is
+    /// stale. This is the same reason a losing `reject` can never wipe an
+    /// already-`.accepted` row's `acceptedCardID`: it never issues an
+    /// unconditional write at all.
+    ///
+    /// ⛔ **`restore` had to arrive inside this statement, not beside it.** The
+    /// obvious undo — read the row, check it is `.rejected`, write `.proposed`
+    /// — is character for character the fetch/check/write this method exists to
+    /// replace, and it reintroduces the same race one direction further round:
+    /// a restore that loses to a concurrent accept would put a proposal whose
+    /// card already exists back on the triage list. Because the claim carries
+    /// both ends of its transition, it stays one statement (#292).
+    ///
+    /// ⚠️ **`acceptedCardID IS NULL` is redundant for `accept` and `reject` and
+    /// load-bearing for `restore`** — which is exactly why it is written once,
+    /// here, rather than per claim. Both of the first two move *out of*
+    /// `.proposed`, a status no reachable path leaves a card id on, so the
+    /// predicate can only ever be true for them; `restore` moves out of
+    /// `.rejected`, where a card id genuinely can sit, and letting that row
+    /// through is how one story grows two Backlog cards. A fourth claim
+    /// inherits the guard instead of having to remember it.
+    public func claimProposal(id: UUID, _ claim: ProposalClaim) async throws -> Bool {
         try await requireWriter().write { db in
             try db.execute(
                 sql: #"""
-                    UPDATE "storyProposal" SET "status" = ? WHERE "id" = ? AND "status" = ?
+                    UPDATE "storyProposal" SET "status" = ?
+                     WHERE "id" = ? AND "status" = ? AND "acceptedCardID" IS NULL
                     """#,
-                arguments: [status.rawValue, id.databaseKey, ProposalStatus.proposed.rawValue]
+                arguments: [claim.to.rawValue, id.databaseKey, claim.from.rawValue]
             )
             return db.changesCount > 0
         }

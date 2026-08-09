@@ -77,17 +77,32 @@ struct AnalysisWriteTests {
         // purpose left it green.
     }
 
+    /// The undo added in #292 is a write like the other two, and it arrived
+    /// after the funnel existed — which is exactly when a new caller reaches
+    /// for `try? await analysisService?.…` and reintroduces the silence.
+    @Test("Restoring with no analysis running does not claim anything came back")
+    func aFailedRestoreDoesNotAssertSuccess() async {
+        let model = AppModel()
+        let failure = await model.restoreProposals(ids: [UUID(), UUID()])
+        #expect(failure == .serviceUnavailable)
+        // ⚠️ What the note *says* is asserted in `AnalysisWriteFailureTests`,
+        // for the reason recorded above: `analysis` is nil on this model, so an
+        // assertion about `model.analysis?.note` here would check nothing.
+    }
+
     // MARK: - 3. One funnel
 
-    /// Both writes go through `analysisWrite`, so neither can be repaired into
+    /// All three writes go through `analysisWrite`, so none can be repaired into
     /// silence on its own. Asserted through the public surface: a `Void` return
-    /// is what made the silent dismissal expressible, and neither has one.
-    @Test("Both analysis writes answer with whether they landed")
+    /// is what made the silent dismissal expressible, and none has one.
+    @Test("Every analysis write answers with whether it landed")
     func neitherWriteCanReportSuccessSilently() async {
         let model = AppModel()
         let update: AnalysisWriteFailure? = await model.updateProposal(proposal)
         let reject: AnalysisWriteFailure? = await model.rejectProposals(ids: [UUID()])
+        let restore: AnalysisWriteFailure? = await model.restoreProposals(ids: [UUID()])
         #expect(update != nil)
         #expect(reject != nil)
+        #expect(restore != nil)
     }
 }
