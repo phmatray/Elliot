@@ -443,7 +443,14 @@ public struct RepositoriesView: View {
             Picker(
                 "Method",
                 selection: Binding(
-                    get: { repo.methodID },
+                    // Not `repo.methodID`: `MethodCatalog.resolve` trims before
+                    // it looks up, so a stored `"  gsd  "` resolves `.chosen`
+                    // while no tag below equals the untrimmed string — the menu
+                    // would render blank, which reads as "no method", exactly
+                    // the silent substitution `.unknown`'s own row exists to
+                    // stop. `selectedMethodID` reads the same resolution the
+                    // tags below are built from, so the two cannot disagree.
+                    get: { Self.selectedMethodID(repo.method) },
                     set: { value in Task { await model.setRepoMethod(repo, methodID: value) } }
                 )
             ) {
@@ -570,6 +577,22 @@ public struct RepositoriesView: View {
     }
 
     // MARK: - Method vocabulary
+
+    /// The picker tag for this resolution — `nil` for `.unset`, a pack's own id
+    /// for `.chosen`, the id `.unknown` carries otherwise.
+    ///
+    /// `MethodResolution` already did the one bit of normalising that matters
+    /// — `MethodCatalog.resolve` trims a stored id before it looks up or
+    /// reports it — so reading the tag off `repo.method` rather than off
+    /// `repo.methodID` keeps the binding and the rows it is chosen from
+    /// speaking about the same value.
+    nonisolated static func selectedMethodID(_ resolution: MethodResolution) -> String? {
+        switch resolution {
+        case .unset: nil
+        case .chosen(let pack): pack.id
+        case .unknown(let id): id
+        }
+    }
 
     /// The menu row for a repository that has never chosen.
     ///

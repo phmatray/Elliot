@@ -59,6 +59,29 @@ struct RepositoriesMethodTests {
         #expect(!MethodCatalog.builtIn.map(\.displayName).contains(label))
     }
 
+    /// M3: `MethodCatalog.resolve` trims before it looks up, so a stored
+    /// `"  gsd  "` resolves `.chosen(gsd)` — but the picker's own tags are
+    /// `pack.id` (never padded) and `nil`. Binding the selection to the raw
+    /// `repo.methodID` would therefore match no row and the menu would render
+    /// blank, reading as "no method" for a repository that plainly chose one.
+    @Test("A stored id with surrounding whitespace still shows a selected row")
+    func selectionSurvivesWhitespace() throws {
+        let pack = try #require(MethodCatalog.builtIn.first { $0.id != MethodCatalog.defaultPackID })
+        let resolution = MethodCatalog.resolve("  \(pack.id)  ")
+        guard case .chosen(let resolved) = resolution else {
+            Issue.record("a whitespace-padded id matching a built-in pack must resolve as .chosen")
+            return
+        }
+        #expect(resolved.id == pack.id)
+
+        // The value `selectedMethodID` hands the picker must equal a tag the
+        // menu actually writes — here, the built-in pack's own (clean) id —
+        // never the raw, whitespace-padded string nobody's row carries.
+        let tag = RepositoriesView.selectedMethodID(resolution)
+        #expect(tag == pack.id)
+        #expect(MethodCatalog.builtIn.map(\.id).contains(tag))
+    }
+
     // MARK: - The write
 
     @MainActor
