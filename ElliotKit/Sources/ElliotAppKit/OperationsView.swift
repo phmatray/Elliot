@@ -300,6 +300,28 @@ public struct OperationsView: View {
                 Button("Set a ceiling") { openWindow(id: "preflight") }
                     .controlSize(.small)
             }
+            byKindRow
+        }
+    }
+
+    /// What today's money went on, under the total it adds up to.
+    ///
+    /// `spendByKind` was written, documented and tested and called by nothing
+    /// outside tests (#308), while the analysis panel started up to eight runs
+    /// from one button and no screen said what that costs against filing one
+    /// issue. This is that query, reaching a reader.
+    ///
+    /// Every kind, always, in one order: a column that appears and disappears as
+    /// work moves is one nobody can glance at. Each figure states its own
+    /// caveats through `amount`, which is where the "at least" wording already
+    /// lives — the split must not read as a smaller, complete bill than the
+    /// total above it.
+    private var byKindRow: some View {
+        HStack(alignment: .top, spacing: 20) {
+            ForEach(model.todayByKind, id: \.kind) { entry in
+                amount(entry.kind.skillName, entry.figure, showsRuns: true)
+            }
+            Spacer(minLength: 0)
         }
     }
 
@@ -310,10 +332,19 @@ public struct OperationsView: View {
     /// answer the narrower question. Asking `isComplete` of it kept this caveat
     /// silent through every analysis — the figure read near zero exactly while
     /// the spending was happening, and landed on the total afterwards.
-    private func amount(_ title: String, _ figure: SpendFigure) -> some View {
+    /// `showsRuns` is what a **column** adds over the day's total: a skill's
+    /// figure means little without how many runs it is over — `$4.10` across two
+    /// merges and across forty analyses are different facts. The total above has
+    /// no such caption, because "everything" needs no denominator.
+    private func amount(
+        _ title: String, _ figure: SpendFigure, showsRuns: Bool = false
+    ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             ConsoleLabel(text: title)
             Fact(text: figure.amount(), tint: .primary)
+            if showsRuns {
+                Fact(text: figure.spend.runsSentence, tint: Palette.quiet, small: true)
+            }
             if !figure.isComplete {
                 Text(figure.sentence())
                     .font(Type.factSmall)
@@ -322,7 +353,10 @@ public struct OperationsView: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title): \(figure.sentence())")
+        .accessibilityLabel(
+            showsRuns
+                ? "\(title): \(figure.sentence()), over \(figure.spend.runsSentence)"
+                : "\(title): \(figure.sentence())")
     }
 
     private var ceilingSentence: String {

@@ -73,7 +73,34 @@ public final class AppModel {
     public var runningNow: RunningNow { RunningNow.of(recentRuns) }
 
     public private(set) var ceiling: SpendCeiling = .off
-    public private(set) var spentToday: Spend = .nothing
+
+    /// Today's spend, total and split by skill, both read from one midnight.
+    ///
+    /// One property rather than two, because the pair is one reading: a split
+    /// assembled from a second `startOfDay` call would disagree with its own
+    /// total across midnight, and nothing on screen would say so. `DaySpend`
+    /// carries the boundary it was taken at for that reason.
+    public private(set) var daySpend: DaySpend = .nothing
+
+    /// What has been spent today, as a bare `Spend`.
+    ///
+    /// Derived rather than stored: it was a stored property assigned beside the
+    /// split, which is exactly the arrangement where one gets refreshed and the
+    /// other does not. The screens that only want the number keep reading this.
+    public var spentToday: Spend { daySpend.total }
+
+    /// Today's spend split by skill, each figure carrying the runs of its own
+    /// kind that are still going.
+    ///
+    /// The pairing is `DaySpend.figures`, in `ElliotModel`: the split is a
+    /// reading of what **ended**, and the runs in flight are a different fact
+    /// from a different source — `RunningNow.countByKind`, the same selection
+    /// the Running now band draws, so the rows saying "not in this figure yet"
+    /// are the rows a reader can see above.
+    public var todayByKind: [(kind: SkillKind, figure: SpendFigure)] {
+        daySpend.figures(inFlight: runningNow.countByKind)
+    }
+
     public private(set) var isOverDailyCeiling = false
 
     /// Today's spend *and* the runs it cannot have counted — the pair, because
@@ -1907,11 +1934,28 @@ public final class AppModel {
         recentRuns = (try? await store.recentRuns(limit: 50)) ?? []
     }
 
+    /// One clock read, one boundary, both halves.
+    ///
+    /// ⛔ The `startOfDay` is a `let` on purpose. This runs on every scheduler
+    /// update, and calling `Calendar.current.startOfDay(for: Date())` once per
+    /// query would put the total and the split on two different days for
+    /// whichever refresh straddles midnight — the split would stop adding up to
+    /// the total beside it, on the one screen whose subject is money, with
+    /// nothing saying so. `BoardStore.daySpend` takes the boundary once so this
+    /// cannot be written the other way.
+    /// ⚠️ Two guards, not one. It was `guard let store, let scheduler`, which
+    /// made the day's figures depend on a scheduler they have nothing to do
+    /// with: with one absent, neither was read. They are two facts from two
+    /// sources — what the store has recorded, and what the running scheduler is
+    /// refusing — and each is now read when its own source exists.
     func refreshSpend() async {
-        guard let store, let scheduler else { return }
-        spentToday = (try? await store.spend(since: Calendar.current.startOfDay(for: Date())))
-            ?? .nothing
-        isOverDailyCeiling = await scheduler.isOverDailyCeiling()
+        let startOfDay = Calendar.current.startOfDay(for: Date())
+        if let store {
+            daySpend = (try? await store.daySpend(since: startOfDay)) ?? .nothing
+        }
+        if let scheduler {
+            isOverDailyCeiling = await scheduler.isOverDailyCeiling()
+        }
     }
 
     // MARK: - What to do next

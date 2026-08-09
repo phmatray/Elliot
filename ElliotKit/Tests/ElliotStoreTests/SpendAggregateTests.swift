@@ -142,6 +142,55 @@ struct SpendAggregateTests {
         #expect(try await store.spend(analysisID: UUID()) == .nothing)
     }
 
+    /// #308: the two halves a screen shows together are read from one boundary,
+    /// so the split adds up to the total beside it.
+    @Test("The day's total and its split are one reading, from one boundary")
+    func daySpendIsOneReading() async throws {
+        let store = try store()
+        let repo = try await repo(store, "Elliot")
+        let analysis = try await analysis(store, repo)
+        try await run(store, repo, kind: .createIssue, cost: 0.5)
+        try await run(store, repo, kind: .analyzeRepo, cost: 4, analysisID: analysis)
+        try await run(store, repo, kind: .analyzeRepo, cost: 6, analysisID: analysis)
+
+        let since = now.addingTimeInterval(-3_600)
+        let day = try await store.daySpend(since: since)
+
+        #expect(day.since == since)
+        #expect(day.total.totalUSD == 10.5)
+        #expect(day.spend(.createIssue).totalUSD == 0.5)
+        #expect(day.spend(.analyzeRepo).totalUSD == 10)
+        #expect(day.spend(.mergePR) == .nothing)
+        // The whole claim in one line: what the columns say adds up to what the
+        // total says, because both were asked the same question.
+        #expect(day.byKind.values.reduce(0) { $0 + $1.totalUSD } == day.total.totalUSD)
+    }
+
+    /// Why it is two statements and not one `GROUP BY` summed in Swift.
+    ///
+    /// `spendByKind` drops a row whose `kind` string does not decode — a run
+    /// written by a build with a fifth skill, met by this one — and it is right
+    /// to: it cannot name a column for it. The **total** must still count that
+    /// money, or an older build's spend would vanish from the one figure the
+    /// ceiling is enforced against.
+    @Test("Money spent on a skill this build cannot name is still in the total")
+    func anUnknownKindStillCounts() async throws {
+        let store = try store()
+        let repo = try await repo(store, "Elliot")
+        try await run(store, repo, kind: .createIssue, cost: 1)
+        // Written past the type, the way a future build would have written it.
+        try await store.testOnlyExecute(
+            #"UPDATE "skillRun" SET "kind" = 'summoniseRepo', "totalCostUSD" = 7"#)
+
+        let day = try await store.daySpend(since: now.addingTimeInterval(-3_600))
+        #expect(day.total.totalUSD == 7)
+        #expect(day.total.runs == 1)
+        #expect(day.byKind.isEmpty)
+        // So the columns are a floor here, and the total is the bill. Summing
+        // the columns instead would have reported nothing at all.
+        #expect(day.byKind.values.reduce(0) { $0 + $1.totalUSD } != day.total.totalUSD)
+    }
+
     @Test("The period is respected by every split, not only by the total")
     func periodAppliesToSplits() async throws {
         let store = try store()
