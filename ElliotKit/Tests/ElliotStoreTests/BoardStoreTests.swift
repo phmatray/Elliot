@@ -45,6 +45,65 @@ struct BoardStoreTests {
         _ = try BoardStore.inMemory()
     }
 
+    /// The sweep's write is the hazard, not the fix, so both are asserted here.
+    ///
+    /// `AppModel.refreshRepoChecks` captures a `Repo`, awaits a networked
+    /// `gh`/`git` sweep for seconds, then writes the captured row back. If that
+    /// write-back carries the whole row, a run-terms change made during the
+    /// window is silently reverted — and the field being reverted is the one
+    /// bounding what an unattended agent may do to the checkout.
+    @Test("Preflight's verdict is written without carrying the rest of the row")
+    func verdictWriteIsTargeted() async throws {
+        let store = try BoardStore.inMemory()
+        let repo = makeRepo()
+        try await store.saveRepo(repo)
+        let staleCopy = try #require(try await store.repo(id: repo.id))
+
+        // The reader tightens the repository while the sweep is in flight.
+        var tightened = staleCopy
+        tightened.permissionMode = .plan
+        tightened.extraAllowedTools = ["Read"]
+        try await store.saveRepo(tightened)
+
+        // The sweep lands, holding the row it captured before the change.
+        try await store.saveRepoPreflight(id: staleCopy.id, verdict: .passing)
+
+        let after = try #require(try await store.repo(id: repo.id))
+        #expect(after.preflight == .passing)
+        #expect(after.permissionMode == .plan, "the sweep reverted the mode")
+        #expect(after.extraAllowedTools == ["Read"], "the sweep reverted the tools")
+    }
+
+    /// The same sequence through the write this replaces, so the test names what
+    /// goes wrong rather than only asserting that it no longer does. If this
+    /// ever passes, `saveRepo` has quietly become targeted and the method above
+    /// has lost its reason to exist.
+    @Test("A whole-row write-back from a stale copy is what loses the setting")
+    func wholeRowWriteBackRevertsTheSetting() async throws {
+        let store = try BoardStore.inMemory()
+        let repo = makeRepo()
+        try await store.saveRepo(repo)
+        var staleCopy = try #require(try await store.repo(id: repo.id))
+
+        var tightened = staleCopy
+        tightened.permissionMode = .plan
+        try await store.saveRepo(tightened)
+
+        staleCopy.preflight = .passing
+        try await store.saveRepo(staleCopy)
+
+        let after = try #require(try await store.repo(id: repo.id))
+        #expect(after.preflight == .passing)
+        #expect(after.permissionMode == .bypassPermissions, "the hazard has changed shape")
+    }
+
+    @Test("Writing a verdict for a repository that is gone changes nothing and does not throw")
+    func verdictWriteForAnAbsentRepoIsQuiet() async throws {
+        let store = try BoardStore.inMemory()
+        try await store.saveRepoPreflight(id: UUID(), verdict: .failing)
+        #expect(try await store.repos().isEmpty)
+    }
+
     @Test("A repo round-trips")
     func repoRoundTrip() async throws {
         let store = try BoardStore.inMemory()
