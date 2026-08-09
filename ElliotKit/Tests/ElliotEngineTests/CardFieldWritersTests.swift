@@ -82,8 +82,20 @@ struct CardFieldWritersTests {
     }
 
     /// The gate is worth nothing if the files it names are not the files that
-    /// exist: a rename would turn it into a test that reads nothing and passes,
-    /// which is the failure mode every source-reading gate has.
+    /// exist.
+    ///
+    /// ⚠️ Measured, because the sentence that used to be here was wrong in the
+    /// reassuring direction. It said a rename *"would turn it into a test that
+    /// reads nothing and passes"*. It does not: `String(contentsOf:encoding:)`
+    /// throws `NSCocoaErrorDomain` 260 on a missing path, an uncaught throw
+    /// fails a `throws` test, and **both** tests here go red by name.
+    ///
+    /// The gap that is real is narrower, and this test does not close it
+    /// either: a watched file left **present but empty**. `"".components(
+    /// separatedBy: "\n")` is `[""]` — one element, not zero — so the
+    /// expectation below passes, and the gate above then finds trivially no
+    /// offenders. Green, guarding nothing. It takes a truncation that keeps the
+    /// exact filename, which is why it is named here rather than patched.
     @Test("Each watched file is there to be read", arguments: watchedFiles)
     func watchedFilesExist(name: String) throws {
         let lines = try Self.read(name)
