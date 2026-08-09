@@ -445,7 +445,7 @@ public final class AppModel {
     /// does not.
     ///
     /// Cleared at exactly two points — the top of ``startAnalysis(repoID:angles:instructions:maxStories:)``
-    /// and ``openAnalysis(id:)`` — and set at exactly one. ``closeAnalysis()``
+    /// and ``openAnalysis(_:)`` — and set at exactly one. ``closeAnalysis()``
     /// deliberately leaves it alone: returning to setup after an analysis that
     /// ran is not a failure.
     ///
@@ -2294,6 +2294,33 @@ public final class AppModel {
 
     // MARK: - Analysis
 
+    /// Which repository the analysis panel is about — the one answer, read by
+    /// the header, the run rows, the evidence links and the Start button.
+    ///
+    /// While a session is open it is that analysis's **own** repository, and
+    /// moving the board's picker cannot change it. With nothing open the panel
+    /// is a setup form aimed at whatever is picked, which is what Start will
+    /// target — that fallback is the whole of the second half.
+    ///
+    /// ⛔ The panel used to compute this itself as
+    /// `repos.first { $0.id == selectedRepoID }`, five times over, and the
+    /// picker has nothing to do with which repository an open analysis read
+    /// (#213). Read this rather than reaching for `selectedRepoID` again: a
+    /// second expression for the same question is how the two answers get to
+    /// disagree, and `AnalysisPanelViewSourceTests` fails if one comes back.
+    public var analysisRepoID: UUID? { analysis?.repoID ?? selectedRepoID }
+
+    /// ``analysisRepoID`` resolved against the registered repositories.
+    ///
+    /// `nil` when the analysis's repository has since been forgotten — the
+    /// header renders `…` and evidence chips go un-clickable, which is strictly
+    /// better than the silent borrowing of whichever repository happened to be
+    /// picked. It deliberately does **not** fall through to the picker: an
+    /// unresolvable subject is a different fact from an absent one.
+    public var analysisRepo: Repo? {
+        analysisRepoID.flatMap { id in repos.first { $0.id == id } }
+    }
+
     /// Why an analysis cannot start right now, or `nil` when it can.
     ///
     /// One answer, read by both surfaces: the toolbar button's tooltip and the
@@ -2305,6 +2332,12 @@ public final class AppModel {
     /// `isEnabled` and the in-flight dedupe and nothing else, so eight
     /// unattended runs could have started in a checkout Preflight had already
     /// refused. The gate belongs on the act, not on the panel's visibility.
+    /// ⚠️ Reads ``selectedRepoID``, not ``analysisRepoID``, and that is not an
+    /// oversight: it gates **Start**, which renders only in setup — the branch
+    /// where the two are equal by construction — and its first sentence is what
+    /// tells the reader *which* repository Start would target. Pointing it at
+    /// ``analysisRepoID`` would compile, read as tidier, and quietly make it
+    /// answerable for a session it has no business refusing.
     public var analysisRefusal: String? {
         guard let id = selectedRepoID, let repo = repos.first(where: { $0.id == id }) else {
             return "Pick a single repository to analyse."
@@ -2332,7 +2365,7 @@ public final class AppModel {
                 maxStoriesPerAngle: maxStories, origin: .manual
             )
             analysis = nil
-            openAnalysis(id: started.analysis.id)
+            openAnalysis(started.analysis)
         } catch {
             // Not `analysis?.note`: this is a *failed* start, so there is no
             // session and that assignment was a no-op that compiled and read as
@@ -2346,7 +2379,20 @@ public final class AppModel {
         }
     }
 
-    public func openAnalysis(id: UUID) {
+    /// Opens `analysis` in the panel.
+    ///
+    /// ⛔ **Takes the whole `Analysis`, not its id, and that is the fix rather
+    /// than a convenience.** An id alone cannot say which repository the
+    /// analysis read, so a session opened from one was a session with no
+    /// subject — and the panel went looking for one in the board's picker
+    /// (#213). Both callers already hold an `Analysis`, so naming the
+    /// repository costs nothing and forgetting it stops compiling.
+    /// The parameter is `opened` rather than `analysis` on purpose: `analysis`
+    /// is also the stored session this method assigns, and a parameter of a
+    /// *different* type shadowing it makes every bare mention in the body mean
+    /// the opposite of what it reads as.
+    public func openAnalysis(_ opened: Analysis) {
+        let id = opened.id
         // The failure belongs to a start that did not happen, not to the
         // analysis about to be on screen — including the one picked from the
         // header's *Earlier analyses* menu, which is the path that does not go
@@ -2355,7 +2401,7 @@ public final class AppModel {
         // One assignment. The outgoing session goes with it, and its
         // observation is cancelled by `ObservationHandle.deinit` rather than
         // by a line here that a sixth member could out-live.
-        analysis = AnalysisSession(id: id)
+        analysis = AnalysisSession(id: id, repoID: opened.repoID)
         Task { await refreshAnalysisRuns() }
 
         // Proposals arrive run by run, so the list fills in as each angle
@@ -2419,9 +2465,16 @@ public final class AppModel {
         await presenterHandle(.analysisFinished(analysisID: id, repo: repo, proposalCount: kept))
     }
 
+    /// The *Earlier analyses* menu, scoped to the repository the **panel** is
+    /// about rather than to the board's picker (#213) — otherwise it offers a
+    /// different repository's history, and opening one of those rows is how the
+    /// panel ended up mismatched in the first place.
+    ///
+    /// Reads ``analysisRepoID``, it does not watch it: the caller re-asks, which
+    /// is why the panel's `.task` is keyed on that same value.
     public func recentAnalyses() async -> [Analysis] {
         guard let store else { return [] }
-        return (try? await store.analyses(repoID: selectedRepoID, limit: 20)) ?? []
+        return (try? await store.analyses(repoID: analysisRepoID, limit: 20)) ?? []
     }
 
     /// One page of the finished history, and how many rows the same filter
@@ -2585,7 +2638,12 @@ public final class AppModel {
         activeRuns = active
         runsByCard = byCard
         recentRuns = recent
-        if !analysis.isEmpty { self.analysis = AnalysisSession(id: UUID(), runs: analysis) }
+        if !analysis.isEmpty {
+            // A repository id these runs do not belong to would be a fixture
+            // that disagrees with itself, so it comes off the runs.
+            let repoID = analysis.first?.repoID ?? UUID()
+            self.analysis = AnalysisSession(id: UUID(), repoID: repoID, runs: analysis)
+        }
     }
 
     /// Seeds the analysis window's state without a store behind it.
