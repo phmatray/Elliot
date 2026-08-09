@@ -114,7 +114,7 @@ The same four steps are available over MCP: `board_analyze_repo`,
 ## Build and run
 
 ```bash
-cd ElliotKit && swift test          # 459 tests, no Xcode needed
+cd ElliotKit && swift test          # the whole suite; no Xcode, no tokens, no network
 ./Scripts/build-app.sh              # assembles dist/Elliot.app
 open dist/Elliot.app
 ```
