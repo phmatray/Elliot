@@ -15,7 +15,7 @@ public struct ProposedStory: Codable, Sendable, Hashable {
     public var rationale: String
     /// `"Sources/ElliotProcess/ClaudeRunner.swift:142"`. At least one required.
     public var evidence: [String]
-    /// `small` | `medium` | `large`; anything else degrades to medium.
+    /// `small` | `medium` | `large`; anything else is recorded as unstated.
     public var effort: String
 
     public init(
@@ -26,7 +26,7 @@ public struct ProposedStory: Codable, Sendable, Hashable {
         acceptanceCriteria: [String] = [],
         rationale: String = "",
         evidence: [String] = [],
-        effort: String = "medium"
+        effort: String = ""
     ) {
         self.title = title
         self.role = role
@@ -59,7 +59,7 @@ public struct ProposedStory: Codable, Sendable, Hashable {
             ?? []
         rationale = try container.decodeIfPresent(String.self, forKey: .rationale) ?? ""
         evidence = try container.decodeIfPresent([String].self, forKey: .evidence) ?? []
-        effort = try container.decodeIfPresent(String.self, forKey: .effort) ?? "medium"
+        effort = try container.decodeIfPresent(String.self, forKey: .effort) ?? ""
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -92,11 +92,18 @@ public struct ProposedStory: Codable, Sendable, Hashable {
 
 public enum Effort: String, Codable, CaseIterable, Sendable, Hashable {
     case small, medium, large
+    /// The model said nothing an effort could be read out of.
+    ///
+    /// Its own case rather than a fold onto `.medium`: "somebody sized this as
+    /// medium" and "nobody sized this" are different facts, and only the first
+    /// one may feed a queue that engages cards with nobody watching. `.medium`
+    /// survives as a size a model can state, never as one Elliot invents.
+    case unstated
 
-    /// Anything unrecognised becomes `.medium`. A wrong size is a nuisance; a
-    /// dropped story is a loss.
+    /// Anything unrecognised becomes `.unstated`. A wrong size is a nuisance; a
+    /// size nobody chose, presented as one somebody did, is worse than either.
     public static func parse(_ raw: String) -> Effort {
-        Effort(rawValue: raw.trimmed().lowercased()) ?? .medium
+        Effort(rawValue: raw.trimmed().lowercased()) ?? .unstated
     }
 }
 
