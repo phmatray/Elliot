@@ -464,6 +464,19 @@ public final class AppModel {
         set { analysis?.selection = newValue }
     }
 
+    /// Which decided group the review list is showing (#331).
+    ///
+    /// The same pass-through `analysisSelection` is, for the same two reasons:
+    /// on the session so it dies with the analysis it filters (#290), and read
+    /// through here so the panel binds to one property rather than reaching
+    /// into the session. Reads `.proposed` and swallows a write when no analysis
+    /// is open — in setup there is no list to filter, so there is nothing a
+    /// write could mean.
+    public var analysisReview: ProposalStatus {
+        get { analysis?.review ?? .proposed }
+        set { analysis?.review = newValue }
+    }
+
     /// The open proposal editor and everything typed into it.
     ///
     /// On the session for the same two reasons as `analysisSelection`: it must

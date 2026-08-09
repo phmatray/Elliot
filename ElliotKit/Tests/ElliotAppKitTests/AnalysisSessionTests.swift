@@ -45,6 +45,9 @@ struct AnalysisSessionTests {
         #expect(session.proposals.isEmpty)
         #expect(session.note == nil)
         #expect(session.observation == nil)
+        // Criterion 1 of #331, and it is bought by the default rather than by
+        // anything asserting it: the panel opens on the triage it exists for.
+        #expect(session.review == .proposed)
     }
 
     @Test("Rows are accepted only by the analysis they were read for")
@@ -140,6 +143,45 @@ struct AppModelAnalysisSessionTests {
         #expect(model.analysis?.note == nil)
         #expect(model.analysis?.runs.isEmpty == true)
         #expect(model.analysis?.proposals.isEmpty == true)
+    }
+
+    /// Criteria 1 and 4 of #331, and neither is bought by a reset line. The
+    /// member defaults to `.proposed` and `openAnalysis` is one assignment of a
+    /// whole new session, so there is nothing to forget.
+    @Test("Every analysis opens on the undecided group, including one reopened from Earlier analyses")
+    func reviewReDefaultsOnEveryOpen() {
+        let model = model()
+        let first = UUID()
+        model.openAnalysis(analysisFixture(repoID: UUID(), id: first))
+        #expect(model.analysisReview == .proposed)
+
+        model.analysisReview = .rejected
+        #expect(model.analysis?.review == .rejected)
+
+        // A *different* analysis — the Earlier analyses path, which never goes
+        // through `startAnalysis`.
+        model.openAnalysis(analysisFixture(repoID: UUID(), id: UUID()))
+        #expect(model.analysisReview == .proposed)
+
+        // And the same one again, which is the other way that menu is used.
+        model.analysisReview = .accepted
+        model.openAnalysis(analysisFixture(repoID: UUID(), id: first))
+        #expect(model.analysisReview == .proposed)
+    }
+
+    /// The pass-through reads the triage group and swallows a write when there
+    /// is no analysis — the same answer `analysisSelection` gives, for the same
+    /// reason: in setup there is no list to filter.
+    @Test("With no analysis open the review filter reads proposed and cannot be written")
+    func reviewIsInertInSetup() {
+        let model = model()
+        #expect(model.analysis == nil)
+        #expect(model.analysisReview == .proposed)
+
+        model.analysisReview = .accepted
+
+        #expect(model.analysis == nil)
+        #expect(model.analysisReview == .proposed)
     }
 
     @Test("A stall, and the recovery after it, still reach the analysis window")
