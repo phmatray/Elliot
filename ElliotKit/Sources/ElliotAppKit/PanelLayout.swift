@@ -61,6 +61,7 @@ enum PanelPane: String, CaseIterable, Hashable, Sendable, Identifiable {
 /// `armPendingMerge` opens the panel *in order to* show it.
 enum PanelHeaderRegion: Hashable, Sendable {
     case mergeConfirmation
+    case lastError
     case nextStep
     case paneSwitch
 }
@@ -230,11 +231,20 @@ enum PanelLayout {
     /// all, and it is the one block that survives edit mode: the editor replaces
     /// the body, so there is no pane to switch and no next step to take until it
     /// closes, but an armed merge is still waiting on an answer.
+    ///
+    /// `.lastError` is the second block that survives edit mode, and for a
+    /// reason of its own rather than by analogy. `lastError` is what
+    /// `VerifiedOutcome.applied(to:)` writes when a run went badly, and the run
+    /// that most often goes badly is `create-issue` — which leaves the card
+    /// with no issue number, hence still editable. So the editor is precisely
+    /// where a reader reads that error and tries again; hiding it there would
+    /// hide it in the one state that needs it.
     static func headerRegions(
-        spans: Int, isEditing: Bool, isMergePending: Bool, hasNextStep: Bool
+        spans: Int, isEditing: Bool, isMergePending: Bool, hasNextStep: Bool, hasLastError: Bool
     ) -> [PanelHeaderRegion] {
         var regions: [PanelHeaderRegion] = []
         if isMergePending { regions.append(.mergeConfirmation) }
+        if hasLastError { regions.append(.lastError) }
         guard !isEditing else { return regions }
         if hasNextStep { regions.append(.nextStep) }
         // Exactly when something is hidden. A switch offering a choice between

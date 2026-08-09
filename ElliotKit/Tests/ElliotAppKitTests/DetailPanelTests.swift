@@ -49,7 +49,7 @@ struct DetailPanelTests {
                     spans: span,
                     isEditing: false,
                     isMergePending: true,
-                    hasNextStep: hasNextStep
+                    hasNextStep: hasNextStep, hasLastError: false
                 )
 
                 #expect(header.contains(.mergeConfirmation))
@@ -69,7 +69,7 @@ struct DetailPanelTests {
                             spans: span,
                             isEditing: false,
                             isMergePending: true,
-                            hasNextStep: hasNextStep
+                            hasNextStep: hasNextStep, hasLastError: false
                         ) == header
                     )
                 }
@@ -81,7 +81,7 @@ struct DetailPanelTests {
     func mergeConfirmationSurvivesTheEditor() {
         for span in spans {
             let editing = PanelLayout.headerRegions(
-                spans: span, isEditing: true, isMergePending: true, hasNextStep: true
+                spans: span, isEditing: true, isMergePending: true, hasNextStep: true, hasLastError: false
             )
             // The editor replaces the body, so there is no pane to switch and no
             // next step to take — but an answer is still being waited on.
@@ -93,7 +93,7 @@ struct DetailPanelTests {
     func nothingIsDrawnWithoutAPendingMerge() {
         for span in spans {
             let header = PanelLayout.headerRegions(
-                spans: span, isEditing: false, isMergePending: false, hasNextStep: true
+                spans: span, isEditing: false, isMergePending: false, hasNextStep: true, hasLastError: false
             )
             #expect(!header.contains(.mergeConfirmation))
             #expect(header.first == .nextStep)
@@ -131,7 +131,7 @@ struct DetailPanelTests {
             for pane in PanelPane.allCases {
                 let visible = PanelLayout.panes(spans: span, selected: pane)
                 let hasSwitch = PanelLayout.headerRegions(
-                    spans: span, isEditing: false, isMergePending: false, hasNextStep: true
+                    spans: span, isEditing: false, isMergePending: false, hasNextStep: true, hasLastError: false
                 )
                 .contains(.paneSwitch)
 
@@ -151,7 +151,7 @@ struct DetailPanelTests {
         // empty — the same rule `IssuePane.sections` follows.
         for span in spans {
             let none = PanelLayout.headerRegions(
-                spans: span, isEditing: false, isMergePending: false, hasNextStep: false
+                spans: span, isEditing: false, isMergePending: false, hasNextStep: false, hasLastError: false
             )
             #expect(!none.contains(.nextStep))
         }
@@ -162,19 +162,73 @@ struct DetailPanelTests {
         #expect(terminal == [.done])
     }
 
+    // MARK: - 3b. What went wrong cannot be hidden either
+
+    /// `lastError` is what `VerifiedOutcome.applied(to:)` writes when a run went
+    /// badly, and `CardView` was the only thing in the app that drew it — 11pt,
+    /// two lines, no tooltip, inside a column that can be 226pt wide. Putting it
+    /// in a *header region* rather than a pane is what stops the pane switch
+    /// hiding it, and that guarantee comes from this list rather than from care
+    /// taken in the view.
+    @Test("The last error is in the header at every span and on every pane")
+    func lastErrorSurvivesTheSwitch() {
+        for span in spans {
+            let header = PanelLayout.headerRegions(
+                spans: span, isEditing: false, isMergePending: false,
+                hasNextStep: true, hasLastError: true
+            )
+            #expect(header.contains(.lastError))
+            #expect(header.first == .lastError)
+        }
+    }
+
+    /// The second block that outlives edit mode, and for a reason of its own:
+    /// the run that most often fails is `create-issue`, which leaves the card
+    /// with no issue number and therefore still editable. Hiding the error in
+    /// the editor would hide it in the one state that needs it.
+    @Test("The last error outlives edit mode, beside the armed merge")
+    func lastErrorSurvivesTheEditor() {
+        for span in spans {
+            let editing = PanelLayout.headerRegions(
+                spans: span, isEditing: true, isMergePending: false,
+                hasNextStep: true, hasLastError: true
+            )
+            #expect(editing == [.lastError])
+        }
+    }
+
+    @Test("No error, no block")
+    func noSlotIsReservedForAnErrorThatIsNotThere() {
+        for span in spans {
+            let header = PanelLayout.headerRegions(
+                spans: span, isEditing: false, isMergePending: false,
+                hasNextStep: true, hasLastError: false
+            )
+            #expect(!header.contains(.lastError))
+        }
+    }
+
     // MARK: - 4. Reading order
 
-    @Test("Header order is fixed: confirmation, next step, switch")
+    @Test("Header order is fixed: confirmation, error, next step, switch")
     func headerReadsInOneOrder() {
         let full = PanelLayout.headerRegions(
-            spans: 2, isEditing: false, isMergePending: true, hasNextStep: true
+            spans: 2, isEditing: false, isMergePending: true, hasNextStep: true, hasLastError: false
         )
         #expect(full == [.mergeConfirmation, .nextStep, .paneSwitch])
 
         let wide = PanelLayout.headerRegions(
-            spans: 3, isEditing: false, isMergePending: true, hasNextStep: true
+            spans: 3, isEditing: false, isMergePending: true, hasNextStep: true, hasLastError: false
         )
         #expect(wide == [.mergeConfirmation, .nextStep])
+
+        // The armed merge stays first — it is the one act that cannot be undone
+        // and #85 put it above everything else deliberately. The error sits
+        // directly under it, above the next step it very often explains.
+        let both = PanelLayout.headerRegions(
+            spans: 2, isEditing: false, isMergePending: true, hasNextStep: true, hasLastError: true
+        )
+        #expect(both == [.mergeConfirmation, .lastError, .nextStep, .paneSwitch])
     }
 
     // MARK: - 5. The width the panel asks for
