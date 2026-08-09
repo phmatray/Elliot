@@ -1186,6 +1186,111 @@ struct AppModelTests {
         #expect(model.startFailure != nil)
     }
 
+    // MARK: - Lenses that are already reading
+
+    /// The setup grid could not know: `runningAngles` reads the open session's
+    /// runs, and in setup there is no session — so all eight tiles looked
+    /// identical whether an angle was free or busy, and arming eight while one
+    /// was running started **nothing** and said one sentence about one lens
+    /// (#293).
+    @Test("A lens with a run already holding it comes back busy, with the tile's own words")
+    func aBusyLensIsVisibleFromSetup() async throws {
+        let store = try BoardStore.inMemory()
+        let subject = repo("subject")
+        let model = analysisModel(store: store, repo: subject)
+        try await store.saveRepo(subject)
+
+        // Nothing is reading yet, so nothing is marked. The positive witness for
+        // every negative below.
+        await model.refreshBusyLenses()
+        #expect(AnalysisAngle.allCases.allSatisfy { model.lensBusy($0) == nil })
+
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.analysis != nil)
+        // Back to the setup form, which is the only place the tiles are drawn.
+        // The Bugs run is still in flight — `InertLauncher` never finishes it.
+        model.closeAnalysis()
+
+        await model.refreshBusyLenses()
+        // Queued rather than reading: the launcher is inert, so the run has been
+        // accepted and never spawned — and that state has no elapsed time,
+        // which is why `LensBusy` has two cases rather than an optional date.
+        #expect(model.lensBusy(.bugs) == .queued)
+        #expect(model.lensBusy(.techDebt) == nil)
+    }
+
+    @Test("Only the armed lenses clash, and they are what the footer names")
+    func clashesAreTheArmedBusyOnes() async throws {
+        let store = try BoardStore.inMemory()
+        let subject = repo("subject")
+        let model = analysisModel(store: store, repo: subject)
+        try await store.saveRepo(subject)
+
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+        model.closeAnalysis()
+        await model.refreshBusyLenses()
+
+        // Busy but not armed: no clash, because Start is not being asked for it.
+        model.analysisAngles = [.tests]
+        #expect(model.clashingLenses.isEmpty)
+
+        model.analysisAngles = [.bugs, .tests]
+        #expect(model.clashingLenses == [.bugs])
+        // Through the value the footer renders, so this covers the sentence and
+        // not merely the storage.
+        let shown = AnalysisFooterMessage.setup(
+            angleCount: model.analysisAngles.count,
+            clashing: model.clashingLenses,
+            failure: model.startFailure,
+            refusal: model.analysisRefusal)
+        #expect(shown.text.hasPrefix("Bugs already had a run in flight"))
+    }
+
+    /// ⛔ #213's axis, on the seal this time. The picker can move while the read
+    /// is in flight, and a set of angles that did not carry its repository would
+    /// be drawn under the header of one it was never read for.
+    @Test("A reading taken for one repository marks nothing in another")
+    func busyLensesAreScopedToTheirRepository() async throws {
+        let store = try BoardStore.inMemory()
+        let a = repo("a")
+        let b = repo("b")
+        let model = AppModel()
+        model.testOnlySeed(repos: [a, b], cards: [])
+        model.selectedRepoID = a.id
+        model.testOnlyAttachAnalysisService(analysisService(store: store))
+        try await store.saveRepo(a)
+        try await store.saveRepo(b)
+
+        await model.startAnalysis(repoID: a.id, angles: [.bugs], instructions: "", maxStories: 8)
+        model.closeAnalysis()
+        await model.refreshBusyLenses()
+        model.analysisAngles = [.bugs]
+        #expect(model.lensBusy(.bugs) == .queued)
+        #expect(model.clashingLenses == [.bugs])
+
+        // The picker moves. B has nothing reading it, and A's reading says
+        // nothing about B — before any refresh has had a chance to run.
+        model.selectedRepoID = b.id
+        #expect(model.lensBusy(.bugs) == nil)
+        #expect(model.clashingLenses.isEmpty)
+
+        // And back: the reading is still A's, and still true of A.
+        model.selectedRepoID = a.id
+        #expect(model.lensBusy(.bugs) == .queued)
+    }
+
+    @Test("The armed lenses are read in the strip's order, by Start and by the footer alike")
+    func armedAnglesFollowTheStrip() {
+        let model = AppModel()
+        model.analysisAngles = [.bestPractices, .bugs, .tests]
+        #expect(model.armedAngles == [.bugs, .tests, .bestPractices])
+
+        model.analysisAngles = []
+        #expect(model.armedAngles.isEmpty)
+    }
+
     @Test("A failure outranks the consequence until it is cleared, whatever the lenses do")
     func failureSurvivesTogglingLenses() async throws {
         // The spec's rule, and the one with teeth: toggling a lens changes what

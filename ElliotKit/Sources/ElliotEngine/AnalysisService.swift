@@ -68,10 +68,24 @@ public actor AnalysisService {
         // rule as a second `implement-issue 47`. It is also what contains the
         // one loop worth worrying about: an analysis run inherits the user's
         // MCP config, so its agent can see `elliot` and call board_analyze_repo.
-        let inFlight = Set(
-            (try await store.activeAnalysisRuns(repoID: repoID)).compactMap(\.analysisAngle)
-        )
-        if let clash = wanted.first(where: inFlight.contains) {
+        //
+        // ⛔ **All or nothing, and that is a decision rather than an accident of
+        // where the `throw` sits.** Arming eight lenses while one is busy starts
+        // none of them. Launching the other seven would be a *partial* success
+        // that no caller can see: `board_analyze_repo` would answer with fewer
+        // runs than it was asked for and no error, and `Analysis.angles` would
+        // have to record the reduced set — so the panel, the harvester's
+        // fallback angle and the MCP reply would all quietly describe something
+        // other than what was requested. A named refusal is the cheaper failure.
+        // What #293 fixes is that the refusal used to arrive only *after* the
+        // press; the setup grid and footer now say it before.
+        //
+        // Through `BusyLenses` rather than a `Set` built here: the panel draws
+        // its seals from the same value, so the hint and the fact are one query
+        // and one rule rather than two that agree today.
+        let busy = BusyLenses(
+            repoID: repoID, runs: try await store.activeAnalysisRuns(repoID: repoID))
+        if let clash = busy.clashes(with: wanted, in: repoID).first {
             throw AnalysisError.angleAlreadyRunning(clash)
         }
 
@@ -153,6 +167,22 @@ public actor AnalysisService {
     }
 
     // MARK: - Reading
+
+    /// Which lenses are already reading `repoID`, right now.
+    ///
+    /// The **same query and the same rule** `start` refuses on, exposed so the
+    /// setup grid can say so before the press instead of after it. Two readers
+    /// of one fact rather than a second implementation of it: a panel that
+    /// counted "busy" its own way would be free to disagree with the throw, and
+    /// the reader would have no way to tell which one was wrong.
+    ///
+    /// ⚠️ **It is a snapshot, and it stays one.** A run can start between this
+    /// answer and the press — the caller's own MCP agent can start it — so
+    /// nothing built on this may refuse anything. `start` is the authority; this
+    /// is the courtesy.
+    public func busyLenses(repoID: UUID) async throws -> BusyLenses {
+        BusyLenses(repoID: repoID, runs: try await store.activeAnalysisRuns(repoID: repoID))
+    }
 
     public func analyses(repoID: UUID? = nil, limit: Int = 50) async throws -> [Analysis] {
         try await store.analyses(repoID: repoID, limit: limit)

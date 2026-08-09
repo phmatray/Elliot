@@ -136,7 +136,24 @@ struct AnalysisPanelView: View {
         // appeared and never again — so *Earlier analyses* listed whatever
         // repository happened to be picked at that instant, permanently, and
         // no later change could correct it (#213).
-        .task(id: model.analysisRepoID) { past = await model.recentAnalyses() }
+        .task(id: model.analysisRepoID) {
+            past = await model.recentAnalyses()
+            // ⚠️ **Re-read, not read once.** The whole value of a busy seal is
+            // that it is current: a lens that finishes while the reader sits on
+            // this form would otherwise stay marked until the panel is closed,
+            // telling them to wait for a run that has ended — a stale hint is
+            // worse than none, because there is nothing on screen to disbelieve.
+            // Nothing pushes here: an analysis started over MCP, or one left
+            // running by the last session, is exactly the case the seal is for,
+            // and neither passes through this model. Cancelled with the view,
+            // which is what hiding the panel does.
+            while !Task.isCancelled {
+                // Only setup draws the tiles. While a session is open the answer
+                // is on screen already, in the lens strip.
+                if model.analysis == nil { await model.refreshBusyLenses() }
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
         // ⚠️ A proposal can be accepted or rejected over MCP — or by this
         // panel's own footer — while the editor is hidden. Re-applying a draft
         // over a decided proposal is worse than losing it: an accepted one
@@ -243,7 +260,14 @@ struct AnalysisPanelView: View {
                         spacing: 10
                     ) {
                         ForEach(AnalysisAngle.allCases, id: \.self) { angle in
-                            LensTile(angle: angle, isOn: model.analysisAngles.contains(angle)) {
+                            LensTile(
+                                angle: angle,
+                                isOn: model.analysisAngles.contains(angle),
+                                // Scoped to the panel's repository by the model,
+                                // so this view cannot hold the mismatch it would
+                                // otherwise be free to draw (#213's axis).
+                                busy: model.lensBusy(angle)
+                            ) {
                                 if model.analysisAngles.contains(angle) { model.analysisAngles.remove(angle) } else { model.analysisAngles.insert(angle) }
                             }
                         }
@@ -519,8 +543,17 @@ struct AnalysisPanelView: View {
         !group.isEmpty && group.allSatisfy { model.analysisSelection.contains($0.id) }
     }
 
-    /// Grounding is the one objective fact available about an opinion, so it is
-    /// the one bulk selection worth offering.
+    /// The two bulk selections worth offering, and they are the two objective
+    /// things known about an opinion: whether the files it cites are there, and
+    /// whether its text already exists somewhere.
+    ///
+    /// ⛔ **Both *select*; neither decides.** The flagged rows are a courtesy —
+    /// `StoryProposal.duplicateOf` says in as many words that skipping a
+    /// near-duplicate is the reader's call — so a one-click *Reject the
+    /// duplicates* would turn a hint into a refusal, on a score
+    /// (`TextSimilarity`, threshold 0.6) that has no business making that
+    /// decision. Selecting puts the whole set one click from the footer's
+    /// Reject **and** one click from its Accept, with the rows still on screen.
     private func selectionBar(_ proposed: [StoryProposal]) -> some View {
         HStack(spacing: 10) {
             Fact(text: "\(model.analysisSelection.count) of \(proposed.count) selected", small: true)
@@ -532,6 +565,18 @@ struct AnalysisPanelView: View {
             .buttonStyle(.plain)
             .font(Type.prose)
             .disabled(grounded.isEmpty)
+
+            let flagged = proposed.filter(\.looksDuplicated).map(\.id)
+            Button("Select the \(flagged.count) flagged") {
+                model.analysisSelection = Set(flagged)
+            }
+            .buttonStyle(.plain)
+            .font(Type.prose)
+            .disabled(flagged.isEmpty)
+            .help(
+                "Selects every proposal that looks like a card, an open issue, or a story another "
+                    + "lens already proposed. Selecting is not deciding — Accept and Reject are "
+                    + "still yours.")
 
             Button("Clear") { model.analysisSelection = [] }
                 .buttonStyle(.plain)
@@ -582,6 +627,7 @@ struct AnalysisPanelView: View {
                 // the decision now; this renders it.
                 let message = AnalysisFooterMessage.setup(
                     angleCount: model.analysisAngles.count,
+                    clashing: model.clashingLenses,
                     failure: model.startFailure,
                     refusal: model.analysisRefusal
                 )
@@ -656,7 +702,11 @@ struct AnalysisPanelView: View {
                     Task {
                         await model.startAnalysis(
                             repoID: repoID,
-                            angles: AnalysisAngle.allCases.filter(model.analysisAngles.contains),
+                            // The same ordered list the footer names in its
+                            // clash sentence and the service refuses on, read
+                            // through one property so the three cannot disagree
+                            // about which lens comes first.
+                            angles: model.armedAngles,
                             instructions: model.analysisInstructions,
                             maxStories: model.analysisMaxStories
                         )
@@ -750,10 +800,26 @@ extension AnalysisFooterMessage.Tone {
 
 /// An angle as something you arm, not a row in a settings list. The eight
 /// lenses are what this feature *is*; a column of checkboxes says otherwise.
+///
+/// ⛔ **A busy tile is still tickable, and never `.disabled`.** #151 removed a
+/// `.disabled` from the Analyse toggle on the argument that a control you cannot
+/// switch off is worse than one that opens onto an explanation, and a lens you
+/// cannot untick is that trap one screen in — the reader's whole remedy for a
+/// clash is to untick it. It is worse here than there, too: `busy` is a snapshot
+/// and can be wrong, so a disabled tile would be a control taken away on the
+/// strength of a hint. `AnalysisPanelViewSourceTests` fails if a `.disabled`
+/// comes back.
 struct LensTile: View {
     let angle: AnalysisAngle
     let isOn: Bool
+    /// How far along a run already holding this lens is, or `nil` when it is
+    /// free. See ``BusyLenses`` — a reading, not a fact.
+    let busy: LensBusy?
     let toggle: () -> Void
+
+    /// Armed *and* busy: the pair that makes Start refuse the whole set. Neither
+    /// half alone does, which is why this is what the tile's ground reacts to.
+    private var blocksStart: Bool { isOn && busy != nil }
 
     var body: some View {
         Button(action: toggle) {
@@ -762,30 +828,105 @@ struct LensTile: View {
                     Text(angle.symbol)
                     Text(angle.title).font(Type.rowTitle)
                     Spacer()
+                    // ⛔ The mark stays the tick, and the busy signal goes in the
+                    // body line instead. The dossier proposed replacing it with
+                    // an attention seal; that costs the one thing the mark is
+                    // for — *did I arm this?* — on exactly the tiles where the
+                    // question matters most, because armed-and-busy is the set
+                    // that blocks Start and the reader is about to go looking
+                    // for it. Busy-ness is the tile's other axis, so it gets its
+                    // own line rather than the same glyph.
                     Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
                         .font(.system(size: 12))
                         .foregroundStyle(isOn ? Palette.armed : Color.secondary.opacity(0.5))
                 }
-                Text(angle.briefing)
-                    .font(Type.prose)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let busy {
+                    busyLine(busy)
+                } else {
+                    Text(angle.briefing)
+                        .font(Type.prose)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(isOn ? Surface.wash(Palette.armed) : Surface.recess)
+            .background(ground)
             .clipShape(RoundedRectangle(cornerRadius: Metric.panelRadius))
             .overlay {
                 RoundedRectangle(cornerRadius: Metric.panelRadius)
-                    .strokeBorder(isOn
-                        ? Surface.washBorder(Palette.armed)
-                        : Color(nsColor: .separatorColor))
+                    .strokeBorder(border)
             }
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isOn ? [.isButton, .isSelected] : .isButton)
-        .accessibilityLabel("\(angle.title). \(angle.briefing)")
+        // The briefing is what this said before, and it is what the tile shows
+        // when the lens is free. When it is busy the reader needs the other
+        // sentence, so VoiceOver gets whatever is actually on the tile.
+        .accessibilityLabel(
+            "\(angle.title). \(busy.map(Self.description) ?? angle.briefing)")
+        .help(busy.map {
+            Self.description(of: $0)
+                + " Ticking it is still allowed; Start will refuse the whole set until it finishes."
+        } ?? angle.briefing)
+    }
+
+    /// ⚠️ Past tense and no promise about now: this is a reading the panel took,
+    /// and `AnalysisService` is what decides whether a Start goes. The footer's
+    /// clash sentence carries the same hedge for the same reason.
+    ///
+    /// ⛔ **Two sentences, because there are two states.** Found by looking at
+    /// the running app: a queued lens read *"Already reading   queued"*, which
+    /// says two contradictory things in four words. The enum has the answer —
+    /// this switches on it rather than treating queued as reading-without-a-clock.
+    private static func description(of busy: LensBusy) -> String {
+        switch busy {
+        case .queued:
+            "A run for this lens was already queued when the lenses were last checked."
+        case .reading:
+            "This lens was already reading the repository when the lenses were last checked."
+        }
+    }
+
+    /// The stopwatch, for the one busy state that has started.
+    ///
+    /// `TimelineView` rather than a stored tick: the same mechanism
+    /// `LensRunRow` uses for a run in flight, so a lens reads the same however
+    /// you are watching it.
+    @ViewBuilder
+    private func busyLine(_ busy: LensBusy) -> some View {
+        HStack(spacing: 6) {
+            switch busy {
+            case .reading(let since):
+                Label("Already reading", systemImage: "hourglass")
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.attention)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Fact(text: Elapsed.short(from: since, to: context.date),
+                         tint: Palette.quiet, small: true)
+                }
+            case .queued:
+                // No stopwatch, and no second word: a queued run has not begun,
+                // so inventing an elapsed time from `createdAt` would be a
+                // clock on something that is not running.
+                Label("Already queued", systemImage: "hourglass")
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.attention)
+            }
+            Spacer(minLength: 0)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var ground: Color {
+        if blocksStart { return Surface.wash(Palette.attention) }
+        return isOn ? Surface.wash(Palette.armed) : Surface.recess
+    }
+
+    private var border: Color {
+        if blocksStart { return Surface.washBorder(Palette.attention) }
+        return isOn ? Surface.washBorder(Palette.armed) : Color(nsColor: .separatorColor)
     }
 }
 
