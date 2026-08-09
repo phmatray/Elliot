@@ -33,6 +33,33 @@ public enum NotGreenReason: Equatable, Sendable, Hashable {
     case noBuildVerdict
 }
 
+public extension NotGreenReason {
+    /// The first thing actually wrong with `verdict`, so the reason a reader
+    /// is given is always the first conjunct that failed rather than
+    /// whichever one this happens to check last.
+    ///
+    /// Answers in exactly the order `ResolvedPRStatus.isMergeableUnattended`
+    /// refuses in: no reading (nil or stale, which describes a commit no
+    /// longer under review and so is not a reading of *this* pull request),
+    /// then a sign, then an unclean merge state, then — the only conjunct
+    /// left once the other three have passed — no build verdict. That last
+    /// arm is a claim, not a default: it is reachable only when the reading
+    /// exists, is not stale, carries no sign, and is `.clean`, so
+    /// `ci.hasBuildVerdict` is the one thing that can still have failed.
+    ///
+    /// Truthful only when the reading it was given is *not* mergeable —
+    /// called on one that is, it still answers confidently (`.noBuildVerdict`,
+    /// the last arm), because it has no way to know its caller never checked
+    /// `isMergeableUnattended` first. Its one call site today is inside the
+    /// refusal branch of `evaluateMove`, where that is already true.
+    static func of(_ verdict: ResolvedPRStatus?) -> NotGreenReason {
+        guard let verdict, !verdict.isStale else { return .noReading }
+        if let sign = verdict.sign { return .sign(sign) }
+        if verdict.merge != .clean { return .notClean(verdict.merge) }
+        return .noBuildVerdict
+    }
+}
+
 /// Why a move was refused. Each case carries enough for the UI to say
 /// something actionable and for the MCP layer to return a machine-readable code.
 public enum MoveBlock: Equatable, Sendable, Hashable {
@@ -183,8 +210,27 @@ public func evaluateMove(
         guard let issue = card.issueNumber else { return .blocked(.missingIssueNumber) }
         return .action(.implementIssue(issueNumber: issue))
 
+    case (.inProgress, .inReview):
+        // Filled by `PRWatcher` alone. A caller that requires a verified green
+        // asking for it is asking to skip the pull request entirely, and
+        // `arrivalNote` could not explain such an arrival — it speaks for moves
+        // whose reason was recorded, and this one would have none.
+        //
+        // Stated as its own arm rather than left to `default`, which answered
+        // `.noAction` for it and would go on answering `.noAction` to a loop.
+        if context.requiresVerifiedGreen { return .blocked(.systemOwnedTransition) }
+        return .noAction
+
     case (.inReview, .done):
         guard let pr = card.prNumber else { return .blocked(.missingPRNumber) }
+        // Before `providedFollowUps`, on purpose. `.needsInput` is information
+        // "only a human (or an explicit tool argument) can supply"; a caller
+        // with no human reads it as "blocked, I will try again", which is a loop
+        // that spins. Every refusal it can meet here is therefore a `.blocked`.
+        if context.requiresVerifiedGreen {
+            guard let verdict = context.prVerdict, verdict.isMergeableUnattended
+            else { return .blocked(.notVerifiedGreen(reason: NotGreenReason.of(context.prVerdict))) }
+        }
         guard let followUps = context.providedFollowUps else {
             return .needsInput(.followUps(prNumber: pr))
         }
