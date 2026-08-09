@@ -108,7 +108,7 @@ struct PRStatusBlock: View {
         switch state {
         case .noChecks: "no check has run"
         case .running: "running"
-        case .passing(let count): count == 1 ? "1 check passed" : "\(count) checks passed"
+        case .passing(let names): names.count == 1 ? "1 check passed" : "\(names.count) checks passed"
         case .failing(let names): names.joined(separator: ", ")
         case .unknown: "not established"
         }
