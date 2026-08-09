@@ -14,11 +14,30 @@ public struct Verifier: Sendable {
         self.gh = gh
     }
 
-    public func verify(run: SkillRun, card: Card, repo: Repo) async -> VerifiedOutcome {
+    /// `cardRuns` and `resume` carry **no default values**, deliberately.
+    ///
+    /// The memberwise convenience of a default is exactly what would let the
+    /// next call site inherit the old window in silence — and the old window is
+    /// the defect this signature exists to close. Without defaults, every caller
+    /// has to state what it knows, and a new one cannot be written by accident.
+    ///
+    /// - Parameters:
+    ///   - cardRuns: every run of this card, so the create-issue window can be
+    ///     anchored on the first attempt of a resume chain. Order is irrelevant.
+    ///   - resume: what the run's terminal event said about the session it tried
+    ///     to fork. Passed *to* the verification, never used to skip it.
+    public func verify(
+        run: SkillRun,
+        card: Card,
+        repo: Repo,
+        cardRuns: [SkillRun],
+        resume: ResumeVerdict
+    ) async -> VerifiedOutcome {
         do {
             switch run.kind {
             case .createIssue:
-                return try await verifyCreateIssue(run: run, card: card, repo: repo)
+                return try await verifyCreateIssue(
+                    run: run, card: card, repo: repo, cardRuns: cardRuns, resume: resume)
             case .implementIssue:
                 return try await verifyImplementIssue(run: run, card: card, repo: repo)
             case .mergePR:
@@ -35,8 +54,17 @@ public struct Verifier: Sendable {
 
     // MARK: - create-issue
 
-    private func verifyCreateIssue(run: SkillRun, card: Card, repo: Repo) async throws -> VerifiedOutcome {
-        let since = run.startedAt ?? run.createdAt
+    private func verifyCreateIssue(
+        run: SkillRun, card: Card, repo: Repo, cardRuns: [SkillRun], resume: ResumeVerdict
+    ) async throws -> VerifiedOutcome {
+        // The window opens at the **first** attempt of this run's resume chain,
+        // not at this attempt's own start. A resumed run's `startedAt` is when
+        // the resume began, so an issue the first attempt filed falls outside a
+        // window anchored on it: the verifier reports nothing created, and with
+        // nobody watching the loop files a second issue on github.com. The
+        // principle is already written three files away — *"recency must never
+        // be a filter"* (`PRMatcher.swift:26`).
+        let since = ResumeChain.firstAttemptStart(of: run, among: cardRuns)
 
         // The log's issue URLs are candidates, not evidence. Confirm each.
         for number in Self.issueNumbers(inLogAt: run.logPath, repo: repo.nameWithOwner) {
@@ -63,11 +91,25 @@ public struct Verifier: Sendable {
 
         // Nothing new. With a zero exit this is the duplicate-skip path, which
         // is a real success: the idea was already covered by an open issue.
-        return .noIssueCreated(
-            reason: run.resultText?.isEmpty == false
-                ? String(run.resultText!.prefix(400))
-                : "No issue was created. It may already be covered by an existing one."
-        )
+        return .noIssueCreated(reason: Self.noIssueReason(run: run, resume: resume))
+    }
+
+    /// Why no issue was created, in terms the reader can act on.
+    ///
+    /// `.sessionGone` is the case this exists for. Such a run never had a turn,
+    /// so `resultText` is the CLI's complaint about a missing transcript;
+    /// putting it here would tell the reader — and an unattended loop — that the
+    /// idea was already covered. Two different facts must not share a sentence.
+    static func noIssueReason(run: SkillRun, resume: ResumeVerdict) -> String {
+        switch resume {
+        case .sessionGone:
+            return "The conversation this run tried to resume no longer exists, so nothing ran."
+        case .ran:
+            guard let text = run.resultText, !text.isEmpty else {
+                return "No issue was created. It may already be covered by an existing one."
+            }
+            return String(text.prefix(400))
+        }
     }
 
     // MARK: - implement-issue

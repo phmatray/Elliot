@@ -604,6 +604,15 @@ public actor RunScheduler: RunLaunching {
         updated.permissionDenials = outcome?.result?.permissionDenials.map(\.toolName) ?? []
         updated.state = Self.state(for: outcome)
 
+        // Computed here because this is the only place the terminal result
+        // exists: `numTurns` and `errors` live on `outcome.result`, and by the
+        // time anything downstream sees the row they are gone.
+        //
+        // Passed **to** `completeCardRun` rather than used to skip it. A run
+        // that could not resume may still have left an issue or a pull request
+        // behind on an earlier attempt, and the only thing that knows is `gh`.
+        let resume = ResumeVerdict.of(resumedFrom: updated.resumedFrom, result: outcome?.result)
+
         // One split, in one place: a card run is verified against gh and writes
         // back to its card; an analysis run is harvested and writes proposals.
         // Letting `finish` acquire two personalities is how this method would
@@ -615,7 +624,7 @@ public actor RunScheduler: RunLaunching {
         if updated.isAnalysis {
             await completeAnalysisRun(&updated)
         } else {
-            verified = await completeCardRun(&updated)
+            verified = await completeCardRun(&updated, resume: resume)
         }
 
         try? await store.saveRun(updated)
@@ -626,15 +635,24 @@ public actor RunScheduler: RunLaunching {
     }
 
     /// Verify against `gh`, then write what it said onto the card.
-    private func completeCardRun(_ run: inout SkillRun) async -> VerifiedOutcome? {
+    private func completeCardRun(
+        _ run: inout SkillRun, resume: ResumeVerdict
+    ) async -> VerifiedOutcome? {
         guard let cardID = run.cardID,
               let card = try? await store.card(id: cardID),
               let repo = try? await store.repo(id: run.repoID)
         else { return nil }
 
+        // Every run of this card, so the verifier can walk `resumedFrom` back to
+        // the attempt the chain started with. This is a page — newest first,
+        // capped at the store's default — which bounds the walk: a chain longer
+        // than the page stops at the oldest row it can see.
+        let cardRuns = (try? await store.runs(cardID: cardID)) ?? []
+
         // Verify even a cancelled run: implement-issue may well have opened the
         // pull request before it was stopped, and both skills are resume-safe.
-        let verified = await verifier.verify(run: run, card: card, repo: repo)
+        let verified = await verifier.verify(
+            run: run, card: card, repo: repo, cardRuns: cardRuns, resume: resume)
         run.verifiedOutcome = verified
         await apply(verified, to: card)
         return verified
