@@ -207,7 +207,7 @@ struct PreflightMethodTests {
 
     /// ⛔ The refusal reached through the code path that will actually run it.
     ///
-    /// `repoChecks` returns early on `guard isRepo` (`PreflightService.swift:284`),
+    /// `repoChecks` returns early on `guard isRepo` (`PreflightService.swift:335`),
     /// which covers every case `ArtifactProbe` throws `.unreadable` for — so by
     /// the time the probe runs, the root is a readable git directory and the
     /// `catch` is reachable only from **malformed pack evidence**. Calling
@@ -276,6 +276,27 @@ struct PreflightMethodTests {
         #expect(row?.detail.contains("nobody has published a /plugin install line") == true)
     }
 
+    /// Severity rule 4, driven through `globalChecks` rather than only through
+    /// the pure `requiredSkills(of:)` helper `requiredSkillsComeFromTheSteps`
+    /// exercises below. A regression that dropped the `.required` arm — folded
+    /// it into `.none`'s `continue`, or hardcoded `.pass` regardless of what
+    /// `pluginCheck` found — would leave every other test in this file green;
+    /// this is the one that would catch it, because the plugin name is chosen
+    /// so it can never actually be installed on the machine running the suite.
+    @Test("A required plugin that is not installed fails, through globalChecks")
+    func requiredPluginMissingFailsThroughGlobalChecks() async {
+        let missing = MethodPack(
+            id: "missing-plugin", displayName: "Missing Plugin", summary: "s",
+            plugin: .required("elliot-test-plugin-that-will-never-be-installed"),
+            projectRequirements: [], steps: [:]
+        )
+        let results = await service().globalChecks(layout: .portfolio, packs: [missing])
+        let row = results.first { $0.id == "plugin.missing-plugin" }
+
+        #expect(row?.status == .fail)
+        #expect(row?.detail.contains("Not installed") == true)
+    }
+
     @Test("A plugin pack is checked for the skills its own steps name")
     func requiredSkillsComeFromTheSteps() throws {
         let kit = try #require(
@@ -313,6 +334,25 @@ struct PreflightMethodTests {
         let kit = try #require(
             MethodCatalog.builtIn.first { $0.id == MethodCatalog.defaultPackID })
         #expect(PreflightService.profileHint(kit).contains("/ai-migration-kit:get-repo-profile"))
+    }
+
+    /// The other half of the conditional above, driven through `repoChecks`
+    /// rather than only asserted against `dispatchesSkills == true`. GSD's
+    /// plugin is `.none`, so nothing it runs ever opens `repo-profile.md` — a
+    /// stub that hardcoded `.fail` regardless of `dispatchesSkills` would pass
+    /// `profileFailsOnlyForSkillDispatchingMethods` above (it never reaches this
+    /// branch) while silently reintroducing the "freezes a GSD board over a
+    /// file its skills never read" defect this conditional exists to fix.
+    @Test("A method whose skills read nothing warns rather than fails on a missing profile")
+    func profileWarnsForMethodsThatDispatchNoSkills() async throws {
+        let (path, remove) = try await checkout()
+        defer { remove() }
+
+        let gsd = repo(at: path, methodID: "gsd")
+        let results = await service().repoChecks(gsd)
+        let profile = try #require(results.first { $0.id == "repo.profile" })
+
+        #expect(profile.status == .warn)
     }
 
     @Test("The packs a global sweep checks always include the default")
