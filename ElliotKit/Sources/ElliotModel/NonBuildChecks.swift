@@ -24,6 +24,33 @@ import Foundation
 /// wrongly **in** it only refuses a merge, which a human can always make
 /// themselves. Do not add a name without having seen the pull request it
 /// appeared on — the portfolio's rule, `pr_verdict.py --census`, never intuition.
+///
+/// ⛔ **What keeps this honest, and what cannot.**
+/// `Fixtures/non_build_checks.json` is Elliot's vendored copy of the source
+/// file, and `NonBuildChecksVendoredTests` fails — naming the difference on each
+/// side — when the two lists part. That runs in `swift test` on every pull
+/// request, with no network and no token.
+///
+/// It proves this list matches Elliot's **last-known** copy. It does not prove
+/// that copy is still what `repo-audit` says *today*, and structurally cannot:
+/// `repo-audit` is a separate private repository, and `ci.yml`'s
+/// `build-and-test` runs with no token and no network by an argument of its
+/// own. Reaching across would grant exactly the credential a downstream
+/// `bypassPermissions` run could reach, and would make this suite fail when a
+/// *different* repository has an outage. The residual is a human's: whoever
+/// edits either copy updates the other in the same change.
+///
+/// ⚠️ **`floor` is not here, and its absence is a decision.**
+/// `.github/workflows/swift-floor.yml` compiles nothing since #187, so a green
+/// `floor` proves no code built — yet a reading whose only green is `floor`
+/// passes `hasBuildVerdict`, because the name is not listed. That is unreachable
+/// today (`ci.yml`'s `build-and-test` has no job-level `if:` and no `paths:`
+/// filter, and `swift-floor.yml`'s parity step already fails by name on the
+/// second) but it is not safe by construction: a job-level `if:` would leave
+/// `swift-floor` green *and* hand the merge gate a false green. Closing that is
+/// **#246**. The name stays off the list because this file's own rule forbids
+/// adding one that has not been seen doing damage on a real pull request —
+/// tracked, not silent, and pinned by `floorIsNotYetListed`.
 public enum NonBuildChecks {
 
     /// Matched exactly, case-sensitively — these are the strings GitHub renders.
