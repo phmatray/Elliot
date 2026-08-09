@@ -1570,7 +1570,9 @@ public final class AppModel {
         }
         do {
             try await board.updateCard(
-                id: id, title: draft.title, body: draft.body, story: draft.story,
+                // `trimmedTitle`, not `title` — the same value `isValid` gated
+                // on, so what was judged saveable is what gets saved (#202).
+                id: id, title: draft.trimmedTitle, body: draft.body, story: draft.story,
                 labels: draft.labels
             )
             return true
