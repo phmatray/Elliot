@@ -37,6 +37,79 @@ Every one of these is forced by the real tree, was measured, and is applied iden
 
 ⚠️ **The contract files `Repo.methodID` / `Repo.method` under `// ElliotStore`. `Repo` is actually `ElliotKit/Sources/ElliotModel/Repo.swift:7`**, persisted through `ElliotStore/Records.swift`. Task 3 edits the model file and the migration; nothing depends on which header the field was listed under.
 
+### Amendments from the pre-flight measurement — these OVERRIDE the task text below
+
+Decided 2026-08-09 before Task 1 was dispatched, because the plan's own "what a human
+must decide" list flagged two guesses and measuring them proved both wrong. Where a task's
+code block disagrees with this section, **this section wins**.
+
+**A1 — `ArgumentForm` gains `.idea`.** GSD's command that turns a raw idea into tracked work
+is `/gsd-capture "<free text>"`; its documented flags are `--note`, `--backlog`, `--seed`,
+`--list`, and it does **not** accept `--label`. The plan bound GSD's Backlog → To Do to
+`/gsd-plan-phase` with `.ideaThenLabels` — wrong command *and* a flag tail nothing parses.
+
+```swift
+public enum ArgumentForm: String, Codable, CaseIterable, Sendable, Hashable {
+    case none
+    /// Free text and nothing else — no flag tail. `/gsd-capture "<idea>"`.
+    case idea
+    case ideaThenLabels
+    case number
+    case numberThenFollowUps
+}
+```
+
+`.idea` is `.ideaThenLabels` minus the tail and reuses the same `collapsedToSingleLine()`
+path, never a second flattening.
+
+**A2 — `pluginName: String?` becomes a three-valued `PluginRequirement`.** Measured:
+ai-migration-kit ships as a plugin named `ai-migration-kit` (what Preflight checks today);
+GSD has **no** plugin (`--claude-plugin` is an unmerged proposal, discussion #3432; the
+official `--claude` mode writes into the project); Spec Kit has **no** plugin (`uv tool
+install specify-cli` then `specify init` writes into the project — no marketplace); BMAD
+**has** a plugin whose name is **not established** (`bmad-code-org/bmad-plugins-marketplace`
+is "the official registry of BMad modules" but documents no `/plugin install` line, and the
+official path is `npx bmad-method install`). `String?` cannot say that fourth row: `nil`
+would assert "not a plugin", which is false, and a guessed name would be worse.
+
+```swift
+public enum PluginRequirement: Codable, Sendable, Hashable {
+    case none                             // measured: not distributed as a plugin
+    case required(String)                 // measured: ships under this name
+    case unestablished(reason: String)    // nobody established it, and why
+}
+```
+
+`MethodPack.plugin: PluginRequirement` replaces `pluginName` everywhere. **Task 6's check
+becomes:** `.required(name)` → check it is installed, `.fail` if absent · `.none` → skip,
+there is nothing to install · `.unestablished(reason)` → **`.warn`** carrying the reason,
+never `.fail` (nothing is established as missing) and never silence (silence is the
+conflation the type exists to end). This retires
+`MethodCatalogTests.unmeasuredPluginsAreNamed`; replace it with a test that every
+`.unestablished` carries a non-empty `reason`.
+
+**A3 — GSD ships only its `createIssue` step.** `/gsd-plan-phase [N]` and `/gsd-ship [N]`
+take a **phase number** resolved against `ROADMAP.md`; Elliot's card carries an **issue
+number**. Different objects, so passing one as the other plans or ships the wrong phase.
+
+```swift
+.createIssue: StepSpec(
+    command: "/gsd-capture",
+    arguments: .idea,
+    prose: "Use GSD's capture command to turn this idea into a tracked todo: "
+)
+```
+
+`.implementIssue` and `.mergePR` are absent, so those drags are refused by
+`BoardError.methodHasNoStep`. GSD's `summary` must say so in plain words.
+
+**A4 — BMAD ships project requirements and zero steps**, so every drag in a BMAD repository
+is refused. Its `summary` must say so, to be read rather than discovered.
+
+**Not amended:** `MethodPack.Evidence`'s nesting, `CardDraft: Codable`, the repo-carrying
+idempotency key, `v11_repoMethodID`, and `GoldenPromptTests` — ai-migration-kit's pack data
+is untouched by all four amendments, which is what keeps the byte-for-byte guarantee true.
+
 ### Dependency order
 
 Types (1–2) → store (3) → prompt (4) → probe (5) → Preflight (6) → the repository's own pack reaching the prompt (7) → the picker (8) → the seeded card end-to-end (9). No task consumes anything a later task produces.
