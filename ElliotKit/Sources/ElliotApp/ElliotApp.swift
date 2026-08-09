@@ -120,20 +120,12 @@ struct ElliotApp: App {
         // Everything the board's Done horizon is not drawing. Wrapped, like
         // Repositories and Operations: it carries a `.navigationTitle` and a
         // `.searchable`, and both want the container.
-        Window("Archive", id: "archive") {
-            NavigationStack { ArchiveView() }.environment(model)
-        }
-        .defaultSize(width: 620, height: 720)
 
         // A window rather than the fixed 580x580 sheet it was. That sheet had
         // already grown an internal ScrollView because at three or four
         // acceptance criteria — the documented normal path — it pushed its own
         // buttons off the bottom, and a macOS sheet cannot be resized. Writing
         // a story also no longer blocks the board while a run reports on it.
-        Window("New story", id: "newStory") {
-            NavigationStack { NewCardWindow() }.environment(model)
-        }
-        .defaultSize(width: 620, height: 640)
 
     }
 
@@ -278,7 +270,7 @@ private struct NewStoryMenuItem: View {
     var body: some View {
         Button("New Story…") {
             model.newCardRepoID = model.defaultRepoIDForNewCard
-            openWindow(id: "newStory")
+            model.showConsoleFace(.newStory)
         }
         .keyboardShortcut("n")
     }
@@ -336,7 +328,7 @@ private struct OpenWindowButtons: View {
         // Analysis lives with the other View items, beside Show/Hide Details.
         Button("Repositories") { model.showConsoleFace(.repositories) }
         Button("Preflight") { model.showConsoleFace(.preflight) }
-        Button("Archive") { openWindow(id: "archive") }
+        Button("Archive") { model.showConsoleFace(.archive) }
     }
 }
 

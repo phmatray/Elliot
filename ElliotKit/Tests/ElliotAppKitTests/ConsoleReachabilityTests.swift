@@ -106,18 +106,19 @@ struct ConsoleReachabilityTests {
     /// A ratchet, not a description. It fails in **both** directions on purpose:
     /// forwards it says which screens still owe a migration, and backwards it
     /// catches a face quietly reverting to a window.
-    @Test("Four screens are faces; Archive and New story are still scenes")
+    @Test("Every screen but the board is a console face, and one scene is left")
     func theMigrationIsWhereItSaysItIs() throws {
         let app = try Self.source("ElliotApp", "ElliotApp.swift")
         let board = try Self.source("ElliotAppKit", "BoardView.swift")
 
+        #expect(Set(Self.reachableFaces(in: [app, board])) == Set(ConsoleFace.allCases))
         #expect(
-            Self.reachableFaces(in: [app, board])
-                == [.operations, .nextSteps, .preflight, .repositories])
-        #expect(
-            Self.declaredScenes(in: app)
-                == ["board", "archive", "newStory"],
-            "when the last of these becomes a face this is [\"board\"], and #232 closes"
+            Self.declaredScenes(in: app) == ["board"],
+            """
+            the console migration is complete and this is its ratchet: one scene, the board. \
+            A new Window scene here needs a reason that survives #232 — an agent has no click, \
+            so a window it declares is a screen no agent can ever open
+            """
         )
     }
 

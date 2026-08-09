@@ -158,7 +158,8 @@ public struct ArchiveView: View {
             }
             .padding(16)
         }
-        .navigationTitle("Archive")
+        // No `.navigationTitle`: this is a console face now, and a title set
+        // here propagates to the *board window* and renames it (#263).
         .searchable(text: $archive.query, prompt: "Search finished work")
         // Keyed on everything the answer depends on, not just the search term.
         //
