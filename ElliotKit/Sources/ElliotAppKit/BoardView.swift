@@ -104,7 +104,13 @@ public struct BoardView: View {
         // window).
         .onKeyPress(.escape) {
             switch EscapeRoute.next(
-                consoleIsOpen: model.console.isOpen, hasSelectedCard: model.selectedCardID != nil)
+                consoleIsOpen: model.console.isOpen,
+                hasSelectedCard: model.selectedCardID != nil,
+                // Since #265 a `confirmationDialog` can be up *in this window*:
+                // Preflight and Repositories are console faces, and both present
+                // `ForgetConfirmation`. Folding the console out from under it
+                // would leave a question attached to a screen that is gone.
+                hasOpenDialog: model.forgetRequest != nil)
             {
             case .foldConsole:
                 model.closeConsole()
@@ -276,7 +282,7 @@ public struct BoardView: View {
 
         ToolbarItem {
             Button {
-                openWindow(id: "repositories")
+                model.showConsoleFace(.repositories)
             } label: {
                 Label("Repositories", systemImage: "square.stack.3d.up")
             }
@@ -286,7 +292,7 @@ public struct BoardView: View {
 
         ToolbarItem {
             Button {
-                openWindow(id: "preflight")
+                model.showConsoleFace(.preflight)
             } label: {
                 Label("Preflight", systemImage: "checkmark.seal")
             }

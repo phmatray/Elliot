@@ -33,15 +33,19 @@ public enum EscapeRoute: Equatable, Sendable, CaseIterable {
     /// the responder chain. A route that reported "handled, did nothing" would
     /// claim Escape for something that did not use it.
     ///
-    /// What is down that chain is an inline editor and then the window, not a
-    /// modal. **This app has no sheets at all** — zero `.sheet(` in the package,
-    /// measured; the one `confirmationDialog` (`ForgetConfirmation`) is applied
-    /// by Preflight and Repositories and never by the board, and the things that
-    /// read like sheets are a `Window` scene (`NewCardWindow`) or inline panel
-    /// regions (`MergeConfirmation`, `ProposalEditor`). The concrete claimant is
+    /// **This app has no sheets at all** — zero `.sheet(` in the package,
+    /// measured; the things that read like one are a `Window` scene
+    /// (`NewCardWindow`) or inline panel regions (`MergeConfirmation`,
+    /// `ProposalEditor`). The concrete claimant down the chain is
     /// `ProposalEditor`'s own `.onExitCommand`, which states the stake exactly:
     /// *"Without it the key would fall through to the window, which is the wrong
     /// thing to close while a row is open."*
+    ///
+    /// ⚠️ **This paragraph also said the one `confirmationDialog` was "applied by
+    /// Preflight and Repositories and never by the board", and that stopped
+    /// being true the moment those two became console faces (#265).** It is now
+    /// presented *inside* the board window, which is why `hasOpenDialog` exists
+    /// below rather than being left to focus handling.
     ///
     /// This paragraph blamed a sheet until #261, one commit after it was
     /// written. The conclusion did not change and the reason did — which is the
@@ -81,7 +85,21 @@ public enum EscapeRoute: Equatable, Sendable, CaseIterable {
     /// behaviour, unchanged by this rule. If a later route puts "cancel the
     /// edit" ahead of "clear the selection", it is *changing* that rather than
     /// keeping it, and should say so.
-    public static func next(consoleIsOpen: Bool, hasSelectedCard: Bool) -> EscapeRoute {
+    ///
+    /// ⛔ **`hasOpenDialog` wins outright, and it is a parameter rather than a
+    /// thing left to focus handling.** Until #265 the only `confirmationDialog`
+    /// in the package (`ForgetConfirmation`, which asks before a repository is
+    /// forgotten) was presented by the Preflight and Repositories *windows*, so
+    /// it could not coexist with this board. Those are console faces now and it
+    /// is presented inside this window. AppKit very likely gives the dialog the
+    /// key press first — but "very likely" is not a rule, and the failure it
+    /// would hide is silent and bad: Escape folding the console out from under
+    /// an open dialog, leaving a question attached to a screen that is no longer
+    /// there. Stated here, it is decided rather than inherited.
+    public static func next(
+        consoleIsOpen: Bool, hasSelectedCard: Bool, hasOpenDialog: Bool = false
+    ) -> EscapeRoute {
+        if hasOpenDialog { return .ignored }
         if consoleIsOpen { return .foldConsole }
         if hasSelectedCard { return .deselectCard }
         return .ignored

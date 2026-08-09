@@ -199,7 +199,8 @@ public struct PreflightView: View {
             .frame(maxWidth: 760, alignment: .leading)
         }
         .frame(maxWidth: .infinity)
-        .navigationTitle("Preflight")
+        // No `.navigationTitle`: this is a console face now, and a title set
+        // here propagates to the *board window* and renames it (#263).
         .forgetConfirmation(model: model, on: .preflight)
     }
 

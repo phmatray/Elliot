@@ -59,7 +59,8 @@ public struct RepositoriesView: View {
             }
         }
         .safeAreaInset(edge: .top) { header }
-        .navigationTitle("Repositories")
+        // No `.navigationTitle`: this is a console face now, and a title set
+        // here propagates to the *board window* and renames it (#263).
         // Keyed on `isReady`, not bare: the toolbar is live before `start()`
         // finishes, and a bare `.task` firing then would find no registry, return
         // silently, and leave the page asserting "nothing found" about a scan
