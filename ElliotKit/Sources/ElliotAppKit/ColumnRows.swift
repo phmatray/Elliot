@@ -155,6 +155,22 @@ extension ColumnRows {
         guard asked, let selection else { return asked }
         return !cards.contains { $0.id == selection }
     }
+
+    /// What is still selected once these cards are folded away — the other side
+    /// of the rule above, and the reason it can stay a rendering rule.
+    ///
+    /// Because a fold that would hide the selection is drawn open instead,
+    /// pressing that heading would otherwise appear to do nothing at all. So the
+    /// selection is given up **at the act**: the fold then means what it says,
+    /// and "a selected card is a drawn card" is never momentarily false.
+    ///
+    /// Out here rather than inline in the two toggles for the reason this whole
+    /// file exists — a rule written twice is a rule that drifts, and this one is
+    /// written once for a repository heading and a day heading alike.
+    static func selection(_ selection: UUID?, survivingFoldOf cards: [Card]) -> UUID? {
+        guard let selection, !cards.contains(where: { $0.id == selection }) else { return nil }
+        return selection
+    }
 }
 
 extension ColumnRows {

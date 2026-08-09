@@ -1348,9 +1348,8 @@ struct ColumnView: View {
     /// repository fold differently and forget the selection identically.
     private func fold(away cards: [Card], _ act: () -> Void) {
         act()
-        if let selected = model.selectedCardID, cards.contains(where: { $0.id == selected }) {
-            model.selectedCardID = nil
-        }
+        model.selectedCardID = ColumnRows.selection(
+            model.selectedCardID, survivingFoldOf: cards)
     }
 
     /// A day's heading in Done, newest first.

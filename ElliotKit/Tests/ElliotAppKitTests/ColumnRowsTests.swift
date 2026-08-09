@@ -245,6 +245,25 @@ struct ColumnRowsTests {
         #expect(model.cards(in: .done).count == 2)
     }
 
+    // MARK: - Folding, at the act
+
+    /// Found by break-testing: deleting the whole of `fold(away:_:)`'s effect
+    /// left all 1992 tests green. The rule above says a fold that would hide the
+    /// selection is drawn open instead, so without this one the chevron does
+    /// **nothing at all** on exactly the group the reader is looking at — and
+    /// nothing could have failed.
+    @Test("Folding a heading gives up the selection it was holding")
+    func selectionYieldsAtTheFold() {
+        let elliot = repo("Elliot")
+        let selected = card("selected", repoID: elliot.id)
+        let elsewhere = card("elsewhere", repoID: elliot.id, order: 1)
+
+        #expect(ColumnRows.selection(selected.id, survivingFoldOf: [selected]) == nil)
+        // A fold somewhere else costs the reader nothing.
+        #expect(ColumnRows.selection(selected.id, survivingFoldOf: [elsewhere]) == selected.id)
+        #expect(ColumnRows.selection(nil, survivingFoldOf: [selected]) == nil)
+    }
+
     // MARK: - The keyboard reads the same list
 
     /// A source gate, for the reason `DefaultActionTests` is one: `stepCard` and
@@ -258,12 +277,7 @@ struct ColumnRowsTests {
     /// and puts the defect back. This is what fails instead.
     @Test("The arrow keys walk the drawn list, never the column's own cards")
     func keyboardWalksWhatIsDrawn() throws {
-        let board = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()  // ElliotAppKitTests
-            .deletingLastPathComponent()  // Tests
-            .deletingLastPathComponent()  // ElliotKit
-            .appendingPathComponent("Sources/ElliotAppKit/BoardView.swift")
-        let source = try String(contentsOf: board, encoding: .utf8)
+        let source = try Self.boardSource()
 
         for name in ["stepCard", "stepColumn"] {
             let body = try #require(
@@ -275,6 +289,50 @@ struct ColumnRowsTests {
                 !body.contains("model.cards(in:"),
                 "\(name) is reading the column's cards again — that is #278 restored")
         }
+    }
+
+    /// The other half of the same gap, and the one no pure function can close:
+    /// that the two headings actually *call* the rule, and that neither of them
+    /// reads a fold set behind its back.
+    ///
+    /// Reading `collapsedRepos.contains(…)` or `isDayCollapsed(…)` here is the
+    /// subtler defect of the two. A heading the reader folded is drawn open
+    /// while it holds the selection, so at that one heading the set and the
+    /// screen disagree — a toggle written against the set folds on a press meant
+    /// to unfold, and the chevron runs backwards.
+    @Test("Both headings fold through the one rule, and neither reads the fold set")
+    func headingsFoldThroughOneRule() throws {
+        let source = try Self.boardSource()
+
+        for name in ["groupHeader", "dayHeader"] {
+            let body = try #require(
+                Self.body(ofFunction: name, in: source), "\(name) is no longer in BoardView.swift")
+            #expect(
+                body.contains("fold(away:"),
+                "\(name) must give up a selection it folds away")
+            #expect(
+                !body.contains("collapsedRepos.contains") && !body.contains("isDayCollapsed"),
+                "\(name) is reading the fold set rather than what it is drawing")
+        }
+
+        // And that the one rule is actually applied. Checking only the two call
+        // sites was the first version of this gate, and it was worthless:
+        // emptying `fold(away:_:)` left every test green a second time, because
+        // both headings still *called* a function that now did nothing.
+        let fold = try #require(
+            Self.body(ofFunction: "fold", in: source), "fold(away:_:) is no longer in BoardView.swift")
+        #expect(
+            fold.contains("ColumnRows.selection("),
+            "fold(away:_:) no longer gives up the selection it folds away")
+    }
+
+    private static func boardSource() throws -> String {
+        let board = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // ElliotAppKitTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // ElliotKit
+            .appendingPathComponent("Sources/ElliotAppKit/BoardView.swift")
+        return try String(contentsOf: board, encoding: .utf8)
     }
 
     /// A function's body, by brace matching from its `func` line.
