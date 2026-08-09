@@ -446,6 +446,15 @@ public final class BoardStore: Sendable {
         }
     }
 
+    /// Runs the v11 backfill again. Idempotent — it only writes rows whose
+    /// `appraisedAt` is still NULL — and exists so a test can assert what the
+    /// migration does without reaching into `grdb_migrations`.
+    public func backfillCardAppraisals() async throws {
+        try await requireWriter().write { db in
+            try db.execute(sql: Migrations.backfillCardAppraisalsSQL)
+        }
+    }
+
     public func deleteCard(id: UUID) async throws {
         _ = try await requireWriter().write { db in try Card.deleteOne(db, key: id.databaseKey) }
     }

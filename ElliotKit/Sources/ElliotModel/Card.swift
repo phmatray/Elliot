@@ -87,6 +87,24 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
     /// first attempt.
     public var idempotencyKey: String?
 
+    /// What an appraisal established about this card, and when.
+    ///
+    /// Columns on the card rather than a table of their own, and the criterion
+    /// is the one written above migration v8: a datum produced *inside* the
+    /// funnel, by a run that owns this card for its whole life, is provenance
+    /// and belongs on the row; an observation written by a poller about an
+    /// object outside the card belongs in its own table.
+    ///
+    /// `evidence` is optional rather than `[]`, and `appraisedAt` is the third
+    /// state that makes the optionality mean something: without it, "nobody has
+    /// ever read this card" and "this card was read and there was nothing to
+    /// find" are the same value. An older file has no column at all, and GRDB
+    /// decodes an absent optional as `nil` — which is the truth, since nothing
+    /// could have written a value the column did not exist to hold.
+    public var effort: Effort?
+    public var evidence: [Evidence]?
+    public var appraisedAt: Date?
+
     public init(
         id: UUID = UUID(),
         repoID: UUID,
@@ -106,7 +124,10 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
         lastError: String? = nil,
         createdAt: Date,
         updatedAt: Date,
-        idempotencyKey: String? = nil
+        idempotencyKey: String? = nil,
+        effort: Effort? = nil,
+        evidence: [Evidence]? = nil,
+        appraisedAt: Date? = nil
     ) {
         self.id = id
         self.repoID = repoID
@@ -127,6 +148,9 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.idempotencyKey = idempotencyKey
+        self.effort = effort
+        self.evidence = evidence
+        self.appraisedAt = appraisedAt
     }
 }
 
