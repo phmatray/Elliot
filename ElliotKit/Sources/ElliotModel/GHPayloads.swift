@@ -177,12 +177,18 @@ public struct GHMergeStatus: Codable, Sendable, Hashable {
         /// which is the *same* false green `CIState.noChecks` exists to name,
         /// reached by a different route.
         ///
-        /// ⚠️ This is **not** the name-based inert-check discounting that was
-        /// deliberately declined for this feature. That one needs a maintained
-        /// list of check *names* — `CodeQL`, `renovate/*` — which drifts, and
-        /// whose data already lives in `repo-audit`. This reads GitHub's own
-        /// `conclusion` vocabulary: no list, nothing to keep in sync, and a
-        /// CodeQL run that genuinely succeeded still counts as a pass.
+        /// ⚠️ This is **not** the name-based inert-check discounting, and the
+        /// two coexist. This comment used to say that judgement had been
+        /// "deliberately declined"; it was declined *here* and made elsewhere —
+        /// since #322 it lives in `NonBuildChecks`, read only by
+        /// `ResolvedPRStatus.isMergeableUnattended`.
+        ///
+        /// This one reads GitHub's own `conclusion` vocabulary: no list, nothing
+        /// to keep in sync, and it still governs `CIState` and `PRSign`, so a
+        /// CodeQL run that genuinely succeeded is still a pass on the card and
+        /// in the panel. The list-based judgement answers a narrower question —
+        /// *may an unattended agent merge on this?* — and only that caller asks
+        /// it.
         public var isNonVerdict: Bool {
             ["SKIPPED", "NEUTRAL", "STALE"].contains((conclusion ?? "").uppercased())
         }
