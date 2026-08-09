@@ -150,14 +150,7 @@ public actor RunScheduler: RunLaunching {
         let cleared = pending
         pending = []
         lastRefusals = [:]
-        for runID in cleared {
-            guard var run = try? await store.run(id: runID), run.state == .queued else { continue }
-            run.state = .cancelled
-            run.endedAt = Date()
-            try? await store.saveRun(run)
-            continuation.yield(
-                .runFinished(runID: runID, cardID: run.cardID, state: .cancelled, outcome: nil))
-        }
+        for runID in cleared { await discardQueued(runID) }
         // Emptying `pending` above is not enough, because this method suspends on
         // every row it cancels. A `launch` landing in one of those windows puts
         // its id back on the queue, and the `pump` it calls reads a row this loop
@@ -170,6 +163,37 @@ public actor RunScheduler: RunLaunching {
         lastRefusals = lastRefusals.filter { pending.contains($0.key) }
         await publishQueue()
         return cleared.count
+    }
+
+    /// Takes one run out of the queue and marks it `.cancelled`.
+    ///
+    /// The single definition of *discarding queued work*, because there are two
+    /// callers — `drain` and the pending branch of `cancel` — and they disagreed
+    /// in three ways that all failed silently. `cancel` left the recorded
+    /// refusal behind, never yielded `.runFinished`, and never published the
+    /// queue: so cancelling one entry left its row on screen until the next
+    /// `pump`, and left the card's `activeRunID` set in `AppModel`, which reads
+    /// that event and nothing else to clear it.
+    ///
+    /// ⛔ **`pending` and `lastRefusals` are edited before the first `await`.**
+    /// That ordering is `pump`'s documented invariant, not a style: a pump whose
+    /// `store.run` read landed after the removal comes back holding a stale
+    /// `.queued` row, and its own post-await containment check is what stops it
+    /// spawning a run the user just discarded.
+    ///
+    /// Returns whether a queued row was actually cancelled, so a caller can say
+    /// what it did rather than guess.
+    @discardableResult
+    private func discardQueued(_ runID: UUID) async -> Bool {
+        pending.removeAll { $0 == runID }
+        lastRefusals.removeValue(forKey: runID)
+        guard var run = try? await store.run(id: runID), run.state == .queued else { return false }
+        run.state = .cancelled
+        run.endedAt = Date()
+        try? await store.saveRun(run)
+        continuation.yield(
+            .runFinished(runID: runID, cardID: run.cardID, state: .cancelled, outcome: nil))
+        return true
     }
 
     /// Moves one entry to the head of the queue.
@@ -626,9 +650,24 @@ public actor RunScheduler: RunLaunching {
 
     // MARK: - Cancellation
 
+    /// Stops one run, whether it is queued or already going.
+    ///
+    /// Three cases, and they are genuinely different acts: a **queued** run is
+    /// discarded through `discardQueued`, the one definition `drain` also uses;
+    /// a **live** run gets a SIGTERM and is marked `.cancelling`, because its
+    /// termination handler is what will finish the job; anything else is a row
+    /// the store still believes is active with nothing behind it — a crash the
+    /// launch sweep would otherwise resolve — and is closed out in place.
     public func cancel(runID: UUID) async {
         guard let claudeRun = live[runID] else {
-            pending.removeAll { $0 == runID }
+            if pending.contains(runID) {
+                await discardQueued(runID)
+                // Without this the discarded row stays on screen until something
+                // else happens to pump the queue, which is the silent-drop class
+                // the queue snapshot exists to end.
+                await publishQueue()
+                return
+            }
             if var run = try? await store.run(id: runID), run.state.isActive {
                 run.state = .cancelled
                 run.endedAt = Date()
