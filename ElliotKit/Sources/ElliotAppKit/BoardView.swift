@@ -28,6 +28,21 @@ public struct BoardView: View {
     /// already answers correctly.
     @State private var contentHeight: CGFloat = 0
 
+    /// Which repository groups the reader has folded, per column.
+    ///
+    /// Held here rather than inside `ColumnView`, where it was, because the
+    /// **keyboard** lives here. `stepCard` has to walk what a column is drawing,
+    /// and a `@State` inside the column is unreachable from outside it — which
+    /// is exactly how ↓ came to step into cards nobody could see, and ⌘→ to
+    /// advance one (#278).
+    ///
+    /// ⛔ Still per column, and still not on `AppModel`. Folding a repository in
+    /// Backlog must not fold it in To Do — those are different questions — and
+    /// this is a reader's view of the board, not a fact about it. `collapsedDays`
+    /// *is* on the model, for the one reason that does not apply here: the
+    /// Archive folds the same days, so a second copy of that set drifted.
+    @State private var collapsedRepos: [ElliotModel.Column: Set<UUID>] = [:]
+
     public init() {}
 
     public var body: some View {
@@ -142,10 +157,24 @@ public struct BoardView: View {
 
     // MARK: - Keyboard selection
 
+    /// The cards a column is **drawing**, in the order it draws them.
+    ///
+    /// Not `model.cards(in:)`, which is where both step functions used to look.
+    /// That answer knows nothing about a folded repository group, nothing about
+    /// Done's seven-day horizon, and nothing about the fact that an
+    /// all-repositories column draws in repository order while it returns
+    /// `orderIndex` order — so ↓ walked a list the reader could not see, in an
+    /// order their eye could not follow. `ColumnRows` is the list the column
+    /// itself draws (#278).
+    private func drawnCards(in column: ElliotModel.Column) -> [Card] {
+        ColumnRows.of(column, model: model, foldedRepoIDs: collapsedRepos[column, default: []])
+            .cards
+    }
+
     /// Move the selection up or down within its column.
     private func stepCard(by delta: Int) -> KeyPress.Result {
         let column = model.selectedCard?.column ?? .backlog
-        let cards = model.cards(in: column)
+        let cards = drawnCards(in: column)
         guard !cards.isEmpty else { return .ignored }
         guard let current = model.selectedCard,
               let index = cards.firstIndex(where: { $0.id == current.id })
@@ -157,9 +186,13 @@ public struct BoardView: View {
         return .handled
     }
 
-    /// Move the selection sideways, skipping columns that hold nothing. If
-    /// every column that way is empty the selection stays put — jumping
-    /// somewhere arbitrary is worse than not moving.
+    /// Move the selection sideways, skipping columns that are **showing**
+    /// nothing. If every column that way is empty the selection stays put —
+    /// jumping somewhere arbitrary is worse than not moving.
+    ///
+    /// "Showing" rather than "holding" since #278: a column whose every group is
+    /// folded draws no card, and landing the selection on one of them would be
+    /// the arbitrary jump this already refuses to make.
     private func stepColumn(by delta: Int) -> KeyPress.Result {
         let order = ElliotModel.Column.allCases
         let from = model.selectedCard?.column ?? (delta > 0 ? .backlog : .done)
@@ -167,7 +200,7 @@ public struct BoardView: View {
 
         var candidate = model.selectedCard == nil ? index : index + delta
         while order.indices.contains(candidate) {
-            if let first = model.cards(in: order[candidate]).first {
+            if let first = drawnCards(in: order[candidate]).first {
                 model.selectedCardID = first.id
                 return .handled
             }
@@ -355,7 +388,9 @@ public struct BoardView: View {
                         case .analysis:
                             analysisPanel(width: width)
                         case .column(let column):
-                            ColumnView(column: column, width: width)
+                            ColumnView(
+                                column: column, width: width,
+                                collapsedRepos: $collapsedRepos.folds(of: column))
                         case .panel:
                             panel(width: width)
                         }
@@ -701,6 +736,22 @@ public struct BoardView: View {
 
 }
 
+extension Binding where Value == [ElliotModel.Column: Set<UUID>] {
+
+    /// One column's folded repositories.
+    ///
+    /// `Binding`'s stock dictionary subscript hands back a `Binding<Set<UUID>?>`,
+    /// and an optional here would distinguish "this column has never had
+    /// anything folded" from "this column has nothing folded" — the same board,
+    /// drawn the same way, with an unwrap in front of every reader of it.
+    func folds(of column: ElliotModel.Column) -> Binding<Set<UUID>> {
+        Binding<Set<UUID>>(
+            get: { wrappedValue[column] ?? [] },
+            set: { wrappedValue[column] = $0 }
+        )
+    }
+}
+
 // MARK: - What the board frames, and where
 
 /// Everything the board's framing must answer to, as **one** value.
@@ -970,15 +1021,20 @@ struct ColumnView: View {
     @Environment(\.openWindow) private var openWindow
     let column: ElliotModel.Column
     let width: CGFloat
+    /// Which repository groups this column has folded — per column and per
+    /// repository, so folding a repository in Backlog does not hide it in To Do.
+    ///
+    /// A `Binding` rather than this view's own `@State` since #278: the set now
+    /// belongs to `BoardView`, because the arrow keys are there and they have to
+    /// know what this column is drawing. The granularity is unchanged; only the
+    /// owner is.
+    @Binding var collapsedRepos: Set<UUID>
     @State private var isTargeted = false
-    /// Per column and per repository, so collapsing a repository in Backlog does
-    /// not hide it in To Do — the two are different questions.
-    @State private var collapsed: Set<UUID> = []
     // Which days in Done are folded is `AppModel.collapsedDays`, not a `@State`
     // here. It was one, and the Archive held a second over the same
     // `ShipDay.start` keys with the toggle written out twice — so folding
     // "Yesterday" in Done left it open in the Archive, showing the same cards
-    // under the same heading. It stays a **separate** set from `collapsed`
+    // under the same heading. It stays a **separate** set from `collapsedRepos`
     // above, for the reason that comment gives: a repository and a day are
     // different things to have folded.
     /// The card a drop would land above, or `nil` when the pointer is not over
@@ -1086,34 +1142,37 @@ struct ColumnView: View {
     }
 
     private var list: some View {
-        ScrollViewReader { proxy in
+        // Computed once and read three times below, not computed three times:
+        // this is the filter, the sort, the grouping and — in Done — the day
+        // bucketing. And the scroll handler has to be judged against the very
+        // list the rows were built from, or it can ask for a card this pass did
+        // not draw.
+        let rows = rows
+        let focus = ColumnFocus.of(
+            landing: model.lastLanded, selection: model.selectedCardID, drawn: rows)
+
+        return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 6) {
-                    // Done is grouped by *day*, and that branch is taken before
-                    // the repository one on purpose. Nesting the two would give
-                    // this column two levels of heading where every other has
-                    // one, and nothing is lost by choosing: `CardView` already
-                    // prints the repository name on the card itself whenever
-                    // the picker says "All repositories", which is exactly when
-                    // `groups` is non-nil.
-                    if column == .done {
-                        shippingLogRows
-                    } else if let groups {
-                        // Grouped only when the picker says "All repositories".
-                        // With one repository chosen every card belongs to it, and a
-                        // header repeating its name on every column is furniture.
-                        ForEach(groups) { group in
-                            groupHeader(group)
-                            if !collapsed.contains(group.repoID) {
-                                ForEach(group.cards) { card in
-                                    draggable(card)
-                                }
-                            }
-                        }
-                    } else {
-                        ForEach(cards) { card in
+                    // One list, in the order it is drawn — `ColumnRows` decides
+                    // whether this column is a dated log, a set of repository
+                    // groups or a plain run of cards, and the arrow keys in
+                    // `BoardView` walk the very same value. The three `if`
+                    // branches that used to be here were the second opinion the
+                    // keyboard could not see (#278).
+                    ForEach(rows.rows) { row in
+                        switch row {
+                        case .repository(let group, let folded):
+                            groupHeader(group, folded: folded)
+                        case .day(let day, let folded):
+                            dayHeader(day, folded: folded)
+                        case .card(let card):
                             draggable(card)
                         }
+                    }
+
+                    if rows.olderCount > 0 {
+                        olderFooter(rows.olderCount)
                     }
 
                     if cards.isEmpty {
@@ -1139,15 +1198,21 @@ struct ColumnView: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             // A dropped card landed at the bottom of a column nothing scrolled,
-            // so a full column swallowed it. The guard keeps the other four
-            // columns still. No colour flash is needed — the card that just
-            // landed is already selected and already wears the armed border.
-            .onChange(of: model.lastLanded) {
-                guard let landed = model.lastLanded,
-                      cards.contains(where: { $0.id == landed.cardID })
-                else { return }
+            // so a full column swallowed it — and the same was true of a card
+            // the *keyboard* selected: ↓ past the viewport left the selection,
+            // its armed border and the caret's anchor off screen, with the rail
+            // drawing a truthful picture of a card nobody could see (#277).
+            //
+            // One handler on one value. A drop is both a landing and a
+            // selection, so two handlers on this proxy would animate the column
+            // twice for one gesture; `ColumnFocus` folds them and its
+            // `target(from:)` says which half moved, exactly as `BoardFraming`
+            // does for the row. No colour flash is needed — the card is already
+            // selected and already wears the armed border.
+            .onChange(of: focus) { previous, current in
+                guard let target = current.target(from: previous) else { return }
                 withAnimation(reduceMotion ? nil : .default) {
-                    proxy.scrollTo(landed.cardID, anchor: .center)
+                    proxy.scrollTo(target.cardID, anchor: target.anchor)
                 }
             }
         }
@@ -1259,47 +1324,52 @@ struct ColumnView: View {
                 ))
     }
 
-    /// The groups, or `nil` when a single repository is selected.
+    /// Everything this column draws, in the order it draws it.
     ///
-    /// Decided by `groupByRepo` in ElliotModel, which is where the ordering and
-    /// the orphan fallback are proven. This only asks.
-    private var groups: [CardGroup]? {
-        guard model.selectedRepoID == nil else { return nil }
-        return groupByRepo(cards, repos: model.repos)
+    /// Computed per access, like the `groups` and `doneLog` it replaces and for
+    /// the same reason: the rule is cheap, and caching it would need something
+    /// to invalidate the cache — including at midnight, when Done's answer
+    /// changes without any card moving.
+    private var rows: ColumnRows {
+        ColumnRows.of(column, model: model, foldedRepoIDs: collapsedRepos)
     }
 
-    /// Done's cards, bucketed by the day they landed and cut to the horizon.
+    /// Fold a heading, and give up the selection it was holding.
     ///
-    /// Computed per access, like `groups` beside it and for the same reason:
-    /// the rule is cheap, and caching it would need something to invalidate the
-    /// cache — including at midnight, when the answer changes without any card
-    /// moving.
-    private var doneLog: ShippingLog { model.doneLog() }
+    /// ⛔ Not optional politeness. `ColumnRows` draws a folded heading **open**
+    /// while it holds the selection — that is what keeps "a selected card is a
+    /// drawn card" true without mutating the fold set behind the reader's back —
+    /// so without this the chevron would visibly do nothing on exactly the group
+    /// the reader is looking at. Refusing the fold instead was the other
+    /// candidate and is worse: a control that declines when pressed reads as
+    /// broken, where losing the selection reads as the consequence of folding
+    /// away what you were reading.
+    ///
+    /// One function for both headings, because there is one rule. A day and a
+    /// repository fold differently and forget the selection identically.
+    private func fold(away cards: [Card], _ act: () -> Void) {
+        act()
+        model.selectedCardID = ColumnRows.selection(
+            model.selectedCardID, survivingFoldOf: cards)
+    }
 
-    /// A heading per day, newest first, each foldable.
+    /// A day's heading in Done, newest first.
     ///
-    /// The rows are `draggable(_:)` exactly like every other column's, so a
-    /// finished card can still be dragged back out — Done is a horizon on what
-    /// is *drawn*, never a change to what a card is or what may be done to it.
-    @ViewBuilder
-    private var shippingLogRows: some View {
-        let log = doneLog
-        ForEach(log.days) { day in
-            ShipDayHeader(
-                label: day.label,
-                count: day.cards.count,
-                collapsed: model.isDayCollapsed(day.start)
-            ) {
-                model.toggleDay(day.start)
+    /// The rows under it are `draggable(_:)` exactly like every other column's,
+    /// so a finished card can still be dragged back out — Done is a horizon on
+    /// what is *drawn*, never a change to what a card is or what may be done to
+    /// it.
+    ///
+    /// `folded` is what the reader **sees**, which is why the button says which
+    /// way it means rather than flipping `collapsedDays`: the two disagree at
+    /// the one heading that holds the selection.
+    private func dayHeader(_ day: ShipDay, folded: Bool) -> some View {
+        ShipDayHeader(label: day.label, count: day.cards.count, collapsed: folded) {
+            if folded {
+                model.setDay(day.start, folded: false)
+            } else {
+                fold(away: day.cards) { model.setDay(day.start, folded: true) }
             }
-            if !model.isDayCollapsed(day.start) {
-                ForEach(day.cards) { card in
-                    draggable(card)
-                }
-            }
-        }
-        if log.olderCount > 0 {
-            olderFooter(log.olderCount)
         }
     }
 
@@ -1335,16 +1405,21 @@ struct ColumnView: View {
     /// header would have to mean "move this card to that repository", which is
     /// a write `BoardService` owns and a second path to a card's identity — the
     /// exact kind of silent second write path the app is built to avoid.
-    private func groupHeader(_ group: CardGroup) -> some View {
+    ///
+    /// `folded` is what the reader **sees**, not what `collapsedRepos` holds:
+    /// a group folded by the reader is drawn open while it holds the selection,
+    /// so reading the set here would fold on a press meant to unfold and the
+    /// chevron would run backwards. See `fold(away:_:)`.
+    private func groupHeader(_ group: CardGroup, folded: Bool) -> some View {
         Button {
-            if collapsed.contains(group.repoID) {
-                collapsed.remove(group.repoID)
+            if folded {
+                collapsedRepos.remove(group.repoID)
             } else {
-                collapsed.insert(group.repoID)
+                fold(away: group.cards) { collapsedRepos.insert(group.repoID) }
             }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: collapsed.contains(group.repoID) ? "chevron.right" : "chevron.down")
+                Image(systemName: folded ? "chevron.right" : "chevron.down")
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(.tertiary)
                 ConsoleLabel(text: group.repoName, tint: .secondary)
