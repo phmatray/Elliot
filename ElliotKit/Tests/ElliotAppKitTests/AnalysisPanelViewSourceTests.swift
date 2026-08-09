@@ -96,4 +96,85 @@ struct AnalysisPanelViewSourceTests {
             )
         }
     }
+
+    // MARK: - Where the Rejected disclosure sits
+
+    /// `AnalysisPanelView.swift` with every `//` comment cut away, so a *mention*
+    /// of a token cannot be read as a use of it — the same hazard the `code(_:)`
+    /// helper above exists for, and the one CLAUDE.md records from #186.
+    private static func panelCode() throws -> String {
+        let source = try String(
+            contentsOf: viewSources.appending(path: "AnalysisPanelView.swift"), encoding: .utf8)
+        return source.components(separatedBy: "\n").map(code).joined(separator: "\n")
+    }
+
+    /// The body of one function, by brace matching from its signature.
+    ///
+    /// ⚠️ **Brace counting is only honest because the function it is pointed at
+    /// holds no braces inside string literals**, which `proposalList` does not —
+    /// its strings all live in the helpers it calls. Scoped to one function
+    /// rather than run over the file for exactly that reason.
+    private static func body(of signature: String, in source: String) throws -> String {
+        let start = try #require(source.range(of: signature))
+        var depth = 0
+        var open: String.Index?
+        var index = start.upperBound
+        while index < source.endIndex {
+            if source[index] == "{" {
+                if depth == 0 { open = source.index(after: index) }
+                depth += 1
+            } else if source[index] == "}" {
+                depth -= 1
+                if depth == 0, let open { return String(source[open..<index]) }
+            }
+            index = source.index(after: index)
+        }
+        Issue.record("no matching brace for \(signature)")
+        return ""
+    }
+
+    /// How deep in braces a token sits inside a body.
+    private static func depth(of token: String, in body: String) throws -> Int {
+        let range = try #require(
+            body.range(of: token), Comment(rawValue: "\(token) is not in the body being read"))
+        return body[body.startIndex..<range.lowerBound].reduce(into: 0) { depth, character in
+            if character == "{" { depth += 1 }
+            if character == "}" { depth -= 1 }
+        }
+    }
+
+    /// ⛔ **The rejected disclosure is a sibling of `if proposed.isEmpty`, never
+    /// inside its `else`.**
+    ///
+    /// The state the section exists for is *"I rejected the wrong one"* — and
+    /// rejecting the last open proposal empties the triage list, so a section
+    /// nested under `!proposed.isEmpty` would hide the undo in precisely the
+    /// case that needs it most while looking perfectly correct in every case
+    /// anyone would think to try (#292).
+    ///
+    /// A source gate because `swift test` cannot see a view: the arithmetic, the
+    /// filter and the store's refusal are all pinned by ordinary tests and every
+    /// one of them stays green with the call moved one level in. This is the
+    /// idiom `CaretAnchorTests` reaches for on the same grounds — when a test
+    /// builds its own model of the code, ask what it would say if the code
+    /// changed underneath it, and if the answer is "nothing", pin the shape
+    /// where the shape lives.
+    @Test("The rejected disclosure renders whether or not anything is left to decide")
+    func theUndoIsNotHiddenByAnEmptyList() throws {
+        let body = try Self.body(of: "private func proposalList(", in: try Self.panelCode())
+        // A negative needs its positive witness: a renamed helper would make
+        // every claim below vacuously true.
+        #expect(body.contains("rejectedSection("), "proposalList no longer renders the disclosure")
+
+        let branch = try Self.depth(of: "if proposed.isEmpty", in: body)
+        let disclosure = try Self.depth(of: "rejectedSection(", in: body)
+        #expect(
+            disclosure == branch,
+            Comment(
+                rawValue:
+                    "rejectedSection sits \(disclosure - branch) brace level(s) deeper than the "
+                    + "`if proposed.isEmpty` it must be a sibling of. Inside that branch it "
+                    + "disappears exactly when every proposal has been rejected — which is when "
+                    + "the reader needs it (#292)."))
+    }
 }
