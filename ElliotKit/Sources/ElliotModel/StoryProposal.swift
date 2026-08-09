@@ -214,9 +214,18 @@ public struct StoryProposal: Identifiable, Codable, Sendable, Hashable {
         self.createdAt = createdAt
     }
 
+    /// What this proposal's citations turned out to be worth.
+    public var grounding: Grounding {
+        Grounding.of(evidence: evidence)
+    }
+
     /// True when every cited file was found. The fastest signal that a story
     /// was found rather than invented.
+    ///
+    /// A reader of `grounding`, not a second definition of it: the panel's seal
+    /// and the wire's `grounded` flag both come through here, and a copy of the
+    /// `allSatisfy` would be free to drift the first time either is corrected.
     public var isGrounded: Bool {
-        !evidence.isEmpty && evidence.allSatisfy(\.exists)
+        grounding == .grounded
     }
 }
