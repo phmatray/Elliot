@@ -108,17 +108,22 @@ public struct RepoRegistryService: Sendable {
 
         var repos: [GHRepoSummary] = []
         var failures: [OwnerListingFailure] = []
-        var named: Set<String> = []
         for (owner, result) in listed {
             switch result {
             case .success(let listed): repos += listed
             case .failure(let error):
-                // One line per owner, whatever the layout says. A duplicate
-                // entry in `owners` fans out twice and would fail twice, and the
-                // banner's `ForEach` keys on the owner — two rows with one id is
-                // undefined in SwiftUI, and "2 owners could not be listed" would
-                // be a count of *attempts*, which is not what the sentence says.
-                guard named.insert(owner).inserted else { continue }
+                // One line per owner. There used to be a `named.insert(owner)`
+                // guard here, because a duplicate entry in `owners` fanned out
+                // twice and failed twice — the banner's `ForEach` keys on the
+                // owner, so two rows carried one id, and "2 owners could not be
+                // listed" counted *attempts* while saying **owners**.
+                //
+                // Removed rather than kept as belt-and-braces (#191). The fan-out
+                // above reads `layout.owners`, which `RepoTreeLayout` now
+                // deduplicates at construction *and* at decoding, so this guard
+                // could not fire — and a guard that cannot fire is one the next
+                // reader cannot tell is load-bearing. The guarantee is pinned
+                // where it now lives, by `RepoTreeLayoutTests`.
                 failures.append(
                     OwnerListingFailure(owner: owner, reason: Self.reason(error)))
             }
