@@ -393,7 +393,7 @@ struct NewStoryStateTests {
     /// stopped binding to the model, would make the claim above vacuously true.
     @Test("The gate is reading the real face")
     func theGateReadsTheFace() throws {
-        let face = try HiddenFaceState.source(of: "NewStoryView.swift")
+        let face = try HiddenFaceState.code(of: "NewStoryView.swift")
         #expect(face.contains("struct NewStoryView: View"))
         #expect(
             face.contains("$model.newCardDraft"),
@@ -402,7 +402,7 @@ struct NewStoryStateTests {
             into the view?
             """)
 
-        let editor = try HiddenFaceState.source(of: "CardFieldsEditor.swift")
+        let editor = try HiddenFaceState.code(of: "CardFieldsEditor.swift")
         #expect(editor.contains("@Binding var draft: CardDraft"))
     }
 
@@ -431,12 +431,12 @@ struct NewStoryStateTests {
     /// one file in leaves every behavioural test in this suite green.
     @Test("The repository picker is in the face, not in the shared field editor")
     func thePickerIsNotInTheSharedEditor() throws {
-        let face = try HiddenFaceState.source(of: "NewStoryView.swift")
+        let face = try HiddenFaceState.code(of: "NewStoryView.swift")
         #expect(
             face.contains("model.newCardRepoID = $0"),
             "the New story header no longer writes the chosen repository (#314)")
 
-        let editor = try HiddenFaceState.source(of: "CardFieldsEditor.swift")
+        let editor = try HiddenFaceState.code(of: "CardFieldsEditor.swift")
         for needle in ["newCardRepoID", "newCardRepo", "model.repos"] {
             #expect(
                 !editor.contains(needle),
@@ -446,5 +446,67 @@ struct NewStoryStateTests {
                         + "edit mode and the proposal editor, so a repository control here is a "
                         + "second write path to a card's identity (#314)."))
         }
+    }
+
+    /// ⛔ **The picker offers repositories and nothing else.**
+    ///
+    /// The board's toolbar picker leads with `Text("All repositories").tag(UUID?.none)`,
+    /// where the tag means *do not filter*; copied here it would mean *file
+    /// nowhere*, and selecting it would disable Add with nothing on screen saying
+    /// why. `AppModel.newCardRepo` cannot produce that state — it falls back to
+    /// `repos.first` — so the only way back into it is a row in this picker.
+    ///
+    /// ⚠️ **Found by break-testing, not by design.** Adding that row back left
+    /// the whole suite green (2 159 tests): the arithmetic underneath is pinned
+    /// and the row is view text, which `swift test` cannot see.
+    @Test("The picker offers no selection that cannot be filed")
+    func thePickerHasNoAllRepositoriesRow() throws {
+        let face = try HiddenFaceState.code(of: "NewStoryView.swift")
+
+        // Positive witness: the picker is still built from the repository list,
+        // so the negatives below are about what it offers rather than about a
+        // control that has gone.
+        #expect(face.contains("ForEach(model.repos)"), "the repository picker has gone")
+
+        for needle in ["UUID?.none", "All repositories"] {
+            #expect(
+                !face.contains(needle),
+                Comment(
+                    rawValue:
+                        "the New story picker offers \"\(needle)\". On the board's toolbar that tag "
+                        + "means \"do not filter\"; here it would mean \"file nowhere\", and a card "
+                        + "must land somewhere (#314)."))
+        }
+    }
+
+    // MARK: - The refusal reaches the reader
+
+    /// ⛔ **The model recording a refusal is only half of #313; the face has to
+    /// draw it.**
+    ///
+    /// ⚠️ **This gate exists because its absence was measured.** Deleting the
+    /// refusal block from `NewStoryView` left all 2 159 tests green — the story
+    /// survived, the face stayed open, and the reader was told nothing, which is
+    /// the original defect with one of its two halves repaired. Every behavioural
+    /// test in this file reads `AppModel`, and `swift test` cannot see a view.
+    ///
+    /// It checks the tier as well as the text: `Palette.refused` is this app's
+    /// "a move was refused, or a run failed", and a refusal drawn in the prose
+    /// tier reads as a caption on a screen that looks like it worked.
+    @Test("The face draws the refusal, in the refusal tier")
+    func theFaceRendersTheRefusal() throws {
+        let face = try HiddenFaceState.code(of: "NewStoryView.swift")
+
+        #expect(
+            face.contains("model.newStoryRefusal"),
+            """
+            NewStoryView never reads AppModel.newStoryRefusal. The model records why nothing was \
+            filed and the screen says nothing, which is #313 with the story kept and the reason \
+            still lost — and the status bar cannot stand in for it: one truncated line at the far \
+            corner of the window, owned by whoever narrated last.
+            """)
+        #expect(
+            face.contains("Palette.refused"),
+            "the refusal is not drawn in the refusal tier, so a refused Add reads as a caption")
     }
 }

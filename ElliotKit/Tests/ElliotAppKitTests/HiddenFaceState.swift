@@ -29,6 +29,35 @@ enum HiddenFaceState {
         try String(contentsOf: viewSources.appending(path: file), encoding: .utf8)
     }
 
+    /// The same file with every `//` comment cut away.
+    ///
+    /// ⚠️ **Load-bearing, and this repository walks into it every time.** These
+    /// files *document* the rules the gates enforce — "no All repositories row",
+    /// "the picker is not in the shared editor" — so a gate matching raw text
+    /// fails on the explanation of the very rule it holds, and the obvious way to
+    /// make it pass is to delete the explanation. Measured here rather than
+    /// assumed: the first version of `thePickerHasNoAllRepositoriesRow` went red
+    /// against an unmodified `NewStoryView.swift`, on its own ⚠️ paragraph.
+    ///
+    /// It cuts positives too, not only negatives. A gate asserting that the face
+    /// *reads* `model.newStoryRefusal` would otherwise be satisfied by a comment
+    /// that merely mentions it — prose passing for behaviour, which is the same
+    /// error pointed the other way. CLAUDE.md states the general form from #186: a
+    /// string gate over prose *"can tell neither a claim from a mention nor a live
+    /// claim from a quoted one"*.
+    ///
+    /// Cutting at `//` would also cut one inside a string literal; none of the
+    /// needles these gates use can occur after one.
+    static func code(of file: String) throws -> String {
+        try source(of: file)
+            .components(separatedBy: "\n")
+            .map { line -> String in
+                guard let comment = line.range(of: "//") else { return line }
+                return String(line[line.startIndex..<comment.lowerBound])
+            }
+            .joined(separator: "\n")
+    }
+
     /// Every `@State private var` declared anywhere in a file, by name.
     ///
     /// ⚠️ **The whole file, not one `struct`.** The first version of this scan
