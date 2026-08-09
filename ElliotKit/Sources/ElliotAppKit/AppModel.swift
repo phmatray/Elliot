@@ -2046,6 +2046,54 @@ public final class AppModel {
         try? await store?.saveRepo(repo)
     }
 
+    /// Chooses the method a repository runs — the one setting on that page that
+    /// changes what a drag *executes*.
+    ///
+    /// It re-runs this repository's checks rather than only saving, and that is
+    /// the point rather than tidiness: the project-requirement warnings, the
+    /// plugin the profile hint names and — for an id no pack answers — the
+    /// `.fail` that blocks the board are all functions of the value just
+    /// written. Leaving them until the next sweep would show the previous
+    /// method's verdict beside the new method's name, which is a screen lying
+    /// about what will happen on the next drag.
+    ///
+    /// Only **this** repository's, through `record`, exactly as `apply(_ fix:)`
+    /// does: pressing one menu item must not start a full-board sweep at ~6
+    /// subprocesses per repository with no progress and no re-entrancy guard.
+    ///
+    /// ⛔ The save is not `try?`, unlike `setRepoEnabled` directly above. If it
+    /// is lost the menu shows a method the store does not hold, and the next
+    /// drag runs the old one — a screen disagreeing with the board about which
+    /// commands a card will spawn, silently. A dropped `isEnabled` is visible
+    /// on the next sweep; a dropped `methodID` is not.
+    public func setRepoMethod(_ repo: Repo, methodID: String?) async {
+        guard let store else {
+            status = "Elliot is still starting; try again in a moment."
+            return
+        }
+        var updated = repo
+        updated.methodID = methodID
+        do {
+            try await store.saveRepo(updated)
+        } catch {
+            status = "Could not set the method for \(updated.displayName): "
+                + error.localizedDescription
+            return
+        }
+
+        guard let toolConfig else { return }
+        let preflight = PreflightService(
+            environment: LoginShellEnvironment(
+                variables: toolConfig.environment, capturedVia: "session"
+            ),
+            config: toolConfig
+        )
+        // `updated`, never `repo`: `record` writes the verdict back onto the row
+        // it is handed, and handing it the pre-write value would save the old
+        // `methodID` over the one just chosen.
+        await record(await preflight.repoChecks(updated), for: updated)
+    }
+
     /// A forget waiting for an answer.
     ///
     /// One optional rather than a per-screen flag: both screens present the same

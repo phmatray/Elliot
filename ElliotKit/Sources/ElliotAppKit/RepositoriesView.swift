@@ -383,6 +383,11 @@ public struct RepositoriesView: View {
                 })
 
             VStack(alignment: .trailing, spacing: 4) {
+                // Above the actions, because it is not one: it is the setting
+                // that decides what those actions will run. `boardButton` keeps
+                // its place directly beneath, as the only non-repair button.
+                methodPicker(row)
+
                 // Above the fixes, because it is the only one of these buttons
                 // that is not a repair — see `RepoRowBoardAction`.
                 boardButton(row)
@@ -409,6 +414,65 @@ public struct RepositoriesView: View {
                     openBoard(row.boardAction)
                 }
             }
+        }
+    }
+
+    /// The method this repository runs — or nothing at all for a row that is not
+    /// registered.
+    ///
+    /// Nothing rather than a disabled control: an unregistered clone has no
+    /// `Repo` to write to, and a greyed picker beside it would name a setting
+    /// that does not exist yet — the confident-looking no-op this file keeps
+    /// refusing to ship. The row's own `Register` fix is the way in.
+    ///
+    /// ⚠️ **The gate is registration — `repoID != nil` — and that is deliberate,
+    /// not the mistake `RepoRow.showsBoardFigures` warns about.** That property
+    /// says *"Not `repoID != nil`"* because *figures* are meaningless for an
+    /// out-of-scope row; but the *cards* of a registered fork are still on the
+    /// board and still draggable, which is exactly `boardAction`'s own rule —
+    /// *"Registration is the gate, not `issue == .ok`"*. A registered
+    /// `.outOfScope` row therefore gets a picker on purpose: a repository whose
+    /// cards can run something must be able to say what.
+    ///
+    /// It reads the registration out of `model.repos` rather than off the
+    /// `RepoRow`, because a row is a *reconciliation* of GitHub, the disk and
+    /// the registration and carries no `methodID`. `repoID` is the join.
+    @ViewBuilder
+    private func methodPicker(_ row: RepoRow) -> some View {
+        if let repoID = row.repoID, let repo = model.repos.first(where: { $0.id == repoID }) {
+            Picker(
+                "Method",
+                selection: Binding(
+                    get: { repo.methodID },
+                    set: { value in Task { await model.setRepoMethod(repo, methodID: value) } }
+                )
+            ) {
+                // `nil` is its own row, and it is **not** the default pack's row.
+                // Collapsing the two would make a repository that never chose
+                // look like one that did, and it would stop following the
+                // default if the default ever moved.
+                Text(Self.unsetMethodLabel()).tag(String?.none)
+                ForEach(MethodCatalog.builtIn) { pack in
+                    Text(pack.displayName).tag(String?.some(pack.id))
+                }
+                // An id this build has no pack for still has to be visible and
+                // still has to be leaveable. Without a row carrying this tag the
+                // menu renders blank, which reads as "no method" — exactly the
+                // silent substitution `MethodResolution.unknown` exists to stop,
+                // restored by the view.
+                if case .unknown(let id) = repo.method {
+                    Text(Self.unknownMethodLabel(id)).tag(String?.some(id))
+                }
+            }
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .labelsHidden()
+            .frame(maxWidth: 190)
+            // A sweep in flight is two writers on one checkout; changing what it
+            // runs mid-sweep is the same hazard the fix buttons refuse.
+            .disabled(model.isReconciling)
+            .help(Self.methodHelp(repo.method))
+            .accessibilityLabel("Method for \(row.nameWithOwner ?? row.id)")
         }
     }
 
@@ -503,6 +567,39 @@ public struct RepositoriesView: View {
     /// had already drifted here, one naming cards and the other naming nothing.
     nonisolated static func explainForget(displayName: String) -> String {
         ForgetPrompt.tooltip(displayName: displayName)
+    }
+
+    // MARK: - Method vocabulary
+
+    /// The menu row for a repository that has never chosen.
+    ///
+    /// It names the pack it falls back to *and* says it is a fallback, because
+    /// those are two facts and a reader deciding whether to choose needs both.
+    nonisolated static func unsetMethodLabel() -> String {
+        guard case .unset(let pack) = MethodCatalog.resolve(nil) else { return "Default" }
+        return "Default — \(pack.displayName)"
+    }
+
+    /// The menu row for an id this build has no pack for.
+    nonisolated static func unknownMethodLabel(_ id: String) -> String {
+        "\(id) — not installed"
+    }
+
+    /// What choosing this method means, in one sentence.
+    ///
+    /// Exhaustive with no `default:`, for the reason `icon`/`tint`/`verdict`
+    /// are: a fourth `MethodResolution` case must fail to compile here so
+    /// someone writes its sentence instead of inheriting one that is wrong.
+    nonisolated static func methodHelp(_ resolution: MethodResolution) -> String {
+        switch resolution {
+        case .unset(let pack):
+            "Never chosen — dragging a card here runs \(pack.displayName). \(pack.summary)"
+        case .chosen(let pack):
+            "Dragging a card here runs \(pack.displayName). \(pack.summary)"
+        case .unknown(let id):
+            "Set to \"\(id)\", which this build has no pack for. Nothing can be dragged here "
+                + "until it names a method Elliot knows."
+        }
     }
 
     // MARK: - Status vocabulary
