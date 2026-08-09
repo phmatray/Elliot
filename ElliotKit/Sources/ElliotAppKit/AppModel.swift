@@ -1955,21 +1955,36 @@ public final class AppModel {
 
     // MARK: - Repos
 
+    /// Preflight's *Add a repository…*, which is a **registration** plus what is
+    /// this screen's own: select it, check it, import its work.
+    ///
+    /// ⛔ It used to be a second implementation of registering, and the two
+    /// stored different rows for the same directory — this one wrote no
+    /// `visibility` and never verified a `.git`. Since `visibility` is what
+    /// `expectedPath` uses to decide where a clone belongs, a repository could
+    /// be reported misplaced or silently exempted according to *which button*
+    /// had registered it. It goes through `RepoRegistryService.register` now,
+    /// the same call `RepoFix.register` makes.
+    ///
+    /// ⚠️ Not through `apply(_ fix:)`, deliberately: that is the Repositories
+    /// page's act and ends in `refreshRepoRows()`, a portfolio-wide sweep with a
+    /// `git fetch` per clone. Adding one repository from Preflight should not
+    /// cost that.
     public func addRepo(path: String) async {
-        guard let store, let toolConfig else { return }
-        let gh = GHClient(config: toolConfig)
-        let info = try? await gh.repoInfo(cwd: path)
-        let repo = Repo(
-            path: path,
-            nameWithOwner: info?.nameWithOwner ?? URL(fileURLWithPath: path).lastPathComponent,
-            defaultBranch: info?.defaultBranch ?? "main",
-            displayName: URL(fileURLWithPath: path).lastPathComponent
-        )
-        try? await store.saveRepo(repo)
+        guard let store, let registry else { return }
+        let outcome = await registry.apply(.register(path: path), layout: layout)
+        // Said under the button, not only in `status`, which is on another
+        // screen. A refusal that leaves no mark reads exactly like a success.
+        lastAddRepoOutcome = FixOutcome(detail: outcome.detail, succeeded: outcome.succeeded)
+        status = outcome.detail
+        guard outcome.succeeded, let repo = try? await store.repo(path: path) else { return }
         selectedRepoID = repo.id
         await refreshRepoChecks()
         await importIfNeeded(repoID: repo.id)
     }
+
+    /// What the last *Add a repository…* did, for the sentence under the button.
+    public private(set) var lastAddRepoOutcome: FixOutcome?
 
     // MARK: - The repository tree
 
@@ -2097,14 +2112,43 @@ public final class AppModel {
             await requestForget(repoID: repoID, origin: .repositories)
             return
         }
-        guard let registry else { return }
+        guard let registry, applyingFix == nil else { return }
+        // Raised around the *fix*, not around the refresh that follows it. It
+        // used to be raised only inside `refreshRepoRows()`, so for the whole of
+        // a `gh repo clone` — bounded at 600 seconds — the page was
+        // indistinguishable from idle: every `.disabled(model.isReconciling)`
+        // button stayed live, and a second press or a Move on another row could
+        // interleave with a directory relocation.
+        applyingFix = fix
         let outcome = await registry.apply(fix, layout: layout)
         status = outcome.detail
+        // ⛔ Cleared before the refresh, not after. `refreshRepoRows()` guards on
+        // `!isReconciling` and takes minutes of its own; holding this across it
+        // would disable the page for a sweep that is not the fix.
+        applyingFix = nil
         await refreshRepoRows()
         // After the refresh, which clears it: this is the sentence the page
         // itself shows, and `status` is on a different screen.
         lastFixOutcome = FixOutcome(detail: outcome.detail, succeeded: outcome.succeeded)
     }
+
+    /// The fix running right now, or nil.
+    ///
+    /// A `RepoFix?` rather than a second `Bool`, because the page has to say
+    /// *which* act it is waiting on — "Cloning phmatray/Elliot…" is the whole
+    /// difference between a slow page and a broken one — and because the
+    /// one-at-a-time rule `RepoRegistryService` documents is then enforced by
+    /// the same value that renders it.
+    public private(set) var applyingFix: RepoFix?
+
+    /// Whether the page must not start anything: a fix is running, or the
+    /// portfolio sweep is. Asked once so a button cannot consult half of it.
+    public var isRepoWorkInFlight: Bool { applyingFix != nil || isReconciling }
+
+    /// What is happening, in the fix's own words. The wording lives beside
+    /// `RepoFix.label` in `ElliotModel`, so the verb on the button that started
+    /// it and the verb in the header cannot drift apart.
+    public var applyingFixSentence: String? { applyingFix?.runningSentence }
 
     public func setRepositoriesRoot(_ path: String) async {
         guard let store else { return }

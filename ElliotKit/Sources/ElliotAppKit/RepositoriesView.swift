@@ -105,7 +105,15 @@ public struct RepositoriesView: View {
                         .textSelection(.enabled)
                 }
                 Spacer()
-                if model.isReconciling {
+                // The fix's own verb while it runs. A `gh repo clone` is bounded
+                // at 600 seconds, and for all of it this header said nothing —
+                // which is how the page came to look idle mid-clone.
+                if let sentence = model.applyingFixSentence {
+                    Text(sentence)
+                        .font(Type.factSmall)
+                        .foregroundStyle(.secondary)
+                }
+                if model.isRepoWorkInFlight {
                     ProgressView().controlSize(.small)
                 }
                 Button("Change…", systemImage: "folder") { chooseRoot() }
@@ -115,13 +123,13 @@ public struct RepositoriesView: View {
                     Task { await model.refreshRepoRows() }
                 }
                 .controlSize(.small)
-                .disabled(model.isReconciling)
+                .disabled(model.isRepoWorkInFlight)
                 .help("Re-read GitHub, the disk and the board")
                 Button("Sync", systemImage: "arrow.triangle.2.circlepath") {
                     Task { await model.syncAll() }
                 }
                 .controlSize(.small)
-                .disabled(model.isReconciling || behindCount == 0)
+                .disabled(model.isRepoWorkInFlight || behindCount == 0)
                 .help(syncHelp)
             }
             Text(
@@ -389,10 +397,13 @@ public struct RepositoriesView: View {
 
                 // One button per legal fix, and nothing here deletes: `RepoFix`
                 // has no `.delete` case, deliberately.
+                // Every row's buttons, not only this row's: applying two fixes at
+                // once can interleave a directory relocation with a clone, which
+                // is the one-at-a-time rule `RepoRegistryService` documents.
                 ForEach(row.fixes, id: \.self) { fix in
                     Button(fix.label) { Task { await model.apply(fix) } }
                         .controlSize(.small)
-                        .disabled(model.isReconciling)
+                        .disabled(model.isRepoWorkInFlight)
                         .help(explain(fix, in: row))
                 }
             }
