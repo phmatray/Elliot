@@ -390,6 +390,34 @@ discovering it after building the bundle and seeding a store. The refusal is at 
 names the two cases apart and lists what is open — which is the one thing this file's false-negative
 family never does.
 
+⚠️ **Re-measured 2026-08-09 (#333) on a bundle built from `main`, and the reply has changed — the
+conclusion has not, it has hardened.** Those six scenes are no longer *windows*; the console
+refactor made them **faces of the board window**, so there is nothing to be "not open":
+
+| call | reply |
+|---|---|
+| `board_screenshot window=preflight` | `window_not_found` · *"No Elliot window is called "preflight"."* · hint: **"Known windows: board."** |
+| `board_screenshot window=board` | `is_visible: true`, `source: live`, 1510×995 |
+
+⛔ **So a console face cannot be photographed by an agent at all, and no seeding trick gets around
+it**: `AppModel.console` is deliberately *not persisted* ("a board that reopened onto Operations
+would be reporting on a machine state from a previous session"), so which face is showing cannot be
+arranged in the database the way a card or a repository can. Every face — Repositories, Operations,
+Up next, Preflight, Archive, New story — needs a human to click it into view, and a change to one is
+**unverifiable on screen from here**. Say so in the pull request rather than implying otherwise.
+
+The `elliot` helper registered with Claude Code points at whichever `ELLIOT_HOME` it was registered
+under, so to reach a scratch instance, spawn one yourself and speak JSON-RPC at its stdin — and
+⚠️ **keep stdin open**: `subprocess.communicate()` closes it, and this helper then exits 0 having
+written nothing at all, which reads exactly like a helper that failed to start. Send `initialize`,
+then `notifications/initialized`, then `tools/call`, reading replies as they arrive.
+
+⚠️ **A repository inserted with `sqlite3` while the app is running does not appear on the board**,
+though `board_list_repos` reports it the same second. That is not a defect and not a race: SQLite
+does not notify *other processes* of writes, which is the whole reason the app is the sole writer —
+the in-app MCP handler re-reads per call and sees it, the app's `ValueObservation` never fires. Seed
+**before** launching, then `PRAGMA wal_checkpoint(TRUNCATE)`.
+
 ⚠️ **A long `ELLIOT_HOME` silently costs you the MCP socket.** `sun_path` is capped at 104 bytes on
 macOS, so a scratch home under a deep path makes `startIPC` fail; the app runs fine, and Preflight
 says so under *MCP socket*. Keep the check store short — `/tmp/elliot-check` is short on purpose.

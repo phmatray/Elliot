@@ -32,8 +32,10 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1669 tests in 190 suites**, 5 of 5 samples on
-  `feat/standards-pure-core` on 2026-08-08 at `3660d68`, i.e. after merging `main` at `a29d019`;
+- **Full test:** `cd ElliotKit && swift test` (**2006 tests in 230 suites**, 5 of 5 samples on
+  `feat/333-repo-run-terms` on 2026-08-09 at `297e9bf`, on a wiped `.build` off `main` at `4977250`;
+  the base measured **1974 in 226**, so the whole of this line's +32/+4 is this branch's own four
+  suites — read off the runs, never added to the previous figure;
   needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
