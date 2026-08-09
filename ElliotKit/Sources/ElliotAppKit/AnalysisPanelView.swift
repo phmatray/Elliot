@@ -44,14 +44,40 @@ struct AnalysisPanelView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    // ⚠️ The setup form and the triage selection live on `AppModel`, not here:
-    // hiding the panel removes it from the row and destroys every `@State` in
-    // it, which would make the hide lossy in exactly the way this feature says
-    // it is not. See ``AppModel/analysisAngles``.
-    @State private var editingID: UUID?
+    // ⚠️ The setup form, the triage selection **and the open editor** live on
+    // `AppModel`, not here: hiding the panel removes it from the row and
+    // destroys every `@State` in it, which would make the hide lossy in exactly
+    // the way this feature says it is not. See ``AppModel/analysisAngles``.
+    //
+    // `editingID` used to be here, and its draft was `@State` inside
+    // `ProposalEditor` — so the promise held for the two pieces named in the
+    // comment above and was false for the one the reader had actually typed
+    // into (#291). Both now travel as one ``ProposalEdit`` on the session.
     @State private var past: [Analysis] = []
     /// `nil` until the reader opens or closes the strip themselves.
     @State private var lensesExpanded: Bool?
+    /// Whether the *N rejected* disclosure is open.
+    ///
+    /// `@State` is right here where it is wrong for the four values above: the
+    /// rule that sends those to `AppModel` is that hiding the panel destroys
+    /// this view, so nothing the reader has **typed** may live in it. A folded
+    /// disclosure is neither typed nor lossy to reopen — the same call
+    /// `lensesExpanded` and `LensRunRow.showingDropped` already make.
+    @State private var rejectedExpanded = false
+
+    /// The open editor's draft, bound through the model.
+    ///
+    /// The `get`'s fallback is never rendered: the editor is built only inside
+    /// `model.analysisEdit?.proposalID == proposal.id`, so a nil edit means
+    /// there is no editor on screen. The `set` writes nothing when the edit is
+    /// gone, which is the right answer for a keystroke that lands after the
+    /// proposal was decided elsewhere.
+    private var editDraftBinding: Binding<CardDraft> {
+        Binding(
+            get: { model.analysisEdit?.draft ?? CardDraft() },
+            set: { model.analysisEdit?.draft = $0 }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -111,6 +137,22 @@ struct AnalysisPanelView: View {
         // repository happened to be picked at that instant, permanently, and
         // no later change could correct it (#213).
         .task(id: model.analysisRepoID) { past = await model.recentAnalyses() }
+        // ⚠️ A proposal can be accepted or rejected over MCP — or by this
+        // panel's own footer — while the editor is hidden. Re-applying a draft
+        // over a decided proposal is worse than losing it: an accepted one
+        // already has a Backlog card carrying its text, so a save would rewrite
+        // the proposal that card came from.
+        //
+        // Keyed on the open ids rather than run from `body`: a view that
+        // mutated the model while rendering it is a different bug.
+        .onChange(of: openProposalIDs, initial: true) { _, ids in
+            model.dropStaleAnalysisEdit(openProposalIDs: ids)
+        }
+    }
+
+    /// The proposals still open for decision — the same filter the list renders.
+    private var openProposalIDs: Set<UUID> {
+        Set((model.analysis.map(proposed) ?? []).map(\.id))
     }
 
     /// The panel's silhouette, used as a background fill and as a border — never
@@ -299,6 +341,15 @@ struct AnalysisPanelView: View {
         HStack(spacing: 8) {
             Fact(text: "\(session.runs.count) lenses", small: true)
             Fact(text: "\(kept) kept", tint: Palette.verified, small: true)
+            // The number the setup footer promised, surviving the collapse the
+            // reader spends the whole triage inside. `Palette.quiet` is
+            // greyscale and spends none of the five consequence accents —
+            // `armed` here would give a sixth meaning to the colour that means
+            // "this starts an agent".
+            if let spend = AnalysisSpend.of(session.runs) {
+                Fact(text: AnalysisSpend.label(spend), tint: Palette.quiet, small: true)
+                    .help(AnalysisSpend.help(spend))
+            }
             if dropped > 0 {
                 Fact(text: "\(dropped) dropped", tint: Palette.attention, small: true)
             }
@@ -320,6 +371,16 @@ struct AnalysisPanelView: View {
         session.proposals.filter { $0.status == .proposed }
     }
 
+    /// What was turned down, in the order it was found.
+    ///
+    /// The observation this session is fed by fetches every status, so these
+    /// rows have always been in memory — nothing on screen could reach them
+    /// (#292). Ordered by `createdAt` like the open list, because *when it was
+    /// rejected* is not recorded and inventing an order would be a claim.
+    private func rejected(_ session: AnalysisSession) -> [StoryProposal] {
+        session.proposals.filter { $0.status == .rejected }
+    }
+
     private func proposalList(_ session: AnalysisSession) -> some View {
         let proposed = self.proposed(session)
         return ScrollView {
@@ -335,12 +396,61 @@ struct AnalysisPanelView: View {
                         }
                     }
                 }
+
+                // ⛔ **A sibling of that `if`, never inside its `else`.** The
+                // state this section exists for is "I rejected the wrong one",
+                // and rejecting the last open proposal empties the list — so
+                // nesting it under `!proposed.isEmpty` would hide the undo in
+                // precisely the case that needs it most, while looking correct
+                // in every case anyone would think to try. `swift test` cannot
+                // see a view, so nothing would have failed.
+                rejectedSection(session)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             // Accepting or rejecting a row made it vanish instantly, so a list
             // of twelve became a list of eleven with no sign of which one went.
             .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: proposed.map(\.id))
+        }
+    }
+
+    /// What was turned down, folded away, with one act on each row: Restore.
+    ///
+    /// Closed by default and rendered nowhere when nothing has been rejected:
+    /// this is a footnote to the triage, not a second list to work through. It
+    /// is also the answer to the footer's *"Rejected 12 proposals."* — a
+    /// sentence that until now named a number with nothing behind it, after a
+    /// bulk Reject that clears the selection before it commits and so leaves no
+    /// record of which twelve went.
+    @ViewBuilder
+    private func rejectedSection(_ session: AnalysisSession) -> some View {
+        let rejected = self.rejected(session)
+        if !rejected.isEmpty {
+            DisclosureGroup(isExpanded: $rejectedExpanded) {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(rejected) { proposal in
+                        ProposalRow(
+                            proposal: proposal,
+                            // The rule is the model's; this only asks it. The
+                            // store's conditional UPDATE is the fact — see
+                            // `StoryProposal.isRestorable`, and the note that
+                            // reports the disagreement when there is one.
+                            actions: proposal.isRestorable
+                                ? .restore({ Task { await model.restoreProposals(ids: [proposal.id]) } })
+                                : .settled,
+                            repoPath: repo?.path
+                        )
+                    }
+                }
+                .padding(.top, 4)
+            } label: {
+                Label(
+                    rejected.count == 1 ? "1 rejected" : "\(rejected.count) rejected",
+                    systemImage: "xmark.bin"
+                )
+                .font(Type.prose)
+                .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -370,24 +480,35 @@ struct AnalysisPanelView: View {
                 // The row grows into a form rather than being covered by one.
                 // This list is walked to triage up to thirty proposals, and a
                 // sheet covered the very thing being sorted.
-                if editingID == proposal.id {
-                    ProposalEditor(proposal: proposal) { editingID = nil }
-                        .id(proposal.id)
+                if model.analysisEdit?.proposalID == proposal.id {
+                    // The draft is bound through the model, so hiding the panel
+                    // and re-showing it lands back on this editor with every
+                    // character intact. `@Bindable` gives the binding; the
+                    // force-unwrap-free path is the model's own optional
+                    // projection.
+                    ProposalEditor(
+                        proposal: proposal,
+                        draft: editDraftBinding,
+                        done: { model.endEditingProposal() }
+                    )
+                    .id(proposal.id)
                 } else {
                     ProposalRow(
                         proposal: proposal,
-                        isSelected: model.analysisSelection.contains(proposal.id),
-                        repoPath: repo?.path,
-                        toggle: {
-                            if model.analysisSelection.contains(proposal.id) {
-                                model.analysisSelection.remove(proposal.id)
-                            } else {
-                                model.analysisSelection.insert(proposal.id)
-                            }
-                        },
-                        edit: { editingID = proposal.id },
-                        accept: { Task { await model.acceptProposals(ids: [proposal.id]) } },
-                        reject: { Task { await model.rejectProposals(ids: [proposal.id]) } }
+                        actions: .decide(
+                            isSelected: model.analysisSelection.contains(proposal.id),
+                            toggle: {
+                                if model.analysisSelection.contains(proposal.id) {
+                                    model.analysisSelection.remove(proposal.id)
+                                } else {
+                                    model.analysisSelection.insert(proposal.id)
+                                }
+                            },
+                            edit: { model.beginEditingProposal(proposal) },
+                            accept: { Task { await model.acceptProposals(ids: [proposal.id]) } },
+                            reject: { Task { await model.rejectProposals(ids: [proposal.id]) } }
+                        ),
+                        repoPath: repo?.path
                     )
                 }
             }
@@ -469,6 +590,20 @@ struct AnalysisPanelView: View {
                     .foregroundStyle(message.tone.tint)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+                    // The clamp is right — this slot is one line of a footer —
+                    // but the failures that land here are
+                    // `error.localizedDescription` from a thrown start, the
+                    // longest strings the slot ever shows and the ones whose
+                    // tail carries the actionable part. Without this the tail is
+                    // *unreadable*: it reaches `os_log`, and as of 2026-08-07
+                    // nothing from this subsystem comes back out of `log show`
+                    // at any level. Deferred deliberately in #216; this is it.
+                    //
+                    // `message.text` verbatim. A second wording here would be a
+                    // second thing to keep in agreement with the value that
+                    // decides the sentence — which is why `AnalysisFooterMessage`
+                    // gains no member for it.
+                    .help(message.text)
                     // A second identical failure must transition rather than
                     // look like the first one never went away.
                     .id(message.text)
@@ -485,6 +620,10 @@ struct AnalysisPanelView: View {
                     .font(Type.prose)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    // Same clamp, same loss, same remedy. Criterion 2: the note
+                    // is not a lesser string — "Rejected 12 proposals." is short,
+                    // but a note carrying a store error is not.
+                    .help(note)
                     .id(note)
                     // Driven by the `.animation(reduceMotion ? nil : …, value:
                     // fadingMessages)` at the foot of this footer, which carries
@@ -550,7 +689,11 @@ struct AnalysisPanelView: View {
                 // Editing was reachable by hover and by context menu, neither
                 // of which a keyboard can open on macOS.
                 Button("Edit…") {
-                    editingID = (model.analysis.map(proposed) ?? []).first { model.analysisSelection.contains($0.id) }?.id
+                    guard
+                        let proposal = (model.analysis.map(proposed) ?? [])
+                            .first(where: { model.analysisSelection.contains($0.id) })
+                    else { return }
+                    model.beginEditingProposal(proposal)
                 }
                 .disabled(model.analysisSelection.count != 1)
 
@@ -777,41 +920,103 @@ struct LensRunRow: View {
 
 // MARK: - A proposal
 
+/// What a proposal row can be asked to do — and, by construction, what it
+/// cannot.
+///
+/// ⛔ **Not four closures beside an `isRejected` flag.** A row in the *Rejected*
+/// disclosure that still held an `accept` closure would compile, and the only
+/// thing keeping that button off screen would be a view remembering an `if`;
+/// this feature exists because a Reject 6pt from an Accept was pressed by
+/// mistake, so a second way to fire the wrong one is the last thing it should
+/// ship with.
+///
+/// The **selection** travels inside `decide` for the same reason rather than
+/// sitting beside the case. `AppModel.analysisSelection` feeds the footer's
+/// *Accept N* / *Reject N*, which act on proposals still open for decision, so a
+/// rejected row must not be able to enter it at all — not "must not be drawn
+/// with a checkbox".
+enum ProposalRowActions {
+
+    /// Still open for decision, in the triage list.
+    case decide(
+        isSelected: Bool,
+        toggle: () -> Void,
+        edit: () -> Void,
+        accept: () -> Void,
+        reject: () -> Void
+    )
+
+    /// Turned down, and able to come back. The one act the disclosure offers.
+    case restore(() -> Void)
+
+    /// Turned down, and *not* able to come back: it produced a Backlog card
+    /// before it was rejected, so putting it on the list again is how one story
+    /// grows two cards. Rendered as a stated fact rather than a disabled
+    /// button — a control you cannot press says only that you cannot press it.
+    /// See ``StoryProposal/isRestorable``, which is what chooses between this
+    /// case and the one above.
+    case settled
+}
+
 struct ProposalRow: View {
     let proposal: StoryProposal
-    let isSelected: Bool
+    let actions: ProposalRowActions
     let repoPath: String?
-    let toggle: () -> Void
-    let edit: () -> Void
-    let accept: () -> Void
-    let reject: () -> Void
 
     @State private var hovering = false
     @State private var showingCriteria = false
 
+    /// Whether this row is being read back rather than decided.
+    ///
+    /// Drives the demotion — recessed ground, struck-through title — so the
+    /// list a reader is triaging and the footnote of what they turned down
+    /// cannot be mistaken for each other at a glance.
+    private var isRejected: Bool {
+        if case .decide = actions { return false }
+        return true
+    }
+
+    private var isSelected: Bool {
+        if case .decide(let isSelected, _, _, _, _) = actions { return isSelected }
+        return false
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Toggle("", isOn: Binding(get: { isSelected }, set: { _ in toggle() }))
-                .labelsHidden()
-                .accessibilityLabel("Select \(proposal.title)")
+            if case .decide(_, let toggle, _, _, _) = actions {
+                Toggle("", isOn: Binding(get: { isSelected }, set: { _ in toggle() }))
+                    .labelsHidden()
+                    .accessibilityLabel("Select \(proposal.title)")
+            }
 
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(proposal.title)
                         .font(Type.cardTitle)
+                        .strikethrough(isRejected)
+                        .foregroundStyle(isRejected ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                         .fixedSize(horizontal: false, vertical: true)
                     EffortChip(effort: proposal.effort)
                     Spacer(minLength: 0)
                     if hovering {
-                        Button("Edit", action: edit)
-                            .buttonStyle(.plain)
-                            .font(Type.prose)
-                        Button("Reject", action: reject)
-                            .buttonStyle(.plain)
-                            .font(Type.prose)
-                        Button("Accept", action: accept)
-                            .buttonStyle(.plain)
-                            .font(Type.prose)
+                        switch actions {
+                        case .decide(_, _, let edit, let accept, let reject):
+                            Button("Edit", action: edit)
+                                .buttonStyle(.plain)
+                                .font(Type.prose)
+                            Button("Reject", action: reject)
+                                .buttonStyle(.plain)
+                                .font(Type.prose)
+                            Button("Accept", action: accept)
+                                .buttonStyle(.plain)
+                                .font(Type.prose)
+                        case .restore(let restore):
+                            Button("Restore", action: restore)
+                                .buttonStyle(.plain)
+                                .font(Type.prose)
+                        case .settled:
+                            EmptyView()
+                        }
                     }
                 }
 
@@ -883,11 +1088,25 @@ struct ProposalRow: View {
                         .foregroundStyle(Palette.attention)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                // Why this one row carries no Restore, said in words. Without
+                // it the disclosure has a row that simply does nothing on
+                // hover, which reads as the feature being broken rather than as
+                // the refusal it is.
+                if case .settled = actions {
+                    Label(
+                        "Already accepted — its card is on the board, so this cannot go back.",
+                        systemImage: "tray.and.arrow.down.fill"
+                    )
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.attention)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isSelected ? Surface.wash(Palette.armed) : Surface.recess)
+        .background(rowGround)
         .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
         .overlay {
             RoundedRectangle(cornerRadius: Metric.cardRadius)
@@ -899,21 +1118,22 @@ struct ProposalRow: View {
         // switches it off there, once, for every row.
         .transition(.opacity.combined(with: .scale(scale: 0.98)))
         .onHover { hovering = $0 }
-        // The row's three actions appear on hover, which is fine for a pointer
-        // and nothing at all for a keyboard or VoiceOver. The context menu is
-        // the conventional discoverable path; the accessibility actions are the
+        // The row's actions appear on hover, which is fine for a pointer and
+        // nothing at all for a keyboard or VoiceOver. The context menu is the
+        // conventional discoverable path; the accessibility actions are the
         // reachable one. Hover alone would repeat the defect the board's cards
-        // already had.
-        .contextMenu {
-            Button("Accept into Backlog", systemImage: "tray.and.arrow.down", action: accept)
-            Button("Edit before accepting", systemImage: "pencil", action: edit)
-            Divider()
-            Button("Reject", systemImage: "xmark", role: .destructive, action: reject)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityAction(named: "Accept into Backlog", accept)
-        .accessibilityAction(named: "Edit before accepting", edit)
-        .accessibilityAction(named: "Reject", reject)
+        // already had — and it is why Restore gets all three, not just the
+        // hover button: an undo only reachable by pointer is an undo half the
+        // readers of this panel do not have.
+        .modifier(ProposalRowMenu(actions: actions))
+    }
+
+    /// Recessed further than the triage rows, which is the demotion made
+    /// visible: `Surface.recess` is what an open proposal sits on, and
+    /// `recessFaint` is the same ground one step quieter.
+    private var rowGround: Color {
+        if isRejected { return Surface.recessFaint }
+        return isSelected ? Surface.wash(Palette.armed) : Surface.recess
     }
 
     private var groundingLabel: String {
@@ -922,6 +1142,48 @@ struct ProposalRow: View {
         return missing == 1
             ? "1 cited file is not in the repository"
             : "\(missing) cited files are not in the repository"
+    }
+}
+
+/// The row's keyboard- and VoiceOver-reachable acts, chosen by the same value
+/// that chose its buttons.
+///
+/// ⚠️ **A modifier rather than three `.contextMenu`/`.accessibilityAction`
+/// calls guarded by `if`s in the row's body.** `.contextMenu { }` with an empty
+/// builder still installs a menu — a right-click on a settled row would open an
+/// empty popover — and `.accessibilityAction` cannot be applied conditionally
+/// without either this or an `AnyView`. Switching once, here, is also what makes
+/// "the hover buttons and the reachable actions are the same set" a fact about
+/// one value instead of an agreement between two places.
+private struct ProposalRowMenu: ViewModifier {
+    let actions: ProposalRowActions
+
+    func body(content: Content) -> some View {
+        switch actions {
+        case .decide(_, _, let edit, let accept, let reject):
+            content
+                .contextMenu {
+                    Button("Accept into Backlog", systemImage: "tray.and.arrow.down", action: accept)
+                    Button("Edit before accepting", systemImage: "pencil", action: edit)
+                    Divider()
+                    Button("Reject", systemImage: "xmark", role: .destructive, action: reject)
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityAction(named: "Accept into Backlog", accept)
+                .accessibilityAction(named: "Edit before accepting", edit)
+                .accessibilityAction(named: "Reject", reject)
+        case .restore(let restore):
+            content
+                .contextMenu {
+                    Button("Restore to the list", systemImage: "arrow.uturn.backward", action: restore)
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityAction(named: "Restore to the list", restore)
+        case .settled:
+            // No menu at all. See the ⚠️ above: an empty one is a popover with
+            // nothing in it, which is worse than none.
+            content.accessibilityElement(children: .contain)
+        }
     }
 }
 
@@ -1008,7 +1270,16 @@ struct ProposalEditor: View {
     /// `[String]` of criteria reconciled only inside the Save closure, which
     /// left `draft.story.acceptanceCriteria` stale for the editor's whole life.
     /// A preview rendered off that value would have shown the pre-edit story.
-    @State private var draft: CardDraft
+    ///
+    /// ⛔ **A `Binding`, not `@State`, and it is seeded elsewhere.** It was
+    /// `@State` built in `init`, which meant hiding the panel — `⌘⌥A`, the
+    /// Analyse toggle, the header `✕` — removed `.analysis` from `boardOrder`,
+    /// tore this subtree down, and took a retyped title and eight acceptance
+    /// criteria with it. Silently: nothing distinguishes a draft that was lost
+    /// from one that was never typed. The panel's own type comment promised the
+    /// hide loses nothing, and named the two pieces of state that had been
+    /// moved; this was the third (#291).
+    @Binding private var draft: CardDraft
     /// What is not edited here: the proposal's rationale, evidence, effort,
     /// angle and identity. `draft.applied(to:)` puts the edits back on top.
     private let proposal: StoryProposal
@@ -1016,10 +1287,10 @@ struct ProposalEditor: View {
     /// which row is being edited; this view only says it is done.
     private let done: () -> Void
 
-    init(proposal: StoryProposal, done: @escaping () -> Void) {
+    init(proposal: StoryProposal, draft: Binding<CardDraft>, done: @escaping () -> Void) {
         self.proposal = proposal
         self.done = done
-        _draft = State(initialValue: CardDraft(proposal: proposal))
+        _draft = draft
     }
 
     /// Inline in the list, not over it.

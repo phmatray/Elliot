@@ -359,5 +359,14 @@ struct SchedulerConcurrentPumpTests {
         // The claim, given back.
         #expect(await scheduler.activeRunCount == 0)
         #expect(await scheduler.occupancy == (writers: 0, analyses: 0))
+
+        // And the sentence it leaves behind is Elliot's. No child ever started,
+        // so there is nobody to quote — yet this went into the field the panel
+        // captions "IT SAID" and sets in demoted italic, which told the reader
+        // to discount the only account of the failure there is (#288).
+        let failed = try #require(try await store.run(id: id))
+        #expect(failed.resultText?.isEmpty == false, "the reason the spawn failed is still shown")
+        #expect(failed.resultSource == .elliot)
+        #expect(RunVerdict.of(failed).itSaid == nil)
     }
 }

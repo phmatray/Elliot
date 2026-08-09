@@ -181,10 +181,18 @@ enum Type {
     /// `Type.fact`.
     ///
     /// This is the type-level form of the rule the whole app rests on: **`gh`
-    /// is the fact, the agent's prose is a hint.** A run's `resultText` set in
+    /// is the fact, the agent's prose is a hint.** A run's closing text set in
     /// this face beside its `verifiedOutcome` set in `fact` says which of the
     /// two may be believed before a word of either has been read — the same
     /// judgement the app already makes in code, made visible.
+    ///
+    /// ⛔ Which is why it is spent on a *claim*, never on a run's closing text
+    /// as such. A run that died before its terminal event stores the process's
+    /// stderr there and a run Elliot could not start stores Elliot's own
+    /// sentence; both were set in this face, which said of a machine's
+    /// diagnosis that it might be believed less than `gh` (#288).
+    /// `ClosingRemark.isHearsay` is what decides, and `VerdictBlock.style(for:)`
+    /// is the one site that reads it.
     ///
     /// It is `bodyProse` italicised rather than a size of its own. What the
     /// agent wrote *is* prose, so demoting it by shrinking it would say it

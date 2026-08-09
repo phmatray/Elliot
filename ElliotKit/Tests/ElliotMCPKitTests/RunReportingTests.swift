@@ -139,7 +139,9 @@ struct RunReportingTests {
         // The exact shape of the bug: the agent says it merged, gh says it did
         // not, and both travel — under different names, so they cannot be
         // confused for one another.
-        run.resultText = "Merged the pull request and deleted the branch."
+        run.setClosing(ClosingRemark(
+            text: "Merged the pull request and deleted the branch.", source: .agent
+        ))
 
         let answer = try await call(
             ElliotMCPServer(bridge: StubBridge.answering(page([run]))),
@@ -148,7 +150,41 @@ struct RunReportingTests {
 
         let reported = try #require(answer["runs"]?[0])
         #expect(reported["resultText"]?.stringValue?.contains("Merged") == true)
+        #expect(reported["resultSource"]?.stringValue == "agent")
         #expect(reported["verifiedOutcome"]?["kind"]?.stringValue == "not_merged")
+    }
+
+    /// The agent reading this board is in exactly the position the panel was
+    /// in: it is handed a `resultText` and has to know whether the words are
+    /// the agent's. They are not always, and until #288 nothing on the wire
+    /// said so — every run's text looked like prose.
+    @Test("A run says whose words its closing text is")
+    func closingTextTravelsWithItsAttribution() async throws {
+        let cases: [(ClosingRemark?, String?)] = [
+            (ClosingRemark(text: "I filed it.", source: .agent), "agent"),
+            (ClosingRemark(text: "zsh: command not found: claude", source: .stderr), "stderr"),
+            (.elliot("Elliot stopped while this run was in flight."), "elliot"),
+            // Nothing recorded, which is what every run finished before this
+            // reports. **Absent**, never a fourth spelling and never `agent`:
+            // an agent that read a default here would be told the board knows
+            // something it does not.
+            (nil, nil),
+        ]
+
+        for (remark, expected) in cases {
+            var run = makeRun(cardID: UUID(), repoID: UUID(), kind: .createIssue, state: .failed)
+            run.setClosing(remark)
+
+            let answer = try await call(
+                ElliotMCPServer(bridge: StubBridge.answering(page([run]))),
+                "board_list_runs"
+            )
+            let reported = try #require(answer["runs"]?[0])
+            #expect(
+                reported["resultSource"]?.stringValue == expected,
+                Comment(rawValue: "\(String(describing: remark?.source)) did not reach the wire")
+            )
+        }
     }
 
     @Test("A run names its skill in the same words the rest of the wire uses")

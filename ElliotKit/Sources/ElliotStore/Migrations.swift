@@ -227,7 +227,58 @@ enum Migrations {
             }
         }
 
-        // v11, additive: what an appraisal established about a card's value.
+        // v11, additive: whose words a run's `resultText` holds.
+        //
+        // The column exists because one field held two kinds of thing —  the
+        // agent's closing prose and, when the process died before emitting a
+        // terminal event, its stderr — and recorded which of them nowhere, so
+        // the panel captioned a machine's diagnosis "IT SAID" and set it in the
+        // demoted face (#288).
+        //
+        // **Nullable, with no default**, and both halves are deliberate — the
+        // same trade v10 made one table over, for the same reason.
+        //
+        // Nullable because `SkillRun.resultSource` is an `Optional`, and it has
+        // to be so `openReadOnly` keeps tolerating a database older than the
+        // helper, where an added column reads as absent.
+        //
+        // No default of `'agent'`, which is the tempting one: it is the
+        // commonest case, and every row it touched would then *assert* an
+        // author nobody recorded. ⛔ Nor may the source be inferred from a
+        // proxy — `numTurns IS NULL`, a state of `failed`, an exit code —
+        // because a guess written into the database is indistinguishable
+        // afterwards from a measurement, and guessing is the whole of what this
+        // column exists to stop. NULL means "nobody recorded it", and
+        // `ClosingRemark` degrades that to the wording these rows already had
+        // rather than claiming stderr for history it cannot know.
+        //
+        // No backfill for the same reason v9 had none: nothing anywhere has
+        // ever recorded where an existing run's text came from.
+        migrator.registerMigration("v11_runResultSource") { db in
+            try db.alter(table: "skillRun") { t in
+                t.add(column: "resultSource", .text)
+            }
+        }
+
+        // v12, additive: what an appraisal established about a card's value.
+        //
+        // ⚠️ **This shipped as `v11_cardAppraisal` and moved to v12 at the
+        // merge** — the second time this file has recorded that sentence, and it
+        // is the rule rather than an exception to it. Two unmerged branches both
+        // claimed v11; `v11_runResultSource` reached `main` first (#344), so it
+        // keeps the number and the unshipped one moves. Renaming the shipped one
+        // instead would run a second, different migration on every database that
+        // had already seen it.
+        //
+        // No `RenamedMigration`, and that half is measured rather than assumed —
+        // twice, because the answer changed underneath the first measurement. A
+        // rename entry records a migration that *actually reached a database*
+        // under the old name; `git log --all -S'cardAppraisal'` finds it on no
+        // ref but this branch, and the developer's own store
+        // (`~/Library/Application Support/Elliot`) holds `v1_initial …
+        // v11_runResultSource` with **zero** rows matching `%cardAppraisal%`
+        // under any number. Nothing was in the field under either name, so
+        // moving it costs nothing — v10's precedent, one migration on.
         //
         // Columns on `card` rather than a table of its own, and the criterion is
         // the one written above v8. A pull request's status is an observation
@@ -248,7 +299,7 @@ enum Migrations {
         // carries the answer one join away. Without this the feature would ship
         // empty on every existing board and look like a feature that does not
         // work — v7's stated reason, unchanged.
-        migrator.registerMigration("v11_cardAppraisal") { db in
+        migrator.registerMigration("v12_cardAppraisal") { db in
             try db.alter(table: "card") { t in
                 t.add(column: "effort", .text)
                 t.add(column: "evidence", .text)        // JSON array
@@ -367,7 +418,7 @@ enum Migrations {
         WHERE "angle" IS NULL
         """
 
-    /// The v11 backfill, named for the same reason `backfillCardAnglesSQL` is:
+    /// The v12 backfill, named for the same reason `backfillCardAnglesSQL` is:
     /// the migration and the test that proves what it does run the identical
     /// statement.
     ///

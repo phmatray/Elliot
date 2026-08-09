@@ -208,19 +208,31 @@ public struct OperationsView: View {
                     .foregroundStyle(Palette.attention)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // How long it has waited. Held forty minutes by a merge, a run read
+            // exactly like one queued a moment ago — the field was filled and
+            // drawn nowhere, so the queue had no sense of time at all.
+            Text(Elapsed.age(of: queued.queuedAt))
+                .font(Type.factSmall)
+                .foregroundStyle(.secondary)
             if queued.position > 1 {
                 Button("Move to front") {
                     Task { await model.promoteQueued(runID: queued.runID) }
                 }
                 .controlSize(.small)
             }
+            // Between "move it up" and "throw the queue away" there was nothing,
+            // so one stuck entry cost every other waiting run.
+            Button("Cancel") {
+                Task { await model.cancelQueued(runID: queued.runID) }
+            }
+            .controlSize(.small)
         }
         .padding(8)
         .background(Surface.recess)
         .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "\(queued.position). \(queued.repoName), \(queued.kind.skillName). \(queued.refusal.sentence)"
+            "\(queued.position). \(queued.repoName), \(queued.kind.skillName), waiting \(Elapsed.age(of: queued.queuedAt)). \(queued.refusal.sentence)"
         )
     }
 
@@ -229,7 +241,7 @@ public struct OperationsView: View {
     private var spendingBand: some View {
         band("Spending") {
             HStack(alignment: .top, spacing: 20) {
-                amount("Today", model.spentToday)
+                amount("Today", model.todayFigure)
                 VStack(alignment: .leading, spacing: 2) {
                     ConsoleLabel(text: "Ceiling")
                     Text(ceilingSentence)
@@ -244,21 +256,26 @@ public struct OperationsView: View {
         }
     }
 
-    /// Shows the sentence, not only the number: a total with unknown-cost runs
-    /// in it must not present itself as complete (#57).
-    private func amount(_ title: String, _ spend: Spend) -> some View {
+    /// Shows the sentence, not only the number: a total that is a floor must not
+    /// present itself as complete (#57).
+    ///
+    /// Takes the `SpendFigure` rather than the `Spend`, because `Spend` can only
+    /// answer the narrower question. Asking `isComplete` of it kept this caveat
+    /// silent through every analysis — the figure read near zero exactly while
+    /// the spending was happening, and landed on the total afterwards.
+    private func amount(_ title: String, _ figure: SpendFigure) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             ConsoleLabel(text: title)
-            Fact(text: MoneyFormat.usd(spend.totalUSD), tint: .primary)
-            if !spend.isComplete {
-                Text(spend.sentence())
+            Fact(text: figure.amount(), tint: .primary)
+            if !figure.isComplete {
+                Text(figure.sentence())
                     .font(Type.factSmall)
                     .foregroundStyle(Palette.attention)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title): \(spend.sentence())")
+        .accessibilityLabel("\(title): \(figure.sentence())")
     }
 
     private var ceilingSentence: String {

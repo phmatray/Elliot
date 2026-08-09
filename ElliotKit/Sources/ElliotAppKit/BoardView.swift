@@ -654,10 +654,16 @@ public struct BoardView: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer(minLength: 8)
-                        Button("Retry") { Task { await model.refreshFromGitHub() } }
-                            .buttonStyle(.link)
-                            .font(Type.labelSmall)
-                            .disabled(model.isImporting)
+                        // This row names one repository and one `gh` message, so
+                        // its button means that repository. It used to re-import
+                        // the whole board whenever the picker said "All".
+                        Button("Retry") {
+                            Task { await model.refreshFromGitHub(repoID: entry.repo.id) }
+                        }
+                        .buttonStyle(.link)
+                        .font(Type.labelSmall)
+                        .disabled(model.isImporting)
+                        .help("Re-import \(entry.repo.displayName)")
                     }
                     .help(entry.message)
                 }
@@ -896,22 +902,26 @@ struct StatusBar: View {
                 )
             }
 
+            // `todayFigure`, not `spentToday`: the store's query keys on
+            // `endedAt`, so the runs going right now are absent from this
+            // number and the sentence is the only place that can say so.
             figure(
-                text: MoneyFormat.usd(model.spentToday.totalUSD),
+                text: model.todayFigure.amount(),
                 tint: model.isOverDailyCeiling ? Palette.refused : Palette.quiet,
-                help: "Spent today — \(model.spentToday.sentence()). Click to set a ceiling.",
-                spoken: "spent today, \(model.spentToday.sentence())",
+                help: "Spent today — \(model.todayFigure.sentence()). Click to set a ceiling.",
+                spoken: "spent today, \(model.todayFigure.sentence())",
                 face: .operations
             )
 
-            // Elliot wrote this hint, so it is not set in the fact face.
-            Text(
-                model.selectedCard == nil
-                    ? "↑↓←→ pick a card"
-                    : "⌘→ advance · ⌘← back · esc deselect"
-            )
-            .font(Type.prose)
-            .foregroundStyle(Palette.quiet)
+            // Elliot wrote this hint, so it is not set in the fact face. It said
+            // a flat "⌘→ advance" for every card, including the ones where ⌘→
+            // does nothing at all; `selectionHint` reaches `preview` for the
+            // card actually selected.
+            Text(model.selectionHint)
+                .font(Type.prose)
+                .foregroundStyle(Palette.quiet)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -964,10 +974,13 @@ struct ColumnView: View {
     /// Per column and per repository, so collapsing a repository in Backlog does
     /// not hide it in To Do — the two are different questions.
     @State private var collapsed: Set<UUID> = []
-    /// Which days in Done are folded away. A separate set from `collapsed`
-    /// rather than a widened one: a repository and a day are different things
-    /// to have folded, and one column never shows both.
-    @State private var collapsedDays: Set<Date> = []
+    // Which days in Done are folded is `AppModel.collapsedDays`, not a `@State`
+    // here. It was one, and the Archive held a second over the same
+    // `ShipDay.start` keys with the toggle written out twice — so folding
+    // "Yesterday" in Done left it open in the Archive, showing the same cards
+    // under the same heading. It stays a **separate** set from `collapsed`
+    // above, for the reason that comment gives: a repository and a day are
+    // different things to have folded.
     /// The card a drop would land above, or `nil` when the pointer is not over
     /// one. Held on the column rather than as `@State` inside each card, so
     /// exactly one insertion cue can be drawn at a time — two bars would say the
@@ -1275,15 +1288,11 @@ struct ColumnView: View {
             ShipDayHeader(
                 label: day.label,
                 count: day.cards.count,
-                collapsed: collapsedDays.contains(day.start)
+                collapsed: model.isDayCollapsed(day.start)
             ) {
-                if collapsedDays.contains(day.start) {
-                    collapsedDays.remove(day.start)
-                } else {
-                    collapsedDays.insert(day.start)
-                }
+                model.toggleDay(day.start)
             }
-            if !collapsedDays.contains(day.start) {
+            if !model.isDayCollapsed(day.start) {
                 ForEach(day.cards) { card in
                     draggable(card)
                 }

@@ -194,7 +194,7 @@ public actor AnalysisService {
             // conditional update, aimed at `.rejected` instead, so whichever
             // of the two calls SQLite serializes first is the only one that
             // can still find `.proposed` to act on.
-            guard try await store.claimProposal(id: id, to: .accepted) else { continue }
+            guard try await store.claimProposal(id: id, .accept) else { continue }
             guard var proposal = try await store.proposal(id: id) else { continue }
 
             let card: Card
@@ -275,7 +275,34 @@ public actor AnalysisService {
             // have been through should still read as what it found, including
             // what you turned down — just never what you turned down after
             // someone else had already taken it.
-            _ = try await store.claimProposal(id: id, to: .rejected)
+            _ = try await store.claimProposal(id: id, .reject)
         }
+    }
+
+    /// Puts rejected proposals back on the list, and says how many really moved.
+    ///
+    /// The undo for `reject`, which marks rather than deletes precisely so that
+    /// there is something left to put back — a promise the app could not keep
+    /// until now, because nothing could read a `.rejected` row back and
+    /// `claimProposal` could only move rows *out of* `.proposed` (#292).
+    ///
+    /// ⛔ **The count is the return value, not `proposalIDs.count`.** A restore
+    /// can lose its claim to something that leaves a card on the board — a
+    /// proposal carrying an `acceptedCardID` is refused by the store outright —
+    /// and reporting the number asked for would hide exactly the case the
+    /// refusal exists for. `reject` can afford to be looser because losing its
+    /// claim only ever means "already decided"; this one cannot.
+    @discardableResult
+    public func restore(proposalIDs: [UUID]) async throws -> Int {
+        var restored = 0
+        for id in proposalIDs {
+            // The identical compare-and-set `accept` and `reject` use, aimed
+            // from `.rejected` back to `.proposed`. Not a fetch-check-write:
+            // that is the shape whose race this method's two neighbours are
+            // written to avoid, and running it here would reintroduce it one
+            // direction further round.
+            if try await store.claimProposal(id: id, .restore) { restored += 1 }
+        }
+        return restored
     }
 }

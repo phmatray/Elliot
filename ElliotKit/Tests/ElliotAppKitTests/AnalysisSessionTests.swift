@@ -59,13 +59,21 @@ struct AnalysisSessionTests {
         #expect(!AnalysisSession.accepts(AnalysisSession(id: UUID(), repoID: UUID()), rowsFor: id))
     }
 
-    @Test("A stall marks the named run and leaves the others alone")
-    func markStalledIsByID() {
+    @Test("A silence notice marks the named run and leaves the others alone")
+    func markIsByID() {
         let target = run()
         let other = run()
         var session = AnalysisSession(id: UUID(), repoID: UUID(), runs: [target, other])
-        session.markStalled(target.id)
+
+        session.mark(.wentQuiet, target.id)
         #expect(session.runs.first(where: { $0.id == target.id })?.state == .stalled)
+        #expect(session.runs.first(where: { $0.id == other.id })?.state == .running)
+
+        // And back again: the fourth collection takes both directions, which is
+        // the half that was never written — the analysis window kept "No output
+        // for a while" on a run that had started talking again.
+        session.mark(.startedTalkingAgain, target.id)
+        #expect(session.runs.first(where: { $0.id == target.id })?.state == .running)
         #expect(session.runs.first(where: { $0.id == other.id })?.state == .running)
     }
 
@@ -134,11 +142,11 @@ struct AppModelAnalysisSessionTests {
         #expect(model.analysis?.proposals.isEmpty == true)
     }
 
-    @Test("A stall still reaches the analysis window's copy of the run")
+    @Test("A stall, and the recovery after it, still reach the analysis window")
     func stallReachesTheSession() {
-        // `markStalled` walks four collections because any of them can be the
-        // one on screen; the analysis window's is the fourth, and it moved
-        // into the session.
+        // `mark` walks four collections because any of them can be the one on
+        // screen; the analysis window's is the fourth, and it moved into the
+        // session.
         let model = model()
         var stalling = SkillRun(
             cardID: nil, repoID: UUID(), analysisID: UUID(), analysisAngle: .bugs,
@@ -150,9 +158,11 @@ struct AppModelAnalysisSessionTests {
         model.openAnalysis(analysisFixture(repoID: UUID()))
         model.testOnlySeedAnalysis(runs: [stalling], note: nil)
 
-        model.markStalled(runID: stalling.id)
-
+        model.mark(.wentQuiet, runID: stalling.id)
         #expect(model.analysis?.runs.first?.state == .stalled)
+
+        model.mark(.startedTalkingAgain, runID: stalling.id)
+        #expect(model.analysis?.runs.first?.state == .running)
     }
 
     // MARK: - The panel's visibility, which is not the session
@@ -230,6 +240,14 @@ struct AppModelAnalysisSessionTests {
         model.analysisAngles = [.bugs, .tests, .docsAndDX]
         model.analysisInstructions = "Focus on the store layer."
         model.analysisMaxStories = 20
+
+        // ⚠️ Seeded **through a session**, which it was not until #290. The
+        // staging belongs to an analysis, so staging with no analysis open is
+        // not a state a reader can reach — and asserting it survived a hide was
+        // asserting the wrong thing about the right value. The claim under test
+        // is unchanged and still true: the session lives on the model, so
+        // hiding the panel loses nothing.
+        model.openAnalysis(analysisFixture(repoID: UUID()))
         let staged = UUID()
         model.analysisSelection = [staged]
 
@@ -240,6 +258,45 @@ struct AppModelAnalysisSessionTests {
         #expect(model.analysisInstructions == "Focus on the store layer.")
         #expect(model.analysisMaxStories == 20)
         #expect(model.analysisSelection == [staged])
+    }
+
+    /// The defect the move exists to make unrepresentable.
+    ///
+    /// Stage five proposals, press Finish — whose own tooltip says "Undecided
+    /// proposals stay in the store" — start a fresh analysis, and the footer
+    /// read "5 selected" over an empty new list. Pressing Accept 5 then handed
+    /// the *previous* analysis's ids to `acceptProposals`; `claimProposal` found
+    /// them still `.proposed`, and five cards landed in Backlog from an analysis
+    /// nobody was looking at.
+    @Test("Staging does not outlive the analysis it stages")
+    func selectionDiesWithItsAnalysis() {
+        let model = AppModel()
+        let repoID = UUID()
+        model.openAnalysis(analysisFixture(repoID: repoID))
+        model.analysisSelection = [UUID(), UUID(), UUID(), UUID(), UUID()]
+        #expect(model.analysisSelection.count == 5)
+
+        // Finish.
+        model.closeAnalysis()
+        #expect(model.analysisSelection.isEmpty)
+
+        // And a *second* analysis starts clean rather than inheriting the
+        // staging of the first — `openAnalysis` is one assignment of a whole
+        // new session, so this cannot be forgotten in a future edit.
+        model.openAnalysis(analysisFixture(repoID: repoID))
+        #expect(model.analysisSelection.isEmpty)
+    }
+
+    /// In setup there are no proposals, so there is nothing a write could mean.
+    /// Reading empty is the correct answer, not a swallowed failure.
+    @Test("With no analysis open there is no selection to hold")
+    func setupHasNoSelection() {
+        let model = AppModel()
+        #expect(model.analysis == nil)
+        #expect(model.analysisSelection.isEmpty)
+
+        model.analysisSelection = [UUID()]
+        #expect(model.analysisSelection.isEmpty)
     }
 
     @Test("The analysis panel is hidden at launch and three columns wide")

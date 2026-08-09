@@ -611,30 +611,57 @@ struct AppModelTests {
         #expect(model.analysis?.runs.first?.state == .running)
     }
 
-    @Test("A run that finished before the notice arrived keeps its outcome")
-    func stallDoesNotResurrectATerminalRun() {
-        // The guard is `RunScheduler.markStalled`'s, spelled the same way on
-        // purpose. The idle watcher notices silence and the run can end while
-        // the notice is in flight; dragging a succeeded run back to `.stalled`
-        // would be a finished run the board says is still going, and `.stalled`
-        // is not terminal, so it would also hold its card against a further
-        // move.
-        for finished in [RunState.succeeded, .failed, .cancelled, .completedWithDenials, .timedOut] {
-            let done = run(cardID: UUID(), state: finished)
-            #expect(AppModel.stalling(done.id, done).state == finished)
+    @Test("A run that starts talking again stops being stalled, on every screen")
+    func resumeReachesTheUI() {
+        // The mirror of the test above, and the whole of #309. The mark was
+        // one-way: `ClaudeRun` cleared its announce latch on the next byte and
+        // yielded nothing, so a `merge-pr` that waited twenty-one minutes on CI
+        // and then produced its next tool call kept the attention tint and "No
+        // output for a while" until it exited. Silence is the only signal a
+        // wedged run gives — there is deliberately no wall-clock kill — so a
+        // mark that never clears makes the signal mean nothing.
+        let model = model(repos: [], cards: [])
+        let cardID = UUID()
+        let talking = run(cardID: cardID, state: .stalled)
+        let other = run(cardID: nil, state: .stalled)
+
+        model.testOnlySeedRuns(
+            active: [cardID: talking],
+            byCard: [cardID: [talking]],
+            recent: [talking],
+            analysis: [other]
+        )
+
+        model.apply(.runResumed(runID: talking.id))
+
+        #expect(model.activeRuns[cardID]?.state == .running)
+        #expect(model.runsByCard[cardID]?.first?.state == .running)
+        #expect(model.recentRuns.first?.state == .running)
+        // Named by id, exactly as the stall is: another stalled run is untouched.
+        #expect(model.analysis?.runs.first?.state == .stalled)
+    }
+
+    @Test("A late notice, either way, never resurrects a run that has ended")
+    func aLateNoticeNeverResurrectsAFinishedRun() {
+        // The state matrix itself is `RunState.applying`'s and is pinned
+        // exhaustively in `ElliotModelTests`; what this asserts is that the
+        // four-collection walk goes through it rather than round it. A run can
+        // end while either notice is in flight, and `.stalled` and `.running`
+        // are both non-terminal — so a resurrected run is one the board says is
+        // still going, holding its card against any further move.
+        let model = model(repos: [], cards: [])
+        let cardID = UUID()
+        let done = run(cardID: cardID, state: .succeeded)
+        model.testOnlySeedRuns(
+            active: [cardID: done], byCard: [cardID: [done]], recent: [done]
+        )
+
+        for notice in RunSilence.allCases {
+            model.mark(notice, runID: done.id)
+            #expect(model.activeRuns[cardID]?.state == .succeeded)
+            #expect(model.runsByCard[cardID]?.first?.state == .succeeded)
+            #expect(model.recentRuns.first?.state == .succeeded)
         }
-        // Queued and cancelling are not "running" either: a queued run has
-        // produced no output because it has not started, and a cancelling one
-        // has already had its SIGTERM.
-        for other in [RunState.queued, .cancelling] {
-            let run = run(cardID: UUID(), state: other)
-            #expect(AppModel.stalling(run.id, run).state == other)
-        }
-        // And the one case that does stall.
-        let running = run(cardID: UUID())
-        #expect(AppModel.stalling(running.id, running).state == .stalled)
-        // Another run's notice changes nothing.
-        #expect(AppModel.stalling(UUID(), running).state == .running)
     }
 
     // MARK: - A run that just started has to reach the panel

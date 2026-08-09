@@ -386,11 +386,19 @@ public actor BoardService: SystemMoving {
         id: UUID, title: String, body: String, story: UserStory?, labels: [String]? = nil
     ) async throws -> Card {
         guard var card = try await store.card(id: id) else { throw BoardError.cardNotFound(id) }
-        if let issue = card.issueNumber { throw BoardError.cardAlreadyFiled(issue) }
         // Once the card points at something on github.com, that is the record.
-        // The pull-request half matters now that a card can be imported from a
-        // pull request which closes no issue.
-        if let pr = card.prNumber { throw BoardError.cardTracksPullRequest(pr) }
+        //
+        // The rule is `Card.editRefusal` and is **read** here rather than
+        // restated: this function held the strict spelling while the editor and
+        // the Edit button each held a looser one, so a card imported from a
+        // pull request that closes no issue was offered an edit that could only
+        // ever fail here. The `switch` is exhaustive, so a fourth kind of
+        // record cannot arrive and quietly read as editable.
+        switch card.editRefusal {
+        case .filedAsIssue(let issue): throw BoardError.cardAlreadyFiled(issue)
+        case .tracksPullRequest(let pr): throw BoardError.cardTracksPullRequest(pr)
+        case nil: break
+        }
         card.title = title
         card.body = body
         card.story = story

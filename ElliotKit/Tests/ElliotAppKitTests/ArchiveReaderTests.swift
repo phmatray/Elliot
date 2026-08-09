@@ -196,16 +196,41 @@ struct ArchiveReaderTests {
 
     // MARK: - Folded days
 
+    /// The fold moved off `ArchiveReader` in #315. It was one of two copies over
+    /// the same `ShipDay.start` keys — Done held the other as a `@State` in
+    /// `BoardView`, with the toggle written out verbatim in both — so folding a
+    /// day on one surface left it open on the other, showing the same cards
+    /// under the same heading.
     @Test("Folding a day is remembered, and folding it again undoes it")
     func foldingRoundTrips() {
-        let reader = ArchiveReader()
+        let model = AppModel()
         let day = Date(timeIntervalSince1970: 1_754_600_000)
 
-        #expect(!reader.isCollapsed(day))
-        reader.toggleDay(day)
-        #expect(reader.isCollapsed(day))
-        reader.toggleDay(day)
-        #expect(!reader.isCollapsed(day))
+        #expect(!model.isDayCollapsed(day))
+        model.toggleDay(day)
+        #expect(model.isDayCollapsed(day))
+        model.toggleDay(day)
+        #expect(!model.isDayCollapsed(day))
+    }
+
+    /// The claim the move exists to make true: one set, so the two surfaces a
+    /// unified shell puts side by side cannot disagree about a day.
+    ///
+    /// ⛔ And the claim it must **not** make. `ColumnView`'s repository-group
+    /// fold stays a separate set: a repository and a day are different things
+    /// to have folded, and merging them would be this very drift one level up.
+    @Test("Done and the Archive fold the same day, because there is one set")
+    func oneFoldForBothSurfaces() {
+        let model = AppModel()
+        let day = Date(timeIntervalSince1970: 1_754_600_000)
+        let other = Date(timeIntervalSince1970: 1_754_500_000)
+
+        // Whichever surface toggles it, both read the same answer — there is
+        // only one place for either of them to read.
+        model.toggleDay(day)
+        #expect(model.isDayCollapsed(day))
+        #expect(!model.isDayCollapsed(other))
+        #expect(model.collapsedDays == [day])
     }
 
     /// The reason the state is on the model at all: a hide destroys the view,
@@ -217,13 +242,13 @@ struct ArchiveReaderTests {
         let day = Date(timeIntervalSince1970: 1_754_600_000)
 
         model.archive.query = "half-written search"
-        model.archive.toggleDay(day)
+        model.toggleDay(day)
         await model.archive.reload(from: source.page)
 
         // Whatever a view did, the model still holds it — no view exists here at
         // all, which is the point.
         #expect(model.archive.query == "half-written search")
-        #expect(model.archive.isCollapsed(day))
+        #expect(model.isDayCollapsed(day))
         #expect(model.archive.state.loaded == 1)
         #expect(model.archive.summary == "1 of 4 shown")
     }

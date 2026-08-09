@@ -193,22 +193,60 @@ public struct RepoRegistryService: Sendable {
         }
     }
 
-    /// Mirrors `AppModel.addRepo(path:)`, plus the visibility the path implies.
-    private func register(path: String, layout: RepoTreeLayout) async throws -> RepoFixOutcome {
+    /// Registers a checkout — **the** implementation, for every caller.
+    ///
+    /// `AppModel.addRepo` used to be a second one, and the two stored different
+    /// rows for the same directory: it wrote no `visibility` and never checked
+    /// for a `.git`. `visibility` is what `expectedPath` uses to decide where a
+    /// clone belongs, so the same repository could later be reported misplaced —
+    /// or silently exempted — purely according to which button had registered
+    /// it. `public` so Preflight's *Add a repository…* reaches this one.
+    ///
+    /// ⛔ **Idempotent on `path`, and that is not a convenience.** `Repo.save`
+    /// keys on `id`, so registering a directory that is already registered used
+    /// to insert a *second* row with a fresh `UUID` — an orphan the cards do not
+    /// point at, and nothing on the page distinguishes it from the real one. The
+    /// existing row is updated in place instead, which is also what repairs a
+    /// row registered the old way: it is how a nil `visibility` gets filled.
+    ///
+    /// ⚠️ Only the derived fields are rewritten. `permissionMode`,
+    /// `extraAllowedTools`, `isEnabled` and the stored preflight verdict are the
+    /// user's, and re-registering is not a request to reset them.
+    public func register(path: String, layout: RepoTreeLayout) async throws -> RepoFixOutcome {
         guard FileManager.default.fileExists(atPath: path + "/.git") else {
-            return RepoFixOutcome(succeeded: false, detail: "\(path) is not a git repository.")
+            // Says which directory to choose instead. This is now the only way
+            // in, so a refusal that only says "no" leaves the reader with the
+            // failing check they can no longer reach by registering first.
+            return RepoFixOutcome(
+                succeeded: false,
+                detail:
+                    "\(path) is not a git repository — it contains no .git. Choose the checkout itself, not the folder above it."
+            )
         }
         let slot = layout.slot(forPath: path)
         let info = try? await gh.repoInfo(cwd: path)
-        let repo = Repo(
-            path: path,
-            nameWithOwner: info?.nameWithOwner ?? slot?.nameWithOwner
-                ?? URL(fileURLWithPath: path).lastPathComponent,
-            defaultBranch: info?.defaultBranch ?? "main",
-            displayName: URL(fileURLWithPath: path).lastPathComponent,
-            visibility: slot?.visibility)
+        let existing = try await store.repo(path: path)
+        var repo =
+            existing
+            ?? Repo(
+                path: path,
+                nameWithOwner: URL(fileURLWithPath: path).lastPathComponent,
+                defaultBranch: "main",
+                displayName: URL(fileURLWithPath: path).lastPathComponent)
+        repo.nameWithOwner =
+            info?.nameWithOwner ?? slot?.nameWithOwner ?? repo.nameWithOwner
+        repo.defaultBranch = info?.defaultBranch ?? repo.defaultBranch
+        repo.displayName = URL(fileURLWithPath: path).lastPathComponent
+        // `?? repo.visibility`, never a bare assignment: a repository outside
+        // the layout has no slot, and letting that erase a visibility already
+        // recorded would move its expected path on the next reconcile.
+        repo.visibility = slot?.visibility ?? repo.visibility
         try await store.saveRepo(repo)
-        return RepoFixOutcome(succeeded: true, detail: "Registered \(repo.nameWithOwner).")
+        return RepoFixOutcome(
+            succeeded: true,
+            detail: existing == nil
+                ? "Registered \(repo.nameWithOwner)."
+                : "Updated the registration for \(repo.nameWithOwner).")
     }
 
     /// Refines the rows that have a clone to ask about — `RepoIssue.isProbeable`,

@@ -502,6 +502,156 @@ struct AnalysisServiceTests {
         #expect(try await fixture.store.proposals(analysisID: started.analysis.id).count == 1)
     }
 
+    // MARK: - Restoring
+
+    /// The promise `reject`'s own comment makes — *"an analysis you have been
+    /// through should still read as what it found, including what you turned
+    /// down"* — was only half kept: the row survived and nothing could reach it
+    /// (#292). Round-tripped through `accept` at the end, because a proposal put
+    /// back that cannot then be accepted is a list entry, not an undo.
+    @Test("A rejected proposal can be put back, and accepted afterwards")
+    func restorePutsItBack() async throws {
+        let fixture = try await makeFixture()
+        let started = try await fixture.service.start(
+            repoID: fixture.repo.id, angles: [.bugs], origin: .manual
+        )
+        let proposal = StoryProposal(
+            analysisID: started.analysis.id, runID: started.runs[0].id, repoID: fixture.repo.id,
+            angle: .bugs, title: "Rejected by mistake",
+            story: UserStory(role: "dev", want: "w", benefit: "b"), createdAt: Date()
+        )
+        try await fixture.store.saveProposals([proposal])
+
+        try await fixture.service.reject(proposalIDs: [proposal.id])
+        #expect(try await fixture.store.proposal(id: proposal.id)?.status == .rejected)
+
+        #expect(try await fixture.service.restore(proposalIDs: [proposal.id]) == 1)
+        #expect(try await fixture.store.proposal(id: proposal.id)?.status == .proposed)
+
+        // `#require`, not `cards[0]`: a broken round trip returns an empty
+        // array, and subscripting it traps — which aborts the whole run with a
+        // signal rather than failing this test, taking every result after it
+        // with it. Found by break-testing this very guarantee.
+        let cards = try await fixture.service.accept(proposalIDs: [proposal.id])
+        #expect(cards.count == 1)
+        #expect(try #require(cards.first).title == "Rejected by mistake")
+    }
+
+    /// The count is what the panel's sentence is built from, so it has to be
+    /// what the store changed rather than what the caller asked for. Reporting
+    /// `proposalIDs.count` here would announce "Restored 2" over a list where
+    /// one row stayed exactly where it was.
+    @Test("Restore counts what actually moved, never what was asked for")
+    func restoreCountsTheClaimsItWon() async throws {
+        let fixture = try await makeFixture()
+        let started = try await fixture.service.start(
+            repoID: fixture.repo.id, angles: [.bugs], origin: .manual
+        )
+        func proposal(_ title: String) -> StoryProposal {
+            StoryProposal(
+                analysisID: started.analysis.id, runID: started.runs[0].id,
+                repoID: fixture.repo.id, angle: .bugs, title: title,
+                story: UserStory(role: "dev", want: "w", benefit: "b"), createdAt: Date()
+            )
+        }
+        let turnedDown = proposal("Turned down")
+        let neverDecided = proposal("Never decided")
+        try await fixture.store.saveProposals([turnedDown, neverDecided])
+        try await fixture.service.reject(proposalIDs: [turnedDown.id])
+
+        // One is restorable, one was never rejected — so one claim can win.
+        let restored = try await fixture.service.restore(
+            proposalIDs: [turnedDown.id, neverDecided.id]
+        )
+        #expect(restored == 1)
+        // Restoring the same one twice wins nothing the second time: the row is
+        // no longer `.rejected`, which is the compare-and-set doing its job.
+        #expect(try await fixture.service.restore(proposalIDs: [turnedDown.id]) == 0)
+    }
+
+    /// The defect the issue names as the thing to watch. A proposal that has
+    /// produced a card must not come back to the list, or accepting it again
+    /// gives one story two Backlog cards — and the count must say it did not
+    /// move, so the panel does not report a success the list contradicts.
+    @Test("A rejected proposal carrying a card is refused, and no second card is made")
+    func restoreRefusesOneThatAlreadyGrewACard() async throws {
+        let fixture = try await makeFixture()
+        let started = try await fixture.service.start(
+            repoID: fixture.repo.id, angles: [.bugs], origin: .manual
+        )
+        let proposal = StoryProposal(
+            analysisID: started.analysis.id, runID: started.runs[0].id, repoID: fixture.repo.id,
+            angle: .bugs, title: "Accepted, then marked rejected",
+            story: UserStory(role: "dev", want: "w", benefit: "b"), createdAt: Date()
+        )
+        try await fixture.store.saveProposals([proposal])
+
+        // Accept it for real, so a card genuinely exists and the backlink is
+        // the store's own, then force the row to `.rejected` behind the
+        // service's back. That combination is not reachable through the claims
+        // any more; it is what the reject race documented in `AnalysisService`
+        // could leave behind before it was fixed, and those rows are in the
+        // field.
+        let cards = try await fixture.service.accept(proposalIDs: [proposal.id])
+        let card = try #require(cards.first, "the set-up accept did not make a card")
+        var stranded = try #require(try await fixture.store.proposal(id: proposal.id))
+        #expect(stranded.acceptedCardID == card.id)
+        stranded.status = .rejected
+        try await fixture.store.saveProposal(stranded)
+
+        #expect(try await fixture.service.restore(proposalIDs: [stranded.id]) == 0)
+        #expect(try await fixture.store.proposal(id: stranded.id)?.status == .rejected)
+
+        // The proof that matters is on the board, not on the row: a restore
+        // that got through would be followed by an accept, and that is where
+        // the second card would appear.
+        _ = try await fixture.service.accept(proposalIDs: [stranded.id])
+        #expect(try await fixture.store.cards(repoID: fixture.repo.id).count == 1)
+    }
+
+    /// Restore joins the same three-way race `accept` and `reject` already run:
+    /// whichever the store serializes first is the only one that acts, and no
+    /// interleaving may leave a card on the board twice.
+    @Test("Restore racing an accept never yields two cards")
+    func restoreRacesAcceptCoherently() async throws {
+        let fixture = try await makeFixture()
+        let started = try await fixture.service.start(
+            repoID: fixture.repo.id, angles: [.bugs], origin: .manual
+        )
+        let service = fixture.service
+        let store = fixture.store
+        let proposal = StoryProposal(
+            analysisID: started.analysis.id, runID: started.runs[0].id, repoID: fixture.repo.id,
+            angle: .bugs, title: "Restore or accept me, never both twice",
+            story: UserStory(role: "dev", want: "w", benefit: "b"), createdAt: Date()
+        )
+        try await store.saveProposals([proposal])
+        let id = proposal.id
+        try await service.reject(proposalIDs: [id])
+
+        // Restores and accepts interleaved over one id. An accept can only win
+        // after some restore has put the row back, so the outcome is either
+        // "still rejected, no card" or "accepted, exactly one card" — never a
+        // second one.
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<4 {
+                group.addTask { _ = try? await service.restore(proposalIDs: [id]) }
+                group.addTask { _ = try? await service.accept(proposalIDs: [id]) }
+            }
+        }
+
+        let final = try #require(try await store.proposal(id: id))
+        let cards = try await store.cards(repoID: fixture.repo.id)
+        switch final.status {
+        case .accepted:
+            #expect(cards.count == 1)
+            #expect(final.acceptedCardID == cards.first?.id)
+        case .rejected, .proposed:
+            #expect(cards.isEmpty)
+            #expect(final.acceptedCardID == nil)
+        }
+    }
+
     @Test("An edited proposal is what becomes the card")
     func editsWinOverTheModel() async throws {
         let fixture = try await makeFixture()

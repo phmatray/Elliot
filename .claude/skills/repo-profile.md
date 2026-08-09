@@ -37,6 +37,14 @@
   needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
+  - ⛔ **This is the only place the count lives, and `README.md` deliberately carries none** (#176).
+    The README's line said *459 tests* while the suite ran 1167 — understating it 2.5× for a long
+    time, because nothing had ever checked it, in the one document a stranger reads first. Correcting
+    it would have bought a few days and re-armed the trap this entry's own history documents below.
+    It now states what does not decay: *"the whole suite; no Xcode, no tokens, no network."*
+    `ReadmeCarriesNoCountTests` fails if a count comes back — narrowly, on `N tests` / `N suites`
+    only, because the README also carries figures that are **records of a past experiment** and those
+    are permanently true. **Do not "fix" the README by adding the number back.**
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
     wrong here three times.** It said 408 while the suite ran 517, then 517 while it ran 788, then
     **820 while it ran 996** — a gap of 176 tests and 21 suites, i.e. the line had gone stale faster

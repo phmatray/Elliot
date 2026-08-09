@@ -253,4 +253,29 @@ public struct StoryProposal: Identifiable, Codable, Sendable, Hashable {
     public var isGrounded: Bool {
         grounding == .grounded
     }
+
+    /// Whether the *Rejected* list should offer to put this one back.
+    ///
+    /// ⚠️ **A hint, in this board's own sense of the word — the fact is the
+    /// store's conditional `UPDATE`.** A view cannot be atomic, so this is read
+    /// to decide what to *draw*; `BoardStore.claimProposal(id:_:)` is what
+    /// decides whether the row actually moves, and its refusal is what the
+    /// panel's note reports when the two disagree. Deriving the button from
+    /// here and the outcome from there is the same split as `duplicateOf`
+    /// beside `gh`, not a second answer to one question.
+    ///
+    /// `acceptedCardID` is the load-bearing half: a proposal that already
+    /// produced a Backlog card must never re-enter the triage list, or the next
+    /// Accept makes a second card for one story.
+    ///
+    /// ⛔ **It is not a complete guard against that, and the gap is worth
+    /// knowing.** The reject race `AnalysisService.reject` documents could
+    /// leave a row `.rejected` with `acceptedCardID` **nil** while its card sits
+    /// on the board — the backlink was what the losing write wiped. Nothing on
+    /// the card points back at the proposal, so that row is indistinguishable
+    /// from an ordinary rejection and this returns `true` for it. The race is
+    /// fixed; rows written before the fix are not recoverable from here.
+    public var isRestorable: Bool {
+        status == .rejected && acceptedCardID == nil
+    }
 }

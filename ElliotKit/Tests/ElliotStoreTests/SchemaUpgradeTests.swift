@@ -93,7 +93,7 @@ private func rewindToV1(_ url: URL) throws {
                 DELETE FROM "grdb_migrations"
                 WHERE "identifier" IN (
                     'v2_repositoryLayout', 'v3_cardIdempotencyKey', 'v5_githubImport',
-                    'v7_cardAngle', 'v11_cardAppraisal'
+                    'v7_cardAngle', 'v12_cardAppraisal'
                 )
                 """
         )
@@ -432,13 +432,13 @@ struct SchemaUpgradeTests {
         #expect(back.first { $0.id == accepted.id }?.angle == .bugs)
     }
 
-    /// The v11 migration, over rows that were already there — and its backfill,
+    /// The v12 migration, over rows that were already there — and its backfill,
     /// which is v7's precedent exactly. `storyProposal` has carried the effort,
     /// the resolved citations and the moment they were resolved since v4, next
     /// to the id of the card it produced, so this reads a fact rather than
     /// inferring one. Without it every existing board would read as never
     /// appraised, and the feature would look like a feature that does not work.
-    @Test("A board upgraded to v11 gets its accepted cards' appraisal back")
+    @Test("A board upgraded to v12 gets its accepted cards' appraisal back")
     func migrationBackfillsAppraisalOverExistingRows() async throws {
         let scratch = try Scratch()
         let repository = repo()
@@ -537,11 +537,11 @@ struct SchemaUpgradeTests {
 
     /// The measurement the schema decision rests on, taken rather than assumed.
     ///
-    /// `evidence` is `[Evidence]?` and not `[]` because a file written before v11
+    /// `evidence` is `[Evidence]?` and not `[]` because a file written before v12
     /// has no column at all, and GRDB decodes an absent optional as `nil` — the
     /// reasoning written at `BoardStore.openReadOnly`. That reasoning is not
     /// allowed into a pull request body until this has run: rewind a store below
-    /// v11, open it with **this** build through `openReadOnly` — which never
+    /// v12, open it with **this** build through `openReadOnly` — which never
     /// migrates, so the columns really are absent at read time — and read the
     /// cards back.
     ///

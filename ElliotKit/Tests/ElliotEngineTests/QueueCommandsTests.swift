@@ -2,6 +2,7 @@ import ElliotModel
 import ElliotProcess
 import ElliotStore
 import Foundation
+import TestSupport
 import Testing
 
 @testable import ElliotEngine
@@ -166,6 +167,89 @@ struct QueueCommandsTests {
         let queue = await scheduler.queueSnapshot()
         #expect(queue.first?.runID == ids[1])
         #expect(queue.first?.refusal == .mergeInFlightInRepo)
+    }
+
+    // MARK: - Cancelling one entry
+
+    @Test("Cancelling one queued run leaves the rest of the queue alone")
+    func cancelOneKeepsTheRest() async throws {
+        // The whole point of the command: "Discard all" was the only way to
+        // clear one stuck entry, so removing it cost every other waiting run.
+        let (scheduler, store, ids) = try await seeded(count: 3)
+        await scheduler.pause()
+        for id in ids { await scheduler.launch(runID: id) }
+
+        await scheduler.cancel(runID: ids[1])
+
+        let queue = await scheduler.queueSnapshot()
+        #expect(queue.map(\.runID) == [ids[0], ids[2]])
+        // Renumbered, not carrying the gap the removal left.
+        #expect(queue.map(\.position) == [1, 2])
+        #expect(try await store.run(id: ids[0])?.state == .queued)
+        #expect(try await store.run(id: ids[2])?.state == .queued)
+    }
+
+    @Test("A cancelled queued run is terminal, so the launch sweep cannot revive it")
+    func cancelledQueuedRunIsTerminal() async throws {
+        let (scheduler, store, ids) = try await seeded(count: 2)
+        await scheduler.pause()
+        for id in ids { await scheduler.launch(runID: id) }
+
+        await scheduler.cancel(runID: ids[0])
+
+        let run = try await store.run(id: ids[0])
+        #expect(run?.state == .cancelled)
+        // Without an `endedAt` the sweep treats it as unfinished work and
+        // resolves it against `gh` on the next start.
+        #expect(run?.endedAt != nil)
+    }
+
+    /// ⚠️ **The regression this pair exists for, and the only one a snapshot
+    /// cannot see.** `queueSnapshot()` is computed on demand, so a test that
+    /// asks it directly passes whether or not anything told the board. The
+    /// pending branch of `cancel` published nothing, so the discarded row stayed
+    /// on screen until something else happened to pump the queue — and never
+    /// yielded `.runFinished`, which is the single event `AppModel` refreshes
+    /// `activeRuns` from, so the card kept showing a run that was gone.
+    @Test("Cancelling a queued run tells the board, in that order")
+    func cancelPublishesFinishThenQueue() async throws {
+        let (scheduler, _, ids) = try await seeded(count: 3)
+        await scheduler.pause()
+        for id in ids { await scheduler.launch(runID: id) }
+
+        let target = ids[1]
+        let observed = Task {
+            try await withTimeout(.seconds(20)) {
+                var sawFinished = false
+                for await update in scheduler.updates {
+                    switch update {
+                    case .runFinished(let id, _, let state, _) where id == target:
+                        #expect(state == .cancelled)
+                        sawFinished = true
+                    // Only a queue published *after* the cancellation counts:
+                    // `launch` publishes too, and its rows are already buffered.
+                    case .queueChanged(let rows) where sawFinished:
+                        return rows.map(\.runID)
+                    default:
+                        break
+                    }
+                }
+                return []
+            }
+        }
+
+        await scheduler.cancel(runID: target)
+        #expect(try await observed.value == [ids[0], ids[2]])
+    }
+
+    @Test("Cancelling something that is not queued changes nothing")
+    func cancelUnknownIsSafe() async throws {
+        let (scheduler, _, ids) = try await seeded(count: 2)
+        await scheduler.pause()
+        for id in ids { await scheduler.launch(runID: id) }
+
+        await scheduler.cancel(runID: UUID())
+        #expect(await scheduler.queueSnapshot().map(\.runID) == ids)
     }
 
     @Test("Pausing twice, or resuming when running, is a no-op")

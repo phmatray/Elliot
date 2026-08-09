@@ -178,14 +178,23 @@ struct PRStatusTests {
         #expect(status(checks: [run("CodeQL", "SKIPPED")]).fresh.ci == .noChecks)
     }
 
-    @Test("Inert checks are NOT discounted — that judgement is deliberately not made here")
+    /// ⚠️ The title and the comment here said the inert-check judgement "is
+    /// deliberately not made" — a claim about the whole app, and false since
+    /// #322 shipped `NonBuildChecks`. What is true, and what this actually
+    /// pins, is narrower: `CIState` does not discount by name, so an inert
+    /// green is still a green on the card and in the panel. The list-based
+    /// judgement exists and answers a different question — *may an unattended
+    /// agent merge on this?* — in `ResolvedPRStatus.isMergeableUnattended`,
+    /// which `MergeableUnattendedTests` pins.
+    @Test("CIState does not discount inert checks — a different question decides merges")
     func inertChecksStillCountAsPassing() {
-        // Arbitrated on #174: encoding a non-build list in Swift would be a third
-        // implementation of a rule whose data lives in repo-audit. The panel
-        // prints the real names so a human judges; the model does not guess.
         let resolved = status(checks: [run("CodeQL", "SUCCESS"), run("renovate/stability-days", "SUCCESS")]).fresh
         #expect(resolved.ci == .passing(["CodeQL", "renovate/stability-days"]))
         #expect(resolved.sign == nil)
+        // The same reading, through the gate that does hold a list: nothing
+        // here built, so an unattended merge is refused. Asserted beside its
+        // opposite so the two questions cannot be read as one.
+        #expect(resolved.ci.hasBuildVerdict == false)
     }
 
     // MARK: - Mergeability

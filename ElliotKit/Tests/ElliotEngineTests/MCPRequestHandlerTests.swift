@@ -524,7 +524,7 @@ struct MCPRequestHandlerTests {
         let theirCard = try await f.board.createCard(
             repoID: f.repo.id, title: "Taken", body: "by someone else"
         ).card
-        #expect(try await f.store.claimProposal(id: proposal.id, to: .accepted))
+        #expect(try await f.store.claimProposal(id: proposal.id, .accept))
         var claimed = try #require(try await f.store.proposal(id: proposal.id))
         claimed.acceptedCardID = theirCard.id
         try await f.store.saveProposal(claimed)
@@ -596,7 +596,7 @@ struct MCPRequestHandlerTests {
     func rejectDoesNotClaimItMovedAnything() async throws {
         let f = try await Fixture.make()
         let proposal = try await f.proposal(title: "Taken", analysisID: UUID())
-        #expect(try await f.store.claimProposal(id: proposal.id, to: .accepted))
+        #expect(try await f.store.claimProposal(id: proposal.id, .accept))
 
         guard case .ok(.proposalsDecided(let decision)) = await f.handler.handle(
             .rejectProposals(ids: [proposal.id])
