@@ -472,10 +472,17 @@ public actor RunScheduler: RunLaunching {
         let invocation = ClaudeInvocation(
             runID: run.id,
             prompt: run.prompt,
-            cwd: repo.path,
+            // The **run's** cwd, not the repository's. They are the same value
+            // for every run created today, and that is the point: a resumed run
+            // has to spawn where its first attempt spawned, because Claude Code
+            // keeps the transcript under a slug of that directory. Two sources
+            // for one fact make the fork fail with "No conversation found",
+            // which reads as an expired session rather than a wrong directory.
+            cwd: run.cwd,
             permissionMode: repo.permissionMode,
             extraAllowedTools: repo.extraAllowedTools,
-            maxBudgetUSD: ceiling.perRunUSD
+            maxBudgetUSD: ceiling.perRunUSD,
+            resumeFrom: run.resumedFrom
         )
         updated.argv = [toolConfig.claudePath] + invocation.arguments()
 

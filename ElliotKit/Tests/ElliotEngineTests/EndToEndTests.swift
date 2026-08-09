@@ -407,6 +407,77 @@ struct EndToEndTests {
         #expect(try await stack.store.runs(cardID: card.id).isEmpty)
     }
 
+    /// The two facts a resume depends on, in one assertion: the fork tokens are
+    /// there, and the child runs in the cwd of the **first** attempt.
+    ///
+    /// The cwd matters as much as the flags. Claude Code keeps a session's
+    /// transcript under a slug of the directory it ran in, so a fork launched
+    /// from anywhere else finds nothing — and fails by saying "No conversation
+    /// found", which reads as a lost session rather than a wrong directory.
+    @Test("A resumed run forks the session it names, from where the first attempt ran")
+    func resumedRunCarriesTheForkTokensAndTheFirstAttemptsCwd() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        // A directory of the first attempt's own, deliberately not `repo.path`:
+        // while `start` built its invocation from `repo.path`, this test could
+        // not tell the two apart.
+        let firstCwd = stack.home.appendingPathComponent("first-attempt", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstCwd, withIntermediateDirectories: true)
+
+        let card = try await stack.board.createCard(
+            repoID: stack.repo.id, title: "Resume me").card
+        let now = Date()
+
+        let first = SkillRun.card(
+            cardID: card.id, repoID: stack.repo.id, kind: .createIssue,
+            prompt: "/ai-migration-kit:create-issue Resume me", cwd: firstCwd.path,
+            state: .failed,
+            startedAt: now.addingTimeInterval(-1_800),
+            endedAt: now.addingTimeInterval(-1_700),
+            logPath: stack.home.appendingPathComponent("runs/first.ndjson").path,
+            stderrPath: stack.home.appendingPathComponent("runs/first.log").path,
+            createdAt: now.addingTimeInterval(-1_800)
+        )
+        try await stack.store.saveRun(first)
+
+        // `.queued`, so `pump()` admits it; seeded straight into the store
+        // because no transition creates a resumed run — that is PR4's.
+        let resumed = SkillRun.card(
+            cardID: card.id, repoID: stack.repo.id, kind: .createIssue,
+            prompt: "/ai-migration-kit:create-issue Resume me", cwd: firstCwd.path,
+            resumedFrom: first.id,
+            logPath: stack.home.appendingPathComponent("runs/resumed.ndjson").path,
+            stderrPath: stack.home.appendingPathComponent("runs/resumed.log").path,
+            createdAt: now
+        )
+        try await stack.store.saveRun(resumed)
+        await stack.scheduler.launch(runID: resumed.id)
+
+        let run = try await stack.awaitRun(cardID: card.id)
+        #expect(run.id == resumed.id)
+
+        // Adjacency, not membership: where the block sits is the contract, and
+        // `--add-dir` naming the first attempt's directory is half of it.
+        //
+        // Read as a bounded slice, never by index. Before the fix below ships,
+        // `--add-dir <cwd>` is the *last* pair argv has: `Stack` builds its
+        // scheduler with `ceiling: .off`, so no `--max-budget-usd` follows, and
+        // the repository's `extraAllowedTools` is empty, so no `--allowedTools`
+        // does either. `argv[addDir + 2]` would therefore trap with
+        // `Fatal error: Index out of range` — killing the whole test process
+        // instead of failing this expectation, and looking exactly like the
+        // intermittent signal abort CLAUDE.md warns about. `prefix(5)` is total:
+        // it returns what is there and this reports the difference.
+        let argv = run.argv
+        let addDir = try #require(argv.firstIndex(of: "--add-dir"))
+        #expect(Array(argv.dropFirst(addDir).prefix(5)) == [
+            "--add-dir", firstCwd.path,
+            "--resume", first.id.uuidString.lowercased(),
+            "--fork-session",
+        ])
+    }
+
     @Test("The launch sweep admits runs that died with the app")
     func reconcilerAdmitsOrphans() async throws {
         let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
