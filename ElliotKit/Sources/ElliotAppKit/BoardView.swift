@@ -964,10 +964,13 @@ struct ColumnView: View {
     /// Per column and per repository, so collapsing a repository in Backlog does
     /// not hide it in To Do — the two are different questions.
     @State private var collapsed: Set<UUID> = []
-    /// Which days in Done are folded away. A separate set from `collapsed`
-    /// rather than a widened one: a repository and a day are different things
-    /// to have folded, and one column never shows both.
-    @State private var collapsedDays: Set<Date> = []
+    // Which days in Done are folded is `AppModel.collapsedDays`, not a `@State`
+    // here. It was one, and the Archive held a second over the same
+    // `ShipDay.start` keys with the toggle written out twice — so folding
+    // "Yesterday" in Done left it open in the Archive, showing the same cards
+    // under the same heading. It stays a **separate** set from `collapsed`
+    // above, for the reason that comment gives: a repository and a day are
+    // different things to have folded.
     /// The card a drop would land above, or `nil` when the pointer is not over
     /// one. Held on the column rather than as `@State` inside each card, so
     /// exactly one insertion cue can be drawn at a time — two bars would say the
@@ -1275,15 +1278,11 @@ struct ColumnView: View {
             ShipDayHeader(
                 label: day.label,
                 count: day.cards.count,
-                collapsed: collapsedDays.contains(day.start)
+                collapsed: model.isDayCollapsed(day.start)
             ) {
-                if collapsedDays.contains(day.start) {
-                    collapsedDays.remove(day.start)
-                } else {
-                    collapsedDays.insert(day.start)
-                }
+                model.toggleDay(day.start)
             }
-            if !collapsedDays.contains(day.start) {
+            if !model.isDayCollapsed(day.start) {
                 ForEach(day.cards) { card in
                     draggable(card)
                 }

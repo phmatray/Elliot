@@ -211,7 +211,12 @@ struct DetailPanelView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if !editor.isEditing, card.issueNumber == nil {
+            // `card.isEditable`, which is `CardEditor.begin`'s guard and
+            // `BoardService.updateCard`'s refusal — one rule, read three times.
+            // Offering a button whose action is refused one layer down is how
+            // this drifted: the panel asked a looser question than the service
+            // answered.
+            if !editor.isEditing, card.isEditable {
                 Button("Edit story", systemImage: "pencil") { editor.begin(from: card) }
                     .controlSize(.small)
             }
@@ -495,8 +500,12 @@ struct DetailPanelView: View {
                 if let branch = card.branch {
                     row("Branch", branch, url: nil)
                 }
-                if card.issueNumber != nil {
-                    Text("The issue is the record now — edit it on GitHub, not here.")
+                // Exactly when the Edit button is absent, and saying which
+                // record replaced it. A card imported from a pull request that
+                // closes no issue used to get no sentence at all — and an Edit
+                // button, which is the other half of the same drift.
+                if let refusal = card.editRefusal {
+                    Text(refusal.sentence)
                         .font(Type.prose)
                         .foregroundStyle(.tertiary)
                         .padding(.top, 2)

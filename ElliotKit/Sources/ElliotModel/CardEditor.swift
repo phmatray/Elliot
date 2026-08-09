@@ -31,7 +31,10 @@ public struct CardEditor: Sendable, Hashable {
     /// Seeding on every `begin` is what stops a cancelled edit coming back —
     /// `end()` keeps the old draft on purpose, and this overwrites it.
     public mutating func begin(from card: Card) {
-        guard card.issueNumber == nil else { return }
+        // `Card.isEditable`, not `issueNumber == nil`. The looser spelling let a
+        // card imported from a pull request into an editor whose Save could
+        // only throw.
+        guard card.isEditable else { return }
         draft = CardDraft(card: card)
         isEditing = true
     }

@@ -141,11 +141,11 @@ public struct ArchiveView: View {
                             label: day.label,
                             count: day.cards.count,
                             partial: row.partial,
-                            collapsed: reader.isCollapsed(day.start)
+                            collapsed: model.isDayCollapsed(day.start)
                         ) {
-                            reader.toggleDay(day.start)
+                            model.toggleDay(day.start)
                         }
-                        if !reader.isCollapsed(day.start) {
+                        if !model.isDayCollapsed(day.start) {
                             ForEach(day.cards) { card in
                                 CardView(card: card)
                             }
