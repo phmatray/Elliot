@@ -427,6 +427,46 @@ public final class AppModel {
         set { analysis?.selection = newValue }
     }
 
+    /// The open proposal editor and everything typed into it.
+    ///
+    /// On the session for the same two reasons as `analysisSelection`: it must
+    /// survive the panel being hidden — which destroys the view, and took the
+    /// draft with it (#291) — and it must not survive the analysis it belongs
+    /// to.
+    public var analysisEdit: ProposalEdit? {
+        get { analysis?.edit }
+        set { analysis?.edit = newValue }
+    }
+
+    /// Opens the editor on a proposal, seeded from the proposal itself.
+    ///
+    /// Seeding here rather than in the view's `init` is the whole fix:
+    /// `ProposalEditor` built its draft in `init` from the proposal, so every
+    /// rebuild of a torn-down subtree started again from the stored text.
+    public func beginEditingProposal(_ proposal: StoryProposal) {
+        analysisEdit = ProposalEdit(
+            proposalID: proposal.id, draft: CardDraft(proposal: proposal))
+    }
+
+    public func endEditingProposal() { analysisEdit = nil }
+
+    /// Drops an edit whose proposal is no longer open for decision.
+    ///
+    /// ⚠️ A proposal can be accepted or rejected over MCP, or by this panel's
+    /// own footer, while the editor is hidden. Re-applying a draft over a
+    /// decided proposal is worse than losing it: an accepted one already has a
+    /// Backlog card carrying its text, and a save would rewrite the proposal
+    /// the card came from.
+    ///
+    /// Called when the list of open proposals changes rather than from `body` —
+    /// a view that mutated the model while rendering it is a different bug.
+    public func dropStaleAnalysisEdit(openProposalIDs: Set<UUID>) {
+        guard let edit = analysisEdit else { return }
+        guard !edit.survives(amongOpen: openProposalIDs) else { return }
+        analysisEdit = nil
+        analysis?.note = "The proposal you were editing was decided elsewhere, so the edit was dropped."
+    }
+
     /// Which shipping days are folded, for **every** surface that draws them.
     ///
     /// One set, because there is one thing being folded. Done and the Archive
@@ -2935,10 +2975,17 @@ public final class AppModel {
     /// `testOnlySeedRuns(analysis:)` seeded a bare array; the session needs an
     /// id, so this takes the session's members and leaves that seam to the
     /// three collections that are still plain.
-    func testOnlySeedAnalysis(runs: [SkillRun], note: String?) {
+    /// `proposals` is defaulted so the existing callers stay as they were. It
+    /// exists because the editor's state is *about* a proposal, and #291 is
+    /// exactly the question of what survives when the view holding it is
+    /// destroyed — which cannot be asked of a session with nothing to edit.
+    func testOnlySeedAnalysis(
+        runs: [SkillRun], note: String?, proposals: [StoryProposal]? = nil
+    ) {
         guard var session = analysis else { return }
         session.runs = runs
         session.note = note
+        if let proposals { session.proposals = proposals }
         analysis = session
     }
 

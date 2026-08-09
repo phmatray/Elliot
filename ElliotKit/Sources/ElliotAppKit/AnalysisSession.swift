@@ -57,6 +57,19 @@ public struct AnalysisSession: Sendable {
     /// destroyed with the thing it stages. Setup state has no session and
     /// therefore no selection, which is correct — there are no proposals yet.
     public var selection: Set<UUID> = []
+
+    /// The open proposal editor, if one is open.
+    ///
+    /// The seventh member, and the last state the panel's "hiding loses
+    /// nothing" promise was still false about. `ProposalEditor` built its draft
+    /// in `init` and held it in `@State`, so hiding the panel tore the subtree
+    /// down and a retyped title plus eight acceptance criteria went with it —
+    /// silently, since nothing distinguishes a lost draft from one never typed.
+    ///
+    /// Here for the same reason `selection` is: created and destroyed with the
+    /// analysis it belongs to. An edit cannot outlive its proposals.
+    public var edit: ProposalEdit?
+
     /// Whatever the window needs to say about the last action.
     public var note: String?
     /// The live proposal observation, held so that letting go of the session

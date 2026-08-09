@@ -44,14 +44,32 @@ struct AnalysisPanelView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    // ⚠️ The setup form and the triage selection live on `AppModel`, not here:
-    // hiding the panel removes it from the row and destroys every `@State` in
-    // it, which would make the hide lossy in exactly the way this feature says
-    // it is not. See ``AppModel/analysisAngles``.
-    @State private var editingID: UUID?
+    // ⚠️ The setup form, the triage selection **and the open editor** live on
+    // `AppModel`, not here: hiding the panel removes it from the row and
+    // destroys every `@State` in it, which would make the hide lossy in exactly
+    // the way this feature says it is not. See ``AppModel/analysisAngles``.
+    //
+    // `editingID` used to be here, and its draft was `@State` inside
+    // `ProposalEditor` — so the promise held for the two pieces named in the
+    // comment above and was false for the one the reader had actually typed
+    // into (#291). Both now travel as one ``ProposalEdit`` on the session.
     @State private var past: [Analysis] = []
     /// `nil` until the reader opens or closes the strip themselves.
     @State private var lensesExpanded: Bool?
+
+    /// The open editor's draft, bound through the model.
+    ///
+    /// The `get`'s fallback is never rendered: the editor is built only inside
+    /// `model.analysisEdit?.proposalID == proposal.id`, so a nil edit means
+    /// there is no editor on screen. The `set` writes nothing when the edit is
+    /// gone, which is the right answer for a keystroke that lands after the
+    /// proposal was decided elsewhere.
+    private var editDraftBinding: Binding<CardDraft> {
+        Binding(
+            get: { model.analysisEdit?.draft ?? CardDraft() },
+            set: { model.analysisEdit?.draft = $0 }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -111,6 +129,22 @@ struct AnalysisPanelView: View {
         // repository happened to be picked at that instant, permanently, and
         // no later change could correct it (#213).
         .task(id: model.analysisRepoID) { past = await model.recentAnalyses() }
+        // ⚠️ A proposal can be accepted or rejected over MCP — or by this
+        // panel's own footer — while the editor is hidden. Re-applying a draft
+        // over a decided proposal is worse than losing it: an accepted one
+        // already has a Backlog card carrying its text, so a save would rewrite
+        // the proposal that card came from.
+        //
+        // Keyed on the open ids rather than run from `body`: a view that
+        // mutated the model while rendering it is a different bug.
+        .onChange(of: openProposalIDs, initial: true) { _, ids in
+            model.dropStaleAnalysisEdit(openProposalIDs: ids)
+        }
+    }
+
+    /// The proposals still open for decision — the same filter the list renders.
+    private var openProposalIDs: Set<UUID> {
+        Set((model.analysis.map(proposed) ?? []).map(\.id))
     }
 
     /// The panel's silhouette, used as a background fill and as a border — never
@@ -379,9 +413,18 @@ struct AnalysisPanelView: View {
                 // The row grows into a form rather than being covered by one.
                 // This list is walked to triage up to thirty proposals, and a
                 // sheet covered the very thing being sorted.
-                if editingID == proposal.id {
-                    ProposalEditor(proposal: proposal) { editingID = nil }
-                        .id(proposal.id)
+                if model.analysisEdit?.proposalID == proposal.id {
+                    // The draft is bound through the model, so hiding the panel
+                    // and re-showing it lands back on this editor with every
+                    // character intact. `@Bindable` gives the binding; the
+                    // force-unwrap-free path is the model's own optional
+                    // projection.
+                    ProposalEditor(
+                        proposal: proposal,
+                        draft: editDraftBinding,
+                        done: { model.endEditingProposal() }
+                    )
+                    .id(proposal.id)
                 } else {
                     ProposalRow(
                         proposal: proposal,
@@ -394,7 +437,7 @@ struct AnalysisPanelView: View {
                                 model.analysisSelection.insert(proposal.id)
                             }
                         },
-                        edit: { editingID = proposal.id },
+                        edit: { model.beginEditingProposal(proposal) },
                         accept: { Task { await model.acceptProposals(ids: [proposal.id]) } },
                         reject: { Task { await model.rejectProposals(ids: [proposal.id]) } }
                     )
@@ -577,7 +620,11 @@ struct AnalysisPanelView: View {
                 // Editing was reachable by hover and by context menu, neither
                 // of which a keyboard can open on macOS.
                 Button("Edit…") {
-                    editingID = (model.analysis.map(proposed) ?? []).first { model.analysisSelection.contains($0.id) }?.id
+                    guard
+                        let proposal = (model.analysis.map(proposed) ?? [])
+                            .first(where: { model.analysisSelection.contains($0.id) })
+                    else { return }
+                    model.beginEditingProposal(proposal)
                 }
                 .disabled(model.analysisSelection.count != 1)
 
@@ -1035,7 +1082,16 @@ struct ProposalEditor: View {
     /// `[String]` of criteria reconciled only inside the Save closure, which
     /// left `draft.story.acceptanceCriteria` stale for the editor's whole life.
     /// A preview rendered off that value would have shown the pre-edit story.
-    @State private var draft: CardDraft
+    ///
+    /// ⛔ **A `Binding`, not `@State`, and it is seeded elsewhere.** It was
+    /// `@State` built in `init`, which meant hiding the panel — `⌘⌥A`, the
+    /// Analyse toggle, the header `✕` — removed `.analysis` from `boardOrder`,
+    /// tore this subtree down, and took a retyped title and eight acceptance
+    /// criteria with it. Silently: nothing distinguishes a draft that was lost
+    /// from one that was never typed. The panel's own type comment promised the
+    /// hide loses nothing, and named the two pieces of state that had been
+    /// moved; this was the third (#291).
+    @Binding private var draft: CardDraft
     /// What is not edited here: the proposal's rationale, evidence, effort,
     /// angle and identity. `draft.applied(to:)` puts the edits back on top.
     private let proposal: StoryProposal
@@ -1043,10 +1099,10 @@ struct ProposalEditor: View {
     /// which row is being edited; this view only says it is done.
     private let done: () -> Void
 
-    init(proposal: StoryProposal, done: @escaping () -> Void) {
+    init(proposal: StoryProposal, draft: Binding<CardDraft>, done: @escaping () -> Void) {
         self.proposal = proposal
         self.done = done
-        _draft = State(initialValue: CardDraft(proposal: proposal))
+        _draft = draft
     }
 
     /// Inline in the list, not over it.
