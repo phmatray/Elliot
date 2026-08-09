@@ -636,15 +636,24 @@ public final class AppModel {
             // Captured, never inherited: launched from the Finder this process
             // sees only /usr/bin:/bin:/usr/sbin:/sbin.
             let environment = await LoginShellEnvironment.capture()
-            let locator = ToolLocator(environment: environment)
+            // `ELLIOT_GH_PATH` and friends, read once here (#238). Prepending a
+            // shim to `PATH` before `open` does **not** work — the capture above
+            // is a login shell, whose own rc files re-prepend their bin
+            // directories and out-rank whatever was inherited (#188). This is
+            // the mechanism that does.
+            let locator = ToolLocator(
+                environment: environment, overrides: .fromProcessEnvironment())
             async let claude = locator.locate("claude")
             async let gh = locator.locate("gh")
             async let git = locator.locate("git")
 
+            // An unusable override resolves to no path at all rather than to
+            // whatever `PATH` would have given, so the app refuses to run a
+            // binary the reader did not choose. Preflight names the variable.
             let config = ToolConfig(
-                claudePath: await claude?.path ?? "",
-                ghPath: await gh?.path ?? "",
-                gitPath: await git?.path ?? "",
+                claudePath: await claude.tool?.path ?? "",
+                ghPath: await gh.tool?.path ?? "",
+                gitPath: await git.tool?.path ?? "",
                 environment: environment.childEnvironment(cwd: NSHomeDirectory())
             )
             toolConfig = config
