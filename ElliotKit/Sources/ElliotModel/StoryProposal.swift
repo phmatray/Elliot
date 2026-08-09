@@ -211,7 +211,13 @@ public struct StoryProposal: Identifiable, Codable, Sendable, Hashable {
         story: UserStory,
         rationale: String = "",
         evidence: [Evidence] = [],
-        effort: Effort = .medium,
+        // `.unstated`, never `.medium`: this is public API, so "no live path
+        // omits it today" is a statement about today. `AnalysisService.accept`
+        // copies `effort` onto the card *and* sets `appraisedAt`, so a caller
+        // that omitted the argument would produce a card `CardValue.of` ranks
+        // on a size nobody chose — the one failure this type exists to prevent,
+        // arriving through the last door left open.
+        effort: Effort = .unstated,
         status: ProposalStatus = .proposed,
         acceptedCardID: UUID? = nil,
         duplicateOf: DuplicateHint? = nil,
