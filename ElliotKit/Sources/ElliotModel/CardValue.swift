@@ -40,18 +40,19 @@ public extension CardValue {
     /// What this card is worth, decided on its own signals and never on its
     /// column.
     ///
-    /// The order of the two refusals is load-bearing.
+    /// `appraisedAt == nil` is asked first, and that ordering is load-bearing:
+    /// it is the *third state* — nothing has ever read this card, a different
+    /// answer from "it was read and there was nothing to find" — and collapsing
+    /// them is exactly what the column exists to prevent. Pinned by the second
+    /// case in `nothingReadIsNeverAppraised`.
     ///
-    /// `appraisedAt == nil` is asked first because it is the *third state*:
-    /// nothing has ever read this card, which is a different answer from "it was
-    /// read and there was nothing to find". Collapsing them is exactly what the
-    /// column exists to prevent.
-    ///
-    /// The grounding is asked before the effort, and that is what lets
-    /// `.ungradeable`'s single payload tell the truth about two different
-    /// causes: a `.grounded` payload can only be reached when the citations were
-    /// fine, so it can only mean the effort was the problem. `summary` reads it
-    /// that way, and `CardValueTests` pins it.
+    /// The two refusal guards below it, in contrast, **commute**: both return
+    /// `.ungradeable(because: grounding)`, so a card that is both uncited and
+    /// unstated gets the same answer whichever runs first. What is load-bearing
+    /// there is narrower: only `.notCited` triggers the grounding refusal —
+    /// `.missing` does not — so a `.grounded` or `.missing` payload on
+    /// `.ungradeable` can only mean the effort was the problem. `summary` reads
+    /// it that way, and `unstatedEffortIsUngradeable` pins it.
     static func of(_ card: Card) -> CardValue {
         guard card.appraisedAt != nil else { return .neverAppraised }
 

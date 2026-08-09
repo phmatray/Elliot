@@ -153,6 +153,23 @@ struct CardValueTests {
         #expect(because.map(\.name).contains(AnalysisAngle.unlensedCode))
     }
 
+    /// The one consumed input no other assertion constrains: `scoreIsTheSumOfItsSignals`
+    /// checks the sum against `because` and the names, never a number;
+    /// `unlensedCardStillRanks` checks only the name `no_lens`;
+    /// `missingFilesAreRankedLower` varies grounding and `refusalsNeverJoinTheOrder`
+    /// varies effort. Replace the lens weight in `of(_:)` with any constant and
+    /// every other test in this file still passes — and that weight is the one
+    /// that orders eight lenses in a queue nobody is watching.
+    @Test("The lens weight actually orders the score, not just its name")
+    func lensWeightOrdersTheScore() throws {
+        let highLens = appraised(angle: .bugs)
+        let lowLens = appraised(angle: .bestPractices)
+
+        let high = try #require(CardValue.of(highLens).rankable)
+        let low = try #require(CardValue.of(lowLens).rankable)
+        #expect(high > low)
+    }
+
     // MARK: - What may never enter a comparator
 
     /// The claim this whole type exists for. A sort has to put an absence
