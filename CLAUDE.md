@@ -328,12 +328,31 @@ family *Things that bite* catalogues below, and like the other five it never say
 prints the resolved path (`/opt/homebrew/bin/gh — gh version …`, never `/tmp/shim/gh`) and *Login shell
 environment* prints `Captured via /bin/zsh -lic — 47 PATH entries` — or `.warn`s *"Could not read the
 login shell"*, which is the one case where the shim really is stripped, because both `-lic` and `-lc`
-failed and `capture()` fell back to a built-in `PATH`. **Instead:** from a test, point
-`ToolConfig.ghPath` at `Scripts/fake-gh.sh` — the seam *Testing discipline* describes below, no
-production change; from a launched app, cause a *genuine* failure, e.g. an owner handle that does not
-exist (`gh repo list phmatray-does-not-exist-9f3a` → *"the owner handle … was not recognized as either
-a GitHub user or an organization"*, exit 1), which is what #183 did and is stronger evidence than a
-simulated one.
+failed and `capture()` fell back to a built-in `PATH`.
+
+✅ **Since #238 there is a mechanism that works, and it is the first thing to reach for:**
+
+```bash
+open -n --env ELLIOT_HOME=/tmp/elliot-check --env ELLIOT_GH_PATH=/tmp/shim/gh dist/Elliot.app
+```
+
+`ELLIOT_<TOOL>_PATH` — `ELLIOT_GH_PATH`, `ELLIOT_CLAUDE_PATH`, `ELLIOT_GIT_PATH`, and any fourth tool
+for free, since the name is derived rather than listed. It is read *ahead* of the captured `PATH`, so
+it cannot be out-ranked the way a prepended directory is, and Preflight's row says `— set by
+ELLIOT_GH_PATH` so an override never changes which binary runs without the screen saying so.
+
+⛔ **An override that names something unrunnable is a Preflight failure, not a fall-back.** That is the
+whole point of the case existing: `ToolLocator.find` used to fall through to `PATH`, so "I told it
+which `gh` to use and it quietly ran a different one" was the design. Measured while fixing it — with
+the fall-through restored, an override of `/tmp/definitely-not-here-9f3a` resolved to
+`/opt/homebrew/bin/gh`, a different binary, reporting `foundVia: "PATH (/bin/zsh -lic)"` and no error
+anywhere.
+
+The older advice still holds where it is stronger: from a test, point `ToolConfig.ghPath` at
+`Scripts/fake-gh.sh` — the seam *Testing discipline* describes below, no production change; and to see
+a real failure rather than a simulated one, cause a genuine one (`gh repo list
+phmatray-does-not-exist-9f3a` → *"the owner handle … was not recognized as either a GitHub user or an
+organization"*, exit 1), which is what #183 did.
 
 **Since #155 the *agent* can look too: `board_screenshot`.** Elliot renders its own window with
 `NSView.cacheDisplay` and hands back a PNG as an MCP image block, so no permission is involved and

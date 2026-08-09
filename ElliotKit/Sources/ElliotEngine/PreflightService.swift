@@ -146,18 +146,44 @@ public struct PreflightService: Sendable {
             command: "/bin/zsh -lic 'env -0'"
         ))
 
-        let locator = ToolLocator(environment: environment)
+        let locator = ToolLocator(environment: environment, overrides: .fromProcessEnvironment())
         for (tool, path) in [
             ("claude", config.claudePath), ("gh", config.ghPath), ("git", config.gitPath),
         ] {
-            let located = await locator.locate(tool)
+            let resolution = await locator.locate(tool)
+            // ⛔ An override that names an unusable path is its own row, ahead of
+            // everything else: "not found — put it on your PATH" is the wrong
+            // remedy for someone who *did* say which binary to use and mistyped
+            // it, and sending them to install software they already have is how
+            // a diagnostic wastes the time it exists to save (#238).
+            if case .overrideUnusable(let variable, let value) = resolution {
+                results.append(CheckResult(
+                    id: "tool.\(tool)",
+                    title: tool,
+                    status: .fail,
+                    detail: "\(variable) is set to \(value), which is not an executable file. "
+                        + "Elliot will not fall back to your PATH — it would run a different "
+                        + "binary than the one you named.",
+                    command: "ls -l \(value)",
+                    fixHint: "Point \(variable) at an executable, or unset it to use your PATH, "
+                        + "then relaunch Elliot."
+                ))
+                continue
+            }
+            let located = resolution.tool
             let found = FileManager.default.isExecutableFile(atPath: path)
+            // Says so when an override is in force. A change to which binary
+            // runs must be visible on the screen that reports which binary runs.
+            let source = located?.foundVia == "user override"
+                ? " — set by \(ToolOverrides.variableName(for: tool))"
+                : ""
             results.append(CheckResult(
                 id: "tool.\(tool)",
                 title: tool,
                 status: found ? .pass : .fail,
                 detail: found
                     ? [located?.resolvedPath ?? path, located?.version].compactMap { $0 }.joined(separator: " — ")
+                        + source
                     : "Not found. An app launched from the Finder does not inherit your shell PATH.",
                 command: "command -v \(tool)",
                 // Names the real remedy. There is no Settings screen anywhere
@@ -166,7 +192,8 @@ public struct PreflightService: Sendable {
                 // window that does not exist.
                 fixHint: found
                     ? nil
-                    : "Elliot reads your login shell's PATH. Put \(tool) on it, then press Check again."
+                    : "Elliot reads your login shell's PATH. Put \(tool) on it, then press Check "
+                        + "again — or name one with \(ToolOverrides.variableName(for: tool))."
             ))
         }
 
