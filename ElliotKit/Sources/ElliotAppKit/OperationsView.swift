@@ -343,10 +343,11 @@ public struct OperationsView: View {
     /// across forty analyses are different facts. ⛔ The sentence is not dropped,
     /// it **moves**: to `help` and to the spoken label, both below. A lone figure
     /// like the day's total has the room and keeps it on screen.
+    @ViewBuilder
     private func amount(
         _ title: String, _ figure: SpendFigure, isColumn: Bool = false
     ) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        let figureStack = VStack(alignment: .leading, spacing: 2) {
             ConsoleLabel(text: title)
             Fact(text: isColumn ? figure.amountMark() : figure.amount(), tint: .primary)
             if isColumn {
@@ -358,12 +359,20 @@ public struct OperationsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .help(isColumn ? figure.sentence() : "")
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
             isColumn
                 ? "\(title): \(figure.sentence()), over \(figure.spend.runsSentence)"
                 : "\(title): \(figure.sentence())")
+
+        // Branched rather than `.help(isColumn ? … : "")`: what an empty help
+        // string does is unmeasured here, and a figure that already spells its
+        // caveat out on screen has nothing to add in a tooltip anyway.
+        if isColumn {
+            figureStack.help(figure.sentence())
+        } else {
+            figureStack
+        }
     }
 
     private var ceilingSentence: String {
