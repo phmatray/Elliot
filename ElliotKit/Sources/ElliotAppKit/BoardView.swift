@@ -201,7 +201,7 @@ public struct BoardView: View {
         ToolbarItem {
             Button {
                 model.newCardRepoID = model.defaultRepoIDForNewCard
-                openWindow(id: "newStory")
+                model.showConsoleFace(.newStory)
             } label: {
                 Label("New story", systemImage: "plus")
             }
@@ -1303,7 +1303,7 @@ struct ColumnView: View {
     /// quiet line rather than a warning.
     private func olderFooter(_ count: Int) -> some View {
         Button {
-            openWindow(id: "archive")
+            model.showConsoleFace(.archive)
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "archivebox")

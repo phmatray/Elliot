@@ -210,11 +210,22 @@ struct WindowCaptureTests {
         #expect(AppKitWindowCapture.failure(for: "bord", among: open) == .unknownWindow(
             known: AppKitWindowCapture.knownWindows
         ))
-        // A declared scene that is simply shut: the answer names what *is* open,
-        // and does not name the one that was asked for.
-        #expect(AppKitWindowCapture.failure(for: "archive", among: open) == .notOpen(open: ["board"]))
         // And a window that is open is not a failure at all.
         #expect(AppKitWindowCapture.failure(for: "board", among: open) == nil)
+
+        // ⚠️ **The shut case is now the board, because the board is the only
+        // scene left.** This named `operations`, then `archive`; each console
+        // wave retired the scene under it, and with the migration complete there
+        // is no declared-but-shut screen other than this one.
+        //
+        // It is still reachable in production — a closed `Window` scene stays in
+        // `NSApp.windows`, which is why `isOpen` is `isVisible || isMiniaturized`
+        // — so `notOpen` is not dead code. It has simply become an answer about
+        // one window rather than about six.
+        #expect(
+            AppKitWindowCapture.failure(for: "board", among: []) == .notOpen(open: []),
+            "with every other screen a console face, a shut board is the only way to see notOpen"
+        )
     }
 
     @Test("The open list only counts Elliot's own scenes")

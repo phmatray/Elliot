@@ -18,7 +18,13 @@ public struct NewCardWindow: View {
     public init() {}
 
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
+
+    /// ⛔ **No `@Environment(\.dismiss)` here, and that is the whole of what
+    /// moving this screen into the console changed.** It was a `Window` scene,
+    /// where dismissing closed that window. As a console face it resolves to the
+    /// *enclosing* window — the board — so Cancel would close the application's
+    /// main window. `AnalysisPanelView` records the identical trap, met the same
+    /// way when it stopped being a window in #151.
 
     @State private var draft = CardDraft()
 
@@ -56,7 +62,7 @@ public struct NewCardWindow: View {
 
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Cancel", role: .cancel) { model.closeConsole() }
                 Button("Add to backlog") { add() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(repoID == nil || !draft.isValid)
@@ -64,7 +70,8 @@ public struct NewCardWindow: View {
             .padding(18)
         }
         .frame(minWidth: 460, minHeight: 420)
-        .navigationTitle("New story")
+        // No `.navigationTitle`: this is a console face now, and a title set
+        // here propagates to the *board window* and renames it (#263).
     }
 
     private var repoName: String? {
@@ -78,7 +85,7 @@ public struct NewCardWindow: View {
                 repoID: repoID, title: draft.title, story: draft.story, body: draft.body,
                 labels: draft.labels
             )
-            dismiss()
+            model.closeConsole()
         }
     }
 }
