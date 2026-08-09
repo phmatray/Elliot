@@ -61,7 +61,7 @@ public enum DefaultAction {
     /// fourth way for Return to mean something the reader did not intend.
     public static let claimants: [Claimant] = [
         Claimant(
-            file: "Sheets.swift",
+            file: "NewStoryView.swift",
             label: "Add to backlog",
             commits: "a new user story"
         ),

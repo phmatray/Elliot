@@ -190,31 +190,13 @@ struct AnalysisPanelStateTests {
         "hovering",
     ]
 
-    /// ⚠️ **The whole file, not just `AnalysisPanelView`.** The first draft cut
-    /// the scan at `struct ProposalRow` on the theory that the other views' state
-    /// was their own business. It is not: hiding the panel removes `.analysis`
-    /// from `boardOrder` and destroys *every* view in the subtree, so `@State` in
-    /// `ProposalRow`, `ProposalEditor` or `LensRunRow` is lost by exactly the same
-    /// mechanism. The narrow scan also skipped two of the three views it claimed
-    /// to cover, since `LensRunRow` is declared before `ProposalRow` — it found
-    /// `showingDropped` only by accident of ordering.
+    /// ⚠️ **The whole file, not just `AnalysisPanelView`** — and the scan itself
+    /// is `HiddenFaceState.declared(in:)`, which says at length why it reads a
+    /// file rather than a type. It lives there because the New story face needs
+    /// the same reading (#314) and the two must not drift; what stays here is the
+    /// allow-list, which is a judgement about *this* panel's data.
     private static var declaredState: [String] {
-        get throws {
-            let url = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("Sources/ElliotAppKit/AnalysisPanelView.swift")
-            let source = try String(contentsOf: url, encoding: .utf8)
-            return source
-                .components(separatedBy: "@State private var")
-                .dropFirst()
-                .compactMap { chunk in
-                    chunk.drop(while: \.isWhitespace)
-                        .prefix { $0.isLetter || $0.isNumber || $0 == "_" }
-                        .description
-                }
-        }
+        get throws { try HiddenFaceState.declared(in: "AnalysisPanelView.swift") }
     }
 
     @Test("Every @State in the panel's subtree is state a hide may destroy")

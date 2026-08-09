@@ -572,17 +572,111 @@ public final class AppModel {
     /// not survive clicking the next card.
     public var logFilter: RunLogFilter = .all
 
-    /// Which repository a new story will be filed against.
+    /// The story being written in the New story face — every character of it.
     ///
-    /// Here rather than passed in, because `NewCardWindow` is a `Window` scene
-    /// and a scene cannot be handed a parameter the way a sheet's closure can.
-    /// Set at the moment the window is opened, so it captures the repository
-    /// that was selected then rather than following the picker afterwards.
+    /// ⚠️ **On the model, not in the view, because hiding the face destroys the
+    /// view.** It is the identical mechanism `analysisAngles` records one screen
+    /// over: folding the console removes the face from the board's column, which
+    /// tears `NewStoryView` down and every `@State` in it with it. As `@State`
+    /// this made ⎋, the ✕ and any door in the status bar silently discard a
+    /// three-field story and its acceptance criteria — and nothing distinguishes
+    /// a draft that was lost from one that was never typed.
+    ///
+    /// **One struct property rather than a field each.** `@Observable`
+    /// invalidates per stored property, so a keystroke here invalidates exactly
+    /// the readers of *this* value — the face — and the board's card list, which
+    /// never touches it, does not re-evaluate per character.
+    public var newCardDraft = CardDraft()
+
+    /// Which repository the reader has **chosen** for the story being written,
+    /// or `nil` for "whatever the board is pointed at".
+    ///
+    /// ⚠️ `nil` is not "none" and never was a valid target: a card must land
+    /// somewhere. It means *nobody has chosen*, and ``newCardRepo`` resolves
+    /// that against the board. Two call sites used to assign
+    /// `selectedRepoID ?? repos.first?.id` into here at the moment the face was
+    /// opened — the same two lines written twice — which froze alphabetical luck
+    /// into a stored id and gave the reader no way to correct it (#314).
+    ///
+    /// Cleared with the draft it belongs to, in ``clearNewStory()``: the choice
+    /// is part of *this* story, so once the story is filed the face is fresh and
+    /// follows the board again.
     public var newCardRepoID: UUID?
 
-    /// The repository a new story should default to: the one in the picker, or
-    /// the first, when "All repositories" is chosen.
-    public var defaultRepoIDForNewCard: UUID? { selectedRepoID ?? repos.first?.id }
+    /// The repository the story being written will actually be filed against.
+    ///
+    /// Resolved against ``repos`` rather than trusted as an id, which is the
+    /// whole point of it being computed: a repository can be forgotten from the
+    /// Repositories face while this one is open, and a stored id that outlived
+    /// its repository reached `BoardService.createCard` as
+    /// `BoardError.repoNotFound` — a refusal, on a screen that closed itself and
+    /// destroyed the story on the way out.
+    ///
+    /// The order is the reader's choice, then the board's picker, then the first
+    /// repository. That last fallback is what makes this total in one useful
+    /// direction: **it is `nil` if and only if the board has no repositories at
+    /// all**, so the face has exactly one repository-less state and it is one the
+    /// reader can see the reason for.
+    public var newCardRepo: Repo? {
+        repos.first { $0.id == newCardRepoID }
+            ?? repos.first { $0.id == selectedRepoID }
+            ?? repos.first
+    }
+
+    /// Why the last *Add to backlog* filed nothing, or `nil`.
+    ///
+    /// ⛔ **A field of its own, not ``status``.** `status` is a single narration
+    /// owned by whoever spoke last — an import finishing, a run starting, the
+    /// launch sweep — and the status bar renders it on one truncated line at the
+    /// bottom of the window. A refusal the reader has to act on must stay beside
+    /// the buttons that were refused, for as long as the story is still being
+    /// written. This repository has the general form of that lesson on file:
+    /// *"a fact that has to survive needs a field of its own"* (`artifactSweep`).
+    ///
+    /// ⚠️ **Scoped to the repository it was thrown for**, which is why it is
+    /// computed rather than plain storage — the same shape, and the same reason,
+    /// as ``startFailure``. The face now carries its own repository picker, so
+    /// the subject can change while the sentence is on screen; stored flat, a
+    /// refusal about repository A would go on rendering in the refusal accent
+    /// beside a live Add button for repository B.
+    ///
+    /// Switching away and back brings it back, deliberately: nothing has been
+    /// attempted for that repository in between, so the sentence is exactly as
+    /// true as it was.
+    public var newStoryRefusal: String? {
+        guard newStoryRefusalRepoID == newCardRepo?.id else { return nil }
+        return newStoryRefusalMessage
+    }
+
+    /// The refusal's text and the repository it belongs to, which only ever move
+    /// together — hence ``clearNewStoryRefusal()`` rather than two assignments at
+    /// each site, exactly as `clearStartFailure()` exists one screen over.
+    private var newStoryRefusalMessage: String?
+    private var newStoryRefusalRepoID: UUID?
+
+    private func clearNewStoryRefusal() {
+        newStoryRefusalMessage = nil
+        newStoryRefusalRepoID = nil
+    }
+
+    /// Records why nothing was filed, against the repository it was refused for.
+    private func refuseNewStory(_ message: String) {
+        newStoryRefusalMessage = message
+        newStoryRefusalRepoID = newCardRepo?.id
+    }
+
+    /// Empties the face: the story is filed, so there is no story and no choice.
+    ///
+    /// The draft and the chosen repository are cleared **together** because the
+    /// choice belongs to the story that was just filed. Its own method for the
+    /// reason `clearStartFailure()` is one: two values that only ever move
+    /// together are one act, and a caller that cleared the draft and left the
+    /// choice would leave the next story pointed somewhere nobody chose it.
+    private func clearNewStory() {
+        newCardDraft = CardDraft()
+        newCardRepoID = nil
+        clearNewStoryRefusal()
+    }
 
     /// The analysis the window is showing. `nil` means it is still in setup.
     ///
@@ -1824,22 +1918,88 @@ public final class AppModel {
         Consequence.reason(block)
     }
 
-    public func createCard(
-        repoID: UUID, title: String, story: UserStory?, body: String, labels: [String] = []
-    ) async {
-        guard let board else { return }
-        _ = try? await board.createCard(
-            repoID: repoID, title: title, body: body, story: story, labels: labels
-        )
+    /// Files the story being written, and decides what that means for the face.
+    ///
+    /// ⛔ **The view does not branch on the outcome, because it cannot see one.**
+    /// This is the shape #313 is about: `createCard` swallowed every failure
+    /// (`_ = try? …`, and a `guard let board else { return }` that did nothing at
+    /// all), and the caller closed the console on the next line regardless — so a
+    /// refused create looked exactly like a successful one and took a full user
+    /// story with it. Returning `Bool` and asking the view to check it would fix
+    /// today's caller and leave tomorrow's free to forget; taking the whole act —
+    /// read the draft, file it, clear or explain — removes the decision from the
+    /// view entirely. There is no longer a create-a-card method a view can call
+    /// and get wrong.
+    ///
+    /// ⚠️ It reads ``newCardDraft`` and ``newCardRepo`` rather than taking them
+    /// as arguments, and that is the same removal one step further: a caller that
+    /// could pass a *different* draft could file a story the reader cannot see,
+    /// and a caller that could pass a repository id could file against one the
+    /// picker never offered.
+    ///
+    /// Every path either files or explains. `BoardService.createCard` stays the
+    /// funnel; nothing here writes a card, and nothing here touches a column.
+    public func addStoryToBacklog() async {
+        clearNewStoryRefusal()
+
+        guard let repo = newCardRepo else {
+            refuseNewStory("No repository is registered, so there is nowhere to file this story.")
+            return
+        }
+        // The same expression the Add button is disabled by, so what is judged
+        // fileable is what gets filed (#202's rule, one screen over). Unreachable
+        // through the button today — which is exactly the claim `isBlocking` made
+        // for four views and no rule.
+        guard newCardDraft.isValid else {
+            refuseNewStory("A story needs a board label and a complete user story before it can be filed.")
+            return
+        }
+        guard let board else {
+            refuseNewStory("The board is not ready yet, so nothing was filed.")
+            return
+        }
+
+        do {
+            _ = try await board.createCard(
+                repoID: repo.id,
+                // `trimmedTitle`, not `title` — see `CardDraft.trimmedTitle`: the
+                // gate and the write are one expression (#202).
+                title: newCardDraft.trimmedTitle,
+                body: newCardDraft.body,
+                story: newCardDraft.story,
+                labels: newCardDraft.labels
+            )
+            clearNewStory()
+            closeConsole()
+        } catch {
+            refuseNewStory("Could not file the story: \(error.localizedDescription)")
+        }
     }
 
+    /// Deletes a card, and says so when it cannot.
+    ///
+    /// It was `try? await board?.deleteCard(id: id)`: a board that was not ready
+    /// and a store that refused the write were both indistinguishable from a
+    /// delete that worked, from the Archive's context menu and from the board's
+    /// (#313). Through ``status`` rather than a field of its own — unlike
+    /// ``newStoryRefusal`` — because there is nothing typed at stake here and no
+    /// surface of the act's own to keep it beside: the card the reader tried to
+    /// delete is simply still there.
     public func deleteCard(id: UUID) async {
-        try? await board?.deleteCard(id: id)
+        guard let board else {
+            status = "The board is not ready yet; the card was not deleted."
+            return
+        }
+        do {
+            try await board.deleteCard(id: id)
+        } catch {
+            status = "Could not delete the card: \(error.localizedDescription)"
+        }
     }
 
-    /// Unlike `createCard` / `deleteCard`, this reports failure: the sheet that
-    /// called it still holds the text the user typed, and silently dropping an
-    /// edit is worse than saying it was refused.
+    /// Unlike `deleteCard`, this reports failure where the reader is looking: the
+    /// panel that called it still holds the text the user typed, and silently
+    /// dropping an edit is worse than saying it was refused.
     public func updateCard(id: UUID, draft: CardDraft) async -> Bool {
         guard let board else {
             // The sheet shows `status` as the reason it refused; leaving the

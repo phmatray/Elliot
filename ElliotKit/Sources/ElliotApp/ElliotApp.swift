@@ -280,7 +280,9 @@ private struct NewStoryMenuItem: View {
 
     var body: some View {
         Button("New Story…") {
-            model.newCardRepoID = model.defaultRepoIDForNewCard
+            // See the toolbar button in `BoardView`: the face resolves its own
+            // repository, so nothing is assigned here. These two sites used to
+            // carry the identical pair of lines (#314).
             model.showConsoleFace(.newStory)
         }
         .keyboardShortcut("n")
