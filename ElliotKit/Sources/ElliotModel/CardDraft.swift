@@ -6,7 +6,7 @@ import Foundation
 /// executable target with no tests: a validation rule written in a `View` is a
 /// validation rule nothing can check. Both the new-card sheet and the edit mode
 /// of the detail sheet bind to this, so there is one field set and one rule.
-public struct CardDraft: Sendable, Hashable {
+public struct CardDraft: Codable, Sendable, Hashable {
     /// The board label.
     public var title: String
     /// Story mode when true, plain note when false — the segmented picker.
