@@ -864,18 +864,30 @@ struct LensTile: View {
         // The briefing is what this said before, and it is what the tile shows
         // when the lens is free. When it is busy the reader needs the other
         // sentence, so VoiceOver gets whatever is actually on the tile.
-        .accessibilityLabel("\(angle.title). \(busy == nil ? angle.briefing : Self.busyDescription)")
-        .help(busy == nil
-            ? angle.briefing
-            : Self.busyDescription
-                + " Ticking it is still allowed; Start will refuse the whole set until it finishes.")
+        .accessibilityLabel(
+            "\(angle.title). \(busy.map(Self.description) ?? angle.briefing)")
+        .help(busy.map {
+            Self.description(of: $0)
+                + " Ticking it is still allowed; Start will refuse the whole set until it finishes."
+        } ?? angle.briefing)
     }
 
     /// ⚠️ Past tense and no promise about now: this is a reading the panel took,
     /// and `AnalysisService` is what decides whether a Start goes. The footer's
     /// clash sentence carries the same hedge for the same reason.
-    private static let busyDescription =
-        "This lens was already reading the repository when the lenses were last checked."
+    ///
+    /// ⛔ **Two sentences, because there are two states.** Found by looking at
+    /// the running app: a queued lens read *"Already reading   queued"*, which
+    /// says two contradictory things in four words. The enum has the answer —
+    /// this switches on it rather than treating queued as reading-without-a-clock.
+    private static func description(of busy: LensBusy) -> String {
+        switch busy {
+        case .queued:
+            "A run for this lens was already queued when the lenses were last checked."
+        case .reading:
+            "This lens was already reading the repository when the lenses were last checked."
+        }
+    }
 
     /// The stopwatch, for the one busy state that has started.
     ///
@@ -885,18 +897,22 @@ struct LensTile: View {
     @ViewBuilder
     private func busyLine(_ busy: LensBusy) -> some View {
         HStack(spacing: 6) {
-            Label("Already reading", systemImage: "hourglass")
-                .font(Type.prose)
-                .foregroundStyle(Palette.attention)
-            if let since = busy.since {
+            switch busy {
+            case .reading(let since):
+                Label("Already reading", systemImage: "hourglass")
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.attention)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Fact(text: Elapsed.short(from: since, to: context.date),
                          tint: Palette.quiet, small: true)
                 }
-            } else {
-                // Queued has no elapsed time, and inventing one from `createdAt`
-                // would be a stopwatch on something that has not begun.
-                Fact(text: "queued", tint: Palette.quiet, small: true)
+            case .queued:
+                // No stopwatch, and no second word: a queued run has not begun,
+                // so inventing an elapsed time from `createdAt` would be a
+                // clock on something that is not running.
+                Label("Already queued", systemImage: "hourglass")
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.attention)
             }
             Spacer(minLength: 0)
         }

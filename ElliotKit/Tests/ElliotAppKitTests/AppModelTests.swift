@@ -1245,7 +1245,7 @@ struct AppModelTests {
             clashing: model.clashingLenses,
             failure: model.startFailure,
             refusal: model.analysisRefusal)
-        #expect(shown.text.hasPrefix("Bugs was still reading"))
+        #expect(shown.text.hasPrefix("Bugs already had a run in flight"))
     }
 
     /// ⛔ #213's axis, on the seal this time. The picker can move while the read

@@ -82,8 +82,8 @@ struct AnalysisFooterMessageTests {
         let message = AnalysisFooterMessage.setup(
             angleCount: 3, clashing: [.techDebt], failure: nil, refusal: nil)
         #expect(
-            message.text == "Tech debt was still reading when the lenses were last checked — "
-                + "Start is all or nothing, so untick it or wait.")
+            message.text == "Tech debt already had a run in flight when the lenses were last "
+                + "checked — Start is all or nothing, so untick it or wait.")
         #expect(message.tone == .refused)
         #expect(message.symbol == "hourglass")
     }
@@ -93,9 +93,24 @@ struct AnalysisFooterMessageTests {
         let message = AnalysisFooterMessage.setup(
             angleCount: 4, clashing: [.bugs, .tests, .techDebt], failure: nil, refusal: nil)
         #expect(
-            message.text == "Bugs, Tests and Tech debt were still reading when the lenses were "
-                + "last checked — Start is all or nothing, so untick them or wait.")
+            message.text == "Bugs, Tests and Tech debt already had runs in flight when the lenses "
+                + "were last checked — Start is all or nothing, so untick them or wait.")
         #expect(message.tone == .refused)
+    }
+
+    /// ⛔ **"in flight", never "reading".** A clashing lens may be *queued* —
+    /// `AnalysisService` refuses on queued and running alike, and a queued run
+    /// has begun nothing. The tile can afford two sentences; this one names
+    /// several lenses at once and needs the word true of both. Found by looking
+    /// at the running app, where a queued lens read *"Already reading queued"*.
+    @Test("The sentence does not claim a queued lens is reading")
+    func theSentenceCoversQueuedAndRunningAlike() {
+        for clashing in [[AnalysisAngle.bugs], [.bugs, .tests]] {
+            let message = AnalysisFooterMessage.setup(
+                angleCount: 4, clashing: clashing, failure: nil, refusal: nil)
+            #expect(!message.text.contains("reading"))
+            #expect(message.text.contains("in flight"))
+        }
     }
 
     /// ⛔ The whole of #293's footer half. `AnalysisService.start` throws on the

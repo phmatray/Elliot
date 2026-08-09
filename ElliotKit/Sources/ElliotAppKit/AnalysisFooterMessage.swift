@@ -85,11 +85,18 @@ struct AnalysisFooterMessage: Equatable {
         }
         if !clashing.isEmpty {
             let names = Self.list(clashing.map(\.title))
-            let plural = clashing.count == 1
+            let one = clashing.count == 1
+            // ⛔ "in flight", not "reading". A clashing lens may be *queued* —
+            // the service refuses on queued and running alike — and a queued
+            // run has not begun reading anything. The tile carries the two
+            // states separately because it has the room; this sentence names
+            // several lenses at once, so it needs the word that is true of
+            // both. Found by looking at the running app, where a queued lens
+            // read "Already reading   queued".
             return AnalysisFooterMessage(
-                text: "\(names) \(plural ? "was" : "were") still reading when the lenses were last "
-                    + "checked — Start is all or nothing, so untick \(plural ? "it" : "them") or "
-                    + "wait.",
+                text: "\(names) already had \(one ? "a run" : "runs") in flight when the lenses "
+                    + "were last checked — Start is all or nothing, so untick "
+                    + "\(one ? "it" : "them") or wait.",
                 // The lens strip's own word for a run in flight, so the tile and
                 // the sentence about it read as one thing.
                 symbol: "hourglass",
