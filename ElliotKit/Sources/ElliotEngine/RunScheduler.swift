@@ -22,6 +22,14 @@ public enum SchedulerUpdate: Sendable {
     case runStarted(runID: UUID, cardID: UUID?)
     case runOutput(runID: UUID, event: StreamEvent)
     case runStalled(runID: UUID, since: Date)
+    /// The mirror of `.runStalled`: the run started talking again and is no
+    /// longer holding a mark that nothing could take off.
+    ///
+    /// Engine-local, like every case here — it does not cross `ElliotIPC`, so
+    /// this does not bump `elliotProtocolVersion`. `Protocol.swift` holds that
+    /// value; a number written down beside code that does not change it is a
+    /// number nothing keeps true.
+    case runResumed(runID: UUID)
     case runFinished(runID: UUID, cardID: UUID?, state: RunState, outcome: VerifiedOutcome?)
     /// The pending queue changed. Pushed rather than polled — the UI must not
     /// ask a question whose answer only the scheduler knows.
@@ -50,6 +58,17 @@ public actor RunScheduler: RunLaunching {
     /// Not persisted, deliberately: a relaunch should start working, not stay
     /// silently stopped.
     private var isPaused = false
+    /// How long a spawned run may say nothing before the silence is announced.
+    ///
+    /// A constructor parameter rather than the constant `ClaudeRun.start`
+    /// defaults to, and **not** part of `SchedulerLimits`: those are persisted as
+    /// JSON, and a new non-optional field there would fail to decode every row
+    /// written by an older build. This is construction-time only.
+    ///
+    /// It exists because the window was unreachable from a test, so the whole
+    /// stall path had no end-to-end coverage at all — which is precisely how the
+    /// mark stayed one-way. Nothing in the app passes anything but the default.
+    private let idleTimeout: Duration
     private let harvester: ProposalHarvester
     /// `git status --porcelain` taken just before each analysis spawned, keyed
     /// by run. In memory only: if the app dies mid-run the baseline is gone and
@@ -72,11 +91,13 @@ public actor RunScheduler: RunLaunching {
         verifier: Verifier,
         harvester: ProposalHarvester? = nil,
         limits: SchedulerLimits = .default,
-        ceiling: SpendCeiling = .off
+        ceiling: SpendCeiling = .off,
+        idleTimeout: Duration = ClaudeRun.defaultIdleTimeout
     ) {
         self.store = store
         self.toolConfig = toolConfig
         self.verifier = verifier
+        self.idleTimeout = idleTimeout
         self.harvester = harvester ?? ProposalHarvester(store: store, gh: GHClient(config: toolConfig))
         self.limits = limits
         self.ceiling = ceiling
@@ -473,7 +494,9 @@ public actor RunScheduler: RunLaunching {
                 at: logURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            claudeRun = try ClaudeRun.start(invocation: invocation, config: toolConfig, logURL: logURL)
+            claudeRun = try ClaudeRun.start(
+                invocation: invocation, config: toolConfig, logURL: logURL, idleTimeout: idleTimeout
+            )
         } catch {
             // The baseline was taken above whether or not the spawn survives;
             // `finish` is never reached from here, so nothing else would ever
@@ -509,7 +532,6 @@ public actor RunScheduler: RunLaunching {
 
     private func consume(_ claudeRun: ClaudeRun, run: SkillRun) async {
         var finalOutcome: ClaudeRunOutcome?
-        var stalled = false
 
         for await update in claudeRun.updates {
             switch update {
@@ -517,21 +539,46 @@ public actor RunScheduler: RunLaunching {
                 break
             case .event(let event):
                 continuation.yield(.runOutput(runID: run.id, event: event))
+            // Both directions yield *before* they await the write, and the two
+            // are deliberately identical in shape: `AppModel` marks its copies
+            // in place rather than re-reading, so a refresh racing the write
+            // would read the row as it was and undo the answer.
             case .stalled(let since):
-                stalled = true
                 continuation.yield(.runStalled(runID: run.id, since: since))
-                await markStalled(run.id)
+                await mark(.wentQuiet, on: run.id)
+            case .resumed:
+                continuation.yield(.runResumed(runID: run.id))
+                await mark(.startedTalkingAgain, on: run.id)
             case .finished(let outcome):
                 finalOutcome = outcome
             }
         }
-        _ = stalled
         await finish(run: run, outcome: finalOutcome)
     }
 
-    private func markStalled(_ runID: UUID) async {
-        guard var run = try? await store.run(id: runID), run.state == .running else { return }
-        run.state = .stalled
+    /// Writes a silence notice onto the run's row, if the row will take it.
+    ///
+    /// One method for both directions, over `RunState.applying`. This was
+    /// `markStalled`, whose guard was hand-copied into `AppModel.stalling` with
+    /// a comment in each saying it was spelled the same way as the other — and
+    /// only ever written in the one direction. The pair now lives once, in
+    /// `ElliotModel`, and is called from here and from `AppModel.mark`.
+    ///
+    /// ⛔ The resume guard is load-bearing: a run can end while the recovery
+    /// notice is in flight, and `.succeeded` is not `.stalled`, so it stays
+    /// `.succeeded`. `cancel` is the sharp case — it writes `.cancelling` over
+    /// whatever the run was, so the last byte a stalled run emits on its way out
+    /// cannot drag it back to `.running` and hold its card against a move.
+    ///
+    /// Internal rather than private, like `canStart` and `refusal` above: this
+    /// is the *durable* half of the mark, and a store write is worth measuring
+    /// on its own rather than only through a spawned child. What reaches it —
+    /// the `consume` switch — is measured end to end.
+    func mark(_ notice: RunSilence, on runID: UUID) async {
+        guard var run = try? await store.run(id: runID),
+              let next = run.state.applying(notice)
+        else { return }
+        run.state = next
         try? await store.saveRun(run)
     }
 

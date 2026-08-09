@@ -59,13 +59,21 @@ struct AnalysisSessionTests {
         #expect(!AnalysisSession.accepts(AnalysisSession(id: UUID(), repoID: UUID()), rowsFor: id))
     }
 
-    @Test("A stall marks the named run and leaves the others alone")
-    func markStalledIsByID() {
+    @Test("A silence notice marks the named run and leaves the others alone")
+    func markIsByID() {
         let target = run()
         let other = run()
         var session = AnalysisSession(id: UUID(), repoID: UUID(), runs: [target, other])
-        session.markStalled(target.id)
+
+        session.mark(.wentQuiet, target.id)
         #expect(session.runs.first(where: { $0.id == target.id })?.state == .stalled)
+        #expect(session.runs.first(where: { $0.id == other.id })?.state == .running)
+
+        // And back again: the fourth collection takes both directions, which is
+        // the half that was never written — the analysis window kept "No output
+        // for a while" on a run that had started talking again.
+        session.mark(.startedTalkingAgain, target.id)
+        #expect(session.runs.first(where: { $0.id == target.id })?.state == .running)
         #expect(session.runs.first(where: { $0.id == other.id })?.state == .running)
     }
 
@@ -134,11 +142,11 @@ struct AppModelAnalysisSessionTests {
         #expect(model.analysis?.proposals.isEmpty == true)
     }
 
-    @Test("A stall still reaches the analysis window's copy of the run")
+    @Test("A stall, and the recovery after it, still reach the analysis window")
     func stallReachesTheSession() {
-        // `markStalled` walks four collections because any of them can be the
-        // one on screen; the analysis window's is the fourth, and it moved
-        // into the session.
+        // `mark` walks four collections because any of them can be the one on
+        // screen; the analysis window's is the fourth, and it moved into the
+        // session.
         let model = model()
         var stalling = SkillRun(
             cardID: nil, repoID: UUID(), analysisID: UUID(), analysisAngle: .bugs,
@@ -150,9 +158,11 @@ struct AppModelAnalysisSessionTests {
         model.openAnalysis(analysisFixture(repoID: UUID()))
         model.testOnlySeedAnalysis(runs: [stalling], note: nil)
 
-        model.markStalled(runID: stalling.id)
-
+        model.mark(.wentQuiet, runID: stalling.id)
         #expect(model.analysis?.runs.first?.state == .stalled)
+
+        model.mark(.startedTalkingAgain, runID: stalling.id)
+        #expect(model.analysis?.runs.first?.state == .running)
     }
 
     // MARK: - The panel's visibility, which is not the session
