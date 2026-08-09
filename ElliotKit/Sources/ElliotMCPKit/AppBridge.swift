@@ -92,26 +92,71 @@ public struct AppBridge: Sendable, BridgeProviding {
     /// `board_screenshot` calls telling a reader to launch an Elliot whose
     /// window was on screen in front of them.
     ///
-    /// The check is arithmetic on a string this process already has: both
-    /// processes *compute* the socket path from `ELLIOT_HOME` rather than
-    /// exchanging it, so the helper can measure a path it has never bound. That
-    /// also means the answer cannot go stale — there is no artefact to expire,
-    /// which is why this is the fix rather than a sentinel file the app writes.
+    /// The check reads a path this process already has: both processes
+    /// *compute* the socket path from `ELLIOT_HOME` rather than exchanging it,
+    /// so the helper can diagnose a path it has never bound. Nothing is
+    /// remembered between calls, so the answer cannot go stale — which is why
+    /// this is the fix rather than a sentinel file the app writes on a
+    /// successful `startIPC`.
     ///
     /// One function, two callers, on purpose: `read` and `write` telling
     /// different stories about the same path is the shape of the defect being
     /// fixed, one layer along.
+    ///
+    /// ⚠️ **#168 named only the length cause, and every other cause fell
+    /// straight through to `isAppRunning()` (#193).** A socket the app could
+    /// never bind because its directory is missing or read-only answered
+    /// nothing, which that call reports exactly as it reports an app that was
+    /// never launched — `isError: false`, `source: offline-db`, *"Elliot is not
+    /// running"*. Correct rows under a false explanation is the dangerous shape
+    /// rather than the noisy one, because nothing in the reply invites doubt.
+    ///
+    /// The *fact* is `UnixSocket.obstruction(to:)`, beside `pathFits`, because
+    /// it is a property of `sockaddr_un` and the filesystem. Only the advice is
+    /// here, where the audience is known.
     private static func unusableSocketPath(_ path: String) -> ElliotResponse? {
-        guard !UnixSocket.pathFits(path) else { return nil }
+        guard let obstruction = UnixSocket.obstruction(to: path) else { return nil }
         return .failure(
             code: .appUnavailable,
-            message: "Elliot could not open its MCP socket: the path ELLIOT_HOME leads to is "
-                + "\(path.utf8.count) bytes, and a unix socket path must be under "
-                + "\(UnixSocket.maxPathBytes). The path is \(path)",
-            hint: "Set a shorter ELLIOT_HOME and restart Elliot, then re-register this helper. "
-                + "Elliot itself may well be up — its board works without the MCP socket, and "
+            message: "Elliot could not open its MCP socket: \(Self.cause(obstruction)). "
+                + "The path is \(path)",
+            hint: Self.remedy(obstruction)
+                + " Elliot itself may well be up — its board works without the MCP socket, and "
                 + "Preflight reports the socket separately."
         )
+    }
+
+    /// What is wrong, in the app's own voice. Split from ``remedy(_:)`` because
+    /// the two answer different questions and a reader in a hurry reads only the
+    /// first.
+    private static func cause(_ obstruction: UnixSocket.PathObstruction) -> String {
+        switch obstruction {
+        case .tooLong(let bytes, let limit):
+            "the path ELLIOT_HOME leads to is \(bytes) bytes, and a unix socket path "
+                + "must be under \(limit)"
+        case .directoryMissing(let directory):
+            "the directory it would live in does not exist — \(directory)"
+        case .notADirectory(let directory):
+            "the path it would live in is not a directory — \(directory)"
+        case .directoryNotWritable(let directory):
+            "the directory it would live in is not writable — \(directory)"
+        }
+    }
+
+    /// ⚠️ Every remedy ends in a full stop, because the caller appends a second
+    /// sentence. One that did not would run two sentences together in the one
+    /// place a confused reader is looking hardest.
+    private static func remedy(_ obstruction: UnixSocket.PathObstruction) -> String {
+        switch obstruction {
+        case .tooLong:
+            "Set a shorter ELLIOT_HOME and restart Elliot, then re-register this helper."
+        case .directoryMissing, .notADirectory:
+            "Point ELLIOT_HOME at a directory that exists and restart Elliot, then "
+                + "re-register this helper."
+        case .directoryNotWritable:
+            "Make that directory writable, or point ELLIOT_HOME elsewhere, and restart "
+                + "Elliot."
+        }
     }
 
     /// A read: answered live, or from a read-only snapshot of the database.
