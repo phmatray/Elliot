@@ -143,17 +143,28 @@ struct ElliotApp: App {
         // menus with a shortcut, not reachable only by dragging — which is
         // slow across four columns and impossible without a pointer.
         CommandMenu("Card") {
-            Button("Advance") {
+            // Titles and enabled state come from `nudgeOffer`, which reaches
+            // `preview` — the same pure `evaluateMove` a drop commits with. The
+            // menu therefore names the consequence the column caption already
+            // shows, rather than holding a second opinion about the move.
+            //
+            // ⚠️ `model` stays passed in, never read from the environment:
+            // `Commands` sits outside the `.environment(model)` each Window
+            // carries, which is the #64 launch crash.
+            let advance = model.nudgeOffer(forward: true)
+            let back = model.nudgeOffer(forward: false)
+
+            Button(advance.title) {
                 Task { await model.nudgeSelection(forward: true) }
             }
             .keyboardShortcut(.rightArrow, modifiers: .command)
-            .disabled(model.selectedCard == nil)
+            .disabled(advance.isEnabled == false)
 
-            Button("Move back") {
+            Button(back.title) {
                 Task { await model.nudgeSelection(forward: false) }
             }
             .keyboardShortcut(.leftArrow, modifiers: .command)
-            .disabled(model.selectedCard == nil)
+            .disabled(back.isEnabled == false)
 
             Divider()
 

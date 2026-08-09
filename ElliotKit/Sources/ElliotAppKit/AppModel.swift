@@ -1484,11 +1484,61 @@ public final class AppModel {
     /// only path for someone who cannot drag at all.
     public func nudgeSelection(forward: Bool) async {
         guard let card = selectedCard else { return }
-        let order = ElliotModel.Column.allCases
-        guard let index = order.firstIndex(of: card.column) else { return }
-        let target = index + (forward ? 1 : -1)
-        guard order.indices.contains(target) else { return }
-        await move(cardID: card.id, to: order[target])
+        switch card.column.step(forward: forward) {
+        case .to(let target):
+            await move(cardID: card.id, to: target)
+        case .atEdge(let reason):
+            // It used to `return` here. ⌘→ on a Done card was enabled, did
+            // nothing, and left no mark — where the same refusal reached by
+            // dropping writes one on the card. The keyboard is the only path for
+            // someone who cannot drag, and it was the silent one.
+            refusal = Refusal(cardID: card.id, message: reason)
+            status = reason
+        }
+    }
+
+    /// What `Card ▸ Advance` and `Card ▸ Move back` should say, and whether they
+    /// should be live.
+    ///
+    /// ⛔ **Calls `preview`; re-derives nothing.** A second copy of the
+    /// transition rules is the invariant this project names first, and
+    /// `rankNextSteps` exists precisely so the board predicts itself by calling
+    /// `evaluateMove` rather than holding an opinion about it. The menu title is
+    /// therefore the same sentence the column caption shows for the same move.
+    ///
+    /// Returned as one value so a caller cannot take the title from here and the
+    /// enabled state from somewhere else — the shape that let ⌘→ be enabled on a
+    /// card it could not move.
+    public func nudgeOffer(forward: Bool) -> NudgeOffer {
+        let verb = forward ? "Advance" : "Move back"
+        guard let card = selectedCard else {
+            return NudgeOffer(title: verb, isEnabled: false, detail: nil)
+        }
+        switch card.column.step(forward: forward) {
+        case .atEdge(let reason):
+            // Enabled, deliberately: pressing it is how the reason gets said.
+            // Disabling it restores the silence — the reader presses, nothing
+            // happens, and nothing explains why.
+            return NudgeOffer(title: verb, isEnabled: true, detail: reason)
+        case .to(let target):
+            let consequence = Consequence.of(preview(card, to: target))
+            return NudgeOffer(
+                title: "\(verb) — \(consequence.summary)",
+                isEnabled: true,
+                detail: consequence.summary)
+        }
+    }
+
+    /// The board's hint line, for the card that is actually selected.
+    ///
+    /// See ``NudgeOffer`` for why a refused move stays pressable.
+    ///
+    /// It read a flat "⌘→ advance · ⌘← back · esc deselect" for every card,
+    /// including the ones where ⌘→ does nothing at all.
+    public var selectionHint: String {
+        guard selectedCard != nil else { return "↑↓←→ pick a card" }
+        let forward = nudgeOffer(forward: true)
+        return "⌘→ \(forward.detail ?? "advance") · ⌘← back · esc deselect"
     }
 
     /// Drop a card between two of its new neighbours.
@@ -2174,10 +2224,33 @@ public final class AppModel {
 
     /// The Refresh button. Imports the selected repository, or every enabled one
     /// when "All repositories" is chosen.
-    public func refreshFromGitHub() async {
+    /// Re-imports one repository, or everything the picker is showing.
+    ///
+    /// `repoID` is what the banner's Retry passes. Each banner row names **one**
+    /// repository and one `gh` message, and its button re-imported every
+    /// repository on the board whenever the picker said "All repositories" —
+    /// serially, with `isImporting` disabling every other row's Retry for the
+    /// duration. The banner exists precisely because a failure written into
+    /// `status` was overwritten seconds later; a Retry that touches everything
+    /// undoes half of that scoping.
+    ///
+    /// ⚠️ `repoID` overrides the picker rather than intersecting with it. The
+    /// banner is scoped to what the picker shows, so the two cannot disagree —
+    /// and a row a reader can see is a row whose button must mean that row.
+    public func refreshFromGitHub(repoID: UUID? = nil) async {
         guard let importer, !isImporting else { return }
-        let targets = selectedRepoID.flatMap { id in repos.filter { $0.id == id } } ?? repos
-        guard !targets.isEmpty else { return }
+        let scope = repoID ?? selectedRepoID
+        let targets = scope.flatMap { id in repos.filter { $0.id == id } } ?? repos
+        // An id that names no repository is **not** "no filter" — the collapse
+        // that four MCP tools each had to be taught separately, and which here
+        // would turn one row's Retry into a whole-board import. It is also not a
+        // silent no-op: this button was pressed on purpose.
+        guard !targets.isEmpty else {
+            if scope != nil {
+                status = "That repository is no longer on the board."
+            }
+            return
+        }
 
         isImporting = true
         status = targets.count == 1
