@@ -60,4 +60,59 @@ struct RepoTreeLayoutTests {
         #expect(RepoVisibility(ghVisibility: "INTERNAL") == .private)
         #expect(RepoVisibility(ghVisibility: "PRIVATE") == .private)
     }
+
+    // MARK: - One owner, once (#191)
+
+    /// The writer-side guarantee every reader now leans on.
+    ///
+    /// `RepoRegistryService` fans out one task per element, so a duplicate made
+    /// the same `gh repo list` call twice and, on failure, produced two banner
+    /// rows carrying **one id** — undefined in SwiftUI — under a sentence that
+    /// counted attempts while saying "owners".
+    @Test("A duplicated owner is collapsed, and the first occurrence keeps its place")
+    func duplicateOwnersCollapse() {
+        let layout = RepoTreeLayout(
+            root: "/Users/p/Repositories",
+            owners: ["phmatray", "Atypical-Consulting", "phmatray"])
+
+        #expect(layout.owners == ["phmatray", "Atypical-Consulting"])
+        // Order is not incidental: the banner reads top to bottom and
+        // `ownerDirectories()` is enumerated in this order.
+        #expect(layout.ownerDirectories().count == 4)
+    }
+
+    /// Exact, and the same rule the three readers use. GitHub handles are
+    /// case-insensitive and that argues the other way; it loses because `owners`
+    /// names **directories**, and APFS can be formatted case-sensitive — where
+    /// a merged pair would resolve to a path that does not exist.
+    @Test("Two spellings of one handle stay two owners, because they are two directories")
+    func casingIsNotMerged() {
+        let layout = RepoTreeLayout(root: "/Users/p/Repositories", owners: ["phmatray", "PhMatray"])
+        #expect(layout.owners == ["phmatray", "PhMatray"])
+        // The readers agree, which is the property that matters more than the
+        // choice itself: a writer that merged these while `slot(forPath:)` kept
+        // them apart is the writer/reader split #191 exists to close.
+        #expect(layout.slot(forPath: "/Users/p/Repositories/PhMatray/public/x")?.owner == "PhMatray")
+        #expect(layout.expectedPath(nameWithOwner: "PhMatray/x", visibility: .public) != nil)
+    }
+
+    /// ⚠️ Decoding is the path that carries a **legacy** duplicate — one stored
+    /// before the rule existed. A value read back must normalise exactly like
+    /// one built in code, and it must not throw at a reader who did nothing.
+    @Test("A stored layout holding a duplicate decodes to a deduplicated value")
+    func decodingDeduplicates() throws {
+        let stored = #"{"root":"/Users/p/Repositories","owners":["phmatray","phmatray"]}"#
+        let decoded = try JSONDecoder().decode(RepoTreeLayout.self, from: Data(stored.utf8))
+
+        #expect(decoded.owners == ["phmatray"])
+        // And the root goes through the same normalisation on the way in, which
+        // is the other half of "decoding is a second construction path".
+        #expect(decoded.root == "/Users/p/Repositories")
+    }
+
+    @Test("A layout round-trips through Codable unchanged")
+    func roundTrips() throws {
+        let encoded = try JSONEncoder().encode(layout)
+        #expect(try JSONDecoder().decode(RepoTreeLayout.self, from: encoded) == layout)
+    }
 }

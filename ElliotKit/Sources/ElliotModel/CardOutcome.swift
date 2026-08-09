@@ -100,7 +100,15 @@ public extension VerifiedOutcome {
                 move = .init(column: .inReview, reason: attribution.reason(whenLive: .prBecameReady))
             }
 
-        case .merged:
+        // A card whose pull request merged while Elliot was closed never sees a
+        // `.prOpen`, so this is the only place it can learn which pull request
+        // finished it. Each field is guarded, because an outcome that reached
+        // here through `GHMergeStatus` has no number or branch to offer and a
+        // blind write would blank the ones the card already had.
+        case .merged(_, let number, let url, let branch):
+            if let number { updated.prNumber = number }
+            if let url { updated.prURL = url }
+            if let branch { updated.branch = branch }
             updated.lastError = nil
             if card.column != .done {
                 move = .init(column: .done, reason: attribution.reason(whenLive: .prMergedExternally))
@@ -109,7 +117,10 @@ public extension VerifiedOutcome {
         case .notMerged(let reason), .unverified(let reason):
             updated.lastError = reason
 
-        case .closedUnmerged:
+        case .closedUnmerged(let number, let url, let branch):
+            if let number { updated.prNumber = number }
+            if let url { updated.prURL = url }
+            if let branch { updated.branch = branch }
             // The only copy of this sentence in the package, and the only one
             // of these strings a user actually reads.
             updated.lastError = "The pull request was closed without being merged."

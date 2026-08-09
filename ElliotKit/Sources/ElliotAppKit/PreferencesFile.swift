@@ -32,8 +32,26 @@ public struct PreferencesFile: PreferencesWriting {
 
     private let url: URL
 
+    /// Reads the pre-#222 notification payload, or `nil`.
+    ///
+    /// Supplied by ``atDefaultLocation()`` and by nothing else, which is the
+    /// whole safety property: a scratch `ELLIOT_HOME` built through `init(url:)`
+    /// **cannot** inherit the operator's real mutes, because the file it was
+    /// handed has no way to reach them. Adoption is a property of *where the
+    /// preferences live*, not of the code path that reads them.
+    private let legacyNotifications: (@Sendable () -> NotificationPreferences?)?
+
     public init(url: URL) {
         self.url = url
+        self.legacyNotifications = nil
+    }
+
+    private init(
+        url: URL,
+        legacyNotifications: @escaping @Sendable () -> NotificationPreferences?
+    ) {
+        self.url = url
+        self.legacyNotifications = legacyNotifications
     }
 
     /// The file inside the `ELLIOT_HOME` this process resolved.
@@ -45,7 +63,9 @@ public struct PreferencesFile: PreferencesWriting {
     /// `ElliotApp` depends on `ElliotAppKit` and nothing else, so the one
     /// production site cannot name `StoreLocation` itself.
     public static func atDefaultLocation() -> PreferencesFile {
-        PreferencesFile(url: StoreLocation.preferencesURL)
+        PreferencesFile(url: StoreLocation.preferencesURL) {
+            LegacyNotificationDefaults.read(from: .standard)
+        }
     }
 
     /// What the file holds, or the default when it holds nothing usable.
@@ -72,7 +92,42 @@ public struct PreferencesFile: PreferencesWriting {
     /// writer rather than by a URL, so a caller that has one cannot restore from
     /// one file and save into another.
     public func load() -> Preferences {
-        Self.load(from: url)
+        var loaded = Self.load(from: url)
+
+        // Adopt the pre-#222 notification settings, once, and only at the
+        // default location.
+        //
+        // Gated on the *file* not declaring the key rather than on the decoded
+        // value looking default: a reader who deliberately turned everything
+        // back on would otherwise have the old mutes reimposed on them for ever.
+        //
+        // ⚠️ It does **not** write. `AppModel.init` calls this, and
+        // `AppModelTests.restoringDoesNotWrite` pins that restoring a preference
+        // never saves one — a write here would turn every launch into a write of
+        // the file it had just read, which is the measured hazard that decided
+        // `panelSpans`' shape. The adopted value reaches disk the first time the
+        // reader changes anything, and until then this stays idempotent.
+        if let legacyNotifications,
+            !Self.declaresNotifications(at: url),
+            let legacy = legacyNotifications()
+        {
+            loaded.notifications = legacy
+        }
+        return loaded
+    }
+
+    /// Whether the file on disk actually carries a `notifications` key.
+    ///
+    /// Read off the raw JSON rather than inferred from the decoded value,
+    /// because `Preferences` decodes leniently: a missing key and a key holding
+    /// the default are the same `NotificationPreferences` afterwards, and only
+    /// one of them means "this reader has never expressed a choice here".
+    private static func declaresNotifications(at url: URL) -> Bool {
+        guard
+            let data = try? Data(contentsOf: url),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return object["notifications"] != nil
     }
 
     /// Writes the preference, or loses it — never throws, never crashes.

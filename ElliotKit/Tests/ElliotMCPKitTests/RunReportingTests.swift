@@ -70,7 +70,7 @@ struct RunReportingTests {
     func mergedIsNotTheSameAsNotMerged() async throws {
         let merged = makeRun(
             cardID: UUID(), repoID: UUID(), kind: .mergePR, state: .succeeded,
-            outcome: .merged(commitSHA: "9929281"),
+            outcome: .merged(commitSHA: "9929281", number: nil, url: nil, branch: nil),
             createdAt: epoch.addingTimeInterval(1)
         )
         let refused = makeRun(
@@ -101,7 +101,7 @@ struct RunReportingTests {
     func closedUnmergedIsItsOwnKind() async throws {
         let run = makeRun(
             cardID: UUID(), repoID: UUID(), kind: .mergePR, state: .succeeded,
-            outcome: .closedUnmerged
+            outcome: .closedUnmerged(number: nil, url: nil, branch: nil)
         )
 
         let answer = try await call(
@@ -245,7 +245,7 @@ struct RunReportingTests {
     func awaitTerminalRunIsFinal() async throws {
         let run = makeRun(
             cardID: UUID(), repoID: UUID(), kind: .mergePR, state: .succeeded,
-            outcome: .merged(commitSHA: "41cbfd9")
+            outcome: .merged(commitSHA: "41cbfd9", number: nil, url: nil, branch: nil)
         )
         let bridge = StubBridge.answering(.run(RunDTO(run: run, now: epoch)))
 

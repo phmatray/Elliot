@@ -217,6 +217,78 @@ struct AnalysisServiceTests {
             repoID: fixture.repo.id, title: "Written by hand"
         )
         #expect(created.card.angle == nil)
+        #expect(created.card.labels == [], "and no label it did not ask for")
+    }
+
+    /// A **visible pre-fill**, which is the whole distinction this issue turns
+    /// on: the label arrives as ordinary card data, in the editor, where a
+    /// human can see it and take it off — not as a rule applied on the way past.
+    ///
+    /// Three lenses, deliberately: one that means a label, one that means a
+    /// different label, and one that honestly means none. A single case would
+    /// pass against a hardcoded `"bug"`, and the `nil` case is the half that
+    /// matters most — five of the eight lenses take it, and a map that answered
+    /// "enhancement" for all of them would put a chosen-looking label on cards
+    /// nobody chose.
+    @Test("An accepted proposal arrives carrying its lens's label, and only an honest one")
+    func acceptSeedsTheLensLabel() async throws {
+        let fixture = try await makeFixture()
+        let started = try await fixture.service.start(
+            repoID: fixture.repo.id, angles: [.bugs, .docsAndDX, .techDebt], origin: .manual
+        )
+
+        func proposal(_ angle: AnalysisAngle, _ title: String) -> StoryProposal {
+            StoryProposal(
+                analysisID: started.analysis.id, runID: started.runs[0].id,
+                repoID: fixture.repo.id, angle: angle, title: title,
+                story: UserStory(role: "maintainer", want: title, benefit: "it is better"),
+                createdAt: Date()
+            )
+        }
+        let bug = proposal(.bugs, "Bound the await")
+        let docs = proposal(.docsAndDX, "Write the runbook")
+        let debt = proposal(.techDebt, "Split the file")
+        try await fixture.store.saveProposals([bug, docs, debt])
+
+        _ = try await fixture.service.accept(proposalIDs: [bug.id, docs.id, debt.id])
+
+        // Read from the store, not from the returned values: the card is loaded
+        // fresh on every launch, and a label that never reached SQLite would be
+        // gone by the next one.
+        let stored = try await fixture.store.cards(repoID: fixture.repo.id)
+        #expect(stored.first { $0.title == "Bound the await" }?.labels == ["bug"])
+        #expect(stored.first { $0.title == "Write the runbook" }?.labels == ["documentation"])
+        #expect(
+            stored.first { $0.title == "Split the file" }?.labels == [],
+            "tech debt is a claim about where the work is, not about what kind of issue it is"
+        )
+    }
+
+    /// The seeded label is a suggestion, not a fact about the card, so it obeys
+    /// the ordinary edit rule: removable until the card is filed. A pre-fill
+    /// that could not be taken off would be the invisible rule wearing a
+    /// visible costume.
+    @Test("A seeded label is ordinary card data a human can remove")
+    func seededLabelIsRemovable() async throws {
+        let fixture = try await makeFixture()
+        let started = try await fixture.service.start(
+            repoID: fixture.repo.id, angles: [.bugs], origin: .manual
+        )
+        let bug = StoryProposal(
+            analysisID: started.analysis.id, runID: started.runs[0].id,
+            repoID: fixture.repo.id, angle: .bugs, title: "Bound the await",
+            story: UserStory(role: "maintainer", want: "a bound", benefit: "no hang"),
+            createdAt: Date()
+        )
+        try await fixture.store.saveProposals([bug])
+
+        let card = try await fixture.service.accept(proposalIDs: [bug.id])[0]
+        #expect(card.labels == ["bug"])
+
+        try await fixture.board.updateCard(
+            id: card.id, title: card.title, body: card.body, story: card.story, labels: []
+        )
+        #expect(try await fixture.store.card(id: card.id)?.labels == [])
     }
 
     @Test("Accepting the same proposal twice creates one card")

@@ -91,18 +91,6 @@ extension ArchiveState {
     }
 }
 
-/// Everything the archive's answer depends on.
-///
-/// A key for `.task(id:)`, so that any of the three changing re-reads. Written
-/// out as a type rather than a tuple because `.task(id:)` needs `Equatable` and
-/// the point is that *all three* participate — a reader adding a fourth input
-/// to `archivePage` should have to come here.
-private struct ArchiveQuery: Equatable {
-    var search: String
-    var repoID: UUID?
-    var cardCount: Int
-}
-
 /// Everything that has ever reached Done.
 ///
 /// The board draws a horizon over that column and counts what it hid; this is
@@ -115,35 +103,22 @@ public struct ArchiveView: View {
     public init() {}
 
     @Environment(AppModel.self) private var model
-    @State private var state = ArchiveState()
-    @State private var query = ""
-    @State private var isLoading = false
-    @State private var collapsedDays: Set<Date> = []
 
-    /// Bumped by every change of filter. A page that comes back carrying a
-    /// stale generation is dropped rather than appended.
-    ///
-    /// `isLoading` alone was not enough and the difference is a real defect:
-    /// typing while a "Load more" was in flight cleared the rows, found
-    /// `isLoading` still true, returned without asking for anything — and then
-    /// the in-flight page landed in the freshly cleared state. The window then
-    /// showed page two of the *previous* filter under the new search term, with
-    /// nothing scheduled to correct it. `ArchiveState.setSearch` was right;
-    /// the sequencing around it was not.
-    @State private var generation = 0
-    /// Whether a load has ever finished.
-    ///
-    /// Without it the window asserts "Nothing has reached Done yet." for the
-    /// debounce plus the query — before it has asked anything. Saying "there is
-    /// none" when the answer is "I have not looked" is the failure this project
-    /// keeps paying for; an empty view says nothing instead.
-    @State private var hasLoaded = false
+    /// Everything this view used to hold in six `@State` properties, lifted onto
+    /// the model by #230 — the term, the pages, the generation guard, whether a
+    /// load has finished, and the folded days. The view keeps only *when* to
+    /// load.
+    private var reader: ArchiveReader { model.archive }
 
     public var body: some View {
+        // A local `@Bindable` because `AppModel.archive` is a `let`: the
+        // binding is to the reader's own property, not to the slot holding
+        // it. The same shape `AnalysisPanelView` uses for its resize handle.
+        @Bindable var archive = model.archive
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 6) {
-                if state.cards.isEmpty {
-                    if hasLoaded { emptyState }
+                if reader.state.cards.isEmpty {
+                    if reader.hasLoaded { emptyState }
                 } else {
                     // In the content, not the toolbar.
                     //
@@ -154,41 +129,38 @@ public struct ArchiveView: View {
                     // toolbar's to decide once the search field is expanded.
                     // Verified on screen twice, which is the only way this was
                     // ever going to be found.
-                    Fact(text: summary, tint: Palette.quiet, small: true)
+                    Fact(text: reader.summary, tint: Palette.quiet, small: true)
                         .padding(.bottom, 2)
                     // Computed once per pass rather than inside the `ForEach`:
                     // `shippingLog` buckets and sorts every loaded card, and the
                     // cut day can only be named from the whole log, so asking
                     // per row would re-derive it once per day drawn.
-                    ForEach(state.dayRows(now: Date(), calendar: .current)) { row in
+                    ForEach(reader.state.dayRows(now: Date(), calendar: .current)) { row in
                         let day = row.day
                         ShipDayHeader(
                             label: day.label,
                             count: day.cards.count,
                             partial: row.partial,
-                            collapsed: collapsedDays.contains(day.start)
+                            collapsed: reader.isCollapsed(day.start)
                         ) {
-                            if collapsedDays.contains(day.start) {
-                                collapsedDays.remove(day.start)
-                            } else {
-                                collapsedDays.insert(day.start)
-                            }
+                            reader.toggleDay(day.start)
                         }
-                        if !collapsedDays.contains(day.start) {
+                        if !reader.isCollapsed(day.start) {
                             ForEach(day.cards) { card in
                                 CardView(card: card)
                             }
                         }
                     }
-                    if state.canLoadMore {
+                    if reader.state.canLoadMore {
                         loadMoreButton
                     }
                 }
             }
             .padding(16)
         }
-        .navigationTitle("Archive")
-        .searchable(text: $query, prompt: "Search finished work")
+        // No `.navigationTitle`: this is a console face now, and a title set
+        // here propagates to the *board window* and renames it (#263).
+        .searchable(text: $archive.query, prompt: "Search finished work")
         // Keyed on everything the answer depends on, not just the search term.
         //
         // - `selectedRepoID`, because `archivePage` reads it: the picker moving
@@ -202,12 +174,12 @@ public struct ArchiveView: View {
         //   screen looking like the delete had failed, and every later page was
         //   off by one. It also self-heals the launch case: the store opens,
         //   the count goes 0 → N, and the read that was too early runs again.
-        .task(id: ArchiveQuery(search: query, repoID: model.selectedRepoID, cardCount: model.cards.count)) {
+        .task(id: reader.query(repoID: model.selectedRepoID, cardCount: model.cards.count)) {
             // A keystroke should not cost a query. Cancellation does the rest:
             // `.task(id:)` tears the old one down when the key changes again.
             try? await Task.sleep(for: .milliseconds(200))
             guard !Task.isCancelled else { return }
-            await reload()
+            await reader.reload(from: model.archivePage(search:limit:offset:))
         }
     }
 
@@ -216,10 +188,12 @@ public struct ArchiveView: View {
     /// second would read as the archive being broken.
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(state.search.isEmpty ? "Nothing has reached Done yet." : "No finished card matches “\(state.search)”.")
+            Text(reader.state.search.isEmpty
+                ? "Nothing has reached Done yet."
+                : "No finished card matches “\(reader.state.search)”.")
                 .font(Type.prose)
                 .foregroundStyle(.secondary)
-            if !state.search.isEmpty {
+            if !reader.state.search.isEmpty {
                 Text("Search covers the title, the body, and the issue or pull request number.")
                     .font(Type.prose)
                     .foregroundStyle(.tertiary)
@@ -230,69 +204,20 @@ public struct ArchiveView: View {
 
     private var loadMoreButton: some View {
         Button {
-            Task { await loadMore() }
+            Task { await reader.loadMore(from: model.archivePage(search:limit:offset:)) }
         } label: {
             HStack(spacing: 6) {
-                if isLoading {
+                if reader.isLoading {
                     ProgressView().controlSize(.small)
                 }
-                ConsoleLabel(text: isLoading ? "Loading" : "Load more")
-                Fact(text: "\(state.total - state.loaded) left", tint: Palette.quiet, small: true)
+                ConsoleLabel(text: reader.isLoading ? "Loading" : "Load more")
+                Fact(text: "\(reader.state.total - reader.state.loaded) left", tint: Palette.quiet, small: true)
             }
             .contentShape(Rectangle())
             .padding(.top, 6)
         }
         .buttonStyle(.plain)
-        .disabled(isLoading)
+        .disabled(reader.isLoading)
     }
 
-    private var summary: String {
-        state.total == 0
-            ? ""
-            : "\(state.loaded) of \(state.total) shown"
-    }
-
-    /// Starts the filter over: clears the rows and reads the first page.
-    ///
-    /// Bumps the generation *before* clearing, so a page still in flight for
-    /// the previous filter is discarded when it lands instead of being appended
-    /// to a result set it does not belong to.
-    private func reload() async {
-        generation += 1
-        state.setSearch(query)
-        state.clear()
-        await load(generation: generation)
-    }
-
-    /// Reads the next page under the current filter.
-    ///
-    /// `isLoading` guards a double-tap on "Load more" — two loads at the same
-    /// offset would append the same page twice. It deliberately does *not*
-    /// guard a filter change: that is the generation's job, and conflating the
-    /// two is what let a stale page land in a cleared list.
-    private func loadMore() async {
-        guard !isLoading else { return }
-        await load(generation: generation)
-    }
-
-    private func load(generation mine: Int) async {
-        isLoading = true
-        defer { isLoading = false }
-
-        let page = await model.archivePage(
-            search: state.search,
-            limit: ArchiveState.pageSize,
-            offset: state.loaded
-        )
-
-        // A newer filter superseded this read while it was in flight.
-        guard mine == generation else { return }
-        // `nil` is "could not look", not "there is nothing" — leave `hasLoaded`
-        // alone so the window says nothing rather than asserting an empty
-        // archive it never confirmed.
-        guard let page else { return }
-
-        state.append(page.cards, total: page.total)
-        hasLoaded = true
-    }
 }

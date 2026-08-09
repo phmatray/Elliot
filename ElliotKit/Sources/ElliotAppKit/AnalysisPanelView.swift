@@ -106,7 +106,11 @@ struct AnalysisPanelView: View {
                 proposalCount: model.analysis.map { proposed($0).count }
             )
         )
-        .task { past = await model.recentAnalyses() }
+        // Keyed, because without an `id:` this ran once when the panel first
+        // appeared and never again — so *Earlier analyses* listed whatever
+        // repository happened to be picked at that instant, permanently, and
+        // no later change could correct it (#213).
+        .task(id: model.analysisRepoID) { past = await model.recentAnalyses() }
     }
 
     /// The panel's silhouette, used as a background fill and as a border — never
@@ -131,7 +135,7 @@ struct AnalysisPanelView: View {
             if !past.isEmpty, model.analysis == nil {
                 Menu {
                     ForEach(past) { analysis in
-                        Button(label(for: analysis)) { model.openAnalysis(id: analysis.id) }
+                        Button(label(for: analysis)) { model.openAnalysis(analysis) }
                     }
                 } label: {
                     Label("Earlier analyses", systemImage: "clock.arrow.circlepath")
@@ -158,7 +162,17 @@ struct AnalysisPanelView: View {
     }
 
     private var repoName: String { repo?.displayName ?? "…" }
-    private var repo: Repo? { model.repos.first { $0.id == model.selectedRepoID } }
+
+    /// Which repository this panel is about — the header, the run rows, the
+    /// evidence links and the Start button all resolve through here.
+    ///
+    /// ⛔ **Not `selectedRepoID`.** That is the board's toolbar picker, which
+    /// the reader can move while this panel is open, and it says nothing about
+    /// which repository the open analysis read. `AppModel.analysisRepo` answers
+    /// from the session while there is one and from the picker only in setup;
+    /// `AnalysisPanelViewSourceTests` fails if the picker comes back into this
+    /// file (#213).
+    private var repo: Repo? { model.analysisRepo }
 
     /// Says what the analysis looked at and what came back, rather than a date
     /// beside a row of emoji.
@@ -496,7 +510,10 @@ struct AnalysisPanelView: View {
 
             if model.analysis == nil {
                 Button("Start \(model.analysisAngles.count) run\(model.analysisAngles.count == 1 ? "" : "s")") {
-                    guard let repoID = model.selectedRepoID else { return }
+                    // In this branch `model.analysis` is nil, so this *is* the
+                    // picker — read through the one property anyway, so a later
+                    // edit cannot split the answer in two again.
+                    guard let repoID = model.analysisRepoID else { return }
                     Task {
                         await model.startAnalysis(
                             repoID: repoID,
@@ -514,6 +531,16 @@ struct AnalysisPanelView: View {
                 // The claimant here spawns up to eight unattended runs, so it is
                 // the one that must not be reachable by a key pressed anywhere
                 // in the window.
+                //
+                // ⚠️ This ⛔ is about **Start**, not about the panel. The panel
+                // does carry a default action — `ProposalEditor`'s Save, which
+                // commits text the reader typed and is sanctioned by
+                // `DefaultAction.claimants`. CLAUDE.md read this comment as
+                // "the analysis panel carries no `.defaultAction`" and stated it
+                // that way, which was false, and false in the direction that
+                // made the Return problem look already solved. The rule and its
+                // gate now live in `DefaultAction` / `DefaultActionTests`
+                // rather than in a comment two files away from what it governs.
                 .disabled(model.analysisAngles.isEmpty || model.analysisRefusal != nil)
                 // The one genuinely armed control on this screen — it starts N
                 // unattended runs — and it was the only one with no tint, while
@@ -1045,7 +1072,14 @@ struct ProposalEditor: View {
                 Button("Save") {
                     let edited = draft.applied(to: proposal)
                     Task {
-                        await model.updateProposal(edited)
+                        // ⛔ **Closes only when the write landed.** It used to
+                        // close unconditionally, so a failed save dismissed the
+                        // editor exactly like a successful one and the reader's
+                        // next sight was the old text — which reads as the app
+                        // having forgotten rather than as a write having failed
+                        // (#223). The panel's note carries the reason; the
+                        // editor staying open is what makes it findable.
+                        guard await model.updateProposal(edited) == nil else { return }
                         done()
                     }
                 }

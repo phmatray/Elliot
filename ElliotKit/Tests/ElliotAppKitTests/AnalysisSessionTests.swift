@@ -5,6 +5,12 @@ import Testing
 
 @testable import ElliotAppKit
 
+/// One stored analysis. `repoID` is the whole subject of #213, so it and the id
+/// are the only parameters. At file scope because both suites below need it.
+func analysisFixture(repoID: UUID, id: UUID = UUID()) -> Analysis {
+    Analysis(id: id, repoID: repoID, angles: [.bugs], createdAt: Date(timeIntervalSince1970: 0))
+}
+
 @Suite("Analysis session")
 struct AnalysisSessionTests {
     /// An analysis run: `cardID` nil, `kind` `.analyzeRepo`. Built with
@@ -22,12 +28,19 @@ struct AnalysisSessionTests {
         return run
     }
 
-    @Test("Every member but the id has a default, which is what makes a new one free")
+    @Test("Every state member has a default, which is what makes a new one free")
     func defaults() {
-        // AC 4 rests on this: `openAnalysis` names only the id, so a member
-        // added later arrives at its default instead of costing a line in
-        // `openAnalysis` and another in `closeAnalysis`.
-        let session = AnalysisSession(id: UUID())
+        // AC 4 rests on this: `openAnalysis` names only what a session cannot
+        // be built without, so a member added later arrives at its default
+        // instead of costing a line in `openAnalysis` and another in
+        // `closeAnalysis`.
+        //
+        // ⚠️ `repoID` is the deliberate second exception, beside `id`, and the
+        // rule above is why: it is *identity*, not state. A default for it
+        // would be a default answer to "which repository is this analysis
+        // about" — the exact question whose absence sent the panel to the
+        // board's picker (#213).
+        let session = AnalysisSession(id: UUID(), repoID: UUID())
         #expect(session.runs.isEmpty)
         #expect(session.proposals.isEmpty)
         #expect(session.note == nil)
@@ -37,20 +50,20 @@ struct AnalysisSessionTests {
     @Test("Rows are accepted only by the analysis they were read for")
     func acceptsOnlyItsOwnRows() {
         let id = UUID()
-        let session = AnalysisSession(id: id)
+        let session = AnalysisSession(id: id, repoID: UUID())
         #expect(AnalysisSession.accepts(session, rowsFor: id))
         // Closed while the read was in flight.
         #expect(!AnalysisSession.accepts(nil, rowsFor: id))
         // Replaced while the read was in flight — the worse case, because
         // the rows would land in a session that renders them.
-        #expect(!AnalysisSession.accepts(AnalysisSession(id: UUID()), rowsFor: id))
+        #expect(!AnalysisSession.accepts(AnalysisSession(id: UUID(), repoID: UUID()), rowsFor: id))
     }
 
     @Test("A stall marks the named run and leaves the others alone")
     func markStalledIsByID() {
         let target = run()
         let other = run()
-        var session = AnalysisSession(id: UUID(), runs: [target, other])
+        var session = AnalysisSession(id: UUID(), repoID: UUID(), runs: [target, other])
         session.markStalled(target.id)
         #expect(session.runs.first(where: { $0.id == target.id })?.state == .stalled)
         #expect(session.runs.first(where: { $0.id == other.id })?.state == .running)
@@ -93,7 +106,7 @@ struct AppModelAnalysisSessionTests {
         // expectation per member: a list of four would go on passing while a
         // fifth member, added later, survived the close. This cannot.
         let model = model()
-        model.openAnalysis(id: UUID())
+        model.openAnalysis(analysisFixture(repoID: UUID()))
         #expect(model.analysis != nil)
 
         model.closeAnalysis()
@@ -108,12 +121,12 @@ struct AppModelAnalysisSessionTests {
         // start was rendered under the analysis you opened next.
         let model = model()
         let first = UUID()
-        model.openAnalysis(id: first)
+        model.openAnalysis(analysisFixture(repoID: UUID(), id: first))
         model.testOnlySeedAnalysis(runs: [], note: "Accepted 3 stories.")
         #expect(model.analysis?.note != nil)
 
         let second = UUID()
-        model.openAnalysis(id: second)
+        model.openAnalysis(analysisFixture(repoID: UUID(), id: second))
 
         #expect(model.analysis?.id == second)
         #expect(model.analysis?.note == nil)
@@ -134,7 +147,7 @@ struct AppModelAnalysisSessionTests {
             createdAt: Date(timeIntervalSince1970: 0)
         )
         stalling.state = .running
-        model.openAnalysis(id: UUID())
+        model.openAnalysis(analysisFixture(repoID: UUID()))
         model.testOnlySeedAnalysis(runs: [stalling], note: nil)
 
         model.markStalled(runID: stalling.id)
@@ -152,7 +165,7 @@ struct AppModelAnalysisSessionTests {
         // landing while eight lenses were still reading.
         let model = model()
         let id = UUID()
-        model.openAnalysis(id: id)
+        model.openAnalysis(analysisFixture(repoID: UUID(), id: id))
         model.showingAnalysisPanel = true
         #expect(model.analysis?.id == id)
 
@@ -245,5 +258,138 @@ struct AppModelAnalysisSessionTests {
         model.panelSpans = PanelLayout.spanChoices.narrow
         model.analysisSpans = PanelLayout.spanChoices.wide
         #expect(model.panelSpans == PanelLayout.spanChoices.narrow)
+    }
+}
+
+// MARK: - Which repository the panel is about (#213)
+
+/// The panel had one expression for its subject and it was the board's toolbar
+/// picker, which the reader can move while an analysis is open. The header then
+/// named one repository while the proposals came from another, and every
+/// evidence chip kept its verified seal while aiming its click at a different
+/// checkout — the family of defect this project has now written down six times:
+/// **a mechanism that silently substitutes different behaviour instead of
+/// erroring.**
+@MainActor
+@Suite("The analysis panel's repository")
+struct AnalysisRepoScopeTests {
+    private func repo(_ name: String) -> Repo {
+        Repo(path: "/tmp/\(name)", nameWithOwner: "o/\(name)", displayName: name)
+    }
+
+    private func model(_ repos: [Repo]) -> AppModel {
+        let model = AppModel()
+        model.testOnlySeed(repos: repos, cards: [])
+        return model
+    }
+
+    // MARK: - Criterion 4: with nothing open, the picker is the subject
+
+    @Test("In setup the panel is about whatever the board is filtered by")
+    func setupFollowsThePicker() {
+        let a = repo("alpha")
+        let b = repo("beta")
+        let model = model([a, b])
+
+        model.selectedRepoID = a.id
+        #expect(model.analysisRepoID == a.id)
+        #expect(model.analysisRepo?.displayName == "alpha")
+
+        // And it *keeps* following it — this is the half that must stay live,
+        // because in setup the picker is what Start will target.
+        model.selectedRepoID = b.id
+        #expect(model.analysisRepo?.displayName == "beta")
+
+        // "All repositories" is a legitimate state: nothing is picked, nothing
+        // is resolved, and `analysisRefusal` is what explains it.
+        model.selectedRepoID = nil
+        #expect(model.analysisRepoID == nil)
+        #expect(model.analysisRepo == nil)
+    }
+
+    // MARK: - Criteria 1 and 2: once open, the analysis is the subject
+
+    @Test("An open analysis is about its own repository, whatever the picker says")
+    func anOpenSessionOwnsTheSubject() {
+        let a = repo("alpha")
+        let b = repo("beta")
+        let model = model([a, b])
+        model.selectedRepoID = b.id
+
+        model.openAnalysis(analysisFixture(repoID: a.id))
+
+        #expect(
+            model.analysisRepoID == a.id,
+            """
+            the panel is showing an analysis of alpha while the board is filtered to beta, and it \
+            resolved to \(model.analysisRepo?.displayName ?? "nothing") — the header, the run rows \
+            and every evidence link read through this
+            """
+        )
+        #expect(model.analysisRepo?.displayName == "alpha")
+    }
+
+    /// Criterion 2 stated as the **act**, not as a state: the reader moves the
+    /// picker with the panel open, which is the gesture that produced the bug.
+    @Test("Moving the picker under an open analysis changes nothing in the panel")
+    func movingThePickerDoesNotReachTheSession() {
+        let a = repo("alpha")
+        let b = repo("beta")
+        let model = model([a, b])
+        model.selectedRepoID = a.id
+        model.openAnalysis(analysisFixture(repoID: a.id))
+
+        model.selectedRepoID = b.id
+        #expect(model.analysisRepoID == a.id)
+
+        model.selectedRepoID = nil  // "All repositories" — the same claim
+        #expect(model.analysisRepoID == a.id)
+
+        // Finishing hands the subject back to the picker, which is criterion 4
+        // reached by the route a reader actually takes.
+        model.selectedRepoID = b.id
+        model.closeAnalysis()
+        #expect(model.analysisRepoID == b.id)
+    }
+
+    // MARK: - The forgotten repository
+
+    @Test("An analysis of a repository that is gone resolves to nothing, not to the picked one")
+    func aForgottenRepositoryDoesNotFallThrough() {
+        let b = repo("beta")
+        let model = model([b])
+        model.selectedRepoID = b.id
+
+        let vanished = UUID()
+        model.openAnalysis(analysisFixture(repoID: vanished))
+
+        #expect(model.analysisRepoID == vanished)
+        #expect(
+            model.analysisRepo == nil,
+            """
+            the analysis's repository is no longer registered and the panel resolved to \
+            \(model.analysisRepo?.displayName ?? "nil") — falling through to the picked repository \
+            here is the defect, not a graceful default: the header would name it and every \
+            evidence chip would open files inside it
+            """
+        )
+    }
+
+    // MARK: - The refusal deliberately stays on the picker
+
+    @Test("The Start refusal still speaks for the picked repository, not for an open analysis")
+    func theRefusalIsUnaffected() {
+        let healthy = repo("healthy")
+        let off = Repo(
+            path: "/tmp/off", nameWithOwner: "o/off", displayName: "off", isEnabled: false)
+        let model = model([healthy, off])
+
+        // A session open on a healthy repository must not make the refusal go
+        // quiet about the disabled one Start would actually target.
+        model.selectedRepoID = off.id
+        model.openAnalysis(analysisFixture(repoID: healthy.id))
+
+        #expect(model.analysisRepoID == healthy.id)
+        #expect(model.analysisRefusal == Consequence.reason(.repoDisabled))
     }
 }

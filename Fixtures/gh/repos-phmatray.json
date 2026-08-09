@@ -4,8 +4,12 @@
       "name": "dev"
     },
     "isArchived": false,
+    "isEmpty": false,
     "isFork": false,
     "nameWithOwner": "phmatray/Koine",
+    "primaryLanguage": {
+      "name": "C#"
+    },
     "url": "https://github.com/phmatray/Koine",
     "visibility": "PRIVATE"
   }

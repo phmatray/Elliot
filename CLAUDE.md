@@ -328,12 +328,31 @@ family *Things that bite* catalogues below, and like the other five it never say
 prints the resolved path (`/opt/homebrew/bin/gh — gh version …`, never `/tmp/shim/gh`) and *Login shell
 environment* prints `Captured via /bin/zsh -lic — 47 PATH entries` — or `.warn`s *"Could not read the
 login shell"*, which is the one case where the shim really is stripped, because both `-lic` and `-lc`
-failed and `capture()` fell back to a built-in `PATH`. **Instead:** from a test, point
-`ToolConfig.ghPath` at `Scripts/fake-gh.sh` — the seam *Testing discipline* describes below, no
-production change; from a launched app, cause a *genuine* failure, e.g. an owner handle that does not
-exist (`gh repo list phmatray-does-not-exist-9f3a` → *"the owner handle … was not recognized as either
-a GitHub user or an organization"*, exit 1), which is what #183 did and is stronger evidence than a
-simulated one.
+failed and `capture()` fell back to a built-in `PATH`.
+
+✅ **Since #238 there is a mechanism that works, and it is the first thing to reach for:**
+
+```bash
+open -n --env ELLIOT_HOME=/tmp/elliot-check --env ELLIOT_GH_PATH=/tmp/shim/gh dist/Elliot.app
+```
+
+`ELLIOT_<TOOL>_PATH` — `ELLIOT_GH_PATH`, `ELLIOT_CLAUDE_PATH`, `ELLIOT_GIT_PATH`, and any fourth tool
+for free, since the name is derived rather than listed. It is read *ahead* of the captured `PATH`, so
+it cannot be out-ranked the way a prepended directory is, and Preflight's row says `— set by
+ELLIOT_GH_PATH` so an override never changes which binary runs without the screen saying so.
+
+⛔ **An override that names something unrunnable is a Preflight failure, not a fall-back.** That is the
+whole point of the case existing: `ToolLocator.find` used to fall through to `PATH`, so "I told it
+which `gh` to use and it quietly ran a different one" was the design. Measured while fixing it — with
+the fall-through restored, an override of `/tmp/definitely-not-here-9f3a` resolved to
+`/opt/homebrew/bin/gh`, a different binary, reporting `foundVia: "PATH (/bin/zsh -lic)"` and no error
+anywhere.
+
+The older advice still holds where it is stronger: from a test, point `ToolConfig.ghPath` at
+`Scripts/fake-gh.sh` — the seam *Testing discipline* describes below, no production change; and to see
+a real failure rather than a simulated one, cause a genuine one (`gh repo list
+phmatray-does-not-exist-9f3a` → *"the owner handle … was not recognized as either a GitHub user or an
+organization"*, exit 1), which is what #183 did.
 
 **Since #155 the *agent* can look too: `board_screenshot`.** Elliot renders its own window with
 `NSView.cacheDisplay` and hands back a PNG as an MCP image block, so no permission is involved and
@@ -420,29 +439,43 @@ body corrected it and CLAUDE.md never caught up. The listing settles it: the sam
 launch, is showing a 900×700 window, so nothing is clamping the app's widths. Only the board is parked
 in the strip, because the app is not frontmost. Nothing to fix.
 
-⚠️ **An empty accessibility tree is not an empty window.** Reading the tree needs the automation driver
-to hold macOS Accessibility permission; without it every window of every app returns zero elements and
-a `degraded` flag, which reads exactly like "the window has nothing in it" — the same false negative,
-one layer down. Before believing a blank tree, snapshot a known-good app (Finder will do) as a control.
-If that is blank too, the finding is about your permissions, not about the change under review.
+⚠️ **An empty accessibility tree is not an empty window.** Reading the tree needs macOS Accessibility,
+held by whichever process is *responsible* for the reader (see the next section — it is not always the
+tool you typed); without it every window of every app returns zero elements and a `degraded` flag,
+which reads exactly like "the window has nothing in it" — the same false negative, one layer down.
+Before believing a blank tree, snapshot a known-good app (Finder will do) as a control. If that is
+blank too, the finding is about your permissions, not about the change under review.
 
-**Looking and touching are two different grants, and only one of them is usually on.** Check before
-planning a verification pass, because the answer decides what the pass can even ask:
+**Looking and touching are two different grants, and neither belongs to a *tool*.** macOS attributes
+Accessibility and Screen Recording to a **responsible process** — the app answerable for whatever is
+asking. So the `cua-driver` daemon, a shell you opened in your terminal, and a shell an agent run
+inherited from Elliot are three different subjects that can hold three different answers, and none of
+them is "this machine". `cua-driver` says as much in its own reply, which is the tell that this is
+the documented model rather than a quirk of one tool:
 
 ```bash
-cua-driver permissions status --json    # {"accessibility": false, "screen_recording": false} today
+cua-driver permissions status --json
+# {"accessibility": false, "screen_recording": false,
+#  "source": {"bundle_id": "com.trycua.driver", "responsible_ppid": 1,
+#             "note": "These booleans reflect the CuaDriver daemon's own TCC identity …"}}
 ```
 
-- **Screen Recording** buys *observation*: `list_windows` (titles, sizes, `is_on_screen`) and a real screenshot of any window. That alone settles "did it open", "how big", "does it render", "is there exactly one".
+- **Screen Recording** buys *observation*: window **titles**, and a real screenshot of a window or the display.
 - **Accessibility** buys *actuation* — and also the AX tree. Synthetic clicks and key presses are posted to another process's event queue, which macOS gates behind this grant.
 
-⛔ **Without Accessibility, a click or a keystroke fails silently and looks like a working no-op.**
-Measured on #48: `press_key` returns `"effect": "unverifiable"` with
-`"escalation": {"reason": "delivery_failed"}`, `click` returns `"effect": "unverifiable"` — and the
-screenshot afterwards is byte-for-byte the same board. Nothing errors. Read that as "the driver could
-not act", never as "the app ignored the input" — the third member of the same false-negative family as
-the two above. Anything needing a click or a key is **not verifiable** until someone runs
-`cua-driver permissions grant` and ticks the box.
+⛔ **So "can this machine observe the UI" is not a question with an answer.** Ask it of an identity —
+and ask it with the two calls that answer directly. Both are instant, neither prompts, and neither
+touches another app:
+
+```bash
+cat > /tmp/grants.swift <<'EOF'
+import ApplicationServices
+import CoreGraphics
+print("accessibility   ->", AXIsProcessTrusted())
+print("screenRecording ->", CGPreflightScreenCaptureAccess())
+EOF
+swift /tmp/grants.swift        # -> false, false  (2026-08-07, from an Elliot-spawned agent shell)
+```
 
 ⚠️ **As of today the driver holds neither grant** — `accessibility: false` *and*
 `screen_recording: false`, read against the daemon's own TCC identity `com.trycua.driver`, which is
@@ -455,11 +488,135 @@ caveat it carried was true and beside the point: a non-frontmost window parks in
 strip at ~143×160 with nothing in it readable as text. See the probe table further down for what an
 agent can and cannot do, and reach for `board_screenshot` instead.
 
-Recognise the shape rather than the tool, because it has now bitten this project four times: **a
-permission that silently changes behaviour instead of erroring.** A blank accessibility tree that
-reads as an empty window; a click that reports `unverifiable` rather than failing; a screen-recording
-grant that is simply absent while the commands still return; and `gh secret list` omitting
-organisation secrets. Not one of the four says *no*.
+⛔ **Probe with those, not by firing a click at the board.** A synthetic click that lands on a card in
+a registered repository *is the act of execution* — it can start an unattended `claude -p` at
+`bypassPermissions` — so "just try it and see" is the one probe that can do real work by accident.
+The table below records what each channel *answered*; it is a reference, not a script to run top to
+bottom against your everyday board.
+
+Then, if you want to know *whose* grants those are, walk your ancestry — the last entry is the app
+they are read against:
+
+```bash
+P=$PPID; while [ -n "$P" ] && [ "$P" -gt 1 ] 2>/dev/null; do ps -o pid=,comm= -p "$P" || break; P=$(ps -o ppid= -p "$P" | tr -d ' '); done
+```
+
+⚠️ **An empty walk is an answer, not a failure**: a process started by launchd has no ancestor to
+name and is its own responsible process — which is exactly what `cua-driver` reports about itself
+above (`"responsible_ppid": 1`). The walk names an inherited identity; it cannot name a self-owned one.
+
+Measured 2026-08-07 from a Claude Code session whose walk came back
+`zsh ← claude ← Elliot.app/Contents/MacOS/Elliot` — an agent run **Elliot itself spawned**, so
+Elliot's grants are the ones in force, and Elliot holds neither:
+
+| What you want | Command | Answer under that identity |
+|---|---|---|
+| activate an app | `set frontmost of (first process whose unix id is <pid>) to true` | **works** — exit 0, and a readback confirms it really activated |
+| name a process | `get name of first process whose unix id is <pid>` | **works** — and is **no evidence at all** about Accessibility |
+| read a UI element | `get {position, size} of window 1` | ⛔ `-1719` *not allowed assistive access* |
+| enumerate menus | `get name of every menu bar item of menu bar 1` | ⛔ `-1719` *not allowed assistive access* |
+| synthetic click | `click at {x, y}` | ⛔ `-25211` *not allowed assistive access* |
+| synthetic key press | `keystroke "a"` · `key code 53` | ⛔ `1002` *not allowed to send keystrokes* |
+| a **real** mouse click | `swift Scripts/realclick.swift <x> <y>` | **exit 0, in silence — and it did not arrive** |
+| window geometry | `CGWindowListCopyWindowInfo` | geometry **yes**; every `title` comes back **empty** |
+| capture a window | `screencapture -o -l<id>` | ⛔ `could not create image from window`, exit 1 |
+| capture the display | `screencapture -x` | ⛔ `could not create image from display`, exit 1 |
+| photograph Elliot | `board_screenshot` over MCP | **works** — 1510×925, `source: live`, no grant involved |
+
+⚠️ **Two rows of that table are the trap, and one of them nearly wrote itself into this file.**
+`get name of … process` answered `Elliot` cleanly, which reads exactly like Accessibility being on;
+process enumeration simply is not gated, and every *UI* read one line later returned `-1719`. Likewise
+`set frontmost` succeeds, so the committed recipe below **starts working and then fails**. A channel
+that answers is evidence about that channel and nothing else — probe the capability you actually need.
+
+⚠️ **A key press that does not arrive means "could not act", never "the app ignored it".** Ungranted
+it at least says so — `1002`, its own error code, distinct from the `-1719`/`-25211` pair, so a
+keyboard failure is diagnosable rather than mysterious. That is the exception, and `realclick.swift`
+was the rule until #161: it posted a `CGEvent` and exited **0 having delivered nothing**, because
+`CGEventPost` returns no receipt. It now refuses by name (`AXIsProcessTrusted`, exit 77). The blank
+`title` fields are the same silence one layer over — geometry arrives, names are withheld.
+
+⛔ **And the grant is not the end of it: keys have been measured to go missing from a shell that
+*held* both grants.** #161's pass, same machine, same day, from a different identity: synthetic
+**clicks** landed and each had its effect, while ⌘F-then-type left a search field on its placeholder
+and Escape did not deselect — with the app frontmost by pid. So clicks working is **no evidence** that
+keys do. This matters for `Scripts/probe-deselect.sh`, whose set-up drives `key code 125/124` to pick
+a card: if that returns `exit 3 nothing selected after ↓`, suspect the keystroke before you suspect
+the board. **Establish delivery on the channel you are about to rely on** — a claim about a gesture
+built on an event that never arrived is a claim about your permissions.
+
+✅ **What still works with neither grant is `board_screenshot` (#155)**, because Elliot renders its own
+hierarchy in-process and TCC is never consulted. In the same minute that `screencapture -o -l5600`
+refused, `board_screenshot` returned that very window — id `5600`, 1510×925 both times — at full size,
+`source: live`. Reach for it first and treat the shell recipes as the fallback. Read its
+`not_included` before concluding something is missing — and note its own aiming hazard, recorded at
+length below: the helper resolves its socket through `ELLIOT_HOME`, so one registered against the
+default home photographs **your everyday board** while you review a worktree branch, and the picture
+looks perfectly correct. Free of TCC is not free of targeting.
+
+**Window ids and geometry survive without Screen Recording too — only the names are withheld**, which
+is a second grant-independent way to look. `Scripts/list-windows.swift` is that enumeration,
+committed rather than retyped, with the three corrections below in its own header:
+
+```bash
+ps -eo pid,command | grep 'MacOS/Elliot$' | grep -v grep   # the pid you want
+swift Scripts/list-windows.swift <pid>                     # omit <pid> for every app's windows
+```
+
+⛔ **Use that `ps` line, not `pgrep -f` — and the reason is this section's own thesis.** Measured
+2026-08-07 from an Elliot-spawned shell, `pgrep -f 'Elliot.app/Contents/MacOS/Elliot'` returns
+**nothing** while `pgrep -a -f …` returns `45434`. It is *not* that GUI apps are invisible —
+`pgrep -f 'Arc.app/Contents/MacOS/Arc'` finds Arc from the same shell. `man pgrep`: `-a` "Include
+process ancestors in the match list. By default, the current pgrep or pkill process and all of its
+ancestors are excluded." **Elliot is excluded because Elliot is your ancestor** — the same fact that
+decides your grants also hides the app from your process search, and it answers with the wrong pids
+rather than failing. (An earlier draft of this very paragraph blamed LaunchServices; that was wrong,
+and code review caught it.)
+
+⛔ **Do not filter on `is_on_screen`** — that is the trap recorded above, and it is why "the window
+didn't open" got written down nine times. ⚠️ **And do not read an empty `title` as an unnamed
+window**: without Screen Recording every name is blank while the geometry is perfect — a list that
+looks complete and is wrong in one column. The script says so itself rather than letting you misread
+it. **Disambiguate by size**, since the designed sizes are distinct: board ~1510×925, Preflight
+820×720, Repositories 900×700, and a 1728×33 row is a titlebar shim rather than a window.
+
+⚠️ **A window id is not yet a readable picture.** If you do hold Screen Recording and feed one of
+these ids to `screencapture -l`, a window whose app is not frontmost is parked in the Stage Manager
+strip at ~143×160 and **nothing in it can be read as text** — which renders as "the board came back
+143×164", the #74 misreading the paragraph above exists to correct. Activate the pid first, or use
+`board_screenshot`, which draws the window at its designed size regardless.
+
+⚠️ **The same commands answered differently earlier the same day, and why is UNMEASURED.** #161 found
+menu enumeration, window capture and clicks all working; hours later, every one of them refused. Two
+explanations fit and neither has been tested: a different responsible process (that pass recorded no
+ancestry walk — the walk is what #161 added), or **the grant being destroyed by a rebuild**, since
+`Scripts/build-app.sh` does `rm -rf "$APP"` then `codesign --force --sign -`, and an ad-hoc signature
+over a deleted-and-recreated bundle is a new TCC subject. Do not repeat either as the cause: writing
+an inferred mechanism down as a measured one is the mistake this whole section is about, and it has
+already cost this file one wrong `pgrep` explanation and one wrong #140 diagnosis. **Re-run the two
+preflights rather than trusting this table**; what is durable is the method, not the booleans.
+
+**To get a grant, grant it to the identity the walk named** — `cua-driver permissions grant` only ever
+settles the daemon, so it does nothing for an agent shell whose ancestor is Elliot; that one needs
+*Elliot.app* ticked under System Settings ▸ Privacy & Security ▸ Accessibility (and Screen Recording
+for capture). Two things make that less simple than it sounds:
+
+- ⛔ **It grants far more than a verification pass.** Elliot spawns unattended `claude -p` runs at `bypassPermissions`, and each inherits Elliot as its responsible process — so ticking that box lets **every** future run post synthetic clicks and keystrokes into any application and read any app's accessibility tree. That is a standing capability bought for one afternoon of looking; decide it deliberately, and prefer `board_screenshot` when it will do.
+- ⚠️ **It expires the next time you build.** `build-app.sh` deletes and re-ad-hoc-signs the bundle, so the grant you just ticked is dropped by the very command this file tells you to run before a look-at-the-app pass — silently, back to `-1719`. And *three* Elliots are routinely on disk at different worktree paths; each is its own TCC subject, so tick the bundle you are actually going to launch.
+
+Until then, anything needing a click, a key or a `screencapture` is **not verifiable from here** —
+a reason to reach for `board_screenshot` and the structural tests, not a reason to assert the change
+works.
+
+Recognise the shape rather than the tool, because it keeps recurring in this project: **a permission
+that silently changes behaviour instead of erroring.** A blank accessibility tree that reads as an
+empty window; a `cua-driver` click reporting `unverifiable` rather than failing (#48: `press_key`
+returns `"escalation": {"reason": "delivery_failed"}` and the screenshot afterwards is byte-for-byte
+the same board); a screen-recording grant that is simply absent while the commands still return;
+`gh secret list` omitting organisation secrets; an accessibility press wearing the name `click`; and
+now `CGEventPost` exiting 0 on an event nobody received, next to window titles blanked in a list that
+otherwise looks complete. Not one of them says *no*. The count is a floor, not a tally — do not spend
+a merge reconciling it.
 
 **Seeding the scratch store: the ids are `UUID`s, and a wrong one wedges the board silently.**
 `Repo.id` and `Card.id` are `UUID`, not free text. Insert `'sandbox'` as a repo id and the app starts,
@@ -479,11 +636,32 @@ then render "Repository blocked — see Preflight", which is the state you want 
 because no transition can spawn an agent from it. Leave **To Do** and **In Progress** empty if you
 want to exercise the "arrows skip empty columns" rule.
 
+⛔ **That sentence was false from the day it was written until #249, and it is the most expensive
+false claim this file has carried** — it invited a verification pass to leave an armed board on
+screen. `evaluateMove` consulted `from != to`, `allowSideEffects`, `repoIsEnabled` and `activeRunID`;
+`isBlocking` was read by four *views* and by no rule, so a card in a repository drawn as blocked
+dragged perfectly well and spawned `claude -p` at `bypassPermissions` inside the broken checkout.
+Two other documents asserted the same gate — `PreflightService.isBlocking`'s doc comment ("whether a
+repo's cards can be dragged at all") and `labelsCheck`, which was made a *warning* rather than a
+failure on the strength of it. **Three assertions, no implementation.**
+
+It is true now: `Repo.preflight` carries the verdict, `BoardService.proposeMove` reads it off the row
+it already loads, and `evaluateMove` refuses with `MoveBlock.repoBlocked`. Held by `BlockedRepoTests`,
+verified by deleting the guard and watching six checks go red.
+
+⚠️ **What is still *not* true is the unmeasured case.** `PreflightState.notChecked` does **not** block,
+deliberately — blocking would freeze the board for the first seconds of every launch, and permanently
+whenever a rate-limited `gh label list` stops the sweep finishing. So a seeded board is safe only
+**once its repositories have actually been swept**; between launch and the first sweep every
+repository is `notChecked` and every transition is live. The lesson generalises past this bug: a
+two-valued answer to a three-valued question is how the gap hid for as long as it did —
+`isBlocking([])` is `false`, so "nobody looked" and "it passed" were the same value.
+
 ### Board transitions
 
 | From → To | What happens |
 |---|---|
-| Backlog → To Do | `/ai-migration-kit:create-issue <story>` — fills in the issue number |
+| Backlog → To Do | `/ai-migration-kit:create-issue <story>` (+ repeatable `--label`) — fills in the issue number |
 | To Do → In Progress | `/ai-migration-kit:implement-issue <n>` — fills in the PR number and branch |
 | In Progress → In Review | *no skill* — a system move, when `PRWatcher` sees the PR go ready |
 | In Review → Done | `/ai-migration-kit:merge-pr <pr>` (+ repeatable `--follow-up`) |
@@ -492,6 +670,34 @@ want to exercise the "arrows skip empty columns" rule.
 The backlog holds **user stories** (`role` / `want` / `benefit` + acceptance criteria as separate
 fields), not loose prose. A card is editable up to the moment it carries an issue number; after that
 `updateCard` refuses rather than letting card and issue drift.
+
+**A card also names the GitHub labels its issue should carry** (#171), chosen from the repository's
+own list through `gh label list`, pre-filled from the analysis lens for the three that honestly imply
+one (`bugs → bug`, `features → enhancement`, `docsAndDX → documentation`; the other five suggest
+nothing rather than guessing). Empty is the common path and emits no flag at all — pinned byte for
+byte, because the whole of `create-issue`'s existing behaviour rides on it.
+
+⛔ **`--label` is an instruction to a reader, not a flag to a parser — do not describe it as one.**
+Measured against ai-migration-kit 1.9.0 while landing #171: `merge-pr`'s SKILL.md carries an
+*Arguments* section naming `--follow-up "<idea>"` as optional and repeatable, and **`create-issue`
+carries no such section at all** — it says only *"pull the idea(s) from the user's request"* and then
+**chooses labels itself**, reading the live set and picking one per axis from the profile's taxonomy.
+Every `--label` inside that skill is its own `gh issue create` call, not an input it parses. So an
+agent will very likely honour the suffix and nothing obliges it to, which is exactly why the card is
+the record of the *intent* and `gh` remains the record of the *outcome*. The durable fix is an
+*Arguments* section in `create-issue`, in another repository; a second channel invented here would
+just be a second way for the two to disagree.
+
+⚠️ **A non-optional field added to `Card` breaks `openReadOnly`'s whole reason for existing, and the
+compiler will not say so.** Swift's synthesised decoder **ignores a property's default value** — it
+emits `decode(_:forKey:)`, not `decodeIfPresent` — so `public var labels: [String] = []` throws
+`keyNotFound` on every card in a database that predates the column. `BoardStore.openReadOnly`
+*deliberately* accepts a database older than the code reading it, so the MCP helper keeps answering
+between a new bundle landing and the app next launching, and that tolerance is written for added
+columns *which are supposed to read as absent*. `OlderDatabaseTests` caught it on the first full run;
+the fix is `@DefaultsToEmpty` (`ElliotModel/DefaultsToEmpty.swift`), a wrapper whose one job is to
+turn the synthesised call into `decodeIfPresent`. **A new non-optional field on a persisted model
+needs it, or an `Optional`.**
 
 ### The two panels
 
@@ -526,10 +732,27 @@ and the value the Start button is disabled by. It used to be a `.disabled(…)` 
 #151 removed that (a toggle you cannot switch off is worse than one that opens onto an explanation)
 and very nearly removed the gate with it.
 
-⛔ **The analysis panel carries no `.keyboardShortcut(.defaultAction)`.** It did as a `Window` scene,
-where Return was scoped to it. As a sibling in the board window it would share Return with
-`DetailPanelView`'s Save, with nothing in the code deciding between them — and the claimant here
+⛔ **The analysis panel's *Start* button carries no `.keyboardShortcut(.defaultAction)`.** It did as a
+`Window` scene, where Return was scoped to it. As a sibling in the board window it would share Return
+with `DetailPanelView`'s Save, with nothing in the code deciding between them — and the claimant here
 spawns up to eight unattended runs.
+
+⚠️ **This said "the analysis *panel* carries no `.defaultAction`" until #247, and that was false** —
+`ProposalEditor`'s Save has one, and always did. The error mattered in the direction it pointed: it
+made the Return problem read as already solved, while two claimants that **co-reside by design** sat
+on the same card. `PanelLayout.headerRegions` returns `[.mergeConfirmation]` and only *then* runs
+`guard !isEditing else { return regions }`, so on a card imported from a pull request that closes no
+issue — `issueNumber == nil` shows "Edit story", `prNumber != nil` arms a merge — Return resolved
+between saving an edit and **merging to a default branch on github.com**. `swift test` cannot press a
+key, so nothing failed and nothing could have.
+
+Since #247 the rule lives in code with a gate: **`.keyboardShortcut(.defaultAction)` may be claimed
+only by a control that commits text the reader has typed.** `DefaultAction` (`ElliotAppKit`) lists the
+three sanctioned claimants and the two deliberately denied; `DefaultActionTests` reads the source,
+attributes every claim to its button's label, and fails naming the file when one is unsanctioned,
+miscounted, in the wrong file, or unattributable. `Merge PR` lost its claim outright rather than being
+scoped better — the one act that cannot be taken back must be reached by pressing it. Verified by
+reintroducing the defect and watching all four checks go red.
 
 Opening the analysis panel scrolls the board to its leading edge
 (`BoardFraming.offsetX(from:boardWidth:)`), because a panel the reader just asked for that lands
@@ -681,6 +904,19 @@ what got written here for one commit and what code review caught. `screencapture
 `-l<windowid> capture this windowsid` plainly. **An option that needs an argument reports its absence
 the same way an unknown option does**; check `--help` before concluding a flag does not exist.
 
+⚠️ **The recipe's *first* line works either way, which is what makes the rest look like an app
+problem.** `set frontmost` is not gated, so it succeeds under any identity while the two lines after
+it fail — measured 2026-08-07 from an Elliot-spawned agent shell, where both were refused. Check
+`AXIsProcessTrusted()` / `CGPreflightScreenCaptureAccess()` before reading a failure here as a fact
+about the app.
+
+⛔ **And the two channels fail separately, so a landed click is no evidence a keystroke will arrive.**
+In the one pass measured from a shell holding **both** grants, clicks landed and keystrokes did not
+arrive at all — ⌘F-then-type left the field on its placeholder, and Escape did not deselect, with the
+app frontmost by pid. So do not assume `key code 53` is Escape just because the click worked: verify
+the channel you actually depend on. (And read the ⛔ above on `click at {x, y}` being an accessibility
+**press** rather than a mouse click — that is a third way this recipe misleads.)
+
 One more false negative to know: `entire contents` of the window can return **empty** while
 `count of UI elements` returns 6. An empty AX dump is not an empty window.
 
@@ -695,6 +931,59 @@ Claude Code handles it, aborts the turn, kills its Bash process tree, runs Sessi
 
 Runs default to `--permission-mode bypassPermissions`; `permissionMode` is a per-repo column if you want
 to tighten one.
+
+### Artefact retention
+
+`runs/`, `screenshots/` and `analyses/` are bounded since #167, by one pure rule applied once per
+launch. **Keep everything younger than 14 days; past that keep newest-first until 512 MB per
+directory and delete the rest** (`ArtifactRetention`, `ElliotModel`). The ceiling budgets the
+*remainder past the horizon*, not the directory total — young files are kept unconditionally and are
+not counted against it, so the honest bound is "a fortnight of writing, plus 512 MB".
+
+`ArtifactSweeper` (`ElliotEngine`, an `actor`) lists, asks and unlinks; it decides nothing.
+`AppModel.start()` runs it in a detached `Task` after the reconciler's sweep — the runs that sweep
+just marked failed are exactly the ones whose logs stop being protected, so reading the table ahead
+of it reads it one state behind.
+
+⛔ **The result is recorded on `artifactSweep`, never written into `status`, and the status bar
+renders a figure from there.** Appending to `status` was the first attempt and it is unfixable by
+placement: the task shares the main actor with `start()`, so it resumes at the next suspension —
+which is `importIfNeeded`'s `await importer.importRepo(repo)`, whose very next statement assigns
+`status`. The sentence was destroyed within milliseconds on every launch that had one, and nothing
+else read the report, so it left no trace. `status` is a single narration owned by whoever spoke
+last; a fact that has to survive needs a field of its own. Code review caught this after the
+placement comment had already claimed to prevent it — **a comment asserting a race is closed is not
+a measurement that it is.**
+
+⛔ **Protection is a string comparison between two paths built by different code, so both sides go
+through `StoreLocation.canonicalPath`.** `FileManager`'s enumerator returns **symlink-resolved** URLs
+and `runLogURL` does not; on macOS `/tmp` is a symlink to `/private/tmp`, and `/tmp/elliot-check` is
+the scratch home this very file recommends. Measured while writing #167: `/var/folders/…` in, `/private/var/folders/…`
+out. Compare raw and the membership test silently stops matching, and the sweep deletes the log of a
+run still in flight — **failing open**, with nothing on screen. Same family as the false negatives
+this file already collects: nothing says *no*.
+
+⛔ **No protected set, no sweep.** The tempting `?? []` on a failed read of the runs table turns "I
+could not find out which runs are live" into "no run is live". A failure to read the board is a
+reason not to touch the disk.
+
+Verified on the shipped build, not inferred: a copy of the real `runs/` (754 files, 73 MB, all
+written within three days) went in and **754 came out** — the intended answer, since a retention rule
+whose first run deletes something gets reverted. Then, on the same binary with **no constant
+patched**, eight aged copies stacked past the ceiling: 6 032 files in, **872 removed**, leaving
+536,375,870 bytes against the 536,870,912 ceiling, and the status bar read `872 pruned`. A clean home
+in the same build shows no such figure at all — both directions of the conditional looked at, because
+a new element in that strip is a layout change and `swift test` cannot see one.
+
+⚠️ Driving the horizon to zero is *not* what proved it deletes; ageing real copies past the shipped
+horizon and ceiling did, which is the stronger claim — a patched binary proves things about a binary
+nobody ships. Note also that the numbers move between runs because the source directory is live: the
+same experiment an hour earlier removed 523 files, because `runs/` had grown from 73.1 to 78.3 MB in
+between. **The invariant to check is remaining ≤ ceiling, never the file count.**
+
+The cut lands mid-copy because the rule cuts at the **file** that would overflow, and the files
+inside one copy share an mtime — which is the path tie-break earning its place on real data rather
+than in a unit test.
 
 ## Testing discipline
 
@@ -794,6 +1083,15 @@ Two invariants carry most of the weight:
   too, a signal after a checkout is ambiguous — wipe first, and only call it the intermittent abort
   once it survives a clean build. Named failing tests after a checkout: same order. Wipe, then look at
   your change.
+
+  ⚠️ **A `git checkout` is not the only trigger — #171 hit it twice in a row with no checkout at
+  all.** Adding an associated value to an existing enum case (`TriggerAction.createIssue` gaining
+  `labels`) produced two consecutive signal 11s with no failing test named, in a worktree whose
+  `.build` had never seen another commit. `rm -rf ElliotKit/.build` cleared it and four samples ran
+  clean. So the rule is about **the shape of a type changing under objects that were not recompiled**,
+  which a checkout is merely the commonest cause of; a same-branch edit to an enum's payload, a
+  struct's stored properties, or a function's signature can do it on its own. The tell is unchanged —
+  a failure that could not have happened — and so is the remedy.
 - **A `ScrollView` that can scroll swallows taps a disabled one passes through.** The board's
   deselect-on-background-click fired by bubbling out of a column's empty space, and that only worked
   while five columns fit the window and scrolling was off. The detail panel widens the row past the
@@ -821,12 +1119,11 @@ Two invariants carry most of the weight:
   that measurement, committed**, and it refuses a click that lands outside the window rather than
   reporting it, because a column scrolled out of view still publishes an off-screen frame.
 
-  The general shape is the one this file already names four times, and this is the fifth: **a
-  mechanism that silently substitutes different behaviour instead of erroring.** A blank AX tree
-  that reads as an empty window; a `cua-driver` click reporting `unverifiable` rather than failing;
-  an absent screen-recording grant while the commands still return; `gh secret list` omitting
-  organisation secrets — and now an accessibility press wearing the name `click`. Not one of the five
-  says *no*. ⚠️ So before concluding that a **pointer** gesture is broken, check what your driver
+  The general shape is the one catalogued under *Looking and touching are two different grants*
+  above — **a mechanism that silently substitutes different behaviour instead of erroring** — and an
+  accessibility press wearing the name `click` is a member of it. (The list lives there; this one
+  used to keep a parallel tally of its own, and the two disagreed.) ⚠️ So before concluding that a
+  **pointer** gesture is broken, check what your driver
   actually posts: `.onTapGesture` is invisible to AX, and the two paths into this app genuinely
   differ (that is the whole point of `CardView`'s `.accessibilityAction`, which exists because the
   tap gesture is unreachable from assistive technology).

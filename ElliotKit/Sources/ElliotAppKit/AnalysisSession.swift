@@ -12,6 +12,31 @@ import Foundation
 /// keep agreeing about.
 public struct AnalysisSession: Sendable {
     public let id: UUID
+
+    /// The repository this analysis read.
+    ///
+    /// Identity, beside `id`, and therefore a `let` with **no default** — the
+    /// one deliberate exception to "every member but the id has a default".
+    /// That rule is about *state* arriving cheaply; a default here would be a
+    /// default answer to the question this member exists to settle.
+    ///
+    /// Its absence was #213. The panel had to ask somewhere else which
+    /// repository it was about, and the only thing to hand was
+    /// ``AppModel/selectedRepoID`` — the board's toolbar picker, which the
+    /// reader can move while the panel is open. The header then named one
+    /// repository while the proposals came from another, and each evidence
+    /// chip kept its verified seal while aiming its click at a different
+    /// checkout, revealing an unrelated file or nothing at all. Nothing on
+    /// screen said which.
+    ///
+    /// ⚠️ This is the *second* time the same axis has been repaired here.
+    /// ``AppModel/startFailure`` is computed rather than stored precisely so a
+    /// failure thrown for repository A stops being rendered once the picker
+    /// moves to B. That fix scoped one **sentence** to its repository and left
+    /// the panel's own subject with the picker; this one puts the subject where
+    /// it belongs, so nothing downstream has to re-derive it.
+    public let repoID: UUID
+
     public var runs: [SkillRun] = []
     public var proposals: [StoryProposal] = []
     /// Whatever the window needs to say about the last action.

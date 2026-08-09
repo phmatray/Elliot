@@ -152,6 +152,81 @@ enum Migrations {
             }
         }
 
+        // v9, additive: the labels a card asks its issue to carry.
+        //
+        // NOT NULL with a `'[]'` default, where v2's `visibility` and v7's
+        // `angle` are both nullable — and the difference is not a style choice.
+        // Those two are `Optional` on `Card`, so a NULL decodes as "nothing was
+        // said". `labels` is a non-optional `[String]`, and Swift's synthesised
+        // decoder does not fall back to a property's default value: a NULL
+        // column would throw `keyNotFound` on **every card written before this
+        // migration**, which presents as a board that opens onto nothing and
+        // blames the store rather than as a migration that went wrong.
+        // `MigrationsTests` inserts a v8 card and reads it back for exactly
+        // that reason.
+        //
+        // Text holding JSON, like `extraAllowedTools` and `permissionDenials`
+        // before it — GRDB encodes a `[String]` that way for free, and a
+        // separate `cardLabel` table would buy ordering and referential
+        // integrity this does not want: the order is the writer's, and the
+        // whole point of the field is that it may name a label the repository
+        // does **not** have.
+        //
+        // No backfill, deliberately, and it is the one place this differs from
+        // v7. The angle could be recovered because `storyProposal` had recorded
+        // it since v4; nothing anywhere has ever recorded which labels an
+        // existing card wanted. Deriving them now — from the card's angle, from
+        // the words in its title — would be the invisible guess this feature
+        // exists to replace, written into the database where nobody would ever
+        // see it happen.
+        migrator.registerMigration("v9_cardLabels") { db in
+            try db.alter(table: "card") { t in
+                t.add(column: "labels", .text).notNull().defaults(to: "[]")
+            }
+        }
+
+        // v10, additive: what Preflight last said about a checkout, on the
+        // registration row.
+        //
+        // ⚠️ **This shipped as `v9_repoPreflight` and moved to v10 at the merge**,
+        // which is the rule this file states rather than an exception to it: two
+        // unmerged branches both claimed v9, and `v9_cardLabels` reached `main`
+        // first (#228). A migration's name is its identity in `grdb_migrations`,
+        // so the one already in the field keeps its number and the unshipped one
+        // moves — renaming `v9_cardLabels` instead would run a second, different
+        // migration on every database that had already seen it. Nothing was in
+        // the field under `v9_repoPreflight`, so moving it costs nothing.
+        //
+        // A measurement stored on a registration is a trade, and it is made
+        // deliberately. The alternative was to hand `BoardService` a Preflight
+        // collaborator, which would put a networked `gh label list` behind every
+        // drag; this way the rule reads a column the funnel already loads, so a
+        // drag, `board_move_card` and `board_next` cannot answer differently.
+        //
+        // **Nullable, with no default**, and both halves are deliberate.
+        //
+        // Nullable because `Repo.preflight` is an `Optional` — and it has to be,
+        // so that `openReadOnly` keeps tolerating a database older than the
+        // helper, where an added column reads as absent. A `NOT NULL` column
+        // under an optional property is a constraint violation waiting for the
+        // first repository registered without a sweep.
+        //
+        // No default of `'passing'`, obviously — but no default of
+        // `'notChecked'` either, because NULL already *is* that answer and two
+        // spellings of one state is how a reader ends up handling only one of
+        // them. `Repo.preflightVerdict` folds NULL into `.notChecked` once.
+        //
+        // What matters is that neither spelling is a pass. Every row predating
+        // this column has genuinely never been swept, and defaulting them to a
+        // pass would be the same lie the change exists to remove:
+        // `isBlocking([])` answering `false` for an unmeasured repository is
+        // what let three documents assert a gate nobody had written.
+        migrator.registerMigration("v10_repoPreflight") { db in
+            try db.alter(table: "repo") { t in
+                t.add(column: "preflight", .text)
+            }
+        }
+
         return migrator
     }
 

@@ -27,6 +27,13 @@ public final class AppModel {
     public private(set) var runsByCard: [UUID: [SkillRun]] = [:]
     public private(set) var globalChecks: [CheckResult] = []
     public private(set) var repoChecks: [UUID: [CheckResult]] = [:]
+
+    /// What the card editor may claim about each repository's labels.
+    ///
+    /// Absent means *nobody has asked yet*, which `labels(for:)` reports as
+    /// `.unavailable` — a third silence that is honestly the same as the second
+    /// one: nothing has been established. The editor asks on open.
+    private var repoLabels: [UUID: RepositoryLabels] = [:]
     public private(set) var status: String = "Starting…"
     public private(set) var isReady = false
     public private(set) var isImporting = false
@@ -105,6 +112,14 @@ public final class AppModel {
     /// sentence beside the board. Zero means every row read, which is why a
     /// healthy board says nothing.
     public private(set) var unreadableRepoCount = 0
+
+    /// What the launch-time artefact sweep removed, once it has finished.
+    ///
+    /// `nil` until then, and that is not the same as `SweepReport()`: "no sweep
+    /// has finished" is a fact about this launch, "a sweep found nothing" is a
+    /// fact about the directories. Only the second is worth rendering, and only
+    /// the second is what `SweepReport.sentence` speaks for.
+    public private(set) var artifactSweep: SweepReport?
 
     /// Which of the board's four screens is the true one.
     ///
@@ -193,6 +208,62 @@ public final class AppModel {
         }
     }
 
+    /// Which screen the console is unfolding above the status bar, and how tall.
+    ///
+    /// One value rather than a face beside a `Bool`, and its transitions live on
+    /// `ConsoleState` rather than here: pressing a door twice is not the same act
+    /// as choosing a screen from a menu, and this model would otherwise decide
+    /// that afresh at each of the call sites below.
+    ///
+    /// ⚠️ **Not persisted, deliberately, and unlike the two panel spans.** A
+    /// board that reopened onto Operations would be reporting on a machine state
+    /// from a previous session, over the columns the reader actually came back
+    /// for. The *height* is a designed preference and will be persisted when
+    /// something exists to set it with; which screen was open is a session.
+    public var console = ConsoleState()
+
+    /// What a **door in the status bar** does.
+    ///
+    /// The figure a reader presses is the thing they are reading, so pressing it
+    /// again unmistakably means "put this away". `ConsoleState.press` holds that
+    /// rule; this is the funnel to it.
+    public func pressConsoleDoor(_ face: ConsoleFace) {
+        console.press(face)
+    }
+
+    /// What a **menu item** does: show this screen, whatever was showing.
+    ///
+    /// Deliberately not ``pressConsoleDoor``. An item named "Operations" that
+    /// closed Operations would do the opposite of what it says on every second
+    /// use, and unlike a door it carries no figure to make the toggle read as
+    /// one.
+    public func showConsoleFace(_ face: ConsoleFace) {
+        console.show(face)
+    }
+
+    /// Folds the console away, keeping the height for next time.
+    ///
+    /// Reached by the header's ✕ and by Escape, whose order is
+    /// `EscapeRoute.next(consoleIsOpen:hasSelectedCard:)` and not this method's
+    /// business.
+    public func closeConsole() {
+        console.close()
+    }
+
+    /// What View ▸ Shorten/Lengthen Console should read right now.
+    ///
+    /// Here for the reason ``panelWidthToggleTitle`` gives: which of the two
+    /// designed heights is the *other* one is a judgement about the designed
+    /// pair, and a menu that made it would be a second place holding it.
+    public var consoleHeightToggleTitle: String {
+        console.height == .tall ? "Shorten Console" : "Lengthen Console"
+    }
+
+    /// Moves the console to the height it is not currently at.
+    public func toggleConsoleHeight() {
+        console.height = console.height.toggled
+    }
+
     /// What View ▸ Narrow/Widen Details should read right now.
     ///
     /// Here rather than in the menu because it is a judgement about which of the
@@ -213,6 +284,18 @@ public final class AppModel {
             ? Preferences.spanChoices.narrow : Preferences.spanChoices.wide
     }
 
+    /// The archive's term, pages and folded days.
+    ///
+    /// On the model rather than in `ArchiveView`, for the two reasons
+    /// ``ArchiveReader`` sets out: the seam between a keystroke and a read had
+    /// no test and **could have none** while the term was `@State` (#230), and a
+    /// view's state dies with the view — which is what a board slot's hide does.
+    ///
+    /// A `let`: `@Observable` tracks through a nested reference fine, but a
+    /// satellite *reassigned* wholesale invalidates every reader of it, and
+    /// nothing here ever wants a second archive.
+    let archive = ArchiveReader()
+
     /// Every reader preference this launch holds, and the single source of the
     /// values the setters above expose one field at a time.
     ///
@@ -225,6 +308,26 @@ public final class AppModel {
     /// lossless.
     private var readerPreferences: Preferences
 
+    /// What the reader has agreed to be interrupted by.
+    ///
+    /// The third reader preference, and it reaches disk exactly like the other
+    /// two: one field of the *held* value, then a save. It used to live in
+    /// `UserDefaults.standard`, which is keyed by bundle identifier and so
+    /// cannot follow `ELLIOT_HOME` — meaning every scratch-home check in this
+    /// project read *and wrote* the operator's real settings (#222).
+    public var notificationPreferences: NotificationPreferences {
+        get { readerPreferences.notifications }
+        set {
+            readerPreferences.notifications = newValue
+            preferences.save(readerPreferences)
+            // The presenter decides whether to post from a value it holds, so it
+            // has to be told. One writer, pushing — rather than the presenter
+            // reaching back for a getter, which is the shape that made this a
+            // `UserDefaults` read in the first place.
+            presenter?.preferences = newValue
+        }
+    }
+
     /// How many board columns wide the analysis panel is.
     ///
     /// The same kind of reader preference ``panelSpans`` is, and deliberately a
@@ -236,7 +339,48 @@ public final class AppModel {
     /// 3 for the same reason `panelSpans` is: the setup screen's lens grid is
     /// two columns, and a proposal row carries a title, a narrative, a
     /// rationale and an evidence strip.
-    public var analysisSpans = 3
+    ///
+    /// **Restored, not reset** (#221): this was an in-memory `= 3`, so half the
+    /// board forgot its width at every launch while the other half remembered.
+    /// Computed over ``readerPreferences`` and saved on write, exactly like
+    /// ``panelSpans`` — the same funnel, deliberately not a second write path,
+    /// because two save paths into one file is how the field written last wins.
+    public var analysisSpans: Int {
+        get { readerPreferences.analysisSpans }
+        set {
+            // One field of the held value. See `panelSpans`'s setter: rebuilding
+            // a fresh `Preferences` here would save a struct whose *other* field
+            // is back at its default, so setting either span would silently
+            // reset the other. That comment described a bug that could not yet
+            // exist; this is the field that makes it possible, and
+            // `PreferencesFileTests` now holds the pair.
+            readerPreferences.analysisSpans = newValue
+            // Unclamped, like `panelSpans`, and for the same reason: the drag
+            // handle and View ▸ Narrow/Widen Analysis can only produce the two
+            // designed spans. The clamp belongs where the value cannot be
+            // trusted, which is `PreferencesFile.load`.
+            preferences.save(readerPreferences)
+        }
+    }
+
+    /// What View ▸ Narrow/Widen Analysis should read right now.
+    ///
+    /// Here rather than in the menu for the reason ``panelWidthToggleTitle``
+    /// gives: which of the two designed widths is "the other one" is a judgement
+    /// about the pair, and a menu that judged it would be a second place holding
+    /// it. `ElliotApp` spelled `model.analysisSpans >= 3 ? … : …` inline, with
+    /// the literal `3` — the exact shape `Preferences.spanChoices` exists to
+    /// prevent, and the one `panelWidthToggleTitle` was extracted out of.
+    public var analysisWidthToggleTitle: String {
+        analysisSpans >= Preferences.spanChoices.wide ? "Narrow Analysis" : "Widen Analysis"
+    }
+
+    /// Moves the analysis panel to the width it is not at, and remembers it.
+    public func toggleAnalysisWidth() {
+        analysisSpans =
+            analysisSpans >= Preferences.spanChoices.wide
+            ? Preferences.spanChoices.narrow : Preferences.spanChoices.wide
+    }
 
     /// What the analysis panel's setup form holds, and which proposals are
     /// staged for a bulk accept or reject.
@@ -301,7 +445,7 @@ public final class AppModel {
     /// does not.
     ///
     /// Cleared at exactly two points — the top of ``startAnalysis(repoID:angles:instructions:maxStories:)``
-    /// and ``openAnalysis(id:)`` — and set at exactly one. ``closeAnalysis()``
+    /// and ``openAnalysis(_:)`` — and set at exactly one. ``closeAnalysis()``
     /// deliberately leaves it alone: returning to setup after an analysis that
     /// ran is not a failure.
     ///
@@ -492,15 +636,24 @@ public final class AppModel {
             // Captured, never inherited: launched from the Finder this process
             // sees only /usr/bin:/bin:/usr/sbin:/sbin.
             let environment = await LoginShellEnvironment.capture()
-            let locator = ToolLocator(environment: environment)
+            // `ELLIOT_GH_PATH` and friends, read once here (#238). Prepending a
+            // shim to `PATH` before `open` does **not** work — the capture above
+            // is a login shell, whose own rc files re-prepend their bin
+            // directories and out-rank whatever was inherited (#188). This is
+            // the mechanism that does.
+            let locator = ToolLocator(
+                environment: environment, overrides: .fromProcessEnvironment())
             async let claude = locator.locate("claude")
             async let gh = locator.locate("gh")
             async let git = locator.locate("git")
 
+            // An unusable override resolves to no path at all rather than to
+            // whatever `PATH` would have given, so the app refuses to run a
+            // binary the reader did not choose. Preflight names the variable.
             let config = ToolConfig(
-                claudePath: await claude?.path ?? "",
-                ghPath: await gh?.path ?? "",
-                gitPath: await git?.path ?? "",
+                claudePath: await claude.tool?.path ?? "",
+                ghPath: await gh.tool?.path ?? "",
+                gitPath: await git.tool?.path ?? "",
                 environment: environment.childEnvironment(cwd: NSHomeDirectory())
             )
             toolConfig = config
@@ -539,7 +692,10 @@ public final class AppModel {
             let preflight = PreflightService(environment: environment, config: config)
             globalChecks = await preflight.globalChecks(layout: layout)
 
-            let presenter = NotificationPresenter(delivery: makeNotificationDelivery())
+            let presenter = NotificationPresenter(
+                delivery: makeNotificationDelivery(),
+                preferences: readerPreferences.notifications
+            )
             self.presenter = presenter
             // Asked once, on launch, and never nagged about again. A denial
             // degrades Elliot to exactly what it was before this feature.
@@ -580,6 +736,36 @@ public final class AppModel {
             status = summary == .init()
                 ? "Ready."
                 : "Ready — recovered \(summary.orphanedRuns == 1 ? "1 interrupted run" : "\(summary.orphanedRuns) interrupted runs")."
+
+            // Housekeeping: bound `runs/`, `screenshots/` and `analyses/`, which
+            // nothing else has ever removed a file from.
+            //
+            // *After* the reconciler, and that is the load-bearing half of the
+            // placement: the runs it has just marked failed are exactly the ones
+            // whose logs stop being protected, and the ones it re-queued are the
+            // ones whose logs start being. Reading the runs table ahead of it
+            // would read it one state behind reality.
+            //
+            // Detached, because nothing on screen waits for it: it walks three
+            // directories and unlinks files, to bound something nobody is looking
+            // at. A failure inside cannot reach start-up either — `sweep()` does
+            // not throw, by construction.
+            //
+            // ⛔ The result is *recorded*, never written into `status`. Appending
+            // to that line was the first attempt and it is unfixable by
+            // placement: this task shares the main actor with `start()`, so it
+            // resumes at whichever suspension comes next — which is
+            // `importIfNeeded`'s `await importer.importRepo(repo)`, whose very
+            // next statement assigns `status`. The sentence was overwritten
+            // within milliseconds, every time, and left no trace. `status` is a
+            // single narration owned by whoever spoke last; a fact that has to
+            // survive belongs in a field of its own, and the status bar renders
+            // it from there.
+            let sweeper = ArtifactSweeper(store: store)
+            Task { [weak self] in
+                let report = await sweeper.sweep()
+                self?.artifactSweep = report
+            }
 
             // The first import is kicked from here, and the order above is
             // load-bearing — do not reshuffle it without reading this (#120).
@@ -674,6 +860,84 @@ public final class AppModel {
         selectedCardID = cardID
     }
 
+    // MARK: - Repositories → the board
+
+    /// Scope the board to a repository, and report whether it worked.
+    ///
+    /// Guarded for the same reason `selectRepoFromNotification` above is, and it
+    /// is worth saying which reason: `repoRows` is a snapshot of a sweep, so a
+    /// `forget` applied between that sweep and this click would otherwise point
+    /// the picker at a registration that no longer exists — an empty board under
+    /// a phantom name. On refusal the current selection is left **as it was**
+    /// rather than cleared, because clearing it answers a stale row by silently
+    /// dumping the reader onto the whole portfolio.
+    ///
+    /// It returns whether it selected rather than raising the window itself:
+    /// `openWindow` belongs to a view's environment, and the caller should only
+    /// raise a window when there is something to raise it for.
+    @discardableResult
+    public func showBoard(repoID: UUID) -> Bool {
+        guard repos.contains(where: { $0.id == repoID }) else {
+            // Said out loud, in the page's own outcome line, rather than
+            // returning `false` into a caller that can only do nothing with it.
+            // A visible button that silently does nothing is indistinguishable
+            // from one that worked — which is the exact defect `FixOutcome`
+            // was introduced to fix, one screen over.
+            lastFixOutcome = FixOutcome(
+                detail: "That repository is no longer registered, so it has no board. "
+                    + "The list is from an earlier sweep — Refresh to see what is there now.",
+                succeeded: false)
+            return false
+        }
+        selectedRepoID = repoID
+        return true
+    }
+
+    /// The same act, from a row's board action rather than a bare id.
+    ///
+    /// The unwrap lives here and not at each call site because there are four
+    /// of them — the row's button, its double-click, its context menu, and ↩ —
+    /// plus ⌘↩ in `ElliotApp`'s `Commands`, which is in a different **module**
+    /// and so cannot reuse a private method in the view. That last one is why
+    /// this is on the model: it is the only place all five can share.
+    @discardableResult
+    public func showBoard(_ action: RepoRowBoardAction) -> Bool {
+        guard case .open(let repoID) = action else { return false }
+        return showBoard(repoID: repoID)
+    }
+
+    /// Whether the selected row can open the board.
+    ///
+    /// Derived from `selectedRowBoardAction`, so the menu item's enablement and
+    /// its action still ask one question — it exists only because `ElliotApp`
+    /// cannot name `RepoRowBoardAction` (it depends on `ElliotAppKit` and
+    /// nothing else) and so cannot pattern-match the case itself.
+    public var canOpenBoardForSelectedRow: Bool {
+        if case .open = selectedRowBoardAction { return true }
+        return false
+    }
+
+    /// The Repositories list's selection, by `RepoRow.id` — `"owner/name"`.
+    ///
+    /// On the model rather than in `RepositoriesView`'s `@State` because the
+    /// menu item that gives this act its ⌘↩ lives in `ElliotApp`'s `Commands`,
+    /// which is not a view hierarchy and cannot read another view's state.
+    public var selectedRepoRowID: String?
+
+    /// The board action of whatever row is selected.
+    ///
+    /// Asked once, here, so the menu item's enablement and its action cannot
+    /// disagree — the two used to be the classic pair of independent guesses.
+    /// A selection can outlive its row (it is a string into a list every sweep
+    /// rebuilds), and that case answers `.unavailable` like any other row with
+    /// nowhere to go.
+    public var selectedRowBoardAction: RepoRowBoardAction {
+        guard let id = selectedRepoRowID,
+            let row = repoRows.first(where: { $0.id == id })
+        else { return .unavailable }
+        return row.boardAction
+    }
+
     /// Turns a scheduler update into a `NotificationEvent`, or drops it.
     ///
     /// Re-reads the run from the store rather than trusting the update's own
@@ -734,7 +998,16 @@ public final class AppModel {
 
     // MARK: - Observation
 
-    private func observe(store: BoardStore) {
+    /// Internal rather than `private` so a test can start the **real**
+    /// observation instead of a four-line replica of it.
+    ///
+    /// `reorder`'s cross-column guard reads `cards`, and `cards` has exactly one
+    /// writer: the pump below. A suite that re-implemented it would be asserting
+    /// against its own copy — the trap that makes a measurement describe its
+    /// rendering rather than its subject. Everything started here is
+    /// store-backed, so it costs a test no network, no clock and no process.
+    /// `shutdown()` cancels all of it. See `ReorderGlueTests`.
+    func observe(store: BoardStore) {
         observeMoveAudits(store: store)
         let cardObservation = store.observeCards()
         observationTasks.append(Task { [weak self] in
@@ -1044,6 +1317,12 @@ public final class AppModel {
             card: card,
             context: MoveContext(
                 repoIsEnabled: repo(for: card)?.isEnabled ?? false,
+                // The persisted verdict, not `repoChecks` — the same value
+                // `BoardService` will read when the drop is committed. Reading
+                // the in-memory dictionary here would make the caption a second
+                // opinion about the drop, which is the one thing `preview`
+                // exists not to be.
+                repoPreflight: repo(for: card)?.preflightVerdict ?? .notChecked,
                 activeRunID: activeRuns[card.id]?.id,
                 allowSideEffects: true,
                 // Left uncollected on purpose: the merge really does stop to
@@ -1080,14 +1359,34 @@ public final class AppModel {
     }
 
     /// A drag. Goes through exactly the same two calls the MCP tool uses.
-    public func move(cardID: UUID, to column: ElliotModel.Column) async {
+    /// - Parameter orderIndex: Where the card should land in `column`, when the
+    ///   caller already knows. `nil` appends, which is what every caller but a
+    ///   cross-column drop means.
+    ///
+    ///   It travels **with** the move rather than being applied after it (#205).
+    ///   `reorder` used to move and then re-read `cards` to confirm the card had
+    ///   arrived before placing it — and `cards` has exactly one writer, the
+    ///   GRDB observation pump, which nothing sequences against the move. When
+    ///   the delivery had not landed the guard was false, the placement was
+    ///   dropped, and the card sat in the right column at the wrong index. That
+    ///   reads as "it just went to the bottom", not as a bug.
+    ///
+    ///   ⚠️ The placement was never *late*, it was **lost**: nothing retries a
+    ///   guard that has already returned. #205 called the coupling latent on 47
+    ///   local samples that never lost; CI lost it twice on two different runs,
+    ///   the second time through a 10-second bounded wait that had nothing to
+    ///   wait for.
+    public func move(
+        cardID: UUID, to column: ElliotModel.Column, orderIndex: Double? = nil
+    ) async {
         guard let board else { return }
         // Captured before the move: by the time `board.move` returns, the
         // card's column and `activeRuns` have both changed, so asking then
         // would describe the world after the act rather than the act.
         let predicted = card(id: cardID).map { Consequence.of(preview($0, to: column)) }
         do {
-            let result = try await board.move(cardID: cardID, to: column, origin: .userDrag)
+            let result = try await board.move(
+                cardID: cardID, to: column, origin: .userDrag, orderIndex: orderIndex)
             switch result {
             case .moved(let runID):
                 refusal = nil
@@ -1157,13 +1456,33 @@ public final class AppModel {
         case .reorder(let p, let n):
             (previous, next) = (p, n)
         case .moveThenReorder(let destination, let p, let n):
-            // Crossing columns is a move first — it may file an issue, open a
-            // pull request or merge one — and only then a placement. A refused
-            // move places nothing, which is why this returns rather than
-            // falling through.
-            await move(cardID: cardID, to: destination)
-            guard refusal == nil, card(id: cardID)?.column == destination else { return }
-            (previous, next) = (p, n)
+            // Crossing columns is a move — it may file an issue, open a pull
+            // request or merge one — and the placement rides along with it
+            // rather than chasing it. One call, one write, and no re-read of
+            // observed state (#205).
+            //
+            // ⛔ This used to be `await move(…)` followed by
+            // `guard refusal == nil, card(id: cardID)?.column == destination`,
+            // and that guard was the defect. `card(id:)` reads `cards`, whose
+            // only writer is the GRDB observation pump; nothing sequences that
+            // pump against the move. When the delivery had not arrived the
+            // guard was false and the placement was **dropped for good** —
+            // nothing retries a guard that has already returned.
+            //
+            // A refused move still places nothing, and now for a structural
+            // reason instead of a second guard kept in step by hand:
+            // `commitMove` writes `orderIndex` only in its two moved cases, so
+            // `.blocked` and `.needsInput` write no row at all.
+            //
+            // ⚠️ `p`/`n` are the destination column's neighbours as they stand
+            // *before* the move. That index is still right afterwards because
+            // `commitMove` does not renumber neighbours — an invariant this
+            // branch now depends on, and `neighboursAreNotRenumberedByAMove`
+            // is what keeps it true.
+            await move(
+                cardID: cardID, to: destination,
+                orderIndex: CardReorder.index(previous: p, next: n))
+            return
         }
 
         do {
@@ -1218,10 +1537,12 @@ public final class AppModel {
     }
 
     public func createCard(
-        repoID: UUID, title: String, story: UserStory?, body: String
+        repoID: UUID, title: String, story: UserStory?, body: String, labels: [String] = []
     ) async {
         guard let board else { return }
-        _ = try? await board.createCard(repoID: repoID, title: title, body: body, story: story)
+        _ = try? await board.createCard(
+            repoID: repoID, title: title, body: body, story: story, labels: labels
+        )
     }
 
     public func deleteCard(id: UUID) async {
@@ -1240,7 +1561,8 @@ public final class AppModel {
         }
         do {
             try await board.updateCard(
-                id: id, title: draft.title, body: draft.body, story: draft.story
+                id: id, title: draft.title, body: draft.body, story: draft.story,
+                labels: draft.labels
             )
             return true
         } catch {
@@ -1454,6 +1776,38 @@ public final class AppModel {
         // body, and `PRWatcher` already re-reads whenever the head moves. The
         // age rule still governs.
         prStatuses[card.id]?.resolved(now: Date(), currentHeadOid: nil)
+    }
+
+    // MARK: - The labels a repository has
+
+    /// What is currently known about `repoID`'s labels.
+    ///
+    /// `.notAsked` until a lookup has actually run — **not** `.unavailable`,
+    /// which is a claim that `gh` was asked and did not answer. It read
+    /// `.unavailable` until code review caught it, and the cost was the editor
+    /// asserting *"gh did not answer for this repository"* for the whole
+    /// duration of every healthy lookup, and for ever on a board whose
+    /// `toolConfig` is still nil.
+    public func labels(for repoID: UUID) -> RepositoryLabels {
+        repoLabels[repoID] ?? .notAsked
+    }
+
+    /// Reads a repository's labels through `gh`, for the card editor's picker.
+    ///
+    /// One `gh label list` per open, not per keystroke, and it does **not**
+    /// cache a failure as an answer — `RepositoryLabels(ghAnswer:)` maps a
+    /// throw to `.unavailable`, so the next open asks again rather than
+    /// remembering that the network was down once.
+    ///
+    /// Nothing here refuses anything. A card may ask for a label this call
+    /// could not confirm; the editor marks it, and the card keeps recording
+    /// what someone asked for. That is criterion 6, and it is why this is a
+    /// read and not a validator.
+    public func loadLabels(for repoID: UUID) async {
+        guard let toolConfig, let repo = repos.first(where: { $0.id == repoID }) else { return }
+        let gh = GHClient(config: toolConfig)
+        let answer = try? await gh.labels(repo: repo.nameWithOwner)
+        repoLabels[repoID] = RepositoryLabels(ghAnswer: answer)
     }
 
     // MARK: - Repos
@@ -1851,7 +2205,37 @@ public final class AppModel {
         )
         let preflight = service ?? PreflightService(environment: environment, config: toolConfig)
         for repo in repos {
-            repoChecks[repo.id] = await preflight.repoChecks(repo)
+            await record(await preflight.repoChecks(repo), for: repo)
+        }
+    }
+
+    /// Records a sweep's results in the two places that need them.
+    ///
+    /// `repoChecks` is what the screens read; `Repo.preflight` is what the rule
+    /// engine reads, through the row `BoardService.proposeMove` already loads.
+    /// One method rather than two assignments at each of the two sweep sites,
+    /// because the whole defect being fixed here is a verdict that existed in
+    /// one place and was unreachable from the other — writing it twice by hand
+    /// is how it would become unreachable again.
+    ///
+    /// The write is skipped when the verdict has not moved. The repo table is
+    /// observed, so an unconditional save on every sweep would republish every
+    /// row and reload the board for nothing.
+    private func record(_ results: [CheckResult], for repo: Repo) async {
+        repoChecks[repo.id] = results
+        let verdict: PreflightState = PreflightService.isBlocking(results) ? .failing : .passing
+        guard repo.preflightVerdict != verdict, let store else { return }
+        var updated = repo
+        updated.preflight = verdict
+        do {
+            try await store.saveRepo(updated)
+        } catch {
+            // Not `try?`. If this write is lost the board silently goes on
+            // permitting moves in a repository Elliot has just diagnosed as
+            // broken — which is the exact failure this whole change removes, so
+            // it is the last thing that should fail quietly.
+            status = "Could not record Preflight's verdict for \(repo.displayName): "
+                + error.localizedDescription
         }
     }
 
@@ -1925,10 +2309,41 @@ public final class AppModel {
         // subprocesses each, plus a networked `gh label list` per repo since
         // #170. Pressing one button should not start a full-board sweep with no
         // progress and no re-entrancy guard.
-        repoChecks[repo.id] = await preflight.repoChecks(repo)
+        // Through `record` so the repository row learns the new verdict too: a
+        // fix that repairs the failing check must clear the block here, not at
+        // the next full sweep. That is what bounds the staleness this column
+        // trades for being readable by the rule engine.
+        await record(await preflight.repoChecks(repo), for: repo)
     }
 
     // MARK: - Analysis
+
+    /// Which repository the analysis panel is about — the one answer, read by
+    /// the header, the run rows, the evidence links and the Start button.
+    ///
+    /// While a session is open it is that analysis's **own** repository, and
+    /// moving the board's picker cannot change it. With nothing open the panel
+    /// is a setup form aimed at whatever is picked, which is what Start will
+    /// target — that fallback is the whole of the second half.
+    ///
+    /// ⛔ The panel used to compute this itself as
+    /// `repos.first { $0.id == selectedRepoID }`, five times over, and the
+    /// picker has nothing to do with which repository an open analysis read
+    /// (#213). Read this rather than reaching for `selectedRepoID` again: a
+    /// second expression for the same question is how the two answers get to
+    /// disagree, and `AnalysisPanelViewSourceTests` fails if one comes back.
+    public var analysisRepoID: UUID? { analysis?.repoID ?? selectedRepoID }
+
+    /// ``analysisRepoID`` resolved against the registered repositories.
+    ///
+    /// `nil` when the analysis's repository has since been forgotten — the
+    /// header renders `…` and evidence chips go un-clickable, which is strictly
+    /// better than the silent borrowing of whichever repository happened to be
+    /// picked. It deliberately does **not** fall through to the picker: an
+    /// unresolvable subject is a different fact from an absent one.
+    public var analysisRepo: Repo? {
+        analysisRepoID.flatMap { id in repos.first { $0.id == id } }
+    }
 
     /// Why an analysis cannot start right now, or `nil` when it can.
     ///
@@ -1941,6 +2356,12 @@ public final class AppModel {
     /// `isEnabled` and the in-flight dedupe and nothing else, so eight
     /// unattended runs could have started in a checkout Preflight had already
     /// refused. The gate belongs on the act, not on the panel's visibility.
+    /// ⚠️ Reads ``selectedRepoID``, not ``analysisRepoID``, and that is not an
+    /// oversight: it gates **Start**, which renders only in setup — the branch
+    /// where the two are equal by construction — and its first sentence is what
+    /// tells the reader *which* repository Start would target. Pointing it at
+    /// ``analysisRepoID`` would compile, read as tidier, and quietly make it
+    /// answerable for a session it has no business refusing.
     public var analysisRefusal: String? {
         guard let id = selectedRepoID, let repo = repos.first(where: { $0.id == id }) else {
             return "Pick a single repository to analyse."
@@ -1968,7 +2389,7 @@ public final class AppModel {
                 maxStoriesPerAngle: maxStories, origin: .manual
             )
             analysis = nil
-            openAnalysis(id: started.analysis.id)
+            openAnalysis(started.analysis)
         } catch {
             // Not `analysis?.note`: this is a *failed* start, so there is no
             // session and that assignment was a no-op that compiled and read as
@@ -1982,7 +2403,20 @@ public final class AppModel {
         }
     }
 
-    public func openAnalysis(id: UUID) {
+    /// Opens `analysis` in the panel.
+    ///
+    /// ⛔ **Takes the whole `Analysis`, not its id, and that is the fix rather
+    /// than a convenience.** An id alone cannot say which repository the
+    /// analysis read, so a session opened from one was a session with no
+    /// subject — and the panel went looking for one in the board's picker
+    /// (#213). Both callers already hold an `Analysis`, so naming the
+    /// repository costs nothing and forgetting it stops compiling.
+    /// The parameter is `opened` rather than `analysis` on purpose: `analysis`
+    /// is also the stored session this method assigns, and a parameter of a
+    /// *different* type shadowing it makes every bare mention in the body mean
+    /// the opposite of what it reads as.
+    public func openAnalysis(_ opened: Analysis) {
+        let id = opened.id
         // The failure belongs to a start that did not happen, not to the
         // analysis about to be on screen — including the one picked from the
         // header's *Earlier analyses* menu, which is the path that does not go
@@ -1991,7 +2425,7 @@ public final class AppModel {
         // One assignment. The outgoing session goes with it, and its
         // observation is cancelled by `ObservationHandle.deinit` rather than
         // by a line here that a sixth member could out-live.
-        analysis = AnalysisSession(id: id)
+        analysis = AnalysisSession(id: id, repoID: opened.repoID)
         Task { await refreshAnalysisRuns() }
 
         // Proposals arrive run by run, so the list fills in as each angle
@@ -2055,9 +2489,16 @@ public final class AppModel {
         await presenterHandle(.analysisFinished(analysisID: id, repo: repo, proposalCount: kept))
     }
 
+    /// The *Earlier analyses* menu, scoped to the repository the **panel** is
+    /// about rather than to the board's picker (#213) — otherwise it offers a
+    /// different repository's history, and opening one of those rows is how the
+    /// panel ended up mismatched in the first place.
+    ///
+    /// Reads ``analysisRepoID``, it does not watch it: the caller re-asks, which
+    /// is why the panel's `.task` is keyed on that same value.
     public func recentAnalyses() async -> [Analysis] {
         guard let store else { return [] }
-        return (try? await store.analyses(repoID: selectedRepoID, limit: 20)) ?? []
+        return (try? await store.analyses(repoID: analysisRepoID, limit: 20)) ?? []
     }
 
     /// One page of the finished history, and how many rows the same filter
@@ -2097,8 +2538,48 @@ public final class AppModel {
         return (cards, total)
     }
 
-    public func updateProposal(_ proposal: StoryProposal) async {
-        try? await analysisService?.updateProposal(proposal)
+    /// Every write to the analysis, funnelled so that none of them can report a
+    /// success that did not happen.
+    ///
+    /// ⛔ **`try? await analysisService?.…` cannot be written correctly**, and
+    /// that is why this exists rather than a rule asking people to be careful.
+    /// It fails two ways and reports neither: the `try?` discards a `throw`, and
+    /// the `?` turns an absent service into a silent no-op *before* the `try?`
+    /// is reached. Both were live — ``updateProposal`` closed its editor exactly
+    /// as on success (#223), and ``rejectProposals`` went further and asserted
+    /// "Rejected N proposals" whichever had happened.
+    ///
+    /// Returns `nil` when the write landed. The note is **cleared before the
+    /// await and set after**, which is `acceptProposals`' rule: replacing one
+    /// sentence with another in place reads as nothing having happened.
+    private func analysisWrite(
+        _ body: (AnalysisService) async throws -> Void
+    ) async -> AnalysisWriteFailure? {
+        analysis?.note = nil
+        guard let analysisService else {
+            let failure = AnalysisWriteFailure.serviceUnavailable
+            analysis?.note = failure.sentence
+            return failure
+        }
+        do {
+            try await body(analysisService)
+            return nil
+        } catch {
+            let failure = AnalysisWriteFailure.refused(error.localizedDescription)
+            analysis?.note = failure.sentence
+            return failure
+        }
+    }
+
+    /// Saves an edited proposal, and says whether it saved.
+    ///
+    /// The return value is the whole fix for #223: the editor closes on `nil`
+    /// and stays open otherwise, so a reader is never left believing an edit
+    /// landed. A `Void` return could not express that, which is how the silent
+    /// dismissal survived.
+    @discardableResult
+    public func updateProposal(_ proposal: StoryProposal) async -> AnalysisWriteFailure? {
+        await analysisWrite { try await $0.updateProposal(proposal) }
     }
 
     public func acceptProposals(ids: [UUID]) async {
@@ -2116,10 +2597,15 @@ public final class AppModel {
         }
     }
 
-    public func rejectProposals(ids: [UUID]) async {
-        analysis?.note = nil
-        try? await analysisService?.reject(proposalIDs: ids)
-        analysis?.note = ids.count == 1 ? "Rejected 1 proposal." : "Rejected \(ids.count) proposals."
+    /// ⚠️ **This claimed success unconditionally**, and it is the louder half of
+    /// #223: the `try?` swallowed the error and the very next line wrote
+    /// "Rejected N proposals" whether or not anything had been. A silent failure
+    /// leaves a reader guessing; an asserted one leaves them certain and wrong.
+    @discardableResult
+    public func rejectProposals(ids: [UUID]) async -> AnalysisWriteFailure? {
+        let failure = await analysisWrite { try await $0.reject(proposalIDs: ids) }
+        analysis?.note = AnalysisWriteFailure.rejectionNote(count: ids.count, failure: failure)
+        return failure
     }
 
     /// The angles still working, for the window's header.
@@ -2176,7 +2662,12 @@ public final class AppModel {
         activeRuns = active
         runsByCard = byCard
         recentRuns = recent
-        if !analysis.isEmpty { self.analysis = AnalysisSession(id: UUID(), runs: analysis) }
+        if !analysis.isEmpty {
+            // A repository id these runs do not belong to would be a fixture
+            // that disagrees with itself, so it comes off the runs.
+            let repoID = analysis.first?.repoID ?? UUID()
+            self.analysis = AnalysisSession(id: UUID(), repoID: repoID, runs: analysis)
+        }
     }
 
     /// Seeds the analysis window's state without a store behind it.
@@ -2231,6 +2722,23 @@ public final class AppModel {
     /// `Scripts/fake-gh.sh` so no real `gh` is involved.
     func testOnlyAttachImporter(_ importer: GitHubImportService) {
         self.importer = importer
+    }
+
+    /// Puts a real board behind the model without `start()`.
+    ///
+    /// Every seam above deliberately leaves `board` nil so a seeded model cannot
+    /// write. `reorder` is the one rule that cannot be proved under that
+    /// arrangement: its first line is `guard let board`, so with no board it
+    /// returns before deciding anything, and the assertion would pass for a
+    /// method whose body never ran.
+    ///
+    /// What needs proving is not the arithmetic — `CardReorderTests` owns that,
+    /// purely — but the *glue* #49's criterion 2 is about: a cross-column drop
+    /// performs the column move first, and a refused one places nothing. That
+    /// step sits between two tested ends and had no test of its own, which is
+    /// the same gap `CaretAnchorTests` was written to close one layer up.
+    func testOnlyAttachBoard(_ board: BoardService) {
+        self.board = board
     }
 
     /// Puts an analysis service behind the model without `start()`.

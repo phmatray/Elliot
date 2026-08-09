@@ -43,6 +43,72 @@ public enum UnixSocket {
     /// failure one layer further from its cause.
     public static func pathFits(_ path: String) -> Bool { path.utf8.count < maxPathBytes }
 
+    /// Why the app could never have bound this path — the *fact*, with no
+    /// advice attached.
+    ///
+    /// The words that explain it to an agent live at the one place that says
+    /// them (`AppBridge`), because advice is audience-specific and this is not:
+    /// it is a property of `sockaddr_un` and the filesystem, which is why it
+    /// sits beside ``pathFits``.
+    public enum PathObstruction: Equatable, Sendable {
+        /// Longer than `sun_path` will hold. The only cause #168 covered.
+        case tooLong(bytes: Int, limit: Int)
+        /// The directory the socket would live in does not exist.
+        case directoryMissing(String)
+        /// Something is there, but it is not a directory.
+        case notADirectory(String)
+        /// It exists and is a directory, and this process may not create in it.
+        case directoryNotWritable(String)
+    }
+
+    /// What stops `bind` from ever succeeding at `path`, or `nil` when nothing
+    /// knowable does.
+    ///
+    /// ⛔ **The socket-file check on line two is what makes this safe to run
+    /// ahead of "is the app up", and it is not an optimisation.** A live socket
+    /// needs its *directory* writable only at bind time; `connect` needs no such
+    /// thing. So a directory whose permissions changed after launch would make a
+    /// naive probe report an app that is running and answering as unusable —
+    /// the exact inversion #193's fourth criterion forbids, and a worse lie than
+    /// the one being fixed. `IPCServer` removes the file before binding and on
+    /// shutdown, so its presence means something bound here; that is not this
+    /// function's story to tell, and it returns `nil`.
+    ///
+    /// A stale file from a crashed app also returns `nil`, deliberately. The
+    /// caller then finds nothing answering and says the app is not running,
+    /// which is **true** — this diagnoses paths that can never work, not paths
+    /// that stopped working.
+    ///
+    /// ⚠️ Deliberately not a bind attempt. Binding succeeds only when the app is
+    /// *not* holding the path, so a probe shaped that way answers the opposite
+    /// of the question on exactly the calls that matter.
+    ///
+    /// Nothing is written and nothing is remembered: the answer is recomputed
+    /// from the filesystem each time. That is why this is the fix rather than a
+    /// sentinel file the app drops on a successful `startIPC` — an artefact
+    /// survives the process that vouched for it, and a confident answer that has
+    /// gone stale is worse than an uncertain one.
+    public static func obstruction(to path: String) -> PathObstruction? {
+        guard pathFits(path) else {
+            return .tooLong(bytes: path.utf8.count, limit: maxPathBytes)
+        }
+        let manager = FileManager.default
+        // Something bound here. Whatever the directory says now, this path has
+        // worked, and a live connection must not be talked out of.
+        if manager.fileExists(atPath: path) { return nil }
+
+        let directory = (path as NSString).deletingLastPathComponent
+        var isDirectory: ObjCBool = false
+        guard manager.fileExists(atPath: directory, isDirectory: &isDirectory) else {
+            return .directoryMissing(directory)
+        }
+        guard isDirectory.boolValue else { return .notADirectory(directory) }
+        guard manager.isWritableFile(atPath: directory) else {
+            return .directoryNotWritable(directory)
+        }
+        return nil
+    }
+
     static func makeAddress(path: String) throws -> sockaddr_un {
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)

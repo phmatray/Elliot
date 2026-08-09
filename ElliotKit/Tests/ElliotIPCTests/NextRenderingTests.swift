@@ -230,6 +230,7 @@ private enum WireBlockCase: CaseIterable {
     case missingIssueNumber
     case missingPRNumber
     case repoDisabled
+    case repoBlocked
     case runAlreadyInFlight
     case notVerifiedGreen
     case systemOwnedTransition
@@ -242,6 +243,7 @@ private enum WireBlockCase: CaseIterable {
         case .missingIssueNumber: .missingIssueNumber
         case .missingPRNumber: .missingPRNumber
         case .repoDisabled: .repoDisabled
+        case .repoBlocked: .repoBlocked
         case .runAlreadyInFlight: .runAlreadyInFlight(runID: UUID())
         case .notVerifiedGreen: .notVerifiedGreen(reason: .sign(.checksFailing(count: 1)))
         case .systemOwnedTransition: .systemOwnedTransition
@@ -256,6 +258,7 @@ private enum WireBlockCase: CaseIterable {
         case .missingIssueNumber: .missingIssueNumber
         case .missingPRNumber: .missingPRNumber
         case .repoDisabled: .repoDisabled
+        case .repoBlocked: .repoBlocked
         case .runAlreadyInFlight: .runAlreadyInFlight
         case .notVerifiedGreen: .notVerifiedGreen
         case .systemOwnedTransition: .systemOwnedTransition

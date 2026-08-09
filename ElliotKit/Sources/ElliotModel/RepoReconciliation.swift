@@ -73,7 +73,24 @@ public enum RepoIssue: Sendable, Hashable {
     case noRemote
     case unreadable(String)
 
-    public enum OutOfScope: Sendable, Hashable { case fork, archived, otherRoot }
+    public enum OutOfScope: Sendable, Hashable {
+        case fork, archived, empty, otherRoot
+
+        /// The one place fork / archived / empty is decided, for every consumer.
+        ///
+        /// Order is the rule, not an implementation detail: a fork reports as a
+        /// fork whatever else is true, because that is the answer that decides
+        /// whether anything may be written into it.
+        ///
+        /// `otherRoot` is deliberately absent here — it is a fact about the local
+        /// tree layout, not about the repository, and only the reconciler knows it.
+        public static func of(_ repo: GHRepoSummary) -> OutOfScope? {
+            if repo.isFork { return .fork }
+            if repo.isArchived { return .archived }
+            if repo.isEmpty { return .empty }
+            return nil
+        }
+    }
 
     /// The one verdict a sweep acts on.
     ///
@@ -192,6 +209,29 @@ public enum RepoFix: Sendable, Hashable {
     }
 }
 
+/// What a row can do about the **board**, as opposed to about itself.
+///
+/// Its own vocabulary rather than a sixth `RepoFix` case, and each mismatch is
+/// load-bearing rather than a matter of taste. `RepoFix` is *"the one thing a
+/// row's button does"* and every case repairs the repository's state — opening
+/// a window repairs nothing. Its buttons route through
+/// `AppModel.apply(_ fix:)`, which calls `RepoRegistryService` and then re-reads
+/// GitHub, the disk and the store; navigation would trigger a portfolio-wide
+/// sweep. They carry `.disabled(model.isReconciling)`, which is right for a
+/// repair and absurd for "show me the cards". And `RepoReconciler` is pure by
+/// design so that "this directory is misplaced" is provable; teaching it to
+/// emit a navigation affordance would couple *what is wrong here* to *where can
+/// I go from here*.
+public enum RepoRowBoardAction: Sendable, Hashable {
+    /// Registered — Elliot drives this checkout and the board can be scoped to it.
+    case open(repoID: UUID)
+    /// On disk, not registered. `RepoFix.register` is the way in; offering both
+    /// would name an act that cannot work yet.
+    case registerFirst
+    /// Neither: not cloned, out of scope, or nothing to go to.
+    case unavailable
+}
+
 public struct RepoRow: Identifiable, Sendable, Hashable {
     public var id: String
     public var nameWithOwner: String?
@@ -250,6 +290,36 @@ public struct RepoRow: Identifiable, Sendable, Hashable {
             .behind, .dirty, .ahead, .diverged, .detached, .noRemote, .unreadable:
             return true
         }
+    }
+
+    /// Whether this row can send the reader to the board, and how.
+    ///
+    /// **Registration is the gate — not `issue == .ok`, and that is the
+    /// decision.** A `.missing` row (registered, nothing on disk), an
+    /// `.unlisted` one (registered, GitHub did not list it) and a registered
+    /// `.outOfScope(.otherRoot)` one all still have cards on the board, and
+    /// those are exactly the rows a person is looking at when they want to see
+    /// them. Gating on `.ok` would refuse the reader at precisely the moment
+    /// the question got interesting.
+    ///
+    /// Note it is `repoID`, deliberately, and not `showsBoardFigures` above:
+    /// those two answer different questions. A registered fork is denied
+    /// *figures* because harmonising it is not our business — but its cards
+    /// exist, and refusing to show them would be that judgement leaking into
+    /// navigation.
+    ///
+    /// `.registerFirst` is read from the row's own `fixes` rather than from
+    /// `repoID == nil`. The two would usually agree; reading `fixes` is what
+    /// makes "offers Register first" an assertion about **the button the row
+    /// actually carries** instead of a second, independent guess at when one
+    /// exists — a `.notChecked` row, for instance, is unregistered and
+    /// deliberately carries no `Register` at all.
+    public var boardAction: RepoRowBoardAction {
+        if let repoID { return .open(repoID: repoID) }
+        let offersRegister = fixes.contains {
+            if case .register = $0 { return true } else { return false }
+        }
+        return offersRegister ? .registerFirst : .unavailable
     }
 }
 
@@ -332,14 +402,19 @@ public enum RepoReconciler {
         // is a different row from one that was never cloned.
         let actual = disk[name].map { "\(layout.root)/\($0.owner)/\($0.visibility.rawValue)/\($0.name)" }
 
-        if remote.isFork || remote.isArchived {
+        if let why = RepoIssue.OutOfScope.of(remote) {
+            let detail: String =
+                switch why {
+                case .fork: "A fork — out of scope."
+                case .archived: "Archived on GitHub — out of scope."
+                case .empty: "Empty on GitHub — nothing to measure."
+                case .otherRoot: "Out of scope."
+                }
             return RepoRow(
                 id: name, nameWithOwner: name, path: actual ?? repo?.path, repoID: repo?.id,
                 visibility: remote.repoVisibility,
-                issue: .outOfScope(remote.isFork ? .fork : .archived),
-                detail: remote.isFork
-                    ? "A fork — out of scope."
-                    : "Archived on GitHub — out of scope.")
+                issue: .outOfScope(why),
+                detail: detail)
         }
 
         guard
@@ -386,8 +461,26 @@ public enum RepoReconciler {
                 fixes: [.register(path: actual)])
         }
 
+        // ⛔ **Not `detail: actual`.** The path is carried by `path`, and this
+        // was the one verdict of ten whose `detail` was not a sentence — so a
+        // row rendered straight from the reconciler showed the same path twice,
+        // in two faces (#218).
+        //
+        // ⚠️ It is deliberately **not** "Up to date." That is
+        // `RepoRegistryService.explain`'s sentence for the *probe's* `.ok`, and
+        // the two `.ok`s do not mean the same thing: the probe has fetched and
+        // found the clone clean, attached and level with upstream, whereas this
+        // one has only established that the repository is registered and cloned
+        // where the layout says it belongs. Copying that sentence here would be
+        // a claim about git made by code that never ran it.
+        //
+        // Fixed here rather than by having the view suppress a `detail` equal to
+        // `path`: that is a reader compensating for a writer, and it leaves the
+        // duplicate in the model for the next reader to meet. Same argument as
+        // #191, one type over.
         return RepoRow(
             id: name, nameWithOwner: name, path: actual, repoID: repo.id,
-            visibility: remote.repoVisibility, issue: .ok, detail: actual)
+            visibility: remote.repoVisibility, issue: .ok,
+            detail: "Cloned where it belongs.")
     }
 }

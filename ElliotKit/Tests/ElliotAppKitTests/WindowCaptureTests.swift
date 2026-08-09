@@ -127,8 +127,19 @@ struct WindowCaptureTests {
         // Only `Window(…, id: "…")` scene declarations — not the `openWindow(id:)`
         // call sites, which name the same ids and would make the assertion pass
         // by counting the buttons instead of the scenes.
+        //
+        // ⚠️ **`contains("Window(")` did not do that**, because `openWindow(`
+        // contains `Window(`. It went unnoticed while every `openWindow` id was
+        // also a declared scene, so both readings agreed; the console's first
+        // wave is what makes them diverge. Measured on this file with the
+        // Preflight *scene* deleted and its menu item left behind: the loose
+        // reading still reports `preflight` as declared, so this test stays
+        // green while `knownWindows` names a scene that is gone — the exact
+        // stale-list failure the comment above says it prevents. A scene
+        // declaration starts its line; a call site never does.
         var declared: Set<String> = []
-        for line in text.split(separator: "\n") where line.contains("Window(") {
+        for line in text.split(separator: "\n")
+        where line.trimmingCharacters(in: .whitespaces).hasPrefix("Window(") {
             guard let idRange = line.range(of: "id: \"") else { continue }
             let rest = line[idRange.upperBound...]
             guard let end = rest.firstIndex(of: "\"") else { continue }
@@ -199,11 +210,22 @@ struct WindowCaptureTests {
         #expect(AppKitWindowCapture.failure(for: "bord", among: open) == .unknownWindow(
             known: AppKitWindowCapture.knownWindows
         ))
-        // A declared scene that is simply shut: the answer names what *is* open,
-        // and does not name the one that was asked for.
-        #expect(AppKitWindowCapture.failure(for: "preflight", among: open) == .notOpen(open: ["board"]))
         // And a window that is open is not a failure at all.
         #expect(AppKitWindowCapture.failure(for: "board", among: open) == nil)
+
+        // ⚠️ **The shut case is now the board, because the board is the only
+        // scene left.** This named `operations`, then `archive`; each console
+        // wave retired the scene under it, and with the migration complete there
+        // is no declared-but-shut screen other than this one.
+        //
+        // It is still reachable in production — a closed `Window` scene stays in
+        // `NSApp.windows`, which is why `isOpen` is `isVisible || isMiniaturized`
+        // — so `notOpen` is not dead code. It has simply become an answer about
+        // one window rather than about six.
+        #expect(
+            AppKitWindowCapture.failure(for: "board", among: []) == .notOpen(open: []),
+            "with every other screen a console face, a shut board is the only way to see notOpen"
+        )
     }
 
     @Test("The open list only counts Elliot's own scenes")
@@ -319,19 +341,24 @@ struct WindowCaptureTests {
 
     @Test("A capture reports the window it photographed, not the one it was asked for")
     func capturedFieldsDescribeTheWindow() async throws {
-        let window = makeWindow(id: "operations", title: "Operations")
+        // ⚠️ **`board`, deliberately, and it has moved twice already.** This said
+        // `operations`, then `preflight`, and each time the console retired that
+        // scene the capture correctly refused an id it no longer knows. The claim
+        // under test is about the *fields*, not about which screen — so it is
+        // pinned to the one scene the whole migration leaves standing.
+        let window = makeWindow(id: "board", title: "Elliot")
         window.layoutIfNeeded()
 
         let capture = AppKitWindowCapture(windows: { [window] })
         guard case .success(let dto) = await capture.capture(
-            window: "operations", maxInlineBytes: 8 * 1024 * 1024
+            window: "board", maxInlineBytes: 8 * 1024 * 1024
         ) else {
             Issue.record("expected a capture")
             return
         }
 
-        #expect(dto.window == "operations")
-        #expect(dto.title == "Operations")
+        #expect(dto.window == "board")
+        #expect(dto.title == "Elliot")
         #expect(dto.width > 0)
         #expect(dto.height > 0)
         #expect(dto.scale >= 1)

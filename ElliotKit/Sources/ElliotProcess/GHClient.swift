@@ -65,6 +65,13 @@ public struct GHClient: Sendable {
         )
     }
 
+    /// The fields every caller of `repos(owner:)` gets, pinned by
+    /// `GHClientFieldsTests`. Narrowing it silently changes what decodes.
+    public static let repoListFields = [
+        "nameWithOwner", "visibility", "defaultBranchRef", "isFork",
+        "isArchived", "url", "primaryLanguage", "isEmpty",
+    ]
+
     /// Every repository of an account, archived and forks included.
     ///
     /// They are listed rather than filtered so a row can say *why* nothing is
@@ -75,7 +82,7 @@ public struct GHClient: Sendable {
             [GHRepoSummary].self,
             arguments: [
                 "repo", "list", owner, "--limit", String(limit),
-                "--json", "nameWithOwner,visibility,defaultBranchRef,isFork,isArchived,url",
+                "--json", Self.repoListFields.joined(separator: ","),
             ],
             timeout: .seconds(120)
         )

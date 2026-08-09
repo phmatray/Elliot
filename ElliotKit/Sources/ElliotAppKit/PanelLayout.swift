@@ -422,4 +422,16 @@ enum PanelLayout {
     /// dash near the card instead of a line to it — the day either literal
     /// moves.
     static let tetherReach: CGFloat = Metric.gutter + Metric.columnListPadding
+
+    /// Whether the panel draws the card's labels outside edit mode.
+    ///
+    /// Criterion 4 is that the labels are readable *without* opening an editor —
+    /// a decision the board does not show is the complaint this whole feature
+    /// starts from. So: shown whenever there are any, and nothing at all when
+    /// there are not. An always-present caption over an empty rail reads as
+    /// something that failed to load, which is the opposite of informative.
+    ///
+    /// Here rather than as an `if` in the panel's body for this file's usual
+    /// reason: `swift test` can hold this and cannot hold a `ViewBuilder`.
+    static func showsLabels(_ card: Card) -> Bool { !card.labels.isEmpty }
 }

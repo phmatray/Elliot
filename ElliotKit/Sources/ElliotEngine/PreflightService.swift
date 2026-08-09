@@ -146,18 +146,44 @@ public struct PreflightService: Sendable {
             command: "/bin/zsh -lic 'env -0'"
         ))
 
-        let locator = ToolLocator(environment: environment)
+        let locator = ToolLocator(environment: environment, overrides: .fromProcessEnvironment())
         for (tool, path) in [
             ("claude", config.claudePath), ("gh", config.ghPath), ("git", config.gitPath),
         ] {
-            let located = await locator.locate(tool)
+            let resolution = await locator.locate(tool)
+            // ⛔ An override that names an unusable path is its own row, ahead of
+            // everything else: "not found — put it on your PATH" is the wrong
+            // remedy for someone who *did* say which binary to use and mistyped
+            // it, and sending them to install software they already have is how
+            // a diagnostic wastes the time it exists to save (#238).
+            if case .overrideUnusable(let variable, let value) = resolution {
+                results.append(CheckResult(
+                    id: "tool.\(tool)",
+                    title: tool,
+                    status: .fail,
+                    detail: "\(variable) is set to \(value), which is not an executable file. "
+                        + "Elliot will not fall back to your PATH — it would run a different "
+                        + "binary than the one you named.",
+                    command: "ls -l \(value)",
+                    fixHint: "Point \(variable) at an executable, or unset it to use your PATH, "
+                        + "then relaunch Elliot."
+                ))
+                continue
+            }
+            let located = resolution.tool
             let found = FileManager.default.isExecutableFile(atPath: path)
+            // Says so when an override is in force. A change to which binary
+            // runs must be visible on the screen that reports which binary runs.
+            let source = located?.foundVia == "user override"
+                ? " — set by \(ToolOverrides.variableName(for: tool))"
+                : ""
             results.append(CheckResult(
                 id: "tool.\(tool)",
                 title: tool,
                 status: found ? .pass : .fail,
                 detail: found
                     ? [located?.resolvedPath ?? path, located?.version].compactMap { $0 }.joined(separator: " — ")
+                        + source
                     : "Not found. An app launched from the Finder does not inherit your shell PATH.",
                 command: "command -v \(tool)",
                 // Names the real remedy. There is no Settings screen anywhere
@@ -166,7 +192,8 @@ public struct PreflightService: Sendable {
                 // window that does not exist.
                 fixHint: found
                     ? nil
-                    : "Elliot reads your login shell's PATH. Put \(tool) on it, then press Check again."
+                    : "Elliot reads your login shell's PATH. Put \(tool) on it, then press Check "
+                        + "again — or name one with \(ToolOverrides.variableName(for: tool))."
             ))
         }
 
@@ -352,7 +379,14 @@ public struct PreflightService: Sendable {
     ///
     /// **A warning, never a failure.** `isBlocking` treats any `.fail` as "cards
     /// cannot be dragged in this repository", and a missing `documentation`
-    /// label must not freeze a board. What a missing label costs is an issue
+    /// label must not freeze a board.
+    ///
+    /// ⚠️ That reasoning was sound and its premise was not: until #249 a `.fail`
+    /// froze nothing, so this check was shaped around a consequence that did not
+    /// exist. The shape happens to be right — a missing label costs an issue
+    /// filed without it, which is not grounds to stop the board — but it was
+    /// right by accident for as long as the gate was missing. It is load-bearing
+    /// now, so promoting this to `.fail` really would freeze a board. What a missing label costs is an issue
     /// filed without it: `create-issue`'s own instructions say *"if a chosen
     /// label isn't in the live list, create without it rather than failing, and
     /// flag the gap"* — so today the card moves, the issue is filed unlabelled,
@@ -426,6 +460,21 @@ public struct PreflightService: Sendable {
     }
 
     /// Whether a repo's cards can be dragged at all.
+    ///
+    /// ⚠️ **This sentence was false from the day it was written until #249.**
+    /// Nothing consulted it but four views: `evaluateMove`'s only repository
+    /// term was `repoIsEnabled`, so a card in a repository this returned `true`
+    /// for was drawn as blocked and dragged anyway, spawning `claude -p` at
+    /// `bypassPermissions` inside a checkout Elliot had already diagnosed. It is
+    /// true now because `AppModel.record` writes this verdict onto
+    /// `Repo.preflight`, which `BoardService.proposeMove` reads.
+    ///
+    /// ⛔ **It still cannot answer for a repository nobody has swept.** On an
+    /// empty array this is `false`, which reads as "fine" and is really "nobody
+    /// looked" — the two-valued answer to a three-valued question that hid the
+    /// gap for as long as it did. Callers that need to tell those apart use
+    /// `PreflightState`, where not looking is its own case; this stays a `Bool`
+    /// because its callers hold results they have just computed.
     public static func isBlocking(_ results: [CheckResult]) -> Bool {
         results.contains { $0.status == .fail }
     }

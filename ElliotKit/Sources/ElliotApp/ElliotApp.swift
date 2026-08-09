@@ -59,8 +59,17 @@ struct ElliotApp: App {
         }
 
         // ⌘, for free.
+        //
+        // ⚠️ `.environment(model)` is load-bearing since #222. The view reads the
+        // notification preference off `AppModel` now — they live in
+        // `preferences.json`, not `UserDefaults` — and a `Scene` does **not**
+        // inherit another scene's environment. Without this line
+        // `@Environment(AppModel.self)` compiles, passes every test, and traps
+        // at launch with *"No Observable object of type AppModel found"*: the
+        // #64 shape, which `swift test` cannot see because `ElliotApp` is an
+        // `executableTarget` no test can import.
         Settings {
-            NotificationSettingsView()
+            NotificationSettingsView().environment(model)
         }
         // Wide enough for the five columns to sit side by side with the panel
         // shut, which is when seeing every column's consequence at once is the
@@ -95,49 +104,28 @@ struct ElliotApp: App {
         // does: `RepositoriesView` and `PreflightView` were written as
         // `NavigationLink` destinations and still carry `.navigationTitle` and
         // `.safeAreaInset`, both of which want that container.
-        Window("Repositories", id: "repositories") {
-            NavigationStack { RepositoriesView() }.environment(model)
-        }
-        .defaultSize(width: 900, height: 700)
 
-        // What the machine is doing, what it will do next, and what it costs.
-        // The board answers "what work exists"; nothing answered the other two,
-        // and the four windows were peers with no home among them.
-        Window("Operations", id: "operations") {
-            NavigationStack { OperationsView() }.environment(model)
-        }
-        .defaultSize(width: 720, height: 780)
+        // Operations and Up next were windows here until the console landed.
+        // They are `ConsoleFace` cases now, unfolded above the status bar in
+        // *this* window, and the figures in that status bar are their doors.
+        //
+        // The reason is the one #151 gave for retiring the Analysis window: a
+        // window for a screen that reports on the board covered the board it
+        // reported on, and the reader had to place it themselves. It is also
+        // what makes them reachable at all — #232 measured that every window but
+        // this one answers `board_screenshot` with `window_not_open`, because
+        // opening one takes a click and an agent has no click.
 
-        // Its own window for now. It is the first band of the Operations
-        // screen (#69) and will be composed into it there; landing it alone
-        // means the ranking is on screen and usable before that screen exists.
-        Window("Up next", id: "nextSteps") {
-            NavigationStack { NextStepsView() }.environment(model)
-        }
-        .defaultSize(width: 520, height: 640)
-
-        Window("Preflight", id: "preflight") {
-            NavigationStack { PreflightView() }.environment(model)
-        }
-        .defaultSize(width: 820, height: 720)
 
         // Everything the board's Done horizon is not drawing. Wrapped, like
         // Repositories and Operations: it carries a `.navigationTitle` and a
         // `.searchable`, and both want the container.
-        Window("Archive", id: "archive") {
-            NavigationStack { ArchiveView() }.environment(model)
-        }
-        .defaultSize(width: 620, height: 720)
 
         // A window rather than the fixed 580x580 sheet it was. That sheet had
         // already grown an internal ScrollView because at three or four
         // acceptance criteria — the documented normal path — it pushed its own
         // buttons off the bottom, and a macOS sheet cannot be resized. Writing
         // a story also no longer blocks the board while a run reports on it.
-        Window("New story", id: "newStory") {
-            NavigationStack { NewCardWindow() }.environment(model)
-        }
-        .defaultSize(width: 620, height: 640)
 
     }
 
@@ -171,11 +159,25 @@ struct ElliotApp: App {
 
             // No Escape key equivalent here on purpose. A menu shortcut is
             // matched before the responder chain, so it would take Escape
-            // from whichever sheet is open and deselect behind it instead
-            // of closing it. The board handles Escape itself, where it can
-            // only fire while the board has focus.
+            // from whatever is focused and deselect behind it instead. The
+            // board handles Escape itself, where it can only fire while the
+            // board has focus, and `EscapeRoute` states the order.
+            //
+            // The decision is unchanged since it was written; its example is
+            // not. It named "whichever sheet is open", and this package has
+            // no sheets — zero `.sheet(`, measured in #261. The live claimant
+            // is `ProposalEditor`'s `.onExitCommand`, an inline editor inside
+            // this very window, which a menu shortcut would indeed rob.
             Button("Deselect") { model.selectedCardID = nil }
                 .disabled(model.selectedCard == nil)
+        }
+
+        // Going from "this repository wants attention" to its cards is the
+        // Repositories page's other half, and criterion 4 of #143 is the same
+        // position the Card menu above states: an act worth a button is an act
+        // worth a shortcut, and a shortcut with no menu item is invisible.
+        CommandMenu("Repository") {
+            OpenBoardMenuItem(model: model)
         }
 
         // Everything the toolbar offers, reachable without a pointer and
@@ -221,14 +223,29 @@ struct ElliotApp: App {
             }
             .keyboardShortcut("a", modifiers: [.command, .option])
 
-            Button(model.analysisSpans >= 3 ? "Narrow Analysis" : "Widen Analysis") {
-                model.analysisSpans = model.analysisSpans >= 3 ? 2 : 3
+            // Title and act both from the model, for the reason the Details pair
+            // above already gives: which width is "the other one" is a judgement
+            // about the designed pair, and spelling it here meant two literal
+            // `3`s and a `2` in a target that cannot import `ElliotModel` — so
+            // the menu could set a span the panel is not designed at, which
+            // `PreferencesFile.load` would then silently repair to the default.
+            // A preference that quietly forgets itself.
+            Button(model.analysisWidthToggleTitle) {
+                model.toggleAnalysisWidth()
             }
             .disabled(!model.showingAnalysisPanel)
 
+            // How tall the console is, is the reader's call, exactly as the two
+            // panel widths are. Title and act both from the model for the reason
+            // spelled out on the pair above: which height is "the other one" is
+            // a judgement about the designed pair, and this target cannot import
+            // `ElliotModel` to consult it.
+            Button(model.consoleHeightToggleTitle) { model.toggleConsoleHeight() }
+                .disabled(!model.console.isOpen)
+
             Divider()
 
-            OpenWindowButtons()
+            OpenWindowButtons(model: model)
         }
     }
 }
@@ -253,27 +270,65 @@ private struct NewStoryMenuItem: View {
     var body: some View {
         Button("New Story…") {
             model.newCardRepoID = model.defaultRepoIDForNewCard
-            openWindow(id: "newStory")
+            model.showConsoleFace(.newStory)
         }
         .keyboardShortcut("n")
     }
 }
 
-/// The three auxiliary windows, as menu items.
+/// Open Board for the Selected Repository, as a menu item.
 ///
-/// A `View` rather than three inline buttons because `openWindow` is an
-/// environment value, and `Commands` is not a view hierarchy that can read one.
-private struct OpenWindowButtons: View {
+/// ⚠️ The model is **passed in, never read from the environment**, for the
+/// reason spelled out on `NewStoryMenuItem` above: `@Environment(AppModel.self)`
+/// in a `Commands` tree compiles, passes every test, and kills the app at launch
+/// (#64, #84). This item is the second one written to that shape.
+private struct OpenBoardMenuItem: View {
+    let model: AppModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Button("Operations") { openWindow(id: "operations") }
-        Button("Up Next") { openWindow(id: "nextSteps") }
+        // The judgement is `AppModel`'s, not this item's: unwrapping the action
+        // and checking the registration still exists is the same act the row's
+        // button performs, and this target cannot reuse the view's private
+        // method. Repeating it here would make ⌘↩ a fifth copy of a decision
+        // the feature exists to hold in one place.
+        Button("Open Board for Selected Repository") {
+            guard model.showBoard(model.selectedRowBoardAction) else { return }
+            openWindow(id: "board")
+        }
+        .keyboardShortcut(.return, modifiers: .command)
+        .disabled(!model.canOpenBoardForSelectedRow)
+    }
+}
+
+/// The auxiliary screens, as menu items.
+///
+/// A `View` rather than inline buttons because `openWindow` is an environment
+/// value, and `Commands` is not a view hierarchy that can read one.
+///
+/// ⚠️ **Two kinds of item now sit here, and they are not interchangeable.** The
+/// console faces call `showConsoleFace`, which is a *destination*: a menu item
+/// named "Operations" that closed Operations because it happened to be open
+/// would do the opposite of what it says on every second use. The doors in the
+/// status bar are the toggles, because a door carries the figure that makes a
+/// toggle read as one. The remaining `openWindow` items are screens whose scenes
+/// have not moved yet.
+///
+/// The model is **passed in, never read from the environment**, for the reason
+/// `NewStoryMenuItem` records: `@Environment(AppModel.self)` in a `Commands`
+/// tree compiles, passes every test, and kills the app at launch (#64, #84).
+private struct OpenWindowButtons: View {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Operations") { model.showConsoleFace(.operations) }
+        Button("Up Next") { model.showConsoleFace(.nextSteps) }
         // No Analysis entry: it is not a window any more (#151). Show/Hide
         // Analysis lives with the other View items, beside Show/Hide Details.
-        Button("Repositories") { openWindow(id: "repositories") }
-        Button("Preflight") { openWindow(id: "preflight") }
-        Button("Archive") { openWindow(id: "archive") }
+        Button("Repositories") { model.showConsoleFace(.repositories) }
+        Button("Preflight") { model.showConsoleFace(.preflight) }
+        Button("Archive") { model.showConsoleFace(.archive) }
     }
 }
 

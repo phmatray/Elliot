@@ -124,6 +124,12 @@ public actor BoardService: SystemMoving {
         }
         let context = MoveContext(
             repoIsEnabled: repo.isEnabled,
+            // Read off the row this method already loaded. That is the whole
+            // reason the verdict is persisted rather than held on `AppModel`:
+            // the funnel every move passes through gets it with no new
+            // collaborator, so a drag, `board_move_card` and `board_next`
+            // cannot answer differently.
+            repoPreflight: repo.preflightVerdict,
             activeRunID: activeRun?.id,
             allowSideEffects: origin.allowsSideEffects,
             providedFollowUps: followUps,
@@ -239,6 +245,10 @@ public actor BoardService: SystemMoving {
         /// sheet, `board_create_card`, the GitHub import — keeps saying nothing
         /// rather than having to say "no lens" out loud.
         angle: AnalysisAngle? = nil,
+        /// The labels this card asks its issue to carry. Defaulted to none, so
+        /// the common path — the New-story sheet with nothing ticked,
+        /// `board_create_card`, the GitHub import — is unchanged.
+        labels: [String] = [],
         idempotencyKey: String? = nil
     ) async throws -> CreatedCard {
         guard try await store.repo(id: repoID) != nil else { throw BoardError.repoNotFound(repoID) }
@@ -260,6 +270,7 @@ public actor BoardService: SystemMoving {
             body: body,
             story: story,
             angle: angle,
+            labels: labels,
             column: column,
             orderIndex: try await store.nextOrderIndex(repoID: repoID, column: column),
             columnEnteredAt: now,
@@ -323,12 +334,21 @@ public actor BoardService: SystemMoving {
         return try await store.card(idempotencyKey: key)
     }
 
-    /// Corrects what the *user* wrote on a card: its label, its story, its note.
+    /// Corrects what the *user* wrote on a card: its label, its story, its note,
+    /// and the GitHub labels it asks for.
     ///
     /// Deliberately not `(_ card: Card)`. The stored card is re-fetched and only
-    /// these three fields are overwritten, so column, order, issue, PR and
+    /// these fields are overwritten, so column, order, issue, PR and
     /// branch keep their one real owner — a whole-`Card` write would be a second
     /// path that can move a card without firing a rule.
+    ///
+    /// ⚠️ `labels` is **optional, and `nil` means "the caller said nothing"** —
+    /// not "no labels". One caller genuinely says nothing: `board_update_card`
+    /// is a wire case older than this field and names only title, body and
+    /// story. Were this a plain `[String]`, that path would have to pass `[]`,
+    /// and every agent edit of a card's title would silently strip the labels a
+    /// human chose. Same shape, and the same reason, as
+    /// `MoveContext.providedFollowUps`.
     ///
     /// Refused once the card carries an issue number: from that point the issue
     /// on github.com is the record, and a card edit would silently diverge from it.
@@ -337,7 +357,9 @@ public actor BoardService: SystemMoving {
     /// now says without a second round trip. `@discardableResult` because the
     /// sheet that calls this is looking at the card already.
     @discardableResult
-    public func updateCard(id: UUID, title: String, body: String, story: UserStory?) async throws -> Card {
+    public func updateCard(
+        id: UUID, title: String, body: String, story: UserStory?, labels: [String]? = nil
+    ) async throws -> Card {
         guard var card = try await store.card(id: id) else { throw BoardError.cardNotFound(id) }
         if let issue = card.issueNumber { throw BoardError.cardAlreadyFiled(issue) }
         // Once the card points at something on github.com, that is the record.
@@ -347,6 +369,7 @@ public actor BoardService: SystemMoving {
         card.title = title
         card.body = body
         card.story = story
+        if let labels { card.labels = labels }
         try await store.saveCard(card)
         return card
     }

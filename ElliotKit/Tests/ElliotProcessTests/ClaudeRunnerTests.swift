@@ -525,6 +525,74 @@ struct ClaudeRunnerTests {
         ])
     }
 
+    /// The labels a card asked for, followed all the way to the argv the child
+    /// process is actually handed.
+    ///
+    /// Every other test of this feature stops at a `String` — the builder's
+    /// output, the rule engine's action, the store's column. This is the only
+    /// one that runs a real `Process` and reads back what it received, which is
+    /// the last step where quoting can still be got wrong: `-p` is one argv
+    /// element, so a shell-quoting mistake would show up here and nowhere else.
+    ///
+    /// ⚠️ What it does **not** establish is whether `create-issue` acts on the
+    /// flag. That is the skill's business, it is measured in this pull request's
+    /// description, and no test in this repository can answer it.
+    @Test("A card's labels reach the child process, in one argv element")
+    func labelsReachTheArgv() async throws {
+        let dir = try TestPaths.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let argvOut = dir.appendingPathComponent("argv.txt")
+        let then = Date(timeIntervalSince1970: 1_700_000_000)
+
+        // Through the real rule engine, from a real card — not a hand-written
+        // prompt string, which would prove only that this test can type.
+        let card = Card(
+            repoID: UUID(), title: "Bound the await", body: "It hangs.",
+            labels: ["bug", "documentation"],
+            columnEnteredAt: then, createdAt: then, updatedAt: then
+        )
+        let outcome = evaluateMove(
+            from: .backlog, to: .todo, card: card,
+            context: MoveContext(
+                repoIsEnabled: true, activeRunID: nil, allowSideEffects: true,
+                // A human's move, and backlog → todo besides: the green guard has
+                // nothing to say about filing an issue, and there is no pull
+                // request for it to have read.
+                requiresVerifiedGreen: false, prVerdict: nil
+            )
+        )
+        guard case .action(let action) = outcome else {
+            Issue.record("the move produced no action: \(outcome)")
+            return
+        }
+        let prompt = SlashCommandBuilder.prompt(for: action)
+
+        let run = try ClaudeRun.start(
+            invocation: ClaudeInvocation(runID: UUID(), prompt: prompt, cwd: dir.path),
+            config: config(environment: ["FAKE_CLAUDE_ARGV_OUT": argvOut.path]),
+            logURL: dir.appendingPathComponent("run.ndjson")
+        )
+        defer { run.cancel() }
+        _ = try await collect(run)
+
+        let argv = try String(contentsOf: argvOut, encoding: .utf8)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .dropLast()
+            .map(String.init)
+
+        // The idea is `Card.ideaText`, which joins a note card's title and body
+        // — the flags follow all of it, never interrupt it.
+        let flag = try #require(argv.firstIndex(of: "-p").map { argv[$0 + 1] })
+        let expected = #"""
+            /ai-migration-kit:create-issue Bound the await. It hangs. --label "bug" --label "documentation"
+            """#
+        #expect(flag == expected)
+        // One element, not three: the quotes are payload, and a child that
+        // received them as separate arguments would be a builder emitting shell
+        // syntax into an argv that never sees a shell.
+        #expect(!argv.contains(#"--label"#))
+    }
+
     /// The stream and the durable log must agree, however the run is timed.
     ///
     /// A child that writes its whole output and exits at once catches a

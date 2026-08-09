@@ -442,15 +442,58 @@ struct EndToEndTests {
         #expect(audits.first?.origin == .system(reason: .reconciliation))
     }
 
-    /// `cardsCorrected` used to count this: the old switch wrote nothing, set
-    /// no move, then fell through to `return true`. A launch summary that
-    /// overstates what it did is the one thing a summary must not do.
-    @Test("A merged pull request on a card already in Done corrects nothing, and says so")
-    func reconcilerDoesNotCountNoOps() async throws {
+    /// A card already in Done gains no *move* from a merged pull request — but
+    /// since #139 it does gain the three fields, so the sweep really did
+    /// correct something and says so.
+    ///
+    /// ⚠️ This assertion read `cardsCorrected == 0` until #139, and the state it
+    /// seeds is precisely the defect #139 exists to close: a Done card holding
+    /// only an issue number, with no link to the pull request that closed it.
+    /// The old zero was truthful about the old code and about nothing else —
+    /// it described a card the board could not explain. The invariant it was
+    /// written to protect (a summary must not overstate what it did) is intact
+    /// and now lives in `reconcilerDoesNotCountRealNoOps` below, which seeds a
+    /// card that has *nothing left to learn*.
+    @Test("A merged pull request teaches a Done card which pull request closed it")
+    func reconcilerRecordsThePullRequestOnADoneCard() async throws {
         let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
         defer { stack.cleanUp() }
 
         let card = try await seedInterruptedCard(in: stack, column: .done, issue: 104)
+        let summary = await reconciler(for: stack, prs: "prs-merged.json").sweep()
+
+        #expect(summary.orphanedRuns == 1)
+        #expect(summary.cardsCorrected == 1)
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.column == .done)
+        #expect(after.prNumber == 203)
+        #expect(after.prURL == "https://github.com/phmatray/Elliot/pull/203")
+        #expect(after.branch == "feat/104-already-landed")
+        // Fields, but no move — it was already in Done, so nothing was moved
+        // and nothing is recorded in the history.
+        #expect(try await stack.store.audits(cardID: card.id).isEmpty)
+    }
+
+    /// The invariant the test above used to carry: `cardsCorrected` counts what
+    /// changed, never what was merely looked at. The old switch wrote nothing,
+    /// set no move, then fell through to `return true`. A launch summary that
+    /// overstates what it did is the one thing a summary must not do.
+    ///
+    /// Seeded with the pull request's fields already on the card, which is what
+    /// makes this a genuine no-op after #139 rather than an artefact of the
+    /// outcome having had nothing to offer.
+    @Test("A merged pull request on a Done card that already names it corrects nothing")
+    func reconcilerDoesNotCountRealNoOps() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await seedInterruptedCard(in: stack, column: .done, issue: 104)
+        card.prNumber = 203
+        card.prURL = "https://github.com/phmatray/Elliot/pull/203"
+        card.branch = "feat/104-already-landed"
+        try await stack.store.saveCard(card)
+
         let summary = await reconciler(for: stack, prs: "prs-merged.json").sweep()
 
         #expect(summary.orphanedRuns == 1)
@@ -563,6 +606,136 @@ struct EndToEndTests {
 
         let audits = try await stack.store.audits(cardID: card.id)
         #expect(audits.first?.origin == .system(reason: .prMergedExternally))
+    }
+
+    // MARK: - A pull request first seen already finished still names itself (#139)
+
+    /// The case #139 exists for, and the one the common path hides: a card that
+    /// holds only an **issue** number, whose pull request was opened *and*
+    /// merged while Elliot was closed. It never sees a `.prOpen`, so the
+    /// sighting that sends it to Done is its only chance to learn which pull
+    /// request did it. Before #139 it landed in Done with all three fields nil
+    /// — the board recording that the work finished but not what finished it.
+    ///
+    /// Matched by `PRMatcher` on the issue number, which is the branch of
+    /// `reconcile` that `card.prNumber` being nil selects.
+    @Test("A pull request first sighted already merged sends the card to Done naming itself")
+    func watcherRecordsAPullRequestItOnlyEverSawMerged() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Landed unseen").card
+        card.column = .inProgress
+        card.issueNumber = 107
+        card.prNumber = nil
+        try await stack.store.saveCard(card)
+
+        let pr = pullRequest(number: 206, issue: 107, state: "MERGED", mergedAt: Date())
+        #expect(await watcher(for: stack).reconcile(card: card, against: [pr]))
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.column == .done)
+        // The whole point of the issue: Done *and* able to say what closed it.
+        #expect(after.prNumber == 206)
+        #expect(after.prURL == "https://github.com/phmatray/Elliot/pull/206")
+        #expect(after.branch == "feat/107-the-thing")
+    }
+
+    /// The closed-unmerged twin. The fields must arrive *alongside* the banner,
+    /// not instead of it — a card that says only "closed without being merged"
+    /// with no pull request to open is the same dead end one case over.
+    @Test("A pull request first sighted already closed records itself and says it was abandoned")
+    func watcherRecordsAPullRequestItOnlyEverSawClosed() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Dropped unseen").card
+        card.column = .inProgress
+        card.issueNumber = 108
+        card.prNumber = nil
+        try await stack.store.saveCard(card)
+
+        let pr = pullRequest(number: 207, issue: 108, state: "CLOSED")
+        #expect(await watcher(for: stack).reconcile(card: card, against: [pr]))
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.prNumber == 207)
+        #expect(after.prURL == "https://github.com/phmatray/Elliot/pull/207")
+        #expect(after.branch == "feat/108-the-thing")
+        #expect(after.lastError == "The pull request was closed without being merged.")
+    }
+
+    /// The regression AC4 creates if `reconcile` keeps matching on the recorded
+    /// number alone, found in review of #139.
+    ///
+    /// Writing the abandoned pull request's number onto a card that is *still
+    /// in flight* ties the watcher to it: `reconcile` prefers an exact
+    /// `card.prNumber` match over `PRMatcher`, so a replacement pull request
+    /// for the same issue becomes invisible for ever and the card never leaves
+    /// In Progress. Before #139 the number was never written, so this could not
+    /// happen — the fix must not buy the panel a link at the cost of the card.
+    ///
+    /// Reachable in production: `tick()` reconciles `.inProgress` as well as
+    /// `.inReview`.
+    @Test("A card whose pull request was abandoned still finds the replacement for the same issue")
+    func watcherFindsAReplacementAfterAnAbandonedPullRequest() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Second attempt").card
+        card.column = .inProgress
+        card.issueNumber = 109
+        try await stack.store.saveCard(card)
+
+        let watcher = watcher(for: stack)
+        let abandoned = pullRequest(number: 208, issue: 109, state: "CLOSED")
+
+        // First sighting: the card records what was abandoned, and stays put.
+        #expect(await watcher.reconcile(card: card, against: [abandoned]))
+        let afterFirst = try #require(try await stack.store.card(id: card.id))
+        #expect(afterFirst.prNumber == 208)
+        #expect(afterFirst.column == .inProgress)
+
+        // Someone opens a new pull request for the same issue. The card must
+        // see it, even though it now holds the dead one's number.
+        let replacement = pullRequest(number: 209, issue: 109, state: "OPEN")
+        #expect(await watcher.reconcile(card: afterFirst, against: [abandoned, replacement]))
+
+        let afterSecond = try #require(try await stack.store.card(id: card.id))
+        #expect(afterSecond.prNumber == 209)
+        #expect(afterSecond.prURL == "https://github.com/phmatray/Elliot/pull/209")
+        #expect(afterSecond.branch == "feat/109-the-thing")
+        #expect(afterSecond.lastError == nil)
+        #expect(afterSecond.column == .inReview)
+    }
+
+    /// The other half of the same rule: a card that has *reached Done* keeps
+    /// the pull request it recorded. Nothing is in flight, so there is no
+    /// replacement to look for, and re-matching by issue could pull the card
+    /// onto an unrelated later pull request.
+    @Test("A Done card keeps the pull request it recorded, and is not re-matched by issue")
+    func doneCardKeepsItsRecordedPullRequest() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Finished").card
+        card.column = .done
+        card.issueNumber = 110
+        card.prNumber = 210
+        card.prURL = "https://github.com/phmatray/Elliot/pull/210"
+        card.branch = "feat/110-the-thing"
+        try await stack.store.saveCard(card)
+
+        let recorded = pullRequest(number: 210, issue: 110, state: "CLOSED")
+        let later = pullRequest(number: 211, issue: 110, state: "OPEN")
+
+        // Nothing to say: it already carries 210's fields and the banner would
+        // be the only change, so this is the no-op branch, not a re-match.
+        _ = await watcher(for: stack).reconcile(card: card, against: [recorded, later])
+
+        let after = try #require(try await stack.store.card(id: card.id))
+        #expect(after.prNumber == 210)
+        #expect(after.column == .done)
     }
 }
 

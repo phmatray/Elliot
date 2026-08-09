@@ -251,11 +251,10 @@ struct OfflineResponder: Sendable {
     static func filter(_ name: String?, in repos: [Repo]) -> RepoFilter {
         guard let name else { return .all }
         guard let match = repos.first(where: { $0.nameWithOwner == name || $0.path == name }) else {
-            return .unknown(.failure(
-                code: .repoNotFound,
-                message: "No registered repository matches \"\(name)\".",
-                hint: "Known: \(repos.map(\.nameWithOwner).joined(separator: ", "))"
-            ))
+            // The words, the hint and the code all come from `ElliotIPC` so this
+            // cannot part from the live path — which is the same question asked
+            // of the same board, and must be answered in the same bytes (#219).
+            return .unknown(.repoNotFound(name: name, in: repos))
         }
         return .one(match)
     }

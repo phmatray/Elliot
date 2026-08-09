@@ -21,6 +21,13 @@ public struct BoardView: View {
     /// panel off-screen in the flipped case. `ScrollPosition` takes the x.
     @State private var boardScroll = ScrollPosition(edge: .leading)
 
+    /// The window's content height, observed rather than measured by a
+    /// container. Everything the console's arithmetic needs is derived from it,
+    /// so a zero here means "not laid out yet" and the doors are simply refused
+    /// until the first pass — which `ConsoleLayout.canOpen(contentHeight: 0)`
+    /// already answers correctly.
+    @State private var contentHeight: CGFloat = 0
+
     public init() {}
 
     public var body: some View {
@@ -45,9 +52,35 @@ public struct BoardView: View {
             case .empty: emptyState
             case .ready: board
             }
+            // Between the board and the status bar, so the doors that opened it
+            // sit directly under what they opened. The board above takes
+            // whatever height is left, which is `ConsoleLayout.boardHeight` by
+            // construction rather than by a second calculation — the property
+            // `theHeightsSumToWhatIsAvailable` pins.
+            if let face = model.console.face {
+                Divider()
+                ConsoleRegion(
+                    face: face,
+                    height: ConsoleLayout.consoleHeight(
+                        model.console.height, contentHeight: contentHeight)
+                )
+                // Driven by the `.animation(…, value: model.console.face)`
+                // below, which is gated on `reduceMotion`; with motion reduced
+                // that animation is nil and this transition is applied with no
+                // animation to run it, so the console appears and disappears
+                // outright.
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             Divider()
-            StatusBar()
+            StatusBar(contentHeight: contentHeight)
         }
+        // The window's content height, read without adding a `GeometryReader`.
+        // This is a layout that has been wrecked three times (#47, #50, #52,
+        // #53); a container introduced to measure it is a container that can
+        // change it, and this modifier only observes.
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.console.face)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.console.height)
         .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: model.selectedCardID)
         // The columns slide aside for the analysis panel the way they do for the
         // detail panel. Keyed on its own value: the one above is keyed on the
@@ -63,10 +96,31 @@ public struct BoardView: View {
         .focusEffectDisabled()
         .focused($boardFocused)
         .defaultFocus($boardFocused, true)
+        // The order is `EscapeRoute`'s and not this closure's. It used to be a
+        // two-line guard, which was the whole rule while the selection was the
+        // only dismissable thing on the board; with the console over it there is
+        // an order to state, and `.ignored` still has to reach the responder
+        // chain below (an inline editor's own `.onExitCommand`, then the
+        // window).
         .onKeyPress(.escape) {
-            guard model.selectedCardID != nil else { return .ignored }
-            model.selectedCardID = nil
-            return .handled
+            switch EscapeRoute.next(
+                consoleIsOpen: model.console.isOpen,
+                hasSelectedCard: model.selectedCardID != nil,
+                // Since #265 a `confirmationDialog` can be up *in this window*:
+                // Preflight and Repositories are console faces, and both present
+                // `ForgetConfirmation`. Folding the console out from under it
+                // would leave a question attached to a screen that is gone.
+                hasOpenDialog: model.forgetRequest != nil)
+            {
+            case .foldConsole:
+                model.closeConsole()
+                return .handled
+            case .deselectCard:
+                model.selectedCardID = nil
+                return .handled
+            case .ignored:
+                return .ignored
+            }
         }
         // Picking a card was pointer-only, which made every affordance built
         // for the keyboard — ⌘→, ⌘←, Escape, the whole Card menu — depend on a
@@ -147,7 +201,7 @@ public struct BoardView: View {
         ToolbarItem {
             Button {
                 model.newCardRepoID = model.defaultRepoIDForNewCard
-                openWindow(id: "newStory")
+                model.showConsoleFace(.newStory)
             } label: {
                 Label("New story", systemImage: "plus")
             }
@@ -228,7 +282,7 @@ public struct BoardView: View {
 
         ToolbarItem {
             Button {
-                openWindow(id: "repositories")
+                model.showConsoleFace(.repositories)
             } label: {
                 Label("Repositories", systemImage: "square.stack.3d.up")
             }
@@ -238,7 +292,7 @@ public struct BoardView: View {
 
         ToolbarItem {
             Button {
-                openWindow(id: "preflight")
+                model.showConsoleFace(.preflight)
             } label: {
                 Label("Preflight", systemImage: "checkmark.seal")
             }
@@ -776,11 +830,18 @@ struct BoardFraming: Equatable, Sendable {
 /// depth, nor the capacity in use, nor the day's spend appeared — although all
 /// three were either already in memory or one aggregate query away.
 ///
-/// It says the three numbers of a control room now. Each opens the screen that
-/// can act on it, so the strip is a way in rather than a readout.
+/// It says the three numbers of a control room now. Each **is a door**: pressing
+/// one unfolds the screen that can act on that number, in this window, directly
+/// above the figure that was pressed. So the strip is a way in rather than a
+/// readout — and since the console lives here, pressing the same figure again is
+/// the way back out.
 struct StatusBar: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openWindow) private var openWindow
+
+    /// The window's content height, passed down rather than measured here,
+    /// because what a door needs to know is whether the *console* fits — a
+    /// question about the window, not about this 28pt strip.
+    let contentHeight: CGFloat
 
     var body: some View {
         HStack(spacing: 8) {
@@ -803,7 +864,7 @@ struct StatusBar: View {
                 tint: model.occupancy.writers > 0 ? Palette.armed : Palette.quiet,
                 help: "How many runs are going, against the limit. Click to change it.",
                 spoken: "\(model.occupancy.writers) of \(model.limits.maxConcurrent) workers busy",
-                window: "operations"
+                face: .operations
             )
 
             // Only when there is one. A permanent "0 queued" is furniture, and
@@ -816,7 +877,22 @@ struct StatusBar: View {
                     spoken: model.isQueuePaused
                         ? "\(model.queue.count) queued, paused"
                         : "\(model.queue.count) runs queued",
-                    window: "operations"
+                    face: .operations
+                )
+            }
+
+            // Same rule as the queue above — only when there is one. With the
+            // shipped retention constants a launch prunes nothing, so this is
+            // absent on an ordinary day rather than reading "0 pruned"; and
+            // because it is derived from `artifactSweep` rather than pushed into
+            // `status`, nothing that speaks later can overwrite it.
+            if let sweep = model.artifactSweep, let sentence = sweep.sentence {
+                figure(
+                    text: "\(sweep.removed) pruned",
+                    tint: Palette.quiet,
+                    help: "\(sentence) Artefacts past the retention horizon, removed at launch.",
+                    spoken: sentence,
+                    face: .operations
                 )
             }
 
@@ -825,7 +901,7 @@ struct StatusBar: View {
                 tint: model.isOverDailyCeiling ? Palette.refused : Palette.quiet,
                 help: "Spent today — \(model.spentToday.sentence()). Click to set a ceiling.",
                 spoken: "spent today, \(model.spentToday.sentence())",
-                window: "operations"
+                face: .operations
             )
 
             // Elliot wrote this hint, so it is not set in the fact face.
@@ -850,16 +926,29 @@ struct StatusBar: View {
     /// `spoken` rather than reading the label aloud: "2/4 workers" is a
     /// screen-reader's nightmare, and a number with no sentence around it says
     /// nothing to anyone who cannot see where it sits.
+    /// ⚠️ `face` is a `ConsoleFace` and was a `String` window id. A typo in that
+    /// string opened nothing at all, silently — there is no such thing as a
+    /// mistyped case.
     private func figure(
-        text: String, tint: Color, help: String, spoken: String, window: String
+        text: String, tint: Color, help: String, spoken: String, face: ConsoleFace
     ) -> some View {
-        Button { openWindow(id: window) } label: {
+        // Refused only when the console is *shut* and could not fit. A door on
+        // an open console must stay live whatever the window height, or a reader
+        // who shrank the window would have no way to fold away what is on
+        // screen — Escape aside, and Escape is not discoverable.
+        let refusal = model.console.isOpen ? nil : ConsoleLayout.refusal(contentHeight: contentHeight)
+
+        return Button { model.pressConsoleDoor(face) } label: {
             Fact(text: text, tint: tint, small: true)
         }
         .buttonStyle(.plain)
-        .help(help)
+        .disabled(refusal != nil)
+        .help(refusal ?? help)
         .accessibilityLabel(spoken)
-        .accessibilityHint("Opens the screen that can change it")
+        .accessibilityHint(
+            refusal ?? (model.console.face == face
+                ? "Folds away the screen that can change it"
+                : "Unfolds the screen that can change it"))
     }
 }
 
@@ -1214,7 +1303,7 @@ struct ColumnView: View {
     /// quiet line rather than a warning.
     private func olderFooter(_ count: Int) -> some View {
         Button {
-            openWindow(id: "archive")
+            model.showConsoleFace(.archive)
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "archivebox")

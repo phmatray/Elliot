@@ -18,7 +18,13 @@ public struct NewCardWindow: View {
     public init() {}
 
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
+
+    /// ⛔ **No `@Environment(\.dismiss)` here, and that is the whole of what
+    /// moving this screen into the console changed.** It was a `Window` scene,
+    /// where dismissing closed that window. As a console face it resolves to the
+    /// *enclosing* window — the board — so Cancel would close the application's
+    /// main window. `AnalysisPanelView` records the identical trap, met the same
+    /// way when it stopped being a window in #151.
 
     @State private var draft = CardDraft()
 
@@ -38,16 +44,25 @@ public struct NewCardWindow: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    CardFieldsEditor(draft: $draft)
+                    CardFieldsEditor(
+                        draft: $draft,
+                        repositoryLabels: repoID.map { model.labels(for: $0) } ?? .notAsked
+                    )
                 }
                 .padding(18)
             }
+            // The sheet shares `CardFieldsEditor`, so it shows the same label
+            // picker — and therefore has to fill the same list, or it would
+            // offer nothing and say the repository has none. `add()` carries
+            // what is ticked through to the card; a control here that did not
+            // would be the discarding editor `Kind` exists to prevent.
+            .task(id: repoID) { if let repoID { await model.loadLabels(for: repoID) } }
 
             Divider()
 
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Cancel", role: .cancel) { model.closeConsole() }
                 Button("Add to backlog") { add() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(repoID == nil || !draft.isValid)
@@ -55,7 +70,8 @@ public struct NewCardWindow: View {
             .padding(18)
         }
         .frame(minWidth: 460, minHeight: 420)
-        .navigationTitle("New story")
+        // No `.navigationTitle`: this is a console face now, and a title set
+        // here propagates to the *board window* and renames it (#263).
     }
 
     private var repoName: String? {
@@ -66,9 +82,10 @@ public struct NewCardWindow: View {
         guard let repoID else { return }
         Task {
             await model.createCard(
-                repoID: repoID, title: draft.title, story: draft.story, body: draft.body
+                repoID: repoID, title: draft.title, story: draft.story, body: draft.body,
+                labels: draft.labels
             )
-            dismiss()
+            model.closeConsole()
         }
     }
 }
@@ -130,7 +147,25 @@ struct MergeConfirmation: View {
                 Button("Merge PR \(pr)") {
                     Task { await model.confirmMerge(cardID: pending.cardID, followUps: cleaned) }
                 }
-                .keyboardShortcut(.defaultAction)
+                // ⛔ No `.keyboardShortcut(.defaultAction)`, and its absence is
+                // load-bearing — see `DefaultAction`, which lists this control
+                // among the ones deliberately denied one.
+                //
+                // It carried one until it was measured against the panel it
+                // actually renders in. `PanelLayout.headerRegions` returns
+                // `[.mergeConfirmation]` and only *then* checks `isEditing`, so
+                // this confirmation deliberately survives edit mode; on a card
+                // imported from a pull request that closes no issue —
+                // `issueNumber == nil`, so "Edit story" shows; `prNumber != nil`,
+                // so a merge can be armed — Return had two claimants on screen
+                // at once and resolved between saving an edit and merging to a
+                // default branch on github.com, with nothing in the code
+                // deciding.
+                //
+                // The fix is not to scope Return better. The one act in this
+                // product that cannot be taken back must be reached by pressing
+                // it, which is the same argument `AnalysisPanelView` makes for
+                // its Start button one panel over.
                 .tint(Palette.irreversible)
             }
         }

@@ -18,8 +18,15 @@ import Foundation
 /// `WindowCaptureTests` parses `ElliotApp.swift` and compares it to this, so the
 /// next such move fails a test instead of reaching an agent.
 public enum ElliotWindows {
+    /// ⚠️ **This list shrinks as the console grows, and that is the design.**
+    /// `operations` and `nextSteps` left it in the first console wave: they are
+    /// `ConsoleFace` cases now, reached inside the board window, so there is no
+    /// scene for `board_screenshot` to find and none for it to report shut.
+    /// `ConsoleFace.allScreens` is the union of this list and the faces, and
+    /// *that* is constant — a screen may change how it is reached and may not
+    /// stop existing.
     public static let all = [
-        "board", "repositories", "operations", "nextSteps", "preflight", "archive", "newStory",
+        "board"
     ]
 
     /// For prose: `"board, repositories, …"`.
