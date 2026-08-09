@@ -139,20 +139,36 @@ private func finishedNotification(run: SkillRun, card: Card, repo: Repo) -> Boar
 private func systemMoveNotification(
     audit: MoveAudit, card: Card, repo: Repo
 ) -> BoardNotification? {
-    // Only the board's own moves. A drag or a `board_move_card` is a gesture
-    // someone made and watched happen.
-    guard case .system(let reason) = audit.origin else { return nil }
-
+    // Exhaustive over `MoveOrigin`, with no `default:`. It was
+    // `guard case .system … else { return nil }`, and under that shape a new
+    // origin falls straight through to silence. Silence is the right answer for
+    // a gesture somebody made and watched happen; it is the worst possible
+    // answer for a session running with nobody in the room, which is exactly
+    // the origin that arrived next.
     let body: String
-    switch reason {
-    case .prBecameReady:
-        body = "\(prLabel(card)) is ready — moved to In Review."
-    case .prMergedExternally:
-        body = "\(prLabel(card)) was merged — moved to Done."
-    case .reconciliation, .githubImport:
-        // Both happen at launch, with the window in front of you, and describe
-        // what was already true rather than something that just happened.
+    switch audit.origin {
+    case .userDrag, .mcp:
+        // A drag and a `board_move_card` are gestures someone made and watched.
         return nil
+
+    case .autoDev:
+        // Named by the column reached rather than by the act, because the acts
+        // are already named elsewhere and the thing a reader who walked away
+        // wants is how far it got.
+        body = "\(prLabel(card)) — an auto-dev session moved it to \(audit.to.displayName)."
+
+    case .system(let reason):
+        switch reason {
+        case .prBecameReady:
+            body = "\(prLabel(card)) is ready — moved to In Review."
+        case .prMergedExternally:
+            body = "\(prLabel(card)) was merged — moved to Done."
+        case .reconciliation, .githubImport:
+            // Both happen at launch, with the window in front of you, and
+            // describe what was already true rather than something that just
+            // happened.
+            return nil
+        }
     }
 
     return BoardNotification(
