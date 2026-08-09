@@ -47,7 +47,10 @@ struct CardView: View {
             }
 
             if let run = activeRun {
-                RunningStrip(run: run, lastLine: lastLine(of: run))
+                // No `context:` and no `cancel:`: the card *is* the run's
+                // context, and Cancel is in its menu. Operations' band passes
+                // both — one component, two surfaces.
+                RunningStrip(run: run, lastLine: model.lastLine(of: run))
             } else if let receipt = lastReceipt {
                 // What `gh` established, not what the agent said about itself.
                 HStack(spacing: 5) {
@@ -204,17 +207,6 @@ struct CardView: View {
     private var isSelected: Bool { model.selectedCardID == card.id }
     private var activeRun: SkillRun? { model.activeRuns[card.id] }
 
-    /// The most recent event of this run that says anything in one line.
-    ///
-    /// Searched backwards rather than taken from the end: `liveLog` holds every
-    /// event now, and most of them — a successful tool result, a `system` line,
-    /// a partial — collapse to nothing. Taking the last event outright would
-    /// blank the strip every time one of those arrived last.
-    private func lastLine(of run: SkillRun) -> String? {
-        guard let events = model.liveLog[run.id] else { return nil }
-        return events.reversed().lazy.compactMap(AppModel.describe).first
-    }
-
     private var refusalMessage: String? {
         model.refusal?.cardID == card.id ? model.refusal?.message : nil
     }
@@ -289,65 +281,6 @@ struct CardView: View {
 }
 
 // MARK: - Pieces
-
-/// A run in flight, on the card. Says how long it has been going and what it
-/// last did — a bare spinner cannot distinguish a healthy ten-minute run from a
-/// wedged one.
-struct RunningStrip: View {
-    let run: SkillRun
-    let lastLine: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 5) {
-                // Queued, running and cancelling used to share one spinner, so
-                // pressing Cancel changed nothing on screen. A spinner means
-                // output is arriving; anything else says which state it is in.
-                if run.state == .running {
-                    ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
-                } else {
-                    Image(systemName: run.state.icon)
-                        .font(.system(size: 10))
-                        .foregroundStyle(run.state.tint)
-                        .frame(width: 12, height: 12)
-                }
-                Text(run.kind.skillName)
-                    .font(Type.fact)
-                    .foregroundStyle(run.state.tint)
-                if run.state != .running {
-                    Text(run.state.label)
-                        .font(Type.prose)
-                        .foregroundStyle(run.state.tint)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                if let started = run.startedAt {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Fact(text: Elapsed.short(from: started, to: context.date), small: true)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-            if let lastLine, !lastLine.isEmpty {
-                Text(lastLine)
-                    .font(Type.factSmall)
-                    .foregroundStyle(Palette.quiet)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            if run.state == .stalled {
-                Text("No output for a while. It may still be thinking.")
-                    .font(Type.prose)
-                    .foregroundStyle(Palette.attention)
-            }
-        }
-        .padding(6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Surface.wash(run.state.tint))
-        .clipShape(RoundedRectangle(cornerRadius: Metric.nestedRadius))
-    }
-
-}
 
 /// A fact that is also a link. A real button, so it can be reached by keyboard
 /// and shows a focus ring — the previous version was a tap gesture on a capsule,
