@@ -1390,10 +1390,10 @@ public final class AppModel {
     /// get cheaper, that is where to look, and the table above is to be re-run
     /// first on the board that actually hurt.
     ///
-    /// Debug is roughly 2.5× slower throughout (22 µs and 376 µs at 100 cards),
-    /// and debug is what `swift test` and a bare `./Scripts/build-app.sh` give
-    /// you — so a slow-feeling board is worth re-measuring in release before it
-    /// is believed.
+    /// Debug is slower — 2.5× on `cards(in:)`, 1.6–2.0× on a pass, so 22 µs and
+    /// 376 µs at 100 cards — and debug is what `swift test` and a bare
+    /// `./Scripts/build-app.sh` give you. A board that feels slow is worth
+    /// re-measuring in release before that is believed.
     public func cards(in column: ElliotModel.Column) -> [Card] {
         cards
             .filter { $0.column == column && (selectedRepoID == nil || $0.repoID == selectedRepoID) }
