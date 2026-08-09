@@ -205,6 +205,44 @@ struct AnalysisPanelViewSourceTests {
             """)
     }
 
+    // MARK: - The bulk selections select; they do not decide
+
+    /// ⛔ **The duplicate hint is a courtesy, so the bar that acts on it in bulk
+    /// may only *select*.**
+    ///
+    /// `StoryProposal.duplicateOf` says in as many words that skipping a
+    /// near-duplicate is the reader's call, and the flag behind it is a
+    /// `TextSimilarity` score over two short titles at a threshold of 0.6 —
+    /// nowhere near good enough to reject on. *Reject the N flagged* would be
+    /// one keystroke that turns eight lenses' worth of hints into decisions,
+    /// with the rows gone before anyone read them (#295).
+    ///
+    /// A source gate because `swift test` cannot press a button: swapping
+    /// `analysisSelection = Set(flagged)` for `rejectProposals(ids: flagged)`
+    /// leaves every other test in this file green.
+    @Test("The selection bar selects the flagged rows; it never decides them")
+    func theBulkDuplicateActionOnlySelects() throws {
+        let bar = try Self.body(of: "private func selectionBar(", in: try Self.panelCode())
+
+        // Positive witnesses: the bar still offers both bulk selections, so the
+        // negative below is about what they do rather than about a renamed
+        // helper.
+        #expect(bar.contains("filter(\\.isGrounded)"), "the grounded selection has gone")
+        #expect(
+            bar.contains("filter(\\.looksDuplicated)"),
+            "the selection bar no longer offers the flagged rows in one gesture (#295)")
+
+        for verb in ["rejectProposals", "acceptProposals"] {
+            #expect(
+                !bar.contains(verb),
+                Comment(
+                    rawValue:
+                        "the selection bar calls \(verb). It stages rows for the footer's Accept "
+                        + "and Reject; deciding them here makes a hint into a refusal, on a 0.6 "
+                        + "similarity score (#295)."))
+        }
+    }
+
     /// ⛔ **The rejected disclosure is a sibling of `if proposed.isEmpty`, never
     /// inside its `else`.**
     ///

@@ -143,9 +143,33 @@ public enum ProposalStatus: String, Codable, CaseIterable, Sendable, Hashable {
 
 /// What a proposal appears to collide with. A hint, never a refusal: the
 /// decision to skip a near-duplicate is the reader's.
+///
+/// ⚠️ **Persisted as JSON on `StoryProposal.duplicateOf`, so the cases are
+/// additive and never renamed.** Swift's synthesised enum coding writes
+/// `{"card":{…}}`, one key per case, so a row written before a case existed
+/// still decodes — but a *renamed* case makes every row carrying the old name
+/// unreadable, and shipped rows cannot be migrated by a schema change.
 public enum DuplicateHint: Codable, Sendable, Hashable {
     case card(id: UUID, title: String)
     case issue(number: Int, title: String)
+    /// Another proposal from the **same analysis**, under another lens.
+    ///
+    /// Runs are per lens and land independently, so Bugs and Tech debt reading
+    /// the same file routinely propose the same change — and the panel groups
+    /// by angle, which puts the two copies in different sections of a list that
+    /// holds up to eight lenses' worth. Accept both and the board grows two
+    /// cards, each of which later spawns its own unattended `create-issue`
+    /// against the same work (#295).
+    ///
+    /// ⚠️ **One-directional by construction.** A run can only be scored against
+    /// siblings already written, so the *first* lens to land never carries this
+    /// and the later one always does. The label says "already proposed" for
+    /// that reason: worded symmetrically it would claim a pairing that only
+    /// one of the two rows knows about.
+    ///
+    /// The lens travels with it because the lens is the section heading — it is
+    /// how the reader finds the row this one looks like.
+    case proposal(id: UUID, title: String, angle: AnalysisAngle)
 
     public var label: String {
         switch self {
@@ -153,6 +177,8 @@ public enum DuplicateHint: Codable, Sendable, Hashable {
             "looks like the card \u{201C}\(title)\u{201D}"
         case .issue(let number, let title):
             "looks like issue #\(number) — \(title)"
+        case .proposal(_, let title, let angle):
+            "looks like \u{201C}\(title)\u{201D}, already proposed by the \(angle.title) lens"
         }
     }
 }
@@ -212,6 +238,16 @@ public struct StoryProposal: Identifiable, Codable, Sendable, Hashable {
     public var isGrounded: Bool {
         !evidence.isEmpty && evidence.allSatisfy(\.exists)
     }
+
+    /// Whether the harvest thought this collides with something that already
+    /// exists — a card, an open issue, or a sibling lens's proposal.
+    ///
+    /// Beside ``isGrounded`` because the panel offers the same gesture for
+    /// both: *select every row that looks like this*, so a bulk decision is one
+    /// click away. ⚠️ **Selecting is not deciding.** See ``duplicateOf`` — this
+    /// is a courtesy, and a bulk *Reject* of the flagged rows would be the
+    /// refusal this type says it is not.
+    public var looksDuplicated: Bool { duplicateOf != nil }
 
     /// Whether the *Rejected* list should offer to put this one back.
     ///

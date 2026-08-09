@@ -73,6 +73,53 @@ struct AnalysisModelTests {
         #expect(DuplicateHint.card(id: UUID(), title: "Dark mode").label.contains("Dark mode"))
     }
 
+    /// ⚠️ The hint from a sibling lens is **one-directional** — only the later
+    /// row carries it — so the wording has to say so rather than pair the two.
+    @Test("A sibling lens's hint names the lens, and reads as the later of the two")
+    func siblingHintNamesItsLensAndItsDirection() {
+        let label = DuplicateHint
+            .proposal(id: UUID(), title: "Cache the login shell", angle: .bugs)
+            .label
+        #expect(label.contains("Cache the login shell"))
+        #expect(label.contains("Bugs"))
+        // "already proposed" is the direction. A symmetric wording — "the same
+        // as", "matches" — would claim a pairing only one row knows about.
+        #expect(label.contains("already proposed"))
+    }
+
+    /// ⛔ `duplicateOf` is persisted as JSON on a table already in the field, so
+    /// a new case must leave old rows readable. Swift's synthesised enum coding
+    /// writes one key per case, which makes adding one additive — and renaming
+    /// one unreadable. Asserted against literal JSON rather than a round trip:
+    /// a round trip through today's code cannot fail this way.
+    @Test("A hint written before the sibling case existed still decodes")
+    func oldHintsStillDecode() throws {
+        let card = UUID()
+        let rows = [
+            #"{"card":{"id":"\#(card.uuidString)","title":"Dark mode"}}"#,
+            #"{"issue":{"number":12,"title":"Idle leak"}}"#,
+        ]
+        let decoded = try rows.map {
+            try JSONDecoder().decode(DuplicateHint.self, from: Data($0.utf8))
+        }
+        #expect(decoded[0] == .card(id: card, title: "Dark mode"))
+        #expect(decoded[1] == .issue(number: 12, title: "Idle leak"))
+    }
+
+    /// The flag the panel's bulk selection reads, beside `isGrounded`.
+    @Test("A proposal knows whether it was flagged, and it is only ever a flag")
+    func looksDuplicatedIsAFlagNotAStatus() {
+        var proposal = StoryProposal(
+            analysisID: UUID(), runID: UUID(), repoID: UUID(), angle: .bugs, title: "A story",
+            story: UserStory(role: "dev", want: "w", benefit: "b"), createdAt: Date())
+        #expect(!proposal.looksDuplicated)
+
+        proposal.duplicateOf = .proposal(id: UUID(), title: "A story", angle: .techDebt)
+        #expect(proposal.looksDuplicated)
+        // ⛔ A courtesy, never a refusal: being flagged decides nothing.
+        #expect(proposal.status == .proposed)
+    }
+
     @Test("Exactly one of card or analysis owns a run")
     func aRunBelongsToOneThing() {
         let cardRun = SkillRun(

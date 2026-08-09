@@ -543,8 +543,17 @@ struct AnalysisPanelView: View {
         !group.isEmpty && group.allSatisfy { model.analysisSelection.contains($0.id) }
     }
 
-    /// Grounding is the one objective fact available about an opinion, so it is
-    /// the one bulk selection worth offering.
+    /// The two bulk selections worth offering, and they are the two objective
+    /// things known about an opinion: whether the files it cites are there, and
+    /// whether its text already exists somewhere.
+    ///
+    /// ⛔ **Both *select*; neither decides.** The flagged rows are a courtesy —
+    /// `StoryProposal.duplicateOf` says in as many words that skipping a
+    /// near-duplicate is the reader's call — so a one-click *Reject the
+    /// duplicates* would turn a hint into a refusal, on a score
+    /// (`TextSimilarity`, threshold 0.6) that has no business making that
+    /// decision. Selecting puts the whole set one click from the footer's
+    /// Reject **and** one click from its Accept, with the rows still on screen.
     private func selectionBar(_ proposed: [StoryProposal]) -> some View {
         HStack(spacing: 10) {
             Fact(text: "\(model.analysisSelection.count) of \(proposed.count) selected", small: true)
@@ -556,6 +565,18 @@ struct AnalysisPanelView: View {
             .buttonStyle(.plain)
             .font(Type.prose)
             .disabled(grounded.isEmpty)
+
+            let flagged = proposed.filter(\.looksDuplicated).map(\.id)
+            Button("Select the \(flagged.count) flagged") {
+                model.analysisSelection = Set(flagged)
+            }
+            .buttonStyle(.plain)
+            .font(Type.prose)
+            .disabled(flagged.isEmpty)
+            .help(
+                "Selects every proposal that looks like a card, an open issue, or a story another "
+                    + "lens already proposed. Selecting is not deciding — Accept and Reject are "
+                    + "still yours.")
 
             Button("Clear") { model.analysisSelection = [] }
                 .buttonStyle(.plain)

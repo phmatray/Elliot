@@ -176,6 +176,167 @@ struct ProposalHarvesterTests {
         #expect(title == "Cache the login shell environment")
     }
 
+    // MARK: - Two lenses proposing the same story
+
+    /// Runs are per lens and land independently, so Bugs and Tech debt reading
+    /// the same file routinely propose the same change — and the panel groups by
+    /// angle, so the two copies sit in different sections of a list holding up
+    /// to eight lenses' worth. Accept both and the board grows two cards, each
+    /// of which later spawns its own unattended `create-issue` against the same
+    /// work (#295).
+    @Test("A story another lens already proposed is flagged, naming that lens")
+    func duplicateOfASiblingProposalIsHinted() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.cleanUp() }
+
+        // The Bugs lens landed first. Written straight to the store because
+        // what is under test is the *second* run's harvest.
+        let sibling = StoryProposal(
+            analysisID: fixture.analysis.id, runID: UUID(), repoID: fixture.repo.id,
+            angle: .bugs, title: "Cache the login shell environment",
+            story: UserStory(role: "dev", want: "w", benefit: "b"),
+            createdAt: Date()
+        )
+        try await fixture.store.saveProposals([sibling])
+
+        var later = fixture.run
+        later.id = UUID()
+        later.analysisAngle = .techDebt
+        try await fixture.store.saveRun(later)
+
+        try """
+        [{"title":"Cache the login shell environment at startup","role":"dev",
+          "want":"w","benefit":"b","evidence":["Sources/Real.swift:1"]}]
+        """.write(to: fixture.artifactURL, atomically: true, encoding: .utf8)
+
+        _ = await makeHarvester(fixture).harvest(
+            run: later, analysis: fixture.analysis,
+            repo: fixture.repo, artifactURL: fixture.artifactURL
+        )
+
+        let landed = try #require(
+            try await fixture.store.proposals(analysisID: fixture.analysis.id)
+                .first { $0.angle == .techDebt })
+        // ⛔ Flagged, never dropped, never refused: the decision to skip a
+        // near-duplicate is the reader's.
+        #expect(landed.status == .proposed)
+        guard case .proposal(let id, let title, let angle)? = landed.duplicateOf else {
+            Issue.record("expected a sibling hint, got \(String(describing: landed.duplicateOf))")
+            return
+        }
+        #expect(id == sibling.id)
+        #expect(title == sibling.title)
+        // The lens travels with it because the lens is the section heading —
+        // it is how the reader finds the row this one looks like.
+        #expect(angle == .bugs)
+        #expect(landed.duplicateOf?.label.contains("already proposed by the Bugs lens") == true)
+    }
+
+    /// ⚠️ One-directional by construction: a run can only be scored against
+    /// siblings already in the store, so the first lens to land carries no hint
+    /// and the later one carries it. The wording says "already proposed" for
+    /// exactly that reason — worded symmetrically it would claim a pairing only
+    /// one of the two rows knows about.
+    @Test("The lens that landed first is not marked; only the later one is")
+    func theHintMarksOnlyTheLaterLens() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.cleanUp() }
+
+        let harvester = makeHarvester(fixture)
+        try """
+        [{"title":"Cache the login shell environment","role":"dev","want":"w","benefit":"b",
+          "evidence":["Sources/Real.swift:1"]}]
+        """.write(to: fixture.artifactURL, atomically: true, encoding: .utf8)
+        _ = await harvester.harvest(
+            run: fixture.run, analysis: fixture.analysis,
+            repo: fixture.repo, artifactURL: fixture.artifactURL)
+
+        var later = fixture.run
+        later.id = UUID()
+        later.analysisAngle = .techDebt
+        try await fixture.store.saveRun(later)
+        let second = fixture.root.appendingPathComponent("stories-2.json")
+        try """
+        [{"title":"Cache the login shell environment at startup","role":"dev",
+          "want":"w","benefit":"b","evidence":["Sources/Real.swift:1"]}]
+        """.write(to: second, atomically: true, encoding: .utf8)
+        _ = await harvester.harvest(
+            run: later, analysis: fixture.analysis, repo: fixture.repo, artifactURL: second)
+
+        let all = try await fixture.store.proposals(analysisID: fixture.analysis.id)
+        let first = try #require(all.first { $0.angle == .bugs })
+        let marked = try #require(all.first { $0.angle == .techDebt })
+        #expect(first.duplicateOf == nil, "the first lens to land cannot see a sibling not yet written")
+        #expect(marked.looksDuplicated)
+    }
+
+    /// ⛔ The reordering hazard, pinned. This run's own stories are saved
+    /// *after* the hints are scored; swap those two steps and every story
+    /// becomes a duplicate of itself.
+    @Test("A story is never a duplicate of itself, nor of its own run's siblings")
+    func aRunDoesNotMatchItsOwnStories() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.cleanUp() }
+
+        try """
+        [{"title":"Cache the login shell environment","role":"dev","want":"w","benefit":"b",
+          "evidence":["Sources/Real.swift:1"]},
+         {"title":"Cache the login shell environment at startup","role":"dev","want":"w",
+          "benefit":"b","evidence":["Sources/Real.swift:1"]}]
+        """.write(to: fixture.artifactURL, atomically: true, encoding: .utf8)
+
+        _ = await makeHarvester(fixture).harvest(
+            run: fixture.run, analysis: fixture.analysis,
+            repo: fixture.repo, artifactURL: fixture.artifactURL)
+
+        let all = try await fixture.store.proposals(analysisID: fixture.analysis.id)
+        #expect(all.count == 2)
+        #expect(all.allSatisfy { !$0.looksDuplicated })
+    }
+
+    /// A card on the board is a stronger thing to tell the reader than a story
+    /// another lens merely suggested, so at an equal score the card wins.
+    /// `TextSimilarity.bestMatch` keeps the first of equal maxima, which makes
+    /// the order `existingTitles` builds the list in the tie-break.
+    @Test("At an equal score a card outranks a sibling proposal")
+    func aCardOutranksASiblingOnATie() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.cleanUp() }
+
+        let card = Card(
+            repoID: fixture.repo.id, title: "Cache the login shell environment",
+            columnEnteredAt: Date(), createdAt: Date(), updatedAt: Date())
+        try await fixture.store.saveCard(card)
+        try await fixture.store.saveProposals([
+            StoryProposal(
+                analysisID: fixture.analysis.id, runID: UUID(), repoID: fixture.repo.id,
+                angle: .bugs, title: "Cache the login shell environment",
+                story: UserStory(role: "dev", want: "w", benefit: "b"), createdAt: Date())
+        ])
+
+        var later = fixture.run
+        later.id = UUID()
+        later.analysisAngle = .techDebt
+        try await fixture.store.saveRun(later)
+        try """
+        [{"title":"Cache the login shell environment at startup","role":"dev",
+          "want":"w","benefit":"b","evidence":["Sources/Real.swift:1"]}]
+        """.write(to: fixture.artifactURL, atomically: true, encoding: .utf8)
+
+        _ = await makeHarvester(fixture).harvest(
+            run: later, analysis: fixture.analysis,
+            repo: fixture.repo, artifactURL: fixture.artifactURL)
+
+        let landed = try #require(
+            try await fixture.store.proposals(analysisID: fixture.analysis.id)
+                .first { $0.angle == .techDebt })
+        guard case .card(let id, _)? = landed.duplicateOf else {
+            Issue.record("expected the card to win, got \(String(describing: landed.duplicateOf))")
+            return
+        }
+        #expect(id == card.id)
+    }
+
     @Test("Dropped stories keep their reasons in the report")
     func droppedReasonsSurvive() async throws {
         let fixture = try await makeFixture()
