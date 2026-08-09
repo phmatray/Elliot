@@ -209,18 +209,47 @@ public struct ProjectRequirement: Codable, Sendable, Hashable {
     public var seed: CardDraft       // the card seeded when the artefact is absent
 }
 
-public enum Evidence: Codable, Sendable, Hashable {
+public enum Evidence: Codable, Sendable, Hashable {   // nested — see below
     case file(String)
     case anyFileUnder(String)
 }
 ```
 
+⚠️ **Corrected after the plan was drafted against the real tree: this enum is
+nested as `MethodPack.Evidence`, not top-level.** `ElliotModel` already declares
+`public struct Evidence` (`StoryProposal.swift:107`) — a proposal's file-and-line
+pointer, carried on the analysis wire and used across 5 sources. A second
+top-level `Evidence` is a redeclaration error, and renaming the shipped one is a
+twelve-file change to a wire type for no wave-1 gain. Case names are unchanged,
+and inside `MethodPack`'s own extensions the bare name still resolves, so
+`projectGaps(satisfied: [Evidence: Bool])` reads exactly as written above.
+
+`ProjectRequirement` is `Codable` and carries a `CardDraft`, which today is only
+`Sendable, Hashable` — so **`CardDraft` gains `Codable`**. All eight stored
+properties are `String`/`Bool`/`[String]`, so synthesis is free.
+
 `Evidence` has two cases in wave 1. The GitHub cases (`.githubIssue`,
 `.githubPR`, `.merged`) arrive in wave 2 **with their consumer** — adding them now
 is exactly the dead code the wave correction above avoided.
 
-Seeded cards carry `idempotencyKey = "method:\(pack.id):req:\(req.id)"`, so the
-hourly sweep never seeds twice. The field already exists on `Card`.
+Seeded cards carry an `idempotencyKey`, so the hourly sweep never seeds twice.
+The field already exists on `Card`.
+
+⛔ **This section first gave that key as `"method:\(pack.id):req:\(req.id)"`, and
+that was a defect — found by the plan's verification pass, against the schema.**
+`card_on_idempotencyKey` is `unique: true` on `["idempotencyKey"]` **alone**
+(`Migrations.swift:34-42`), deliberately: its own comment says *"a key that could
+repeat across repositories would answer with an arbitrary one of them."*
+`BoardStore.card(idempotencyKey:)` filters on the key alone. So a repo-free key
+means the **second** repository to choose GSD is seeded nothing while the fix
+reports `succeeded: true` — a false success, which is the exact failure family
+this document spends its length condemning.
+
+The key is `"method:\(repoID):\(pack.id):req:\(requirement.id)"`, matching the
+shipped `"seedCard:\(repoID):\(title)"` family, and it is produced by **one
+function** — `ProjectRequirement.idempotencyKey(in:)` — rather than by a format
+string repeated in prose. A format string repeated in prose is how this one got
+written wrong.
 
 ```swift
 public struct ArtifactProbe: Sendable {                       // ElliotProcess
