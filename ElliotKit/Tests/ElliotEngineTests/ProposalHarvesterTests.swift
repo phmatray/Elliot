@@ -105,14 +105,19 @@ struct ProposalHarvesterTests {
         defer { fixture.cleanUp() }
 
         var run = fixture.run
-        run.resultText = """
-            Here is what I found:
+        // `.agent`: the harvester's fallback reads the *closing message*, which
+        // only ever means the terminal event's own text.
+        run.setClosing(ClosingRemark(
+            text: """
+                Here is what I found:
 
-            ```json
-            [{"title":"From prose","role":"dev","want":"w","benefit":"b",
-              "evidence":["Sources/Real.swift"]}]
-            ```
-            """
+                ```json
+                [{"title":"From prose","role":"dev","want":"w","benefit":"b",
+                  "evidence":["Sources/Real.swift"]}]
+                ```
+                """,
+            source: .agent
+        ))
         try await fixture.store.saveRun(run)
 
         let report = await makeHarvester(fixture).harvest(

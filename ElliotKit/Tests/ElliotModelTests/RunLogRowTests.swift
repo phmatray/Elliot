@@ -260,7 +260,7 @@ struct RunLogRowTests {
             state: .succeeded,
             logPath: "/tmp/run.ndjson",
             stderrPath: "/tmp/run.err",
-            resultText: "Filed issue #47",
+            closing: ClosingRemark(text: "Filed issue #47", source: .agent),
             verifiedOutcome: outcome,
             createdAt: Date(timeIntervalSince1970: 0)
         )
@@ -298,9 +298,10 @@ struct RunLogRowTests {
     @Test("A run that said nothing has no claim side")
     func emptyProseIsNoClaim() {
         var run = claimingRun(.closedUnmerged(number: nil, url: nil, branch: nil))
-        run.resultText = "   \n "
+        run.setClosing(ClosingRemark(text: "   \n ", source: .agent))
         #expect(RunVerdict.of(run).itSaid == nil)
-        run.resultText = nil
+        #expect(RunVerdict.of(run).closing == nil, "and no row at all, not an empty captioned one")
+        run.setClosing(nil)
         #expect(RunVerdict.of(run).itSaid == nil)
         #expect(RunVerdict.of(run).ghSays == "Closed without merging")
     }
@@ -321,5 +322,124 @@ struct RunLogRowTests {
         for (outcome, expected) in cases {
             #expect(outcome.receiptText == expected)
         }
+    }
+
+    // MARK: Whose words these are
+
+    /// The same run, with only the attribution changed.
+    private func closing(_ remark: ClosingRemark?) -> SkillRun {
+        var run = claimingRun(nil)
+        run.setClosing(remark)
+        return run
+    }
+
+    /// The defect, stated the way it was found: a run that died before its
+    /// terminal event stores stderr in the field the panel captioned "IT SAID"
+    /// and set in demoted italic (#288). The reader was invited to discount the
+    /// only real information the failed run produced.
+    @Test("A run's stderr is never presented as something the agent said")
+    func stderrIsNotHearsay() {
+        let run = closing(ClosingRemark(
+            text: "error: cannot find 'claude' in scope", source: .stderr
+        ))
+        let verdict = RunVerdict.of(run)
+
+        // The text is still shown — losing it would be the opposite mistake.
+        #expect(verdict.closing?.text == "error: cannot find 'claude' in scope")
+        // But not on the hearsay side, and not under the hearsay caption.
+        #expect(verdict.itSaid == nil)
+        #expect(verdict.closing?.isHearsay == false)
+        #expect(verdict.closing?.caption == "stderr")
+        #expect(verdict.closing?.spokenLead == "Standard error")
+    }
+
+    /// The same inversion with no agent involved at all: three sites store a
+    /// sentence *Elliot* wrote, and on two of them the agent never ran.
+    @Test("Elliot's own note about a run is not the agent's prose either")
+    func elliotsOwnNoteIsNotHearsay() {
+        let verdict = RunVerdict.of(
+            closing(.elliot("Elliot stopped while this run was in flight."))
+        )
+
+        #expect(verdict.itSaid == nil)
+        #expect(verdict.closing?.isHearsay == false)
+        #expect(verdict.closing?.caption == "elliot")
+        #expect(verdict.closing?.text == "Elliot stopped while this run was in flight.")
+    }
+
+    /// The agent's own closing prose still reads exactly as it did.
+    @Test("The agent's own account keeps the caption and the demoted tier")
+    func agentProseIsStillHearsay() {
+        let verdict = RunVerdict.of(closing(ClosingRemark(text: "Filed issue #47", source: .agent)))
+
+        #expect(verdict.itSaid == "Filed issue #47")
+        #expect(verdict.closing?.isHearsay == true)
+        #expect(verdict.closing?.caption == "it said")
+    }
+
+    /// ⚠️ Every run finished before #288 has no source recorded, and nothing
+    /// distinguishes the ones holding stderr from the ones holding prose. The
+    /// caption therefore degrades to the wording those rows already had, rather
+    /// than claiming stderr for history it cannot know — and it degrades
+    /// towards *less* trust, which is the only direction here that cannot go
+    /// wrong.
+    @Test("A run written before the source existed keeps the old wording")
+    func unattributedHistoryDegradesRatherThanGuesses() {
+        // `unattributed` is `internal`, and this is the only kind of code that
+        // may build one: history, not a writer. `@testable` is what reaches it.
+        let historical = ClosingRemark.unattributed("Merged and cleaned up.")
+
+        #expect(historical.source == nil, "an absence of a record, never a fourth kind")
+        #expect(historical.caption == "it said", "it degrades to the wording these rows already had")
+        #expect(historical.spokenLead == "It said")
+        // Towards *less* trust: believing an unknown is the one mistake here
+        // that cannot be walked back, so an unattributed remark stays hearsay.
+        #expect(historical.isHearsay)
+        #expect(RunVerdict(closing: historical).itSaid == "Merged and cleaned up.")
+
+        // And trimming keeps the absence rather than filling it in.
+        let trimmed = ClosingRemark.unattributed("  Merged.\n ").trimmed()
+        #expect(trimmed?.text == "Merged.")
+        #expect(trimmed?.source == nil)
+    }
+
+    /// The `??` that used to live in `RunScheduler.finish`. It is the moment the
+    /// attribution is decided, so it is a rule, and it is asserted here rather
+    /// than behind a real process spawn.
+    @Test("The agent's words win over stderr, and stderr wins over nothing")
+    func attributionFollowsWhichTextExists() {
+        let both = ClosingRemark.of(agentText: "I filed it.", stderr: "warning: noisy")
+        #expect(both?.text == "I filed it.")
+        #expect(both?.source == .agent)
+
+        let died = ClosingRemark.of(agentText: nil, stderr: "zsh: command not found: claude")
+        #expect(died?.text == "zsh: command not found: claude")
+        #expect(died?.source == .stderr)
+
+        #expect(ClosingRemark.of(agentText: nil, stderr: nil) == nil)
+
+        // Empty is still the agent having answered: the `??` never let stderr
+        // stand in for a terminal event that arrived, and preserving that is
+        // what keeps this a re-attribution rather than a behaviour change.
+        let empty = ClosingRemark.of(agentText: "", stderr: "warning: noisy")
+        #expect(empty?.text == "")
+        #expect(empty?.source == .agent)
+    }
+
+    /// ⛔ A fourth source must be classified, captioned and spoken — not
+    /// inherit an answer. `isHearsay` defaulting either way is the defect
+    /// restored: `false` promotes a claim to a fact, `true` demotes a diagnosis
+    /// to a claim.
+    @Test("Every source names a tier, a caption and a spoken lead of its own")
+    func everySourceIsClassified() {
+        let captions = RunResultSource.allCases.map(\.caption)
+        let leads = RunResultSource.allCases.map(\.spokenLead)
+
+        #expect(Set(captions).count == RunResultSource.allCases.count, "two sources share a caption")
+        #expect(Set(leads).count == RunResultSource.allCases.count, "two sources share a spoken lead")
+        let allNamed = captions.allSatisfy { !$0.isEmpty } && leads.allSatisfy { !$0.isEmpty }
+        #expect(allNamed)
+        // Exactly one source may be believed only as a claim.
+        #expect(RunResultSource.allCases.filter(\.isHearsay) == [.agent])
     }
 }

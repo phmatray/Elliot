@@ -50,7 +50,21 @@ import Foundation
 /// finished it (#139). Additive on the wire, like 6, and degrading the same
 /// quiet way — but a 6 helper renders a Done card's receipt with no pull
 /// request at all, which is the defect this closes rather than a cosmetic loss.
-public let elliotProtocolVersion = 7
+///
+/// **8** — `RunDTO` carries `resultSource`: whose words `resultText` is, one of
+/// `agent`, `stderr` or `elliot` (#288). Additive on the wire, and refused in
+/// the direction that matters for the same reason 4 was. The field is
+/// tri-state by absence: **absent** means the run finished before anything
+/// recorded a source, which is a real answer about history and not a synonym
+/// for `agent`. An 8 helper talking to a 7 app would find it absent on *every*
+/// run — including the ones that stored stderr — and would report the whole
+/// board as the agent's prose, which is the defect this closes rather than a
+/// cosmetic loss. One number, one wire.
+///
+/// ⚠️ The issue that asked for this said "bump from 6", read off a base that
+/// had since reached 7. Writing 7 would have left the number unchanged while
+/// the wire moved. Read this constant, never a plan.
+public let elliotProtocolVersion = 8
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
@@ -901,9 +915,19 @@ public struct RunDTO: Codable, Sendable, Hashable {
     public var endedAt: Date?
     public var totalCostUSD: Double?
     public var numTurns: Int?
-    /// The `result` field of the terminal event. Display only — never parse it
-    /// for issue or PR numbers; that is what `verifiedOutcome` is for.
+    /// The run's closing text. Display only — never parse it for issue or PR
+    /// numbers; that is what `verifiedOutcome` is for.
     public var resultText: String?
+    /// Whose words `resultText` is: `agent`, `stderr` or `elliot`.
+    ///
+    /// ⚠️ Read it before quoting the text as the agent's. `agent` is the
+    /// terminal event's own `result` field; `stderr` is what the process left
+    /// behind when it died before emitting one, and is a fact rather than a
+    /// claim; `elliot` is a sentence the board wrote about a run that could not
+    /// be started or was orphaned by a crash — on those paths no agent ever
+    /// spoke. **Absent** means the run finished before this was recorded, which
+    /// is an absence of a record and not a fourth kind.
+    public var resultSource: String?
     public var permissionDenials: [String]
     /// NDJSON, one Claude Code `stream-json` event per line.
     public var logPath: String
@@ -932,6 +956,7 @@ public struct RunDTO: Codable, Sendable, Hashable {
         totalCostUSD = run.totalCostUSD
         numTurns = run.numTurns
         resultText = run.resultText
+        resultSource = run.resultSource?.rawValue
         permissionDenials = run.permissionDenials
         logPath = run.logPath
         stderrPath = run.stderrPath
@@ -959,6 +984,7 @@ public struct RunDTO: Codable, Sendable, Hashable {
         totalCostUSD: Double? = nil,
         numTurns: Int? = nil,
         resultText: String? = nil,
+        resultSource: String? = nil,
         permissionDenials: [String] = [],
         logPath: String,
         stderrPath: String,
@@ -981,6 +1007,7 @@ public struct RunDTO: Codable, Sendable, Hashable {
         self.totalCostUSD = totalCostUSD
         self.numTurns = numTurns
         self.resultText = resultText
+        self.resultSource = resultSource
         self.permissionDenials = permissionDenials
         self.logPath = logPath
         self.stderrPath = stderrPath

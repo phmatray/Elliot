@@ -21,8 +21,14 @@ struct ListRunsTool: BoardTool {
                 Read `verifiedOutcome` — that is what `gh` established. `state: succeeded` \
                 is compatible with `no_issue_created`, `not_merged` and `unverified`: the \
                 agent finished cleanly and nothing was created or merged. `resultText` is \
-                the agent's own account of its work; it is display text, not a fact, and \
-                must never be parsed for issue or pull-request numbers.
+                display text, not a fact, and must never be parsed for issue or \
+                pull-request numbers. `resultSource` says whose words it is: `agent` is \
+                the agent's own account of its work, `stderr` is what the process left \
+                behind when it died before saying anything, and `elliot` is the board's \
+                own sentence about a run it could not start or that a crash orphaned. \
+                Do not quote it as the agent's without reading that field — and an \
+                **absent** `resultSource` means the run finished before this was \
+                recorded, not that the agent wrote it.
 
                 `isTerminal: false` means the run is still going, and `pollAfterSeconds` \
                 says how long to wait before looking again — but prefer board_await_run, \

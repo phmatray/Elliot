@@ -285,8 +285,10 @@ public extension ElliotMCPServer {
         one of them merges to a default branch on github.com.
 
         Start with board_next: it says which card to act on and what moving it would run. \
-        Judge every run by `verifiedOutcome`, which is what `gh` established, never by the \
-        agent's own prose in `resultText`.
+        Judge every run by `verifiedOutcome`, which is what `gh` established, never by \
+        `resultText` — and read `resultSource` before quoting that text as the agent's: it \
+        is `agent`, `stderr` or `elliot`, and absent on runs that finished before it was \
+        recorded.
 
         Helper build \(ElliotBuild.version), wire protocol \(elliotProtocolVersion).
         """

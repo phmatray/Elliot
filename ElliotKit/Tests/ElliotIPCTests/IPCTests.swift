@@ -555,8 +555,14 @@ struct IPCTests {
     /// The plan for #139 said "4 → 5"; `main` had already reached 6 by the time
     /// it was executed, and writing 5 would have *lowered* the version and
     /// readmitted exactly the helpers the bump exists to refuse.
-    @Test("Widening the outcome bumped the protocol version")
-    func protocolVersionIsSeven() {
-        #expect(elliotProtocolVersion == 7)
+    ///
+    /// It happened again at 8: #288's plan said "bump from 6", against a base
+    /// that had reached 7. This is the assertion that turns that mistake into a
+    /// red test rather than a version silently standing still — so when it
+    /// fails, **read `Protocol.swift` and raise both**, never lower the
+    /// constant to match the number written here.
+    @Test("Widening the outcome, and attributing a run's closing text, bumped the version")
+    func protocolVersionIsEight() {
+        #expect(elliotProtocolVersion == 8)
     }
 }
