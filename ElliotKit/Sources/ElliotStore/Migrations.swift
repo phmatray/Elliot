@@ -351,6 +351,36 @@ enum Migrations {
             }
         }
 
+        // v14, additive: the labels *this* repository requires (#199, #200).
+        //
+        // ⚠️ **Written as `v13_repoLabelPolicy` and moved**, which is the eighth
+        // time this file has recorded that trade — and the first where the two
+        // claimants were written the same evening: `v13_runResumedFrom` (#355)
+        // reached `main` while this sat unpushed, so it keeps the number and
+        // this one moves. No `RenamedMigration` entry: the old name reached no
+        // database, because the branch was never merged and the column has never
+        // existed under it.
+        //
+        // ⛔ **No default and no backfill.** Defaulting existing rows to
+        // `LabelPolicy.default` is the tempting one and it destroys the whole
+        // distinction: it would make every repository in the field *assert* a
+        // taxonomy nobody chose, and the check would then stop offering the
+        // conversation on exactly the repositories that have never had it. NULL
+        // means "never asked"; an empty JSON array means "asked, and chose to
+        // require nothing". Those are different answers and this column exists
+        // to keep them apart.
+        //
+        // Nullable for v11's and v13's reason one table over: `openReadOnly`
+        // accepts a database older than the build, an absent column decodes as
+        // nil, and that only holds while `Repo.labelPolicy` stays `Optional` —
+        // the synthesised decoder emits `decode` for a non-optional and would
+        // throw `keyNotFound` on every repository. `OlderDatabaseTests` pins it.
+        migrator.registerMigration("v14_repoLabelPolicy") { db in
+            try db.alter(table: "repo") { t in
+                t.add(column: "labelPolicy", .text)     // JSON array, or NULL
+            }
+        }
+
         return migrator
     }
 

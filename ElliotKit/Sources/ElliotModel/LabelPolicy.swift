@@ -59,6 +59,69 @@ public enum LabelPolicy {
         ),
     ]
 
+    /// Whose opinion a check applied.
+    ///
+    /// A closed pair rather than a `Bool`, because the two are not "on and off"
+    /// — they are two different *sentences*, and the check must say which one it
+    /// spoke. `.elliotFloor` is Elliot asserting a taxonomy on a repository that
+    /// has never been asked; `.repository` is the repository's own answer.
+    public enum Source: String, Codable, Sendable, Hashable {
+        /// Nobody has chosen, so ``LabelPolicy/default`` applied.
+        case elliotFloor
+        /// This repository declared its own set — possibly an empty one.
+        case repository
+    }
+
+    /// The policy in force for one repository, **and whose it is**.
+    ///
+    /// The two travel together for the reason `SpendFigure` pairs a figure with
+    /// whether it is complete: a caller handed a bare `[RequiredLabel]` cannot
+    /// tell a taxonomy somebody chose from a floor nobody has disagreed with,
+    /// and #200 is precisely the bug where a `.pass` against the second read as
+    /// endorsement of the first.
+    public struct Resolved: Sendable, Hashable {
+        public let required: [RequiredLabel]
+        public let source: Source
+
+        public init(required: [RequiredLabel], source: Source) {
+            self.required = required
+            self.source = source
+        }
+
+        /// Whether anyone has answered *"what should this repository require?"*
+        ///
+        /// ⛔ **Not `required.isEmpty`.** A repository that declared an empty set
+        /// has decided — it means *check nothing* — and asking it again would be
+        /// nagging it for an answer it already gave. `nil` and `[]` are
+        /// different facts, which is the same three-valued distinction
+        /// ``RepositoryLabels`` is built on one type over.
+        public var isUndecided: Bool { source == .elliotFloor }
+
+        /// How the check names the set it applied.
+        ///
+        /// Criterion 5 of #200: a `.pass` must not read as endorsement of a
+        /// taxonomy nobody chose.
+        public var whose: String {
+            switch source {
+            case .elliotFloor: "Elliot's skills apply"
+            case .repository: "this repository requires"
+            }
+        }
+    }
+
+    /// The policy in force for `repo`.
+    ///
+    /// `Repo.labelPolicy` is `nil` on every repository until someone answers, so
+    /// this is the single place the fall-back happens — one property rather than
+    /// a `?? LabelPolicy.default` at each call site, for the reason
+    /// `Repo.preflightVerdict` is one property rather than four coalescings.
+    public static func resolved(for repo: Repo) -> Resolved {
+        guard let declared = repo.labelPolicy else {
+            return Resolved(required: LabelPolicy.default, source: .elliotFloor)
+        }
+        return Resolved(required: declared, source: .repository)
+    }
+
     /// Which of `required` the repository does not have, in the policy's order.
     ///
     /// Case-insensitive, because GitHub is: it refuses a second casing of a
