@@ -35,13 +35,20 @@ struct CardFieldWritersTests {
         .deletingLastPathComponent()   // ElliotKit
         .appendingPathComponent("Sources/ElliotEngine")
 
-    /// Exactly the set the design names. `appraisedAt` is deliberately not here
-    /// yet: PR6 widens the set when the appraisal harvester becomes its writer,
-    /// and widening it early would make this gate assert something no code in
-    /// the package is trying to do.
+    /// Exactly the set the design names.
+    ///
+    /// `appraisedAt` was deliberately absent while nothing wrote it — this
+    /// comment said *"PR6 widens the set when the appraisal harvester becomes
+    /// its writer"*, and PR6 is where `AppraisalHarvester` became exactly that.
+    /// Widening it then would have made the gate assert something no code in the
+    /// package was trying to do; leaving it out now protects two of the three
+    /// fields one write produces and not the third, for no reason. It is the
+    /// field a second writer would corrupt worst: without it, *"nobody has read
+    /// this card"* and *"this card was read and carries no signal"* are the same
+    /// value.
     private static let fields = [
         "issueNumber", "issueURL", "prNumber", "prURL", "branch", "lastError",
-        "effort", "evidence",
+        "effort", "evidence", "appraisedAt",
     ]
 
     private static func read(_ name: String) throws -> [String] {
