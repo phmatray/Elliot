@@ -1,3 +1,4 @@
+import ElliotModel
 import Foundation
 import Testing
 
@@ -37,6 +38,66 @@ struct UnattendedStartDelegationTests {
         "This repository is switched off in Preflight.",
         "A Preflight check is failing for this repository — fix it there first.",
     ]
+
+    /// The sentence the ruling deliberately kept out of the rule.
+    private static let pickerSentence = "Pick a single repository to analyse."
+
+    private func repo(_ name: String, enabled: Bool = true, preflight: PreflightState? = nil) -> Repo
+    {
+        Repo(
+            path: "/tmp/\(name)", nameWithOwner: "o/\(name)", displayName: name,
+            isEnabled: enabled, preflight: preflight
+        )
+    }
+
+    // MARK: - What asking the rule actually changed
+
+    /// ⛔ **The one new guarantee this change makes, and the break that found it
+    /// unguarded.**
+    ///
+    /// `decide` used to key its preflight branch on `blocked != nil` — the badge's
+    /// *presence* — so a repository whose persisted verdict is `.failing` arriving
+    /// with no badge was refused **nothing at all**. That is a gate opening on an
+    /// absent value, which is the shape the whole task exists to remove; it is now
+    /// keyed on the rule's verdict.
+    ///
+    /// Measured: restoring the old form (`guard let blocked else { return nil }`)
+    /// left **2419/2419 green**. `AnalysisRefusalTests.aVerdictWithoutAReadingStillOffersTheWay`
+    /// looks like the covering test and is not — it drives `AppModel`, where
+    /// `blockedBadge` returns non-`nil` for every `.failing` verdict, so the
+    /// `blocked == nil` path is unreachable from there. This one calls `decide`
+    /// directly, which is the only way to reach it.
+    ///
+    /// ⚠️ **Both halves are deliberate.** The refusal is the point; the *empty*
+    /// `fixes` is the honest consequence and not an accident — `AnalysisRefusal.fixes`
+    /// already documents empty as a real answer ("the explanation is `text`, and it
+    /// stands alone"), and there is nothing to offer, because `.showPreflight`
+    /// needs the badge that did not arrive. Refusing while inventing a fix, or
+    /// permitting because no fix could be named, are both worse.
+    @Test("A failing verdict with no badge is still refused, with nothing to offer")
+    func aFailingVerdictRefusesEvenWithNoBadgeToOffer() throws {
+        let blocked = repo("blocked", preflight: .failing)
+
+        let refusal = try #require(
+            AnalysisRefusal.decide(subject: blocked, registered: [blocked], blocked: nil),
+            """
+            decide permitted an analysis in a repository whose persisted Preflight verdict is \
+            failing, because no BlockedBadge came with it. The badge is the remedy; the verdict is \
+            the gate. Keyed on the badge, this is a gate that opens on an absent value — eight \
+            unattended runs at bypassPermissions inside a checkout Elliot has diagnosed as broken.
+            """)
+
+        #expect(refusal.text == Self.sentences[1])
+        #expect(refusal.fixes.isEmpty)
+
+        // The positive witness for the other half: the same verdict *with* a badge
+        // still carries the way to the finding, so the claim above is about the
+        // gate and not about having quietly dropped the remedy.
+        let badge = BlockedBadge(repoID: blocked.id, check: nil)
+        #expect(
+            AnalysisRefusal.decide(subject: blocked, registered: [blocked], blocked: badge)?.fixes
+                == [.showPreflight(badge)])
+    }
 
     /// ⛔ The screen renders the rule; it does not re-decide it.
     @Test("The analysis refusal asks the rule rather than re-implementing its guards")
@@ -132,44 +193,80 @@ struct UnattendedStartDelegationTests {
         }
     }
 
+    /// ⛔ **The picker's sentence stayed out of the rule, and that was a decision.**
+    ///
+    /// "Which repository" is a question a picker has and a service does not — an
+    /// appraisal is handed a card, `AnalysisService.start` a `repoID` — so in
+    /// `UnattendedStartRefusal` it would be a case `refusal(repo:preflight:)` can
+    /// never return, forcing two services to switch over a state they cannot be in.
+    /// This holds the decision from the side that can be held: the sentence has no
+    /// home in `ElliotModel`.
+    ///
+    /// ⚠️ **It is deliberately *not* asserted to have exactly one home, unlike the
+    /// two above, and the reason is a measurement rather than caution.** It has
+    /// two: `AnalysisRefusal.decide` and `BoardView.analysisPanelLabel:1648`, which
+    /// composes it into an accessibility label — *"Analysis. Pick a single
+    /// repository to analyse."* That is a real duplication and a real drift risk (a
+    /// reword lands on the footer and not on VoiceOver), it pre-dates this change,
+    /// and closing it means deciding whether the label composes the refusal's
+    /// sentence — a change to a `body`'s vocabulary that belongs in its own pass.
+    /// A gate that blessed the pair would be worse than this one; a gate that
+    /// failed on unmodified `main` would be worse still.
+    @Test("The picker's sentence has no home in the rule's module")
+    func thePickerSentenceStaysOutOfTheRule() throws {
+        let sources = try Self.swiftSources()
+        let inModel = sources
+            .filter { $0.module == "ElliotModel" }
+            .filter { HiddenFaceState.stripped($0.source).contains(Self.pickerSentence) }
+            .map(\.name)
+
+        // Positive witness: the sweep can see ElliotModel at all.
+        #expect(
+            sources.contains { $0.name == "UnattendedStartRefusal.swift" && $0.module == "ElliotModel" },
+            "the sweep did not find the rule in ElliotModel — it is reading the wrong tree")
+
+        #expect(
+            inModel.isEmpty,
+            Comment(
+                rawValue: """
+                    "\(Self.pickerSentence)" is written in ElliotModel \
+                    (\(inModel.joined(separator: " · "))). \
+                    Whether a repository is picked is not a fact about a repository, and a service \
+                    handed one cannot be in that state — a rule case no rule returns is a branch \
+                    every caller must write and none can reach.
+                    """))
+    }
+
     // MARK: - Reading the package
 
-    /// Every `.swift` file under `Sources/`, by name and content.
+    /// Every `.swift` file under `Sources/`, by name, owning module and content.
     ///
     /// Discovered rather than listed, so a module added tomorrow is covered on the
-    /// day it is created — which is the only day the mistake is easy to make.
-    private static func swiftSources() throws -> [(name: String, source: String)] {
+    /// day it is created — which is the only day the mistake is easy to make. The
+    /// module is the first path component under `Sources/`, which is what SwiftPM's
+    /// own layout guarantees here.
+    private static func swiftSources() throws -> [(name: String, module: String, source: String)] {
         let root = HiddenFaceState.viewSources.deletingLastPathComponent()  // …/Sources
         let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: nil)
-        var found: [(name: String, source: String)] = []
+        var found: [(name: String, module: String, source: String)] = []
         while let url = enumerator?.nextObject() as? URL {
             guard url.pathExtension == "swift" else { continue }
-            found.append((url.lastPathComponent, try String(contentsOf: url, encoding: .utf8)))
+            let module =
+                url.pathComponents.dropFirst(root.pathComponents.count).first ?? ""
+            found.append(
+                (url.lastPathComponent, module, try String(contentsOf: url, encoding: .utf8)))
         }
         return found.sorted { $0.name < $1.name }
     }
 
-    /// One function's body, by brace matching from its signature — the idiom
-    /// `AnalysisRefusalTests` and `AnalysisPanelViewSourceTests` both use, and
-    /// honest for the same reason: the functions it is pointed at hold no braces
-    /// inside a string literal, and comments are already cut.
+    /// Brace matching from a signature, through the one implementation.
+    ///
+    /// ⚠️ **Not a fourth copy of the walk.** `HiddenFaceState` owns the parse — its
+    /// own header says the parse lives there and the judgement does not — and the
+    /// three pre-existing copies are named in its doc comment along with why they
+    /// are not folded in here.
     private static func body(of signature: String, in source: String) throws -> String {
-        let start = try #require(source.range(of: signature))
-        var depth = 0
-        var open: String.Index?
-        var index = start.upperBound
-        while index < source.endIndex {
-            if source[index] == "{" {
-                if depth == 0 { open = source.index(after: index) }
-                depth += 1
-            } else if source[index] == "}" {
-                depth -= 1
-                if depth == 0, let open { return String(source[open..<index]) }
-            }
-            index = source.index(after: index)
-        }
-        Issue.record("no matching brace for \(signature)")
-        return ""
+        try HiddenFaceState.body(of: signature, in: source)
     }
 }
