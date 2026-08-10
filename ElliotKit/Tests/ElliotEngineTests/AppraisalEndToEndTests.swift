@@ -164,33 +164,27 @@ struct AppraisalEndToEndTests {
         )
     }
 
-    /// A real `git`, when there is one.
-    ///
-    /// `/usr/bin/git` ships with the Xcode command-line tools this package needs
-    /// to build, so `nil` is not expected in practice. It is still asked rather
-    /// than assumed, and asked **once**: a sentinel assertion made against a
-    /// `git` that is not there compares two swallowed failures and passes, so
-    /// "which binary" and "may I assert the sentinel" have to be the same
-    /// answer.
-    private static var gitBinary: String? {
-        let git = "/usr/bin/git"
-        return FileManager.default.isExecutableFile(atPath: git) ? git : nil
-    }
-
     /// `git init`s the fixture checkout, so the sentinel has a real tree to read.
-    private func initGit(_ git: String, at path: String) async {
+    private func initGit(at path: String) async {
         _ = try? await ProcessRunner.run(
-            executable: git, arguments: ["init", "-q"], cwd: path,
+            executable: gitFixturePath, arguments: ["init", "-q"], cwd: path,
             environment: ["PATH": "/usr/bin:/bin"], timeout: .seconds(20)
         )
     }
 
-    @Test("An appraisal fills the card in, from the artifact it was told to write")
+    /// - Note: `.enabled(if: gitFixtureIsAvailable)` rather than a branch inside
+    ///   the body. The sentinel block below used to sit behind `if git != nil`,
+    ///   so on a machine without `/usr/bin/git` this test reported green having
+    ///   asserted the one thing #368's review demanded — and a skip that leaves
+    ///   no trace in the output is indistinguishable from a pass. The trait is
+    ///   named in the run; the branch was not.
+    @Test(
+        "An appraisal fills the card in, from the artifact it was told to write",
+        .enabled(if: gitFixtureIsAvailable))
     func theWholePath() async throws {
-        let git = Self.gitBinary
-        let stack = try await makeStack(gitPath: git ?? "/usr/bin/false")
+        let stack = try await makeStack(gitPath: gitFixturePath)
         defer { stack.cleanUp() }
-        if let git { await initGit(git, at: stack.repo.path) }
+        await initGit(at: stack.repo.path)
 
         let started = try await stack.service.appraise(cardID: stack.card.id)
         let run = try await withTimeout(.seconds(40)) {
@@ -207,21 +201,21 @@ struct AppraisalEndToEndTests {
         #expect(report.kept == 1)
         #expect(report.dropped.isEmpty)
 
-        if git != nil {
-            // Checked-and-clean, not "never checked": a real `git status` was
-            // taken before and after, over an actually-initialised repo, and
-            // found nothing — `false`, not `nil`. The artifact lands under the
-            // shared `TestHome.root`, not inside the checkout, so a regression
-            // that made an appraisal touch the repository would flip this.
-            //
-            // ⛔ This assertion is the one the appraisal half of the sentinel
-            // did not have. Passing `baseline: nil` into `completeAppraisalRun`
-            // left the whole suite green while the identical break on the
-            // analysis half reddened three tests; the card still comes out
-            // appraised either way, so nothing else here can see it.
-            #expect(report.workingTreeChanged == false)
-            #expect(report.workingTreeDiff == nil)
-        }
+        // Checked-and-clean, not "never checked": a real `git status` was taken
+        // before and after, over an actually-initialised repo, and found
+        // nothing — `false`, not `nil`. The artifact lands under the shared
+        // `TestHome.root`, not inside the checkout, so a regression that made an
+        // appraisal touch the repository would flip this.
+        //
+        // ⛔ This assertion is the one the appraisal half of the sentinel did
+        // not have. Passing `baseline: nil` into `completeAppraisalRun` left the
+        // whole suite green while the identical break on the analysis half
+        // reddened three tests; the card still comes out appraised either way,
+        // so nothing else here can see it. It is unconditional for the same
+        // reason: guarded by `if git != nil` it was one absent binary away from
+        // being back where it started.
+        #expect(report.workingTreeChanged == false)
+        #expect(report.workingTreeDiff == nil)
 
         // The artifact really is where the prompt said it would be.
         #expect(FileManager.default.fileExists(
@@ -245,16 +239,19 @@ struct AppraisalEndToEndTests {
         #expect(card.lastError == nil)
     }
 
-    @Test("An appraisal that edits the repository is reported, not hidden")
+    /// - Note: a real `git` is needed for the sentinel to say anything, and it
+    ///   is required as a trait rather than checked as a `guard … else
+    ///   { return }`. Without one, the early return reported this test green
+    ///   having asserted nothing at all.
+    @Test(
+        "An appraisal that edits the repository is reported, not hidden",
+        .enabled(if: gitFixtureIsAvailable))
     func theSentinelFires() async throws {
-        // A real git binary is needed for the sentinel to say anything.
-        guard let git = Self.gitBinary else { return }
-
         let stack = try await makeStack(
-            extraEnv: ["FAKE_CLAUDE_TOUCH": "meddled.txt"], gitPath: git
+            extraEnv: ["FAKE_CLAUDE_TOUCH": "meddled.txt"], gitPath: gitFixturePath
         )
         defer { stack.cleanUp() }
-        await initGit(git, at: stack.repo.path)
+        await initGit(at: stack.repo.path)
 
         let started = try await stack.service.appraise(cardID: stack.card.id)
         let run = try await withTimeout(.seconds(40)) {
