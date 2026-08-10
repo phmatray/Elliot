@@ -83,7 +83,17 @@ public actor AppraisalService {
             throw AppraisalError.repoNotFound(card.repoID)
         }
 
-        // ⛔ **The one rule, asked at the act, by its second caller.**
+        // ⛔ **The one rule, asked at the act, by its third caller.**
+        //
+        // The other two are `AnalysisRefusal.decide`, which refuses a press, and
+        // `AnalysisService.start`, which refuses behind a panel somebody pressed;
+        // `UnattendedStartRefusal` counts all three in its own header. This
+        // sentence read *second* until the count was measured — a copy of
+        // `AnalysisService.swift`'s explanation, byte for byte, which #146's
+        // lesson names as the tell that the mechanism was copied too. It was:
+        // this was the only caller of the three that no gate held. It is now
+        // held by
+        // `UnattendedStartDelegationTests.theAppraisalServiceAsksTheRule`.
         //
         // Asked live, before anything is written: a run committed and then
         // refused would leave a queued row for the launch sweep to revive.

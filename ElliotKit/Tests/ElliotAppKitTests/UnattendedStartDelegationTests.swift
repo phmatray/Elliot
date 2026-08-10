@@ -197,6 +197,68 @@ struct UnattendedStartDelegationTests {
         }
     }
 
+    /// ⛔ **The third caller, and the only one that reaches an unattended agent
+    /// through no transition and no gesture at all.**
+    ///
+    /// `AnalysisRefusal` refuses a press and `AnalysisService.start` refuses
+    /// behind a panel somebody pressed. An appraisal is started by neither: it
+    /// passes through no board transition, so `evaluateMove`,
+    /// `MoveOrigin.allowsSideEffects` and the move's own preflight never see it,
+    /// and this rule is the entirety of its guard. Of the three callers it is the
+    /// one where a second copy could disagree with the board and nothing on the
+    /// board would ever say so.
+    ///
+    /// ⚠️ **Measured in both directions, not assumed.** Replacing the call to
+    /// `UnattendedStartRefusal.refusal(…)` inside `appraise` with the two guards
+    /// written out faithfully — `if !repo.isEnabled` … `if await
+    /// gate.verdict(for: repo) == .failing` — leaves **2452/2452 green**:
+    /// `AppraisalServiceTests` pins both arms of the gate and the order between
+    /// them, so every value either side of the delegation is held and only the
+    /// step between them was not. Against that break this gate reports **three**
+    /// issues; against the real source it passes. That is
+    /// ``theScreenAsksTheRule``'s finding a second module over, and
+    /// `CaretAnchorTests`' before it.
+    @Test("The appraisal service asks the rule rather than re-implementing its guards")
+    func theAppraisalServiceAsksTheRule() throws {
+        let sources = try Self.swiftSources()
+        let file = try #require(
+            sources.first { $0.name == "AppraisalService.swift" && $0.module == "ElliotEngine" },
+            "the sweep did not find AppraisalService in ElliotEngine — it is reading the wrong tree")
+        let code = HiddenFaceState.stripped(file.source)
+
+        // Positive witness: a renamed or moved `appraise` would make every claim
+        // below vacuously true and this gate would go green having read nothing.
+        #expect(
+            code.contains("public func appraise("),
+            "AppraisalService no longer declares appraise( — this gate is reading the wrong thing")
+
+        let body = try Self.body(of: "public func appraise(", in: code)
+        #expect(
+            body.contains("UnattendedStartRefusal.refusal("),
+            """
+            AppraisalService.appraise does not consult UnattendedStartRefusal. Whether an \
+            unattended agent may start against a repository is one rule with three askers — the \
+            analysis panel, AnalysisService, and this one, which spawns a claude -p at \
+            bypassPermissions inside a real checkout without passing through a transition or a \
+            gesture. A second copy here is the one no board behaviour can contradict.
+            """)
+
+        // The guards themselves. `gate.verdict(for:)` is deliberately not a
+        // needle: handing the rule a measured verdict *is* the delegation.
+        for needle in ["isEnabled", ".failing", ".passing", ".notChecked"] {
+            #expect(
+                !body.contains(needle),
+                Comment(
+                    rawValue: """
+                        AppraisalService.appraise reads \(needle). That is the rule's own guard \
+                        re-derived in a service — UnattendedStartRefusal.refusal(repo:preflight:) \
+                        answers it, in evaluateMove's order, with the reasons written beside it. \
+                        Skipping the sweep for a repository already switched off needs exactly \
+                        this knowledge, and that is a second copy of an ordering.
+                        """))
+        }
+    }
+
     @Test("A refused move reads the rule's sentence rather than keeping a copy")
     func theMoveRefusalReadsTheRule() throws {
         let code = try HiddenFaceState.code(of: "Consequence.swift")
