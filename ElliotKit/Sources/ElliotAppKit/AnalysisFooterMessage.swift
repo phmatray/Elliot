@@ -35,6 +35,31 @@ struct AnalysisFooterMessage: Equatable {
     let symbol: String
     let tone: Tone
 
+    /// What the reader can press about ``text``, and nothing else's.
+    ///
+    /// ⛔ **The fix travels with the sentence, and that is the whole reason it is
+    /// here rather than read straight off `AppModel.analysisRefusal` in the
+    /// view.** This value is what decides which of four sentences is on screen;
+    /// a footer that drew its button from the refusal would keep offering
+    /// *Switch … on* underneath a *failure* sentence about a start that threw
+    /// for some other reason — a remedy rendered under a diagnosis it does not
+    /// belong to. That is #134's defect (a sentence shown under a subject it is
+    /// not about) with a control attached, and one value carrying both is what
+    /// makes it unrepresentable.
+    ///
+    /// Empty for every branch but the refusal, by construction: the three
+    /// remaining sentences are about the *next* press rather than about
+    /// something standing in its way, and there is nothing to go and do about
+    /// what a start is about to spend.
+    let fixes: [AnalysisFix]
+
+    init(text: String, symbol: String, tone: Tone, fixes: [AnalysisFix] = []) {
+        self.text = text
+        self.symbol = symbol
+        self.tone = tone
+        self.fixes = fixes
+    }
+
     /// The setup slot's whole decision, in precedence order.
     ///
     /// **Refusal ▸ failure ▸ clash ▸ consequence**, and each step of that order
@@ -69,15 +94,22 @@ struct AnalysisFooterMessage: Equatable {
     ///
     /// The three consequence sentences are the ones the view used to hold, moved
     /// verbatim so the copy cannot drift between here and there.
+    ///
+    /// ⚠️ **`refusal` is an ``AnalysisRefusal`` rather than a `String` since
+    /// #294**, and the type change is the fix: the sentence and the button that
+    /// answers it arrive together, so the branch that chooses the sentence is
+    /// the one that hands on the button. Nothing else here may carry one — see
+    /// ``fixes``.
     static func setup(
         angleCount: Int,
         clashing: [AnalysisAngle] = [],
         failure: String?,
-        refusal: String?
+        refusal: AnalysisRefusal?
     ) -> AnalysisFooterMessage {
         if let refusal {
             return AnalysisFooterMessage(
-                text: refusal, symbol: "exclamationmark.octagon.fill", tone: .refused)
+                text: refusal.text, symbol: "exclamationmark.octagon.fill", tone: .refused,
+                fixes: refusal.fixes)
         }
         if let failure {
             return AnalysisFooterMessage(

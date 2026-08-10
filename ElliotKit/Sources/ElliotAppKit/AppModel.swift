@@ -3160,20 +3160,61 @@ public final class AppModel {
     /// tells the reader *which* repository Start would target. Pointing it at
     /// ``analysisRepoID`` would compile, read as tidier, and quietly make it
     /// answerable for a session it has no business refusing.
-    public var analysisRefusal: String? {
-        guard let id = selectedRepoID, let repo = repos.first(where: { $0.id == id }) else {
-            return "Pick a single repository to analyse."
+    /// ⚠️ **An ``AnalysisRefusal`` rather than a `String` since #294**, so the
+    /// footer can offer the remedy the sentence names instead of describing it —
+    /// the shape `CheckResult.fixes` (#170) and `RepoRow.fixes` (#12) already
+    /// have. The three sentences are unchanged, and the ordering that used to
+    /// live here moved into
+    /// ``AnalysisRefusal/decide(subject:registered:blocked:)`` so a test can reach
+    /// it without an `AppModel`. Internal rather than `public` for the same reason
+    /// ``blockedBadge(for:)`` and ``openPreflight(_:)`` are: it now names types no
+    /// other module has any use for.
+    var analysisRefusal: AnalysisRefusal? {
+        let subject = selectedRepoID.flatMap { id in repos.first { $0.id == id } }
+        return AnalysisRefusal.decide(
+            subject: subject,
+            registered: repos,
+            // The persisted verdict, through `blockedBadge`, for the reason that
+            // method gives: reading the in-memory checks made this gate answer
+            // "fine" for the whole of every launch in a repository whose every
+            // drag was being refused. An analysis is eight unattended runs; it
+            // should be gated on the same value the board is.
+            blocked: subject.flatMap { blockedBadge(for: $0) })
+    }
+
+    /// Performs one of ``AnalysisRefusal``'s fixes.
+    ///
+    /// ⛔ **Deterministic, every case, and no agent** — the argument is written
+    /// out on ``AnalysisFix``. Two of the three are a single assignment and the
+    /// third is a store write; reaching `claude -p` from here would put a second
+    /// place that starts an unattended run outside the board.
+    ///
+    /// ⚠️ **No `FixOutcome`, unlike ``apply(_:)`` for a `CheckFix`, and that is a
+    /// decision rather than an omission.** A `CheckFix` reports because its
+    /// finding is re-read over the network and can half-succeed. These three are
+    /// judged by the refusal itself, which is recomputed from ``repos`` on every
+    /// render: a fix that lands takes its own sentence and its own button off the
+    /// screen, and one that does not leaves both exactly where they were. A
+    /// sentence claiming *switched on* under a refusal still reading *switched
+    /// off* would be a second opinion about one fact.
+    func apply(_ fix: AnalysisFix) async {
+        switch fix {
+        case .analyse(let repoID, _):
+            // Guarded rather than assigned blind. The offer was built from
+            // `repos` while the footer rendered, so a repository forgotten
+            // between then and the press would point the board at a
+            // registration that is gone — an empty board under a phantom name,
+            // which is what `showBoard(repoID:)` refuses one screen over.
+            guard repos.contains(where: { $0.id == repoID }) else { return }
+            selectedRepoID = repoID
+        case .enable(let repoID, _):
+            // Re-read here, never carried in the fix: `setRepoEnabled` writes
+            // the whole row, so the copy it is handed has to be the current one.
+            guard let repo = repos.first(where: { $0.id == repoID }) else { return }
+            await setRepoEnabled(repo, enabled: true)
+        case .showPreflight(let badge):
+            openPreflight(badge)
         }
-        if !repo.isEnabled { return Consequence.reason(.repoDisabled) }
-        // The persisted verdict, through `blockedBadge`, for the reason that
-        // method gives: reading the in-memory checks made this gate answer
-        // "fine" for the whole of every launch in a repository whose every drag
-        // was being refused. An analysis is eight unattended runs; it should be
-        // gated on the same value the board is.
-        if blockedBadge(for: repo) != nil {
-            return "A Preflight check is failing for this repository — fix it there first."
-        }
-        return nil
     }
 
     /// The lenses already reading, as last read — private, so nothing can draw

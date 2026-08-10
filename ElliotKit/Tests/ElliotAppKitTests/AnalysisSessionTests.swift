@@ -266,13 +266,13 @@ struct AppModelAnalysisSessionTests {
         // No single repository chosen: eight runs against "everything" is not a
         // thing this product does.
         model.selectedRepoID = nil
-        #expect(model.analysisRefusal == "Pick a single repository to analyse.")
+        #expect(model.analysisRefusal?.text == "Pick a single repository to analyse.")
 
         model.selectedRepoID = off.id
-        #expect(model.analysisRefusal == Consequence.reason(.repoDisabled))
+        #expect(model.analysisRefusal?.text == Consequence.reason(.repoDisabled))
 
         model.selectedRepoID = blocked.id
-        #expect(model.analysisRefusal?.contains("Preflight") == true)
+        #expect(model.analysisRefusal?.text.contains("Preflight") == true)
 
         // And the one case that must be allowed, so the gate is a gate and not a
         // wall.
@@ -497,6 +497,6 @@ struct AnalysisRepoScopeTests {
         model.openAnalysis(analysisFixture(repoID: healthy.id))
 
         #expect(model.analysisRepoID == healthy.id)
-        #expect(model.analysisRefusal == Consequence.reason(.repoDisabled))
+        #expect(model.analysisRefusal?.text == Consequence.reason(.repoDisabled))
     }
 }
