@@ -211,13 +211,12 @@ struct UnattendedStartDelegationTests {
     /// ⚠️ **Measured in both directions, not assumed.** Replacing the call to
     /// `UnattendedStartRefusal.refusal(…)` inside `appraise` with the two guards
     /// written out faithfully — `if !repo.isEnabled` … `if await
-    /// gate.verdict(for: repo) == .failing` — leaves **2452/2452 green**:
+    /// gate.verdict(for: repo) == .failing` — leaves the **whole suite green bar
+    /// this one test**: 2453 tests, one failure, three issues, all of them here.
     /// `AppraisalServiceTests` pins both arms of the gate and the order between
     /// them, so every value either side of the delegation is held and only the
-    /// step between them was not. Against that break this gate reports **three**
-    /// issues; against the real source it passes. That is
-    /// ``theScreenAsksTheRule``'s finding a second module over, and
-    /// `CaretAnchorTests`' before it.
+    /// step between them was not. That is ``theScreenAsksTheRule``'s finding a
+    /// second module over, and `CaretAnchorTests`' before it.
     @Test("The appraisal service asks the rule rather than re-implementing its guards")
     func theAppraisalServiceAsksTheRule() throws {
         let sources = try Self.swiftSources()
