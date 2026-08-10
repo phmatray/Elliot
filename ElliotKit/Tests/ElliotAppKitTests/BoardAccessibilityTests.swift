@@ -177,6 +177,12 @@ struct BoardAccessibilityTests {
 
     /// Singular written out by hand, as this file's header requires of every
     /// caption in it. "1 cards settled" is read aloud.
+    ///
+    /// ⚠️ **Two inputs, because one of them is degenerate.** 1-of-1 is the only
+    /// case where the two candidate nouns agree, so on its own it says nothing
+    /// about *which* number the noun counts: `cards(settled)` passes it and then
+    /// reads *"1 of 2 card settled"* everywhere else. The second input is where
+    /// they disagree, and it is the one that pins the total as the source.
     @Test("One card is a card, in the auto-dev figure too")
     func autoDevFigureSingular() {
         #expect(
@@ -184,6 +190,11 @@ struct BoardAccessibilityTests {
                 session: Self.session(cards: 1, state: .finished),
                 tally: AutoDevTally(engaged: 0, merged: 1, blocked: 0))
                 == "Auto-dev finished, 1 of 1 card settled")
+        #expect(
+            BoardAccessibility.autoDevFigure(
+                session: Self.session(cards: 2, state: .finished),
+                tally: AutoDevTally(engaged: 1, merged: 1, blocked: 0))
+                == "Auto-dev finished, 1 of 2 cards settled")
     }
 
     /// Over every case rather than a sample: a fourth state added without a
@@ -291,24 +302,92 @@ struct BoardAccessibilityTests {
         #expect(
             bodies[0].contains("AutoDevBand.figureText("),
             "the status bar must render AutoDevBand's sentence, not build its own")
+
+        // ⛔ **Every argument the figure is handed, pinned to a value, inside the
+        // auto-dev block and nowhere wider.** Both halves of that are paid for.
+        //
+        // *A value, not a call somewhere near it*: a needle asserting that
+        // `AutoDevBand.figureText(` appears is satisfied while the `text:` beside
+        // it is composed inline — measured, the figure rendered
+        // `"\(autoDevTally.settled)/\(autoDevTally.total) auto-dev"`, the wrong
+        // pair of numbers and precisely the defect `autoDevFigure` was changed to
+        // prevent, with every call-shaped needle still green.
+        //
+        // *Inside the block*: `face: .operations` is written on four figures in
+        // this strip, so over the whole body it is the **workers** figure that
+        // satisfies it. Measured too — scoped to `bodies[0]` this loop was green
+        // with the auto-dev figure sending the reader to `.dismissed`, which is
+        // the door opening onto the wrong screen in silence. `figure`'s own doc
+        // says `face` was made a `ConsoleFace` because "a typo in that string
+        // opened nothing at all, silently"; the type removed the typo and could
+        // not remove the wrong case, and a needle read too wide removes neither.
+        let autoDevBlock = try HiddenFaceState.body(
+            of: "if let autoDevSession = model.autoDev,", in: bodies[0])
+        for (argument, why) in [
+            ("text: autoDevText", "the text must be AutoDevBand.figureText's, not composed here"),
+            ("help: autoDevBand.headline", "the tooltip must be the band's headline, not written here"),
+            ("tint: autoDevBand.tone.tint", "the tone is the band's and Consequence.swift maps it"),
+            ("face: .operations", "this figure is the door into the auto-dev band, and no other screen"),
+            (
+                "BoardAccessibility.autoDevFigure(",
+                "the spoken sentence must be the one a test can hold, not one written here"
+            ),
+            (
+                "AutoDevBand.repoName(",
+                """
+                the Operations band asks the same function — a second lookup here is how the band \
+                and the figure that is its door come to name two different repositories
+                """
+            ),
+        ] {
+            #expect(
+                autoDevBlock.contains(argument),
+                Comment(rawValue: "the auto-dev figure is not handed `\(argument)` — \(why)"))
+        }
+
+        // ⛔ **The guard, exactly**, because a *word* list cannot hold this
+        // direction: banning `.finished` says nothing about
+        // `if !autoDevBand.controls.isEmpty`, which is `[]` for exactly a
+        // finished session and hides the figure for every one of them — the
+        // outcome the failure message below describes, reached with no banned
+        // word anywhere. A clause added to the `if let` (`autoDevTally.total > 0`)
+        // does the same for the window before the first engagement row lands.
+        //
+        // So the condition is read back and compared whole. It fails loudly with
+        // what it read, which is the right direction: a reformatting asks a
+        // person to look; a new clause is the defect.
         #expect(
-            bodies[0].contains("BoardAccessibility.autoDevFigure("),
-            "the figure's spoken sentence must be the one a test can hold, not one written here")
-        #expect(
-            bodies[0].contains("AutoDevBand.repoName("),
+            try Self.autoDevGuard(in: bodies[0])
+                == "letautoDevText=AutoDevBand.figureText(session:autoDevSession,tally:autoDevTally)",
             """
-            The figure works the session's repository out for itself. `AutoDevBand.repoName` is \
-            that lookup and the Operations band asks it too — a second copy here is how the band \
-            and the figure that is its door come to name two different repositories.
+            The figure's guard is no longer "a session exists, and the band has a sentence for it". \
+            Anything else in that condition is a way for the figure to disappear while the session \
+            it reports still exists — and the report is the only surface that shows a card whose \
+            merge failed, which stays in Done where `rankNextSteps` cannot see it.
             """)
-        #expect(
-            bodies[0].contains("autoDevBand.tone.tint"),
-            """
-            The figure does not draw the band's tone. The band decides the tone and \
-            `Consequence.swift` maps it to a colour, in that order and in those two files — a \
-            tint picked here leaves `AutoDevBand.Tone.tint` correct, tested and bypassed, and \
-            the door a different colour from the band it opens.
-            """)
+
+        for body in bodies {
+            // And the call is a **direct child** of that guard, at brace depth 0
+            // inside it. This is the half that is a guarantee rather than a list:
+            // a `ViewBuilder` cannot return early, so every nested branch is a
+            // brace, whatever it is spelled — `controls.isEmpty`, a tally
+            // threshold, or a condition nobody has thought of yet.
+            let block = try HiddenFaceState.body(
+                of: "if let autoDevSession = model.autoDev,", in: body)
+            let depth = try #require(
+                Self.braceDepth(of: "figure(", in: block),
+                "the auto-dev block draws no figure at all — this gate is reading the wrong block")
+            #expect(
+                depth == 0,
+                """
+                The figure is nested \(depth) level(s) deep inside its own `if let`. Its only \
+                guard is that a session exists; a branch around the call is a second one, and \
+                whatever it tests, the figure vanishes for some session that has run. That is the \
+                report disappearing — a card whose merge failed stays in Done, where \
+                `Column.naturalNext` is nil and `rankNextSteps` drops it, so nothing else on the \
+                board shows it.
+                """)
+        }
 
         for body in bodies {
             for comparison in ["model.autoDev ==", "model.autoDev !="] {
@@ -347,6 +426,41 @@ struct BoardAccessibilityTests {
                             """))
             }
         }
+    }
+
+    /// The whole condition of the auto-dev `if let`, whitespace squashed.
+    ///
+    /// Everything between the clause that names the session and the `{` that
+    /// opens the block — so a clause added anywhere in it changes this string.
+    /// Squashed because the condition is hand-wrapped over three lines and a
+    /// reformat is not a defect; a new clause is.
+    private static func autoDevGuard(in body: String) throws -> String {
+        let signature = "if let autoDevSession = model.autoDev,"
+        let start = try #require(
+            body.range(of: signature),
+            "the status bar no longer opens the figure with `\(signature)`")
+        let rest = body[start.upperBound...]
+        let brace = try #require(
+            rest.firstIndex(of: "{"), "the auto-dev condition never opens a block")
+        return rest[..<brace].filter { !$0.isWhitespace }
+    }
+
+    /// How many braces deep the first occurrence of `needle` sits, or `nil` if
+    /// it does not occur.
+    ///
+    /// The structural half of the presence gate. A `ViewBuilder` cannot return
+    /// early, so *every* way of not drawing something is a brace — which makes
+    /// depth an answer about shape rather than about vocabulary.
+    private static func braceDepth(of needle: String, in block: String) -> Int? {
+        var depth = 0
+        var index = block.startIndex
+        while index < block.endIndex {
+            if block[index...].hasPrefix(needle) { return depth }
+            if block[index] == "{" { depth += 1 }
+            if block[index] == "}" { depth -= 1 }
+            index = block.index(after: index)
+        }
+        return nil
     }
 
     /// One session with `cards` engaged cards. The ids are the only thing the
