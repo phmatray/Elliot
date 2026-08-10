@@ -676,7 +676,12 @@ struct ClaudeRunnerTests {
         let outcome = evaluateMove(
             from: .backlog, to: .todo, card: card,
             context: MoveContext(
-                repoIsEnabled: true, activeRunID: nil, allowSideEffects: true,
+                repoIsEnabled: true,
+                // This suite is about the prompt the default method builds, so
+                // the resolution is stated rather than defaulted — `method` has
+                // no default, for the reason `MoveContext.init` gives.
+                method: MethodCatalog.resolve(nil),
+                activeRunID: nil, allowSideEffects: true,
                 // A human's move, and backlog → todo besides: the green guard has
                 // nothing to say about filing an issue, and there is no pull
                 // request for it to have read.
@@ -687,7 +692,11 @@ struct ClaudeRunnerTests {
             Issue.record("the move produced no action: \(outcome)")
             return
         }
-        let prompt = SlashCommandBuilder.prompt(for: action)
+        guard case .unset(let method) = MethodCatalog.resolve(nil) else {
+            Issue.record("a repository that never chose a method must resolve to the default pack")
+            return
+        }
+        let prompt = SlashCommandBuilder.prompt(for: action, method: method)
 
         let run = try ClaudeRun.start(
             invocation: ClaudeInvocation(runID: UUID(), prompt: prompt, cwd: dir.path),

@@ -202,7 +202,15 @@ struct AppModelTests {
             let expected = evaluateMove(
                 from: backlog.column, to: column, card: backlog,
                 context: MoveContext(
-                    repoIsEnabled: true, activeRunID: nil,
+                    repoIsEnabled: true,
+                    // `a.method`, never a literal: read off the same row
+                    // `preview` reads, so a `preview` that stopped consulting
+                    // the repository disagrees here. Restating the resolution as
+                    // `MethodCatalog.resolve(nil)` would make both sides agree
+                    // by construction on a fixture that never chose — which is
+                    // how this test passed while `preview` was unpinned.
+                    method: a.method,
+                    activeRunID: nil,
                     allowSideEffects: true, providedFollowUps: nil,
                     // The same answer `AppModel.preview` gives, and this test
                     // exists to prove the two agree rather than to restate one.
@@ -211,6 +219,37 @@ struct AppModelTests {
             )
             #expect(model.preview(backlog, to: column) == expected, "disagreed about \(column)")
         }
+    }
+
+    /// The sibling above proves `preview` and `evaluateMove` *agree*; this proves
+    /// `preview` reads the repository's method at all.
+    ///
+    /// They are not the same claim, and an independent review measured the gap:
+    /// deleting `method:` from `AppModel.preview` left the whole suite green,
+    /// because the test above builds its expected context by hand and its
+    /// fixture never chose a method — so both sides took the same value whether
+    /// or not `preview` consulted the row. This asserts the **conclusion**
+    /// instead of restating the context, which is what makes it stay red.
+    ///
+    /// Without it the Backlog → To Do caption reads *"Files a GitHub issue."* in
+    /// `Palette.armed` for a repository whose pack declares no such step, the
+    /// drop is accepted, the card animates across, and `commitMove` refuses it.
+    @Test("preview refuses a card whose method has no step for the move")
+    func previewSeesTheMethod() throws {
+        let stepless = try #require(
+            MethodCatalog.builtIn.first { $0.steps.isEmpty },
+            "the catalogue no longer ships a stepless pack — this test needs one")
+        var r = repo("Elliot")
+        r.methodID = stepless.id
+        r.preflight = .passing
+        let backlog = card("write it", repoID: r.id, column: .backlog, order: 1)
+        let model = model(repos: [r], cards: [backlog])
+
+        #expect(
+            model.preview(backlog, to: .todo)
+                == .blocked(
+                    .methodHasNoStep(
+                        method: stepless.displayName, kind: SkillKind.createIssue.skillName)))
     }
 
     @Test("A switched-off repository is refused, and preview says so before the drop")

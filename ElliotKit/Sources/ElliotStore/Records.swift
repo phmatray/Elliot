@@ -13,6 +13,14 @@ import GRDB
 // `static var` compiles but is silently ignored, which stores blobs while every
 // lookup asks for text.
 
+/// `Repo` has no `Columns` enum and no `CodingKeys`: every column name is the
+/// Swift property name verbatim, and the synthesised `Codable` is what reads and
+/// writes the row. A stored property added to `Repo` therefore needs a column of
+/// the **identical** name — `methodID`, added by `v11_repoMethodID` — and gets no
+/// compiler error if the two ever part, only a failure at the first **write**: a
+/// fetch reads the mismatch as `nil`, silently, which is the same tolerance
+/// `openReadOnly` depends on, while `PersistableRecord` encodes the property and
+/// `repo.save(db)` throws *"table repo has no column named methodID"*.
 extension Repo: FetchableRecord, PersistableRecord {
     public static let databaseTableName = "repo"
     public static func databaseUUIDEncodingStrategy(for column: String) -> DatabaseUUIDEncodingStrategy {

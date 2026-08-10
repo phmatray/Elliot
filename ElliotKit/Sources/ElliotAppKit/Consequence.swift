@@ -135,6 +135,13 @@ struct Consequence {
         // the repair is elsewhere. Collapsing them would send someone to look
         // for a switch that is already on.
         case .repoBlocked: "Preflight is failing here — repair it before moving cards."
+        // Names the *method* rather than the transition, because that is the
+        // field the reader can change and the Repositories page is where.
+        case .unknownMethod(let id): "No pack for the method \"\(id)\" — choose one that exists."
+        // Says "this method", not "this card": nothing about the card is wrong,
+        // and a caption blaming it would send someone editing a story that is
+        // already complete.
+        case .methodHasNoStep(let method, _): "\(method) has no step for this move."
         case .runAlreadyInFlight: "A run is already working on this card."
         case .notVerifiedGreen(let reason):
             "Not a verified green — " + Self.notGreenGap(reason)

@@ -19,7 +19,7 @@ private func firstDigitRun(of s: String) -> Int? {
 
 /// Counts `"` characters that are not escaped by a preceding backslash,
 /// accounting for escaped backslashes (`\\"` *is* an unescaped quote).
-private func countUnescapedQuotes(in s: String) -> Int {
+func countUnescapedQuotes(in s: String) -> Int {
     var count = 0
     var pendingBackslashes = 0
     for ch in s {
@@ -49,6 +49,22 @@ private let nastyTitles = [
     "100% coverage",
 ]
 
+/// Every test in this file predates method packs, and every one of them is
+/// about the pack a repository that never chose one gets — which is the pack
+/// whose prompts `GoldenPromptTests` freezes. Saying that once here keeps the
+/// twenty assertions below readable as what they are: the shipped behaviour.
+private func kitPrompt(
+    for action: TriggerAction,
+    strategy: PromptStrategy = .slashCommand
+) -> String {
+    guard let kit = aiMigrationKitPack() else {
+        // One named failure rather than twenty mismatches against "".
+        Issue.record("MethodCatalog.resolve(nil) did not answer .unset with a pack")
+        return ""
+    }
+    return SlashCommandBuilder.prompt(for: action, method: kit, strategy: strategy)
+}
+
 @Suite("Slash command builder")
 struct SlashCommandBuilderTests {
 
@@ -56,7 +72,7 @@ struct SlashCommandBuilderTests {
 
     @Test("create-issue carries the idea as free text")
     func createIssueForm() {
-        let prompt = SlashCommandBuilder.prompt(
+        let prompt = kitPrompt(
             for: .createIssue(idea: "Add a dark mode toggle. Respect the system setting.")
         )
         #expect(prompt == "/ai-migration-kit:create-issue Add a dark mode toggle. Respect the system setting.")
@@ -69,20 +85,20 @@ struct SlashCommandBuilderTests {
             want: "to see the run log\ninside the card",
             benefit: "I can diagnose without a terminal"
         )
-        let prompt = SlashCommandBuilder.prompt(for: .createIssue(idea: story.issueBody))
+        let prompt = kitPrompt(for: .createIssue(idea: story.issueBody))
         #expect(prompt == "/ai-migration-kit:create-issue As a developer, I want to see the run log "
             + "inside the card, so that I can diagnose without a terminal.")
     }
 
     @Test("implement-issue carries the number and nothing else")
     func implementIssueForm() {
-        let prompt = SlashCommandBuilder.prompt(for: .implementIssue(issueNumber: 47))
+        let prompt = kitPrompt(for: .implementIssue(issueNumber: 47))
         #expect(prompt == "/ai-migration-kit:implement-issue 47")
     }
 
     @Test("merge-pr carries the number and one flag per follow-up")
     func mergePRForm() {
-        let prompt = SlashCommandBuilder.prompt(
+        let prompt = kitPrompt(
             for: .mergePR(prNumber: 279, followUps: ["add Rust snapshot tests", "document minimap config"])
         )
         #expect(prompt == #"/ai-migration-kit:merge-pr 279 --follow-up "add Rust snapshot tests" --follow-up "document minimap config""#)
@@ -90,7 +106,7 @@ struct SlashCommandBuilderTests {
 
     @Test("merge-pr with no follow-ups is just the number")
     func mergePRWithoutFollowUps() {
-        let prompt = SlashCommandBuilder.prompt(for: .mergePR(prNumber: 279, followUps: []))
+        let prompt = kitPrompt(for: .mergePR(prNumber: 279, followUps: []))
         #expect(prompt == "/ai-migration-kit:merge-pr 279")
     }
 
@@ -102,7 +118,7 @@ struct SlashCommandBuilderTests {
     )
     func firstDigitRunIsTheIssueNumber(issue: Int) {
         for strategy in PromptStrategy.allCases {
-            let prompt = SlashCommandBuilder.prompt(
+            let prompt = kitPrompt(
                 for: .implementIssue(issueNumber: issue), strategy: strategy
             )
             #expect(
@@ -119,13 +135,64 @@ struct SlashCommandBuilderTests {
     func firstDigitRunIsThePRNumber(pr: Int) {
         let followUps = nastyTitles + ["fix 3 flaky tests", "0 downtime rollout", "#1 priority"]
         for strategy in PromptStrategy.allCases {
-            let prompt = SlashCommandBuilder.prompt(
+            let prompt = kitPrompt(
                 for: .mergePR(prNumber: pr, followUps: followUps), strategy: strategy
             )
             #expect(
                 firstDigitRun(of: prompt) == pr,
                 "\(strategy) produced a prompt whose first digit run is not \(pr): \"\(prompt)\""
             )
+        }
+    }
+
+    /// The existing invariant, one pack wider. `implement-issue` resolves its
+    /// argument with `grep -oE '[0-9]+' | head -1`, so **any** pack whose step
+    /// takes a number must put that number first — which makes this the place a
+    /// digit inside a command or a prose sentence is refused. A pack naming its
+    /// command `/gsd-2-ship` would implement issue 2, silently, in every
+    /// repository that chose it.
+    ///
+    /// Iterated over `SkillKind.allCases` rather than over `pack.steps`, so the
+    /// order is the enum's and not a dictionary's.
+    @Test(
+        "Every built-in pack that takes a number puts that number first",
+        arguments: [1, 4, 7, 9, 10, 47, 99, 100, 279, 1234, 99_999]
+    )
+    func everyNumberFormPutsTheNumberFirst(number: Int) {
+        let noisy = nastyTitles + ["fix 3 flaky tests", "0 downtime rollout", "#1 priority"]
+        for pack in MethodCatalog.builtIn {
+            for kind in SkillKind.allCases {
+                guard let step = pack.steps[kind],
+                      step.arguments == .number || step.arguments == .numberThenFollowUps
+                else { continue }
+
+                let action: TriggerAction
+                switch kind {
+                case .implementIssue: action = .implementIssue(issueNumber: number)
+                case .mergePR: action = .mergePR(prNumber: number, followUps: noisy)
+                // Unreachable, and a defect if it ever fires: the `guard` above
+                // only arrives here for a kind whose step this pack declares
+                // with a number-taking form, and none of the three carries a
+                // number to put first. `.appraiseCards` is the strongest of
+                // them — no pack declares any step for it
+                // (`SkillKindReadOnlyTests.appraisalIsElliotsOwnPrompt`), and it
+                // has no `TriggerAction`, so a pack declaring one would be
+                // asking for a number that does not exist rather than one this
+                // switch failed to supply.
+                case .createIssue, .analyzeRepo, .appraiseCards:
+                    Issue.record("\(pack.id) takes a number for \(kind.skillName), which carries none")
+                    continue
+                }
+                for strategy in PromptStrategy.allCases {
+                    let prompt = SlashCommandBuilder.prompt(
+                        for: action, method: pack, strategy: strategy
+                    )
+                    #expect(
+                        firstDigitRun(of: prompt) == number,
+                        "\(pack.id) \(kind.skillName) \(strategy) produced \"\(prompt)\""
+                    )
+                }
+            }
         }
     }
 
@@ -140,7 +207,7 @@ struct SlashCommandBuilderTests {
         ]
         for action in actions {
             for strategy in PromptStrategy.allCases {
-                let prompt = SlashCommandBuilder.prompt(for: action, strategy: strategy)
+                let prompt = kitPrompt(for: action, strategy: strategy)
                 #expect(!prompt.contains("\n"), "newline survived in \"\(prompt)\"")
                 #expect(!prompt.contains("\t"), "tab survived in \"\(prompt)\"")
                 #expect(!prompt.contains("  "), "double space survived in \"\(prompt)\"")
@@ -150,7 +217,7 @@ struct SlashCommandBuilderTests {
 
     @Test("Quotes inside a follow-up are escaped so they cannot close the flag")
     func followUpQuotesAreEscaped() {
-        let prompt = SlashCommandBuilder.prompt(
+        let prompt = kitPrompt(
             for: .mergePR(prNumber: 279, followUps: [#"add "dark mode" tests"#])
         )
         #expect(prompt == #"/ai-migration-kit:merge-pr 279 --follow-up "add \"dark mode\" tests""#)
@@ -163,7 +230,7 @@ struct SlashCommandBuilderTests {
 
     @Test("Backslashes inside a follow-up are escaped before the quotes")
     func followUpBackslashesAreEscaped() {
-        let prompt = SlashCommandBuilder.prompt(
+        let prompt = kitPrompt(
             for: .mergePR(prNumber: 1, followUps: [#"handle C:\path\ and "quotes""#])
         )
         #expect(prompt == #"/ai-migration-kit:merge-pr 1 --follow-up "handle C:\\path\\ and \"quotes\"""#)
@@ -171,7 +238,7 @@ struct SlashCommandBuilderTests {
 
     @Test("Blank follow-ups are dropped rather than emitted as empty flags")
     func blankFollowUpsAreDropped() {
-        let prompt = SlashCommandBuilder.prompt(
+        let prompt = kitPrompt(
             for: .mergePR(prNumber: 279, followUps: ["", "   ", "\n", "real one"])
         )
         #expect(prompt == #"/ai-migration-kit:merge-pr 279 --follow-up "real one""#)
@@ -186,24 +253,24 @@ struct SlashCommandBuilderTests {
     @Test("A card with no labels produces exactly the prompt it produced before")
     func noLabelsIsUnchanged() {
         for strategy in PromptStrategy.allCases {
-            let without = SlashCommandBuilder.prompt(
+            let without = kitPrompt(
                 for: .createIssue(idea: "Add a dark mode toggle."), strategy: strategy
             )
-            let empty = SlashCommandBuilder.prompt(
+            let empty = kitPrompt(
                 for: .createIssue(idea: "Add a dark mode toggle.", labels: []), strategy: strategy
             )
             #expect(without == empty)
             #expect(!without.contains("--label"), "\(strategy) emitted a flag for no labels")
         }
         #expect(
-            SlashCommandBuilder.prompt(for: .createIssue(idea: "Add a dark mode toggle."))
+            kitPrompt(for: .createIssue(idea: "Add a dark mode toggle."))
                 == "/ai-migration-kit:create-issue Add a dark mode toggle."
         )
     }
 
     @Test("create-issue carries one flag per label, after the idea")
     func createIssueCarriesLabels() {
-        let prompt = SlashCommandBuilder.prompt(
+        let prompt = kitPrompt(
             for: .createIssue(idea: "Add a dark mode toggle.", labels: ["bug", "documentation"])
         )
         #expect(prompt == #"/ai-migration-kit:create-issue Add a dark mode toggle. --label "bug" --label "documentation""#)
@@ -214,7 +281,7 @@ struct SlashCommandBuilderTests {
     /// payload would close the flag early and leave the rest as stray text.
     @Test("Quotes and backslashes in a label are escaped exactly as a follow-up's are")
     func labelQuotesAreEscaped() {
-        let prompt = SlashCommandBuilder.prompt(
+        let prompt = kitPrompt(
             for: .createIssue(idea: "Ship it", labels: [#"needs "review""#, #"C:\path\"#])
         )
         #expect(prompt == #"/ai-migration-kit:create-issue Ship it --label "needs \"review\"" --label "C:\\path\\""#)
@@ -224,7 +291,7 @@ struct SlashCommandBuilderTests {
 
     @Test("Blank labels are dropped rather than emitted as empty flags")
     func blankLabelsAreDropped() {
-        let prompt = SlashCommandBuilder.prompt(
+        let prompt = kitPrompt(
             for: .createIssue(idea: "Ship it", labels: ["", "   ", "\n", "bug"])
         )
         #expect(prompt == #"/ai-migration-kit:create-issue Ship it --label "bug""#)
@@ -236,7 +303,7 @@ struct SlashCommandBuilderTests {
     /// depending on a strategy nobody chose per-card.
     @Test("The natural-language fallback names the labels too", arguments: nastyTitles)
     func naturalLanguageKeepsTheLabels(label: String) {
-        let prompt = SlashCommandBuilder.prompt(
+        let prompt = kitPrompt(
             for: .createIssue(idea: "Add a dark mode toggle.", labels: [label]),
             strategy: .naturalLanguage
         )
@@ -248,7 +315,7 @@ struct SlashCommandBuilderTests {
     @Test("A prompt carrying labels is still a single line", arguments: nastyTitles)
     func labelledPromptsAreSingleLine(label: String) {
         for strategy in PromptStrategy.allCases {
-            let prompt = SlashCommandBuilder.prompt(
+            let prompt = kitPrompt(
                 for: .createIssue(idea: "A story\nover two lines", labels: [label, "bug"]),
                 strategy: strategy
             )
@@ -268,7 +335,7 @@ struct SlashCommandBuilderTests {
     )
     func labelsDoNotDisturbTheIssueNumber(issue: Int) {
         for strategy in PromptStrategy.allCases {
-            let prompt = SlashCommandBuilder.prompt(
+            let prompt = kitPrompt(
                 for: .implementIssue(issueNumber: issue), strategy: strategy
             )
             #expect(firstDigitRun(of: prompt) == issue)
@@ -285,12 +352,5 @@ struct SlashCommandBuilderTests {
         #expect(TriggerAction.implementIssue(issueNumber: 47).targetNumber == 47)
         #expect(TriggerAction.mergePR(prNumber: 279, followUps: []).kind == .mergePR)
         #expect(TriggerAction.mergePR(prNumber: 279, followUps: []).targetNumber == 279)
-    }
-
-    @Test("Slash names are plugin-qualified with a colon")
-    func slashNames() {
-        #expect(SkillKind.createIssue.slashName == "/ai-migration-kit:create-issue")
-        #expect(SkillKind.implementIssue.slashName == "/ai-migration-kit:implement-issue")
-        #expect(SkillKind.mergePR.slashName == "/ai-migration-kit:merge-pr")
     }
 }

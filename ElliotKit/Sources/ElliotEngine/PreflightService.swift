@@ -44,7 +44,22 @@ public enum CheckFix: Sendable, Hashable, Identifiable {
     /// silently targets the wrong repository.
     case createLabels(repoID: UUID, nameWithOwner: String, labels: [RequiredLabel])
     /// Put a card in Backlog describing work someone should look at.
-    case seedCard(repoID: UUID, title: String, story: UserStory)
+    ///
+    /// `key` is this fix's identity, and `nil` means *derive it from the title*,
+    /// which is what it did before methods existed. Both spellings are needed
+    /// and neither is a default anyone should change:
+    ///
+    /// - ⛔ The labels seed passes `nil` and must keep passing it. `apply` hands
+    ///   `fix.id` to `createCard(idempotencyKey:)`, so this string is already in
+    ///   databases in the field; recomputing it would let a second identical
+    ///   card be created for a finding that had already been seeded.
+    /// - A project requirement passes `MethodPack.idempotencyKey(for:in:)`,
+    ///   which is `"method:<repoID>:<packID>:req:<reqID>"` — keyed on *what it
+    ///   is about* rather than on what it says, so rewording a requirement's
+    ///   title does not produce a duplicate card, **and carrying the repository**,
+    ///   because `card_on_idempotencyKey` is unique board-wide.
+    case seedCard(repoID: UUID, title: String, story: UserStory, key: String?)
+
     /// Record that this repository requires exactly these labels.
     ///
     /// Writes `Repo.labelPolicy`, which until #199 had no writer at all — the
@@ -78,8 +93,8 @@ public enum CheckFix: Sendable, Hashable, Identifiable {
         switch self {
         case .createLabels(let repoID, _, let labels):
             "createLabels:\(repoID):\(labels.map(\.name).joined(separator: ","))"
-        case .seedCard(let repoID, let title, _):
-            "seedCard:\(repoID):\(title)"
+        case .seedCard(let repoID, let title, _, let key):
+            key ?? "seedCard:\(repoID):\(title)"
         case .adoptLabelPolicy(let repoID, let labels):
             "adoptLabelPolicy:\(repoID):\(labels.map(\.name).joined(separator: ","))"
         }
@@ -93,7 +108,7 @@ public enum CheckFix: Sendable, Hashable, Identifiable {
     /// is a fix applied to the wrong one waiting to happen.
     public var repoID: UUID {
         switch self {
-        case .createLabels(let repoID, _, _), .seedCard(let repoID, _, _),
+        case .createLabels(let repoID, _, _), .seedCard(let repoID, _, _, _),
             .adoptLabelPolicy(let repoID, _):
             repoID
         }
@@ -152,7 +167,13 @@ public struct PreflightService: Sendable {
 
     // MARK: - Global
 
-    public func globalChecks(layout: RepoTreeLayout = .portfolio) async -> [CheckResult] {
+    /// - Parameter packs: the methods this machine's repositories actually run.
+    ///   A plugin check per pack, rather than one hardcoded name — which is what
+    ///   made "the method Elliot drives" a property of the build instead of a
+    ///   property of the repository.
+    public func globalChecks(
+        layout: RepoTreeLayout = .portfolio, packs: [MethodPack]
+    ) async -> [CheckResult] {
         var results: [CheckResult] = []
 
         results.append(CheckResult(
@@ -227,12 +248,43 @@ public struct PreflightService: Sendable {
             fixHint: authenticated ? nil : "Run `gh auth login -h github.com` in a terminal."
         ))
 
-        results.append(pluginCheck(
-            id: "plugin.aiMigrationKit",
-            title: "ai-migration-kit skills",
-            plugin: "ai-migration-kit",
-            required: ["create-issue", "implement-issue", "merge-pr"]
-        ))
+        // A plugin check per pack this machine's repositories actually run,
+        // rather than one hardcoded name — `pack.plugin` is the measured
+        // three-way split `PluginRequirement` exists to carry, and each case
+        // means something different here:
+        for pack in packs {
+            switch pack.plugin {
+            case .none:
+                // ⛔ Skipped, never failed. A method that needs no plugin — GSD's
+                // and Spec Kit's own tooling writes straight into the checkout —
+                // must not read as a method whose plugin is missing: that would
+                // be a `.fail` for a correct setup, and a red row nobody can
+                // clear is a red row people learn to skim.
+                continue
+            case .required(let plugin):
+                // ⚠️ The id is `plugin.<pack.id>`, so the default pack's row
+                // moves from `plugin.aiMigrationKit` to `plugin.ai-migration-kit`.
+                // Nothing reads it, and the change is deliberate.
+                results.append(pluginCheck(
+                    id: "plugin.\(pack.id)",
+                    title: "\(plugin) skills",
+                    plugin: plugin,
+                    required: Self.requiredSkills(of: pack)
+                ))
+            case .unestablished(let reason):
+                // Nothing is established as missing, so this is a `.warn`
+                // carrying the reason — never a silent skip (which would read as
+                // "checked, fine") and never a `.fail` (nothing has been shown
+                // to be absent). This is the conflation `PluginRequirement`
+                // exists to end, one layer up.
+                results.append(CheckResult(
+                    id: "plugin.\(pack.id)", title: "\(pack.displayName) plugin",
+                    status: .warn, detail: reason,
+                    fixHint: "Confirm whether \(pack.displayName) ships a Claude Code plugin, "
+                        + "then record it in MethodCatalog."
+                ))
+            }
+        }
         results.append(pluginCheck(
             id: "plugin.superpowers",
             title: "superpowers skills",
@@ -342,29 +394,70 @@ public struct PreflightService: Sendable {
             fixHint: isMain ? nil : "Register the main checkout instead."
         ))
 
-        let profilePath = ".claude/skills/repo-profile.md"
-        let profileURL = URL(fileURLWithPath: repo.path).appendingPathComponent(profilePath)
+        // Which method this repository runs, in three values rather than two.
+        // `.unknown` is the one that blocks: we do not know what to run, and
+        // running some other method's commands unannounced is worse than
+        // refusing — the silent substitution `MethodResolution` exists to stop.
+        let pack: MethodPack?
+        switch repo.method {
+        case .unset(let chosen):
+            pack = chosen
+            results.append(CheckResult(
+                id: "repo.method", title: "Method", status: .pass,
+                // "Not chosen" and "chose the default" run the same commands and
+                // are different facts: only one of them follows the default if
+                // it ever moves.
+                detail: "Not chosen — using \(chosen.displayName). \(chosen.summary)",
+                fixHint: "Pick one on the Repositories page."
+            ))
+        case .chosen(let chosen):
+            pack = chosen
+            results.append(CheckResult(
+                id: "repo.method", title: "Method", status: .pass,
+                detail: "\(chosen.displayName). \(chosen.summary)"
+            ))
+        case .unknown(let id):
+            pack = nil
+            results.append(CheckResult(
+                id: "repo.method", title: "Method", status: .fail,
+                detail: "Set to \"\(id)\", which this build has no pack for. "
+                    + "Nothing will be dragged here until it names a method Elliot knows.",
+                fixHint: "Pick one of "
+                    + MethodCatalog.builtIn.map(\.id).sorted().joined(separator: ", ")
+                    + " on the Repositories page."
+            ))
+        }
+
+        let profileURL = URL(fileURLWithPath: repo.path).appendingPathComponent(Self.profilePath)
         let profileExists = FileManager.default.fileExists(atPath: profileURL.path)
+        // `.fail` only when this method dispatches plugin skills: the profile is
+        // the config *those* read at their preconditions step. A method that
+        // dispatches none — GSD's `/gsd-plan-phase`, plain plan mode — has
+        // nothing that opens the file, and freezing its board over an absence
+        // that costs it nothing is #249's gate answering the wrong question.
+        let dispatchesSkills = pack.map { !Self.requiredSkills(of: $0).isEmpty } ?? false
         results.append(CheckResult(
             id: "repo.profile", title: "Repo profile",
-            status: profileExists ? .pass : .fail,
-            detail: profileExists ? profilePath : "No \(profilePath); the skills read it at their preconditions step.",
+            status: profileExists ? .pass : (dispatchesSkills ? .fail : .warn),
+            detail: profileExists
+                ? Self.profilePath
+                : "No \(Self.profilePath); the skills read it at their preconditions step.",
             command: "cat \(profileURL.path)",
-            fixHint: profileExists ? nil : "Run /ai-migration-kit:get-repo-profile in this repo."
+            fixHint: profileExists ? nil : Self.profileHint(pack)
         ))
 
         if profileExists {
             // An untracked profile does not exist inside a fresh worktree, and
             // implement-issue works from one.
-            let tracked = await git.isTracked(path: profilePath, in: repo.path)
+            let tracked = await git.isTracked(path: Self.profilePath, in: repo.path)
             results.append(CheckResult(
                 id: "repo.profileCommitted", title: "Profile committed",
                 status: tracked ? .pass : .warn,
                 detail: tracked
                     ? "Tracked by git."
                     : "Untracked — it will be missing inside the worktrees implement-issue creates.",
-                command: "git -C \(repo.path) ls-files --error-unmatch \(profilePath)",
-                fixHint: tracked ? nil : "git add \(profilePath) && git commit"
+                command: "git -C \(repo.path) ls-files --error-unmatch \(Self.profilePath)",
+                fixHint: tracked ? nil : "git add \(Self.profilePath) && git commit"
             ))
         }
 
@@ -389,6 +482,14 @@ public struct PreflightService: Sendable {
         // above already reports that.
         if let nameWithOwner = info?.nameWithOwner {
             results.append(await labelsCheck(repo, nameWithOwner: nameWithOwner))
+        }
+
+        // The method's project requirements, last: they are the only checks here
+        // that depend on which method this repository chose, and an `.unknown`
+        // one has no requirements to look for — reporting another pack's would
+        // be the substitution the `.fail` above refuses.
+        if let pack {
+            results.append(contentsOf: await projectResults(repo: repo, pack: pack))
         }
 
         return results
@@ -523,9 +624,189 @@ public struct PreflightService: Sendable {
                         "Every label it names exists on the repository.",
                         "Elliot's Preflight labels check passes for \(repo.nameWithOwner).",
                     ]
-                )
+                ),
+                // ⛔ `nil`, not a key of its own. `apply` hands `fix.id` to
+                // `createCard(idempotencyKey:)`, and this fix's id — derived
+                // from the title — is already the key of cards in the field.
+                // A key here would let a second identical card be created for a
+                // finding that had already been seeded.
+                key: nil
             ),
         ]
+    }
+
+    // MARK: - The repository's method
+
+    /// The one path both the profile check and its hint name.
+    static let profilePath = ".claude/skills/repo-profile.md"
+
+    /// The distinct methods a machine's repositories run, plus the default.
+    ///
+    /// The default is always in, even for an empty list: `globalChecks` runs at
+    /// launch, before the repository table has been read, and a plugin check
+    /// that silently disappeared on a fresh install would be "nobody looked"
+    /// wearing a pass — `isBlocking([])`'s lesson, one screen over.
+    ///
+    /// `.unknown` contributes nothing. It has no pack, so it names no plugin;
+    /// `repoChecks` fails it per repository, which is where the reader can act.
+    public static func packsInUse(_ repos: [Repo]) -> [MethodPack] {
+        var byID: [String: MethodPack] = [:]
+        if case .unset(let fallback) = MethodCatalog.resolve(nil) { byID[fallback.id] = fallback }
+        for repo in repos {
+            switch repo.method {
+            case .unset(let pack), .chosen(let pack): byID[pack.id] = pack
+            case .unknown: continue
+            }
+        }
+        return byID.values.sorted { $0.id < $1.id }
+    }
+
+    /// The plugin skills this pack dispatches, read off its own step commands.
+    ///
+    /// Derived rather than declared, because `MethodPack` has no field for it
+    /// and inventing one would put the same list in two places. A command of the
+    /// shape `/<plugin>:<skill>` names a `SKILL.md` that must exist; anything
+    /// else — GSD's `/gsd-plan-phase`, Spec Kit's `/speckit.specify` — names a
+    /// command, and there is no skill directory to look for.
+    ///
+    /// Only meaningful for `.required(name)`: a pack whose plugin is `.none` or
+    /// `.unestablished` has no established name to form the `/<plugin>:` prefix
+    /// from, and no built-in pack in either state carries a `/<name>:<skill>`
+    /// command anyway — GSD's and Spec Kit's commands use `-` and `.`, never `:`.
+    ///
+    /// **Sorted**, because `steps` is a dictionary and has no order: an unsorted
+    /// list would make the check's own detail string reshuffle between sweeps,
+    /// which reads as something changing. Alphabetical also happens to be the
+    /// order the hardcoded list had, so the default pack's detail is unchanged
+    /// byte for byte.
+    public static func requiredSkills(of pack: MethodPack) -> [String] {
+        guard case .required(let plugin) = pack.plugin else { return [] }
+        let prefix = "/\(plugin):"
+        return pack.steps.values
+            .compactMap {
+                $0.command.hasPrefix(prefix) ? String($0.command.dropFirst(prefix.count)) : nil
+            }
+            .sorted()
+    }
+
+    /// How to get a repo profile, in the resolved method's own words.
+    public static func profileHint(_ pack: MethodPack?) -> String {
+        guard let pack, case .required(let plugin) = pack.plugin else {
+            return "Write \(profilePath) by hand — this method installs no plugin that writes it."
+        }
+        return "Run /\(plugin):get-repo-profile in this repo, or write \(profilePath) by hand."
+    }
+
+    // MARK: - The repository's project requirements
+
+    /// The probe, the decision and the refusal, in one place a test can drive.
+    ///
+    /// ⛔ Extracted rather than inlined into `repoChecks`, and not for tidiness:
+    /// `repoChecks` returns early on `guard isRepo`, which covers every case
+    /// `ArtifactProbe` throws `.unreadable` for, so from inside `repoChecks` the
+    /// `catch` is reachable **only** through malformed pack evidence — which no
+    /// catalogue pack has. Left inline, the refusal arm could be deleted with
+    /// every test still green. `PreflightMethodTests.malformedPackEvidenceReachesTheRefusal`
+    /// drives this function with a hand-built pack;
+    /// `missingArtefactWarnsAndDoesNotBlock` drives `repoChecks` end to end, so
+    /// the two together also catch `repoChecks` ceasing to call it.
+    ///
+    /// An instance method rather than `static`, unlike its siblings below: it is
+    /// reached in tests as `service().projectResults(...)`, alongside every
+    /// other member of this service that touches disk or a tool, even though
+    /// its own body needs no instance state.
+    public func projectResults(repo: Repo, pack: MethodPack) async -> [CheckResult] {
+        guard !pack.projectRequirements.isEmpty else { return [] }
+        do {
+            let satisfied = try ArtifactProbe(repoRoot: repo.path)
+                .evaluate(pack.projectRequirements.map(\.evidence))
+            return Self.projectChecks(repo: repo, pack: pack, satisfied: satisfied)
+        } catch {
+            return [Self.probeRefusal(pack: pack, repo: repo, error: error)]
+        }
+    }
+
+    /// One `.warn` per missing project artefact — **never a `.fail`**.
+    ///
+    /// ⛔ Since #249 a `.fail` blocks every drag in that repository. A repository
+    /// without a PRD, a constitution or a roadmap still works, and freezing its
+    /// board over a file it has every right not to have would be absurd. The two
+    /// verdicts are one character apart and only one of them is reversible by a
+    /// reader, so the distinction is named here rather than left to the caller.
+    ///
+    /// `static` and pure: what the screen *says* is assertable without a disk.
+    public static func projectChecks(
+        repo: Repo, pack: MethodPack, satisfied: [MethodPack.Evidence: Bool]
+    ) -> [CheckResult] {
+        pack.projectGaps(satisfied: satisfied).map { requirement in
+            CheckResult(
+                id: "method.\(pack.id).\(requirement.id)",
+                title: requirement.title,
+                status: .warn,
+                detail: "\(pack.displayName) expects \(sentence(requirement.evidence)); "
+                    + "it is not there.",
+                command: command(requirement.evidence, in: repo.path),
+                fixHint: requirement.remedy,
+                fixes: seedFix(requirement, pack: pack, repoID: repo.id)
+            )
+        }
+    }
+
+    /// "I could not look" is not "there is nothing there".
+    ///
+    /// **One** warning naming the cause, never N false gaps — the singular
+    /// return type is the guarantee, not a convention. It is the same duty
+    /// `labelsCheck` discharges when `gh` does not answer, and it carries no fix
+    /// for the same reason: a button here would act on a guess about a checkout
+    /// nobody could open.
+    public static func probeRefusal(
+        pack: MethodPack, repo: Repo, error: any Error
+    ) -> CheckResult {
+        CheckResult(
+            id: "method.\(pack.id).probe",
+            title: "\(pack.displayName) project files",
+            status: .warn,
+            detail: "Could not be established: \(error.localizedDescription)",
+            command: "ls -1 \(repo.path)",
+            fixHint: "Check that \(repo.path) is readable, then press Check again."
+        )
+    }
+
+    /// Exhaustive with no `default:`: wave 2's GitHub evidence cases must fail
+    /// to compile here so someone writes the sentence rather than inheriting a
+    /// wrong one.
+    private static func sentence(_ evidence: MethodPack.Evidence) -> String {
+        switch evidence {
+        case .file(let path): "the file \(path)"
+        case .anyFileUnder(let directory): "at least one file under \(directory)"
+        }
+    }
+
+    private static func command(_ evidence: MethodPack.Evidence, in root: String) -> String {
+        switch evidence {
+        case .file(let path): "ls -l \(root)/\(path)"
+        case .anyFileUnder(let directory): "find \(root)/\(directory) -type f"
+        }
+    }
+
+    /// The card this gap offers to file, keyed through the one function that
+    /// builds that key — see `MethodPack.idempotencyKey(for:in:)`, and the
+    /// board-wide uniqueness of `card_on_idempotencyKey` it exists to survive.
+    ///
+    /// A note-mode draft has no `UserStory` and `.seedCard` demands one, so the
+    /// honest answer is no button — the remedy is still in `fixHint`.
+    /// `MethodCatalogTests` pins every built-in seed as a story, so this guard is
+    /// a floor rather than a path.
+    private static func seedFix(
+        _ requirement: ProjectRequirement, pack: MethodPack, repoID: UUID
+    ) -> [CheckFix] {
+        guard let story = requirement.seed.story else { return [] }
+        return [.seedCard(
+            repoID: repoID,
+            title: requirement.seed.title,
+            story: story,
+            key: pack.idempotencyKey(for: requirement, in: repoID)
+        )]
     }
 
     // MARK: - Acting on a finding
@@ -600,7 +881,7 @@ public struct PreflightService: Sendable {
                 detail: parts.isEmpty ? "Nothing to create." : parts.joined(separator: ". ") + "."
             )
 
-        case .seedCard(_, let title, let story):
+        case .seedCard(_, let title, let story, _):
             do {
                 // Backlog, where nothing runs. Seeding into `todo` would file an
                 // issue the instant the button was pressed — a button that

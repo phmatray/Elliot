@@ -24,6 +24,8 @@ enum MoveBlockCase: CaseIterable {
     case runAlreadyInFlight
     case notVerifiedGreen
     case systemOwnedTransition
+    case unknownMethod
+    case methodHasNoStep
 
     /// One value standing for this case. The associated values are arbitrary —
     /// what is under test is the wording of a case, never of a payload.
@@ -39,6 +41,8 @@ enum MoveBlockCase: CaseIterable {
         case .runAlreadyInFlight: .runAlreadyInFlight(runID: UUID())
         case .notVerifiedGreen: .notVerifiedGreen(reason: .sign(.checksFailing(count: 1)))
         case .systemOwnedTransition: .systemOwnedTransition
+        case .unknownMethod: .unknownMethod("gsd-v2")
+        case .methodHasNoStep: .methodHasNoStep(method: "BMAD Method", kind: "create-issue")
         }
     }
 
@@ -56,6 +60,8 @@ enum MoveBlockCase: CaseIterable {
         case .runAlreadyInFlight: .runAlreadyInFlight
         case .notVerifiedGreen: .notVerifiedGreen
         case .systemOwnedTransition: .systemOwnedTransition
+        case .unknownMethod: .unknownMethod
+        case .methodHasNoStep: .methodHasNoStep
         }
     }
 

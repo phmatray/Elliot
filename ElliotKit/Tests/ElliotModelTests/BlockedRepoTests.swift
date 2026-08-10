@@ -43,7 +43,8 @@ struct BlockedRepoTests {
         // preflight gate, which sits ahead of the green guard and answers
         // whatever the guard would have said.
         MoveContext(
-            repoIsEnabled: true, repoPreflight: preflight, providedFollowUps: [],
+            repoIsEnabled: true, repoPreflight: preflight,
+            method: MethodCatalog.resolve(nil), providedFollowUps: [],
             requiresVerifiedGreen: false, prVerdict: nil
         )
     }
@@ -136,11 +137,14 @@ struct BlockedRepoTests {
     /// A caller that has not measured cannot assert a pass by omission.
     @Test("MoveContext defaults to not-checked, never to passing")
     func contextDefaultsToNotChecked() {
-        // The two arguments stated here have no defaults, by design
-        // (`MoveContext.init`'s ⛔ note); `repoPreflight` is the one under test
-        // and stays omitted, which is the whole assertion.
+        // The three arguments stated here have no defaults, by design
+        // (`MoveContext.init`'s ⛔ note — `method` joined the other two when a
+        // review measured both its unpinned production sites); `repoPreflight`
+        // is the one under test and stays omitted, which is the whole assertion.
         #expect(
-            MoveContext(requiresVerifiedGreen: false, prVerdict: nil).repoPreflight == .notChecked
+            MoveContext(
+                method: MethodCatalog.resolve(nil), requiresVerifiedGreen: false, prVerdict: nil
+            ).repoPreflight == .notChecked
         )
     }
 

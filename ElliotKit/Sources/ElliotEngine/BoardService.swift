@@ -24,6 +24,15 @@ public enum BoardError: Error, LocalizedError {
     case cardAlreadyFiled(Int)
     case cardTracksPullRequest(Int)
     case runNotFound(UUID)
+    case unknownMethod(String)
+    /// The repository's method declares no step for this transition.
+    ///
+    /// Not a defect and not a fallback: wave 1 ships a BMAD pack carrying
+    /// project requirements and no steps at all, and a GSD pack declaring only
+    /// `create-issue`. Borrowing another method's command here would run
+    /// `claude -p` at `bypassPermissions` against a checkout whose owner asked
+    /// for something else entirely.
+    case methodHasNoStep(method: String, kind: String)
 
     public var errorDescription: String? {
         switch self {
@@ -34,6 +43,11 @@ public enum BoardError: Error, LocalizedError {
         case .cardTracksPullRequest(let number):
             "This card tracks pull request #\(number); edit it on GitHub."
         case .runNotFound(let id): "No run with id \(id)."
+        case .unknownMethod(let id):
+            "This repository is set to the method \"\(id)\", which this build does not know. "
+                + "Choose one on the Repositories page."
+        case .methodHasNoStep(let method, let kind):
+            "The \(method) method declares no \(kind) step, so this move has nothing to run."
         }
     }
 }
@@ -139,6 +153,12 @@ public actor BoardService: SystemMoving {
             // collaborator, so a drag, `board_move_card` and `board_next`
             // cannot answer differently.
             repoPreflight: repo.preflightVerdict,
+            // Off the same row, for the same reason: the method decides which
+            // command a transition runs, so the engine that predicts the move
+            // and the code that commits it must read one value. It used to be
+            // read in `makeRun` instead — downstream of `evaluateMove` — which
+            // is how `board_next` came to offer moves the commit then refused.
+            method: repo.method,
             activeRunID: activeRun?.id,
             allowSideEffects: origin.allowsSideEffects,
             providedFollowUps: followUps,
@@ -218,13 +238,38 @@ public actor BoardService: SystemMoving {
         guard let repo = try await store.repo(id: card.repoID) else {
             throw BoardError.repoNotFound(card.repoID)
         }
+        // Read off the row this method already loaded, for the same reason
+        // `repoPreflight` is: the funnel every move passes through gets it with
+        // no new collaborator, so a drag and `board_move_card` cannot answer
+        // differently.
+        //
+        // ⛔ **An unreachable floor, not the gate.** `evaluateMove` refuses both
+        // of these as `MoveBlock`s before a proposal ever reaches `commitMove`,
+        // which is what lets `board_next` and the drop caption predict them —
+        // they were refusals *here* for one day, and a BMAD card previewed as
+        // ready and threw at commit (finding I2).
+        //
+        // Kept anyway, and deliberately: a future caller that reaches `makeRun`
+        // by some other path must still fail closed rather than spawn
+        // `claude -p` at `bypassPermissions` inside a checkout whose owner asked
+        // for a different method. Cheap, and the failure it guards is expensive.
+        let method: MethodPack
+        switch repo.method {
+        case .unset(let pack), .chosen(let pack): method = pack
+        case .unknown(let id): throw BoardError.unknownMethod(id)
+        }
+        guard method.steps[action.kind] != nil else {
+            throw BoardError.methodHasNoStep(
+                method: method.displayName, kind: action.kind.skillName
+            )
+        }
         let runID = UUID()
         return SkillRun(
             id: runID,
             cardID: card.id,
             repoID: card.repoID,
             kind: action.kind,
-            prompt: SlashCommandBuilder.prompt(for: action),
+            prompt: SlashCommandBuilder.prompt(for: action, method: method),
             cwd: repo.path,
             logPath: StoreLocation.runLogURL(runID: runID).path,
             stderrPath: StoreLocation.runStderrURL(runID: runID).path,

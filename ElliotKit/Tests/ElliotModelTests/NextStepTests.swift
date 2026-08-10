@@ -36,6 +36,7 @@ private func candidate(
         card: card,
         repoName: repoName,
         context: MoveContext(
+            method: MethodCatalog.resolve(nil),
             providedFollowUps: followUps,
             // What `nextCandidates` itself answers — see
             // `nextCandidatesAnswerForAHumansProxy` below for why.

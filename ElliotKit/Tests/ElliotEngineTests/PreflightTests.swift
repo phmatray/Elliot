@@ -50,7 +50,8 @@ struct PreflightTests {
         let seed = CheckFix.seedCard(
             repoID: repoID,
             title: "Decide a label taxonomy",
-            story: UserStory(role: "maintainer", want: "a taxonomy", benefit: "labelled issues")
+            story: UserStory(role: "maintainer", want: "a taxonomy", benefit: "labelled issues"),
+            key: nil
         )
 
         #expect(!create.label.isEmpty)
@@ -261,7 +262,7 @@ struct PreflightTests {
         let story = UserStory(role: "maintainer", want: "a taxonomy", benefit: "labelled issues")
 
         let outcome = await service().apply(
-            .seedCard(repoID: repo.id, title: "Decide a label taxonomy", story: story),
+            .seedCard(repoID: repo.id, title: "Decide a label taxonomy", story: story, key: nil),
             repo: repo,
             board: board
         )
@@ -283,7 +284,8 @@ struct PreflightTests {
         let a = CheckFix.createLabels(repoID: repoID, nameWithOwner: "phmatray/Elliot", labels: [])
         let b = CheckFix.seedCard(
             repoID: repoID, title: "t",
-            story: UserStory(role: "r", want: "w", benefit: "b")
+            story: UserStory(role: "r", want: "w", benefit: "b"),
+            key: nil
         )
         #expect(a.id != b.id)
         #expect(Set([a, b]).count == 2)
@@ -326,7 +328,8 @@ struct PreflightTests {
         let (store, board, _, repo) = try await seededBoard()
         let fix = CheckFix.seedCard(
             repoID: repo.id, title: "Decide a label taxonomy",
-            story: UserStory(role: "r", want: "w", benefit: "b")
+            story: UserStory(role: "r", want: "w", benefit: "b"),
+            key: nil
         )
 
         _ = await service().apply(fix, repo: repo, board: board)

@@ -13,6 +13,19 @@ DerivedData/
 # Assembled app bundle
 dist/
 
+# Written by `swift test`, not by anyone. `GitFixtures` and the three sync
+# suites spawn `gh` and `git` with an environment built for the test rather
+# than inherited, and a child that finds no `XDG_STATE_HOME` falls back to a
+# `.local/state` relative to its working directory — which is the package.
+#
+# Measured twice on the same day, in two worktrees, by two readers who each
+# took it for a leftover: absent before a run, present after, 4K of
+# `state/gh/device-id`. Deleting it is not a fix, because the next `swift test`
+# writes it again; what it costs untracked is a `git status` that is never
+# clean, which is the signal every "is this worktree safe to delete" check in
+# this project reads.
+ElliotKit/.local/
+
 # Scratch for subagent-driven execution: ledger, task briefs, review packages.
 # The git history is the durable record; this is only the map used while a plan
 # is being executed.

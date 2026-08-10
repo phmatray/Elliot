@@ -137,6 +137,42 @@ public final class BoardStore: Sendable {
         }
     }
 
+    /// Writes the chosen method and **only** the chosen method.
+    ///
+    /// The sibling above earns its shape from a seconds-long suspension. This
+    /// one has no network call in it at all, and is still a single-column
+    /// `UPDATE` — because the argument that matters is the last line of that
+    /// doc comment rather than the first: *no window of its own to reason
+    /// about*. A read-modify-write here would narrow the hazard from "a whole
+    /// sweep" to "two store calls" and leave the reader a race to think about
+    /// every time this is read. There is no version of that which is worth
+    /// having for one scalar column.
+    ///
+    /// It shipped as `var updated = repo; updated.methodID = …; saveRepo(updated)`
+    /// — the whole row, from the copy the menu was rendering. What the field
+    /// being reverted was decides how bad that is, and the answer moved: `Repo`
+    /// gained `permissionMode` and `extraAllowedTools` in #333, so a picker
+    /// built on a pre-tightening snapshot put `bypassPermissions` back.
+    ///
+    /// `nil` is a value here, not a missing argument: it clears the column and
+    /// the repository resolves as `.unset` again. `Optional<String>` binds as
+    /// `NULL`, which is what the v15 migration deliberately left backfill-free.
+    ///
+    /// Returns whether a row was actually updated. `false` means the repository
+    /// is gone — Preflight carries a Forget button, so a menu can outlive its
+    /// row — and the caller has a sentence to show for that. Reading the row
+    /// back to find out instead would reintroduce exactly the window this
+    /// spelling exists to avoid.
+    public func saveRepoMethod(id: UUID, methodID: String?) async throws -> Bool {
+        try await requireWriter().write { db in
+            try db.execute(
+                sql: "UPDATE repo SET methodID = ? WHERE id = ?",
+                arguments: [methodID, id.databaseKey]
+            )
+            return db.changesCount > 0
+        }
+    }
+
     public func deleteRepo(id: UUID) async throws {
         _ = try await requireWriter().write { db in try Repo.deleteOne(db, key: id.databaseKey) }
     }
