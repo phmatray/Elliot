@@ -2878,15 +2878,22 @@ public final class AppModel {
         }
         let updated: Repo
         do {
-            guard var current = try await store.repo(id: repo.id) else {
+            guard try await store.saveRepoMethod(id: repo.id, methodID: methodID) else {
                 // Reachable rather than theoretical, for `setRunTerms`' reason:
                 // Preflight carries a Forget button, and the row can go while
-                // the menu holding this picker is open.
+                // the menu holding this picker is open. The store answers this
+                // from the `UPDATE`'s own row count, so there is no second call
+                // that could disagree with the first.
                 status = "\(repo.displayName) is no longer registered."
                 return
             }
-            current.methodID = methodID
-            try await store.saveRepo(current)
+            // Read **back**, never `repo` with the field poked into it. The
+            // checks below are computed from a whole row — the path, the
+            // taxonomy, the run terms — and the copy this menu was rendering may
+            // have aged. Missing now means the row went between the write and
+            // this read, which costs nothing: there is no repository left to
+            // check.
+            guard let current = try await store.repo(id: repo.id) else { return }
             updated = current
         } catch {
             status = "Could not set the method for \(repo.displayName): "

@@ -84,6 +84,54 @@ struct RepositoriesMethodTests {
 
     // MARK: - The write
 
+    /// The picker must not be able to undo the Run terms picker beside it.
+    ///
+    /// ⛔ This is the one test in this file that is about a **safety control**
+    /// rather than about a method. `setRepoMethod` shipped as `var updated =
+    /// repo; updated.methodID = …; saveRepo(updated)` — the whole row, built
+    /// from the copy the menu was rendering. The branch review filed that as a
+    /// deferred minor, correctly, because at the time the worst it could revert
+    /// was `isEnabled`. Merging `main` changed the answer without touching the
+    /// line: `Repo` gained `permissionMode` and `extraAllowedTools` (#333), and
+    /// `labelPolicy` (#199).
+    ///
+    /// So this drives the sequence a reader actually performs — tighten, then
+    /// choose — with the stale `repo` value the view would still be holding,
+    /// which is the whole point: passing the re-read row would test nothing.
+    /// With the whole-row write restored, `permissionMode` comes back
+    /// `bypassPermissions` and an unattended agent is re-armed in silence.
+    @MainActor
+    @Test("Choosing a method does not put the run terms back")
+    func setRepoMethodLeavesRunTermsAlone() async throws {
+        _ = TestHome.root
+        let store = try BoardStore.inMemory()
+        let repo = Repo(
+            path: "/tmp/terms", nameWithOwner: "phmatray/terms", displayName: "terms")
+        try await store.saveRepo(repo)
+
+        let model = AppModel()
+        model.testOnlySeedStore(store)
+        model.testOnlySeed(repos: [repo], cards: [])
+
+        await model.setRunTerms(repo, .mode(.plan))
+        let pack = try #require(
+            MethodCatalog.builtIn.first { $0.id != MethodCatalog.defaultPackID })
+
+        // `repo`, deliberately: the pre-tightening snapshot, exactly what the
+        // menu is still bound to.
+        await model.setRepoMethod(repo, methodID: pack.id)
+
+        let after = try #require(try await store.repo(id: repo.id))
+        #expect(after.methodID == pack.id, "the method was not written")
+        // Hoisted, not inlined: `#expect`'s message is a `Comment`, which is
+        // `ExpressibleByStringLiteral`, so a `+` in place resolves against
+        // `Sequence` and does not compile. Noted once in this wave's ledger and
+        // met again here.
+        let reverted = "the method picker reverted the run terms — an unattended agent just "
+            + "got its permissions back"
+        #expect(after.permissionMode == .plan, Comment(rawValue: reverted))
+    }
+
     @MainActor
     @Test("Choosing a method writes it, and choosing none clears it")
     func setRepoMethodWritesThrough() async throws {
