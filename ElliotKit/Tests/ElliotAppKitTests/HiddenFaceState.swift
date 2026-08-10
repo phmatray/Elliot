@@ -156,12 +156,40 @@ enum HiddenFaceState {
     /// How many braces deep the first occurrence of `needle` sits inside
     /// `block`, or `nil` if it does not occur there at all.
     ///
-    /// The structural half of a presence gate, and the reason it is worth having
-    /// beside a needle: a `ViewBuilder` cannot return early, so *every* way of
-    /// not drawing something is a brace — which makes depth an answer about
-    /// shape rather than about vocabulary. A gate that bans `.finished` says
-    /// nothing about `if !controls.isEmpty`; a gate that pins depth says
-    /// something about a condition nobody has thought of yet.
+    /// The structural half of a presence gate, and worth having beside a needle
+    /// because it answers about the **shape** of the code rather than about its
+    /// vocabulary: an `if` written around the call reddens whatever that `if`
+    /// tests — `controls.isEmpty`, a tally threshold, a condition nobody has
+    /// thought of yet — where a banned-word list only ever holds the words on it.
+    ///
+    /// ⛔ **What it is not.** This doc said *"a `ViewBuilder` cannot return early,
+    /// so every way of not drawing something is a brace"*. That is false, and
+    /// **three** evasions have now been measured green against gates built on it:
+    ///
+    /// 1. a **braceless ternary** — `(cond ? AnyView(EmptyView()) : AnyView(x))`
+    ///    — no brace between the guard and the call, so the depth is unchanged;
+    /// 2. a **sibling-function guard** — an overload whose own body holds the
+    ///    `if`, leaving the call site byte-identical bar one argument and the
+    ///    branch outside the slice entirely;
+    /// 3. a **modifier that draws nothing**, *inside* the correct branch —
+    ///    `.opacity(0)`, `.hidden()`, a zero `font` or `frame`. The view is
+    ///    present, the depth is right, and there is nothing on screen. Measured
+    ///    while fixing `AutoDevCardMarkTests`: `.opacity(activeRun == nil ? 1 : 0)`
+    ///    on the engaged card's mark restored the exact defect that suite exists
+    ///    to prevent, with **2628 tests in 300 suites green**.
+    ///
+    /// So this is a guarantee against a **brace-shaped branch inside the block it
+    /// is handed**, and nothing wider. A caller that needs the other three says
+    /// so in its own words, because the shapes differ per surface — the pattern
+    /// worth copying is `BoardAccessibilityTests`', which bans `.hidden()` and
+    /// `.opacity(` in the strip's body *beside* its depth check, and which both
+    /// modifier breaks above reddened on.
+    ///
+    /// ⚠️ **The false sentence had already been retired once on this branch** —
+    /// in `BoardAccessibilityTests`, two commits before this helper existed — and
+    /// was then written again here. A universal is the premise the next author
+    /// reasons from, so it is the one kind of comment worth measuring before
+    /// writing.
     ///
     /// ⚠️ **The second copy of this walk, and the first is `BoardAccessibility
     /// Tests.braceDepth`.** Written here rather than a third time, on the

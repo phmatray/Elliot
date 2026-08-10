@@ -66,14 +66,22 @@ struct AutoDevCardMarkTests {
     /// What decides whether the mark is drawn — read whole, and read at the
     /// draw site rather than in the property it calls.
     ///
-    /// ⛔ **Three separate ways to lose this arm, and a needle only closes the
-    /// first.** A condition gaining a clause (`isEngagedByAutoDev, activeRun ==
-    /// nil`); a second `if` *inside* it; a second `if` *around* it. The first two
-    /// are caught by comparing the nearest enclosing condition whole — the
+    /// ⛔ **Three brace-shaped ways to lose this arm, and a needle only closes
+    /// the first.** A condition gaining a clause (`isEngagedByAutoDev, activeRun
+    /// == nil`); a second `if` *inside* it; a second `if` *around* it. The first
+    /// two are caught by comparing the nearest enclosing condition whole — the
     /// backwards search finds the innermost `if`, so a nested one is read instead
-    /// of the intended one and fails naming what it read. The third is a brace,
-    /// so it is caught by depth: a `ViewBuilder` cannot return early, which makes
-    /// every way of not drawing something a brace, whatever it is spelled.
+    /// of the intended one and fails naming what it read. The third is caught by
+    /// depth, which reads the shape rather than the words.
+    ///
+    /// ⚠️ **A fourth way is not brace-shaped, and neither check here sees it: a
+    /// view can be present and draw nothing.** `.opacity(0)`, `.hidden()`, a zero
+    /// `font` or `frame` *inside the correct branch* leaves the condition right
+    /// and the depth right. Measured, not supposed —
+    /// `.opacity(activeRun == nil ? 1 : 0)` on the mark restored this task's
+    /// whole arm-3 defect with 2628 tests in 300 suites green. It is closed by
+    /// the needle in ``markSurvivesARun``, which is where that arm lives; this
+    /// test holds the shape, not the modifiers.
     ///
     /// The last depth check is about the row rather than the mark: the whole
     /// point of choosing the title row is that it is **unconditional**, so a
@@ -147,10 +155,42 @@ struct AutoDevCardMarkTests {
     /// session. Equality holds both — a rewrite fails loudly naming what it read,
     /// which asks a person to look, and that is the right direction for the one
     /// expression this whole feature's visibility rests on.
+    ///
+    /// ⛔ **The property is one of two places a run can suppress the mark, and
+    /// the second is not a branch at all.** A view can be present and draw
+    /// nothing: `.opacity(activeRun == nil ? 1 : 0)` on the `Image`, inside the
+    /// correct `if`, leaves this body untouched, the draw-site condition
+    /// untouched and the brace depth untouched. Measured rather than imagined —
+    /// it restored this whole arm's defect with 2628 tests in 300 suites green,
+    /// which is what fix round 1 found. So the mark's own block is swept too.
+    ///
+    /// ⚠️ **That second half is a needle, and it is disclosed as one**, unlike
+    /// the whole-value comparison above it. It holds the three shapes that have
+    /// actually been measured — the same pair `BoardAccessibilityTests` bans in
+    /// the status strip, plus the name this arm is about. It does **not** hold a
+    /// zero `font` or `frame`, nor a sibling `markFont` computing one, and both
+    /// of those are live. `.font(` cannot be banned here because the mark draws
+    /// with it, which is the honest reason the list stops where it does.
     @Test("The mark reads the engaged set, and nothing else — a run does not suppress it")
     func markSurvivesARun() throws {
         let code = try HiddenFaceState.code(of: "CardView.swift")
         let body = try HiddenFaceState.body(of: "private var isEngagedByAutoDev", in: code)
+        let block = try HiddenFaceState.body(of: "if isEngagedByAutoDev", in: code)
+
+        // `activeRun` catches `model.activeRuns[card.id]` written inline too —
+        // the plural contains the singular — so the one name this arm is about
+        // is closed by both routes into it.
+        for shape in ["activeRun", ".opacity(", ".hidden()"] {
+            #expect(
+                !block.contains(shape),
+                Comment(
+                    rawValue: """
+                        The mark's own block carries `\(shape)`. A branch is not the only way to \
+                        lose this arm — a view can be present and draw nothing — and a hiding \
+                        modifier here makes the mark vanish for exactly the card auto-dev is \
+                        working on, with the condition and the brace depth both still right.
+                        """))
+        }
 
         #expect(
             body.filter { !$0.isWhitespace } == "model.autoDevEngagedCardIDs.contains(card.id)",
