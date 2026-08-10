@@ -1,5 +1,6 @@
 import ElliotModel
 import Foundation
+import TestSupport
 import Testing
 
 @testable import ElliotStore
@@ -460,6 +461,149 @@ struct ImportPersistenceTests {
         try await store.dismiss(ExternalRef(kind: .pullRequest, number: 20), repoID: repo.id)
         try await store.deleteRepo(id: repo.id)
         #expect(try await store.dismissals(repoID: repo.id).isEmpty)
+    }
+
+    // MARK: - Dismissals, read back and undone one at a time (#334)
+
+    /// Two repositories, each holding the pair a card carrying an issue *and*
+    /// its pull request would write.
+    private func storeWithDismissals() async throws -> (BoardStore, Repo, Repo) {
+        let store = try BoardStore.inMemory()
+        let first = makeRepo()
+        let second = makeRepo()
+        try await store.saveRepo(first)
+        try await store.saveRepo(second)
+        try await store.dismiss(ExternalRef(kind: .issue, number: 102), repoID: first.id, now: now)
+        try await store.dismiss(
+            ExternalRef(kind: .pullRequest, number: 201), repoID: first.id, now: now)
+        try await store.dismiss(
+            ExternalRef(kind: .issue, number: 7), repoID: second.id,
+            now: now.addingTimeInterval(60))
+        return (store, first, second)
+    }
+
+    /// The whole point of the feature at this layer: the timestamp has been in
+    /// the table since v5 and `dismissals` threw it away, because its one caller
+    /// — the importer — needs only the keys.
+    @Test("A dismissal comes back carrying the date it was written with")
+    func dismissedItemsCarryTheDateTheKeyThrewAway() async throws {
+        let (store, repo) = try await storeWithRepo()
+        let ref = ExternalRef(kind: .issue, number: 4)
+        try await store.dismiss(ref, repoID: repo.id, now: now)
+
+        let items = try await store.dismissedItems(repoID: repo.id)
+        #expect(items.count == 1)
+        #expect(items.first?.ref == ref)
+        #expect(items.first?.repoID == repo.id)
+        #expect(items.first?.dismissedAt == now)
+    }
+
+    @Test("nil is every repository; an id is that repository alone")
+    func dismissedItemsFollowTheRepositoryArgument() async throws {
+        let (store, first, second) = try await storeWithDismissals()
+        #expect(try await store.dismissedItems(repoID: nil).count == 3)
+        #expect(try await store.dismissedItems(repoID: first.id).count == 2)
+        #expect(try await store.dismissedItems(repoID: second.id).map(\.ref.number) == [7])
+        #expect(try await store.dismissedItems(repoID: UUID()).isEmpty)
+    }
+
+    /// Criterion 2's first half at this layer, and the edge case the face has to
+    /// disclose: a card carrying both an issue and its pull request wrote two
+    /// rows, and restoring one must leave the other exactly where it is.
+    @Test("Undismissing deletes one row, not the card's other ref and not another repository's")
+    func undismissDeletesExactlyOneRow() async throws {
+        let (store, first, second) = try await storeWithDismissals()
+
+        try await store.undismiss(ExternalRef(kind: .issue, number: 102), repoID: first.id)
+
+        #expect(try await store.dismissals(repoID: first.id)
+            == [ExternalRef(kind: .pullRequest, number: 201)])
+        #expect(try await store.dismissals(repoID: second.id)
+            == [ExternalRef(kind: .issue, number: 7)])
+    }
+
+    /// A number matches only under its own kind: issue 5 and PR 5 are two rows,
+    /// and a delete keyed on the number alone would take both.
+    @Test("Undismissing an issue leaves the pull request that shares its number")
+    func undismissIsKeyedOnKindAsWellAsNumber() async throws {
+        let (store, repo) = try await storeWithRepo()
+        try await store.dismiss(ExternalRef(kind: .issue, number: 5), repoID: repo.id)
+        try await store.dismiss(ExternalRef(kind: .pullRequest, number: 5), repoID: repo.id)
+
+        try await store.undismiss(ExternalRef(kind: .issue, number: 5), repoID: repo.id)
+        #expect(try await store.dismissals(repoID: repo.id)
+            == [ExternalRef(kind: .pullRequest, number: 5)])
+    }
+
+    /// The third column of the key, and the one whose absence would be silent:
+    /// two repositories very often dismiss the same low issue number, and a
+    /// delete that forgot the repository would restore in one board while
+    /// quietly restoring in the other.
+    @Test("Undismissing in one repository leaves the same number dismissed in another")
+    func undismissIsKeyedOnTheRepositoryToo() async throws {
+        let store = try BoardStore.inMemory()
+        let first = makeRepo()
+        let second = makeRepo()
+        try await store.saveRepo(first)
+        try await store.saveRepo(second)
+        let ref = ExternalRef(kind: .issue, number: 12)
+        try await store.dismiss(ref, repoID: first.id)
+        try await store.dismiss(ref, repoID: second.id)
+
+        try await store.undismiss(ref, repoID: first.id)
+        #expect(try await store.dismissals(repoID: first.id).isEmpty)
+        #expect(try await store.dismissals(repoID: second.id) == [ref])
+    }
+
+    /// Matching `dismiss`'s documented idempotence, from the other side: a row
+    /// the next refresh already brought back is a row *Restore* may be pressed
+    /// on twice.
+    @Test("Undismissing a row that is already gone is a no-op, not an error")
+    func undismissingAnAbsentRowIsANoOp() async throws {
+        let (store, repo) = try await storeWithRepo()
+        try await store.dismiss(ExternalRef(kind: .issue, number: 4), repoID: repo.id)
+
+        try await store.undismiss(ExternalRef(kind: .issue, number: 9), repoID: repo.id)
+        try await store.undismiss(ExternalRef(kind: .issue, number: 4), repoID: repo.id)
+        try await store.undismiss(ExternalRef(kind: .issue, number: 4), repoID: repo.id)
+        #expect(try await store.dismissals(repoID: repo.id).isEmpty)
+    }
+
+    /// The importer's view is now a *projection* of the reader's, not a second
+    /// SELECT over the same table. Asserted on a fixture where the two could
+    /// disagree — two repositories, and a repository holding two kinds.
+    @Test("The importer's key set is exactly the reader's rows, mapped down")
+    func dismissalsIsAProjectionOfDismissedItems() async throws {
+        let (store, first, second) = try await storeWithDismissals()
+        for repo in [first, second] {
+            let keys = try await store.dismissals(repoID: repo.id)
+            let rows = try await store.dismissedItems(repoID: repo.id)
+            #expect(keys == Set(rows.map(\.ref)))
+        }
+    }
+
+    /// Criterion 4 at this layer: *Forget dismissed items* keeps clearing them
+    /// all — and keeps meaning "this repository", not "the table".
+    @Test("Forgetting one repository's dismissals leaves the other repository's alone")
+    func clearDismissalsStillEmptiesOneRepository() async throws {
+        let (store, first, second) = try await storeWithDismissals()
+        try await store.clearDismissals(repoID: first.id)
+        #expect(try await store.dismissedItems(repoID: first.id).isEmpty)
+        #expect(try await store.dismissedItems(repoID: second.id).count == 1)
+    }
+
+    /// The figure in the status bar is driven by this rather than by the last
+    /// import summary, so a restore decrements it immediately and a stale count
+    /// cannot outlive the fact it reports.
+    @Test("The table is observable, so the figure follows a restore rather than a refresh")
+    func observeDismissalsDeliversTheTable() async throws {
+        let (store, _, _) = try await storeWithDismissals()
+        let delivered = try await withTimeout(.seconds(5)) {
+            for try await rows in store.observeDismissals() { return rows }
+            return [DismissedItem]()
+        }
+        #expect(delivered.count == 3)
+        #expect(Set(delivered.map(\.ref.number)) == [102, 201, 7])
     }
 
     /// Reopening is the everyday path; the upgrade *over pre-existing rows* —

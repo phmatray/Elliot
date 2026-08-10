@@ -761,6 +761,15 @@ public final class AppModel {
     /// one of the answers.
     public private(set) var activeRuns: [UUID: SkillRun] = [:]
 
+    /// Every suppression, live off the table.
+    ///
+    /// Fed by ``BoardStore/observeDismissals()`` rather than by the last import
+    /// summary. `ImportSummary.sentence` still says "3 dismissed" and that
+    /// sentence is a *record of one pass*: it cannot decrement when a row is
+    /// restored, and it is overwritten by whatever speaks into `status` next. A
+    /// figure that is a reading of the table cannot outlive the fact it reports.
+    public private(set) var dismissedItems: [DismissedItem] = []
+
     public var selectedRepoID: UUID?
     public var selectedCardID: UUID?
     public var pendingFollowUps: PendingMerge?
@@ -1298,6 +1307,22 @@ public final class AppModel {
                 // Deliberately quiet, unlike the card observation above: a lost
                 // status stream costs a badge, not the board, and a banner
                 // saying so would be louder than the fact it reports.
+            }
+        })
+
+        // Its own observation, for the reason the PR statuses above have one:
+        // nothing about a dismissal touches a card row, so a figure refreshed
+        // off the card observation would follow a restore exactly never.
+        let dismissalObservation = store.observeDismissals()
+        observationTasks.append(Task { [weak self] in
+            do {
+                for try await rows in dismissalObservation {
+                    await MainActor.run { self?.dismissedItems = rows }
+                }
+            } catch {
+                // Quiet, like the statuses: a lost figure costs a door in the
+                // status bar, not the board, and the face is still reachable
+                // from the View menu. A banner would be louder than the fact.
             }
         })
 
@@ -2714,6 +2739,56 @@ public final class AppModel {
         status = summary.sentence
     }
 
+    /// What the **Dismissed** face draws: the repositories in view, each with
+    /// its own rows already ordered.
+    ///
+    /// "In view" is the board's picker, exactly as ``clearDismissals()`` and
+    /// ``visibleImportFailures`` already read it — one repository selected shows
+    /// its own rows, *All repositories* shows every one, grouped.
+    public var visibleDismissals: [DismissalGroup] {
+        DismissalDigest.groups(dismissedItems, repoID: selectedRepoID)
+    }
+
+    /// The door in the status bar, or `nil` when there is nothing to open it
+    /// for.
+    ///
+    /// Counts what is **in view**, not the whole table, so the figure names
+    /// exactly the rows the face it opens will show and the act beside them —
+    /// *Forget dismissed items* — would clear.
+    public var dismissedFigure: String? {
+        DismissalDigest.figure(
+            count: DismissalDigest.rows(dismissedItems, repoID: selectedRepoID).count)
+    }
+
+    /// Undoes **one** suppression, so the next refresh may bring that item back
+    /// and nothing else changes.
+    ///
+    /// ⛔ **Creates no card.** The importer creates cards; a second path that
+    /// inserted one here would be the write path `BoardService` exists to
+    /// prevent, and it would insert a card carrying what the row remembered
+    /// rather than what GitHub says now. The row goes; the refresh does the
+    /// rest.
+    ///
+    /// ⚠️ `importSession.forget` is not housekeeping — it is what makes the act
+    /// visible. Without it a repository whose one unattended attempt is already
+    /// spent picks nothing up until the reader presses Refresh, so *Restore*
+    /// appears to do nothing at all. `clearDismissals` below has called it for
+    /// exactly this reason since it was written.
+    public func restoreDismissal(_ item: DismissedItem) async {
+        guard let store else { return }
+        do {
+            try await store.undismiss(item.ref, repoID: item.repoID)
+        } catch {
+            status = "Could not restore \(item.ref.label): \(error.localizedDescription)"
+            return
+        }
+        importSession.forget(repoID: item.repoID)
+        // `item.ref.label` is a `String`, and `status` is rendered by a `Text`
+        // built from a variable — so the number stays "PR #1234" rather than
+        // being group-separated into "PR #1.234" (`MergeConfirmation`).
+        status = "\(item.ref.label) restored — refresh to bring it back."
+    }
+
     /// Undoes every dismissal for the repositories in view, so the next refresh
     /// brings back what was deleted.
     public func clearDismissals() async {
@@ -3664,6 +3739,21 @@ public final class AppModel {
     func testOnlySeedRepoBoard(rows: [RepoRow], tallies: [UUID: RepoBoardTally] = [:]) {
         repoRows = rows
         repoTallies = tallies
+    }
+
+    /// Puts the suppression table in front of the model without an observation
+    /// behind it.
+    ///
+    /// `dismissedItems` is `private(set)` because ``observeDismissals()`` fills
+    /// it, and the rules that read it — which repositories the face groups, what
+    /// the door's figure counts — are about the **picker**, not about GRDB.
+    /// Standing a real observation up to assert them would test delivery and
+    /// call it a test of the filter.
+    ///
+    /// ⚠️ It therefore proves nothing about the wiring. That claim is
+    /// `DismissedListTests.theTableIsObserved`, which subscribes for real.
+    func testOnlySeedDismissals(_ items: [DismissedItem]) {
+        dismissedItems = items
     }
 
     /// Puts a real store behind the model without `start()`.
