@@ -114,10 +114,10 @@ struct ClaudeInvocationTests {
     }
 
     @Test("The session id is lowercase, as the CLI's UUID validation expects")
-    func sessionIDIsLowercased() {
+    func sessionIDIsLowercased() throws {
         let invocation = ClaudeInvocation(runID: UUID(), prompt: "x", cwd: "/tmp")
         let args = invocation.arguments()
-        let sessionID = args[args.firstIndex(of: "--session-id")! + 1]
+        let sessionID = try #require(argumentValues(after: "--session-id", in: args).first)
         #expect(sessionID == sessionID.lowercased())
         #expect(UUID(uuidString: sessionID) != nil)
     }
@@ -129,7 +129,8 @@ struct ClaudeInvocationTests {
 
         invocation.extraAllowedTools = ["Bash(git status *)", "Read"]
         let args = invocation.arguments()
-        #expect(args[args.firstIndex(of: "--allowedTools")! + 1] == "Bash(git status *),Read")
+        #expect(
+            argumentValues(after: "--allowedTools", in: args) == ["Bash(git status *),Read"])
     }
 
     @Test("Extra directories are one --add-dir each, after the working directory")
@@ -142,9 +143,7 @@ struct ClaudeInvocationTests {
         // the burden of quoting somewhere nobody is looking.
         invocation.extraDirectories = ["/Users/p/Library/Application  Support/Elliot/analyses"]
         let args = invocation.arguments()
-        let directories = args.enumerated()
-            .filter { $0.element == "--add-dir" }
-            .map { args[$0.offset + 1] }
+        let directories = argumentValues(after: "--add-dir", in: args)
         #expect(directories == [
             "/tmp/checkout", "/Users/p/Library/Application  Support/Elliot/analyses",
         ])
@@ -170,7 +169,7 @@ struct ClaudeInvocationTests {
         let granted = try #require(args.lastIndex(of: "--add-dir"))
         let resumed = try #require(args.firstIndex(of: "--resume"))
         #expect(granted < resumed)
-        #expect(args[granted + 1] == "/tmp/artifacts")
+        #expect(argumentValues(after: "--add-dir", in: args).last == "/tmp/artifacts")
         // The resume trio stays contiguous — the failure mode being forbidden
         // is a pair landing in the middle of it, not merely arriving early.
         #expect(Array(args.dropFirst(resumed).prefix(3)) == [
@@ -189,18 +188,18 @@ struct ClaudeInvocationTests {
 
         invocation.maxBudgetUSD = 2.5
         let args = invocation.arguments()
-        #expect(args[args.firstIndex(of: "--max-budget-usd")! + 1] == "2.50")
+        #expect(argumentValues(after: "--max-budget-usd", in: args) == ["2.50"])
     }
 
     @Test("The budget is formatted as money, never as scientific notation")
-    func budgetIsNeverScientific() {
+    func budgetIsNeverScientific() throws {
         // `"\(0.00001)"` is `"1e-05"`, which the CLI would reject or misread.
         // Interpolating the Double here would have been the obvious thing to do.
         var invocation = ClaudeInvocation(runID: UUID(), prompt: "x", cwd: "/tmp")
         for (value, expected) in [(0.000_01, "0.00"), (10.0, "10.00"), (1_000.5, "1000.50")] {
             invocation.maxBudgetUSD = value
             let args = invocation.arguments()
-            let written = args[args.firstIndex(of: "--max-budget-usd")! + 1]
+            let written = try #require(argumentValues(after: "--max-budget-usd", in: args).first)
             #expect(written == expected)
             #expect(!written.contains("e"))
         }
@@ -215,11 +214,11 @@ struct ClaudeInvocationTests {
     }
 
     @Test("The permission mode comes from the repo's setting")
-    func permissionModeIsPerRepo() {
+    func permissionModeIsPerRepo() throws {
         var invocation = ClaudeInvocation(runID: UUID(), prompt: "x", cwd: "/tmp")
         invocation.permissionMode = .acceptEdits
         let args = invocation.arguments()
-        #expect(args[args.firstIndex(of: "--permission-mode")! + 1] == "acceptEdits")
+        #expect(argumentValues(after: "--permission-mode", in: args) == ["acceptEdits"])
     }
 }
 
@@ -713,7 +712,7 @@ struct ClaudeRunnerTests {
 
         // The idea is `Card.ideaText`, which joins a note card's title and body
         // — the flags follow all of it, never interrupt it.
-        let flag = try #require(argv.firstIndex(of: "-p").map { argv[$0 + 1] })
+        let flag = try #require(argumentValues(after: "-p", in: argv).first)
         let expected = #"""
             /ai-migration-kit:create-issue Bound the await. It hangs. --label "bug" --label "documentation"
             """#
