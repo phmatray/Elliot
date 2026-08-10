@@ -57,7 +57,8 @@ private struct Fixture {
         let spy = LaunchSpy(store: store)
         let board = BoardService(store: store, launcher: spy)
         let analysis = AnalysisService(
-            store: store, launcher: spy, board: board, gh: GHClient(config: config)
+            store: store, launcher: spy, board: board, gh: GHClient(config: config),
+            gate: OpenGate()
         )
         var repo = Repo(
             path: "/tmp/repo-\(UUID().uuidString)",

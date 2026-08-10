@@ -5,7 +5,15 @@ import Foundation
 
 public enum AnalysisError: Error, LocalizedError, Equatable {
     case repoNotFound(UUID)
-    case repoDisabled(String)
+    /// An unattended agent may not start against this repository.
+    ///
+    /// The sentence is the rule's, not this enum's: one wording, decided in
+    /// `ElliotModel` and rendered by the analysis panel, the toolbar's tooltip,
+    /// a refused move's caption and — through `errorDescription` — every reply
+    /// this service gives. Carrying the ``UnattendedStartRefusal`` rather than a
+    /// pre-rendered string is what lets `MCPRequestHandler` name the right
+    /// remedy without re-deciding the refusal.
+    case repoRefused(UnattendedStartRefusal)
     case noAngles
     case angleAlreadyRunning(AnalysisAngle)
     case analysisNotFound(UUID)
@@ -18,7 +26,7 @@ public enum AnalysisError: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .repoNotFound(let id): "No repository with id \(id)."
-        case .repoDisabled(let name): "\(name) is disabled in Elliot."
+        case .repoRefused(let refusal): refusal.sentence
         case .noAngles: "Pick at least one angle to read the repository through."
         case .angleAlreadyRunning(let angle): "A \(angle.title) analysis is already running on this repository."
         case .analysisNotFound(let id): "No analysis with id \(id)."
@@ -47,6 +55,13 @@ public actor AnalysisService {
     /// into proposals. A second *holder* is not a second implementation, which
     /// is what the invariant protects.
     private let harvester: ProposalHarvester
+    /// Preflight's verdict, asked live at every start.
+    ///
+    /// No default anywhere, deliberately — the template is
+    /// `MoveContext.providedFollowUps`. A defaulted gate compiles at every
+    /// construction site and catches none of them; this way each one states its
+    /// answer, and a test that wants no sweep says ``OpenGate`` out loud.
+    private let gate: any RepoGating
     /// Re-harvests past their first `await` and not yet finished.
     ///
     /// This actor is **reentrant**: every guard in `reharvest` suspends, so two
@@ -58,11 +73,15 @@ public actor AnalysisService {
     /// same shape `start` already uses for `(repoID, angle)`.
     private var reharvesting: Set<UUID> = []
 
-    public init(store: BoardStore, launcher: any RunLaunching, board: BoardService, gh: GHClient) {
+    public init(
+        store: BoardStore, launcher: any RunLaunching, board: BoardService, gh: GHClient,
+        gate: any RepoGating
+    ) {
         self.store = store
         self.launcher = launcher
         self.board = board
         self.gh = gh
+        self.gate = gate
         harvester = ProposalHarvester(store: store, gh: gh)
     }
 
@@ -83,7 +102,28 @@ public actor AnalysisService {
         guard let repo = try await store.repo(id: repoID) else {
             throw AnalysisError.repoNotFound(repoID)
         }
-        guard repo.isEnabled else { throw AnalysisError.repoDisabled(repo.displayName) }
+        // ⛔ **The one rule, asked at the act, by its second caller.**
+        //
+        // This was a single guard on the reader's switch and nothing else, so up
+        // to eight unattended `claude -p` runs could begin at
+        // `bypassPermissions` inside a checkout Preflight had already diagnosed
+        // as broken. The only gate on this path was a computed property on a
+        // SwiftUI model — which #151 nearly deleted, and which a service cannot
+        // reach anyway. An analysis passes through no board transition, so
+        // `evaluateMove` never sees it; `UnattendedStartRefusal` is where the
+        // two paths meet.
+        //
+        // ⚠️ **The gate is asked even for a repository the reader switched
+        // off**, which costs a Preflight sweep the rule will then ignore. The
+        // alternative is for this caller to know that the switch is asked first
+        // — and a second copy of the rule's ordering is exactly what this
+        // removed. `AnalysisServiceTests.disabledWinsOverBlocked` pins the order
+        // that makes the saving tempting.
+        if let refusal = UnattendedStartRefusal.refusal(
+            repo: repo, preflight: await gate.verdict(for: repo)
+        ) {
+            throw AnalysisError.repoRefused(refusal)
+        }
 
         // Ordered-unique: ticking an angle twice in the UI is a slip, not a
         // request for two runs.

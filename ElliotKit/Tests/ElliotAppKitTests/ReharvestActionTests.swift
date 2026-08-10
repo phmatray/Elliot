@@ -49,7 +49,8 @@ struct ReharvestActionTests {
             gh: GHClient(
                 config: ToolConfig(
                     claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
-                    gitPath: "/usr/bin/false", environment: [:]))
+                    gitPath: "/usr/bin/false", environment: [:])),
+            gate: OpenGate()
         )
         let repo = Repo(path: "/tmp/r", nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
         try await store.saveRepo(repo)

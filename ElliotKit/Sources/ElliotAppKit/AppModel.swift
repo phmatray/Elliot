@@ -978,7 +978,17 @@ public final class AppModel {
             globalChecks.append(await presenter.authorizationSummary())
 
             let analysisService = AnalysisService(
-                store: store, launcher: scheduler, board: board, gh: ghClient
+                store: store, launcher: scheduler, board: board, gh: ghClient,
+                // A live reading, not `repoReadings` and not `Repo.preflight`.
+                // Both of those are a screen's cache: the readings are not
+                // persisted and the verdict is, so between launch and the first
+                // sweep every repository looks unmeasured — which permits. The
+                // board can live with that (a person is dragging one card, and
+                // freezing every repository for the first seconds of a launch
+                // is worse); a service that starts up to eight unattended agents
+                // should ask. `preflight` is already built above for the global
+                // checks, so this costs no second service.
+                gate: PreflightGate(preflight: preflight)
             )
             self.analysisService = analysisService
             startIPC(board: board, store: store, analysis: analysisService, verdicts: verdicts)

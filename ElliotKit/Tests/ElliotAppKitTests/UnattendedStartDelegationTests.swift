@@ -137,6 +137,66 @@ struct UnattendedStartDelegationTests {
         }
     }
 
+    /// ⛔ **The second caller, held the same way — and the reason the sweep now
+    /// crosses a module boundary.**
+    ///
+    /// This suite lives in `ElliotAppKitTests` because its first subject was a
+    /// screen, and it read `Sources/ElliotAppKit` alone. `AnalysisService.start`
+    /// is the other caller of the same rule and it is in `ElliotEngine`, so a
+    /// gate that stopped at the module edge would hold the *cheaper* half: the
+    /// screen refuses a press, this one refuses up to eight unattended `claude
+    /// -p` runs at `bypassPermissions`. `swiftSources()` already enumerates the
+    /// whole of `Sources/` for ``eachSentenceHasOneHome``; this reads one file
+    /// out of it rather than adding a second walk.
+    ///
+    /// ⚠️ **A source gate, because no behavioural test can reach this either.**
+    /// Measured, not assumed: writing the two guards back out inside `start` —
+    /// `guard repo.isEnabled` … `if await gate.verdict(for: repo) == .failing` —
+    /// leaves every test in `AnalysisServiceTests` green, because the values
+    /// either side of the delegation are identical. That is
+    /// ``theScreenAsksTheRule``'s finding one module over, and `CaretAnchorTests`'
+    /// before it.
+    @Test("The analysis service asks the rule rather than re-implementing its guards")
+    func theServiceAsksTheRule() throws {
+        let sources = try Self.swiftSources()
+        let file = try #require(
+            sources.first { $0.name == "AnalysisService.swift" && $0.module == "ElliotEngine" },
+            "the sweep did not find AnalysisService in ElliotEngine — it is reading the wrong tree")
+        let code = HiddenFaceState.stripped(file.source)
+
+        // Positive witness: a renamed or moved `start` would make every claim
+        // below vacuously true and this gate would go green having read nothing.
+        #expect(
+            code.contains("public func start("),
+            "AnalysisService no longer declares start( — this gate is reading the wrong thing")
+
+        let body = try Self.body(of: "public func start(", in: code)
+        #expect(
+            body.contains("UnattendedStartRefusal.refusal("),
+            """
+            AnalysisService.start does not consult UnattendedStartRefusal. Whether an unattended \
+            agent may start against a repository is one rule with three askers — the analysis \
+            panel, this service, and the appraisal — and this is the asker that spawns up to eight \
+            agents at bypassPermissions inside a real checkout. A second copy here is how the \
+            board's answer and the service's come to disagree.
+            """)
+
+        // The guards themselves. `gate.verdict(for:)` is deliberately not a
+        // needle: handing the rule a measured verdict *is* the delegation.
+        for needle in ["isEnabled", ".failing", ".passing", ".notChecked"] {
+            #expect(
+                !body.contains(needle),
+                Comment(
+                    rawValue: """
+                        AnalysisService.start reads \(needle). That is the rule's own guard \
+                        re-derived in a service — UnattendedStartRefusal.refusal(repo:preflight:) \
+                        answers it, in evaluateMove's order, with the reasons written beside it. \
+                        Short-circuiting the gate to save a Preflight sweep needs exactly this \
+                        knowledge, and that is a second copy of an ordering.
+                        """))
+        }
+    }
+
     @Test("A refused move reads the rule's sentence rather than keeping a copy")
     func theMoveRefusalReadsTheRule() throws {
         let code = try HiddenFaceState.code(of: "Consequence.swift")

@@ -80,7 +80,8 @@ struct CardValueFromProposalTests {
 
         return Fixture(
             store: store,
-            service: AnalysisService(store: store, launcher: spy, board: board, gh: gh),
+            service: AnalysisService(
+                store: store, launcher: spy, board: board, gh: gh, gate: OpenGate()),
             harvester: ProposalHarvester(store: store, gh: gh),
             repo: repo, analysis: analysis, run: run,
             artifactURL: root.appendingPathComponent("stories.json"),

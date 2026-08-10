@@ -93,7 +93,8 @@ struct ListReposFreshnessTests {
         return MCPRequestHandler(
             store: store, board: board,
             analysis: AnalysisService(
-                store: store, launcher: scheduler, board: board, gh: GHClient(config: config)
+                store: store, launcher: scheduler, board: board, gh: GHClient(config: config),
+                gate: OpenGate()
             )
         )
     }

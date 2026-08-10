@@ -70,7 +70,8 @@ struct ScreenshotHandlerTests {
         let launcher = NeverLaunches()
         let board = BoardService(store: store, launcher: launcher)
         let analysis = AnalysisService(
-            store: store, launcher: launcher, board: board, gh: GHClient(config: config)
+            store: store, launcher: launcher, board: board, gh: GHClient(config: config),
+            gate: OpenGate()
         )
         return MCPRequestHandler(
             store: store, board: board, analysis: analysis, capture: capture
@@ -197,7 +198,8 @@ struct ScreenshotHandlerTests {
         let handler = MCPRequestHandler(
             store: store, board: board,
             analysis: AnalysisService(
-                store: store, launcher: launcher, board: board, gh: GHClient(config: config)
+                store: store, launcher: launcher, board: board, gh: GHClient(config: config),
+                gate: OpenGate()
             )
         )
 
