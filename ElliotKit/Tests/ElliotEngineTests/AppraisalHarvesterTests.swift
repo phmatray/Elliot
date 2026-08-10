@@ -169,7 +169,7 @@ struct AppraisalHarvesterTests {
 
         var run = fixture.run
         // `resultText` cannot be assigned directly — `SkillRun.setClosing(_:)`
-        // is the one write path (`SkillRun.swift:252`) — but the point of this
+        // is the one write path (`SkillRun.swift:257`) — but the point of this
         // test is unchanged: a run whose closing prose contains a plausible
         // appraisal must still yield nothing when no artifact was written.
         run.setClosing(

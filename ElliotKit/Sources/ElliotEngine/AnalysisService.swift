@@ -57,8 +57,12 @@ public actor AnalysisService {
     private let harvester: ProposalHarvester
     /// Preflight's verdict, asked live at every start.
     ///
-    /// No default anywhere, deliberately — the template is
-    /// `MoveContext.providedFollowUps`. A defaulted gate compiles at every
+    /// No default anywhere, deliberately — the template is `MoveContext`'s last
+    /// two parameters, `requiresVerifiedGreen` and `prVerdict`, which carry no
+    /// default for this exact reason and argue it at length. This cited
+    /// `MoveContext.providedFollowUps` until the citation was checked, and that
+    /// one **is** defaulted (`RuleEngine.swift:209`, `= nil`) — the precedent for
+    /// the opposite decision. A defaulted gate compiles at every
     /// construction site and catches none of them; this way each one states its
     /// answer, and a test that wants no sweep says ``OpenGate`` out loud.
     private let gate: any RepoGating

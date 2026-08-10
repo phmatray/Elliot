@@ -41,7 +41,10 @@ public struct AppraisalHarvester: Sendable {
 
         // Existence is checked before the read, and the read itself uses
         // `do`/`catch` rather than `try?` — for the reason `RunScheduler.start`
-        // reads its repo that way (`RunScheduler.swift`, around line 437):
+        // reads its repo that way (the `do`/`catch` around
+        // `store.repo(id: run.repoID)`; this said *"around line 437"*, which is
+        // a blank doc line, so the pointer is now the code rather than a
+        // number):
         // "no artifact was written" and "the artifact could not be read" are
         // different facts. `try?` would collapse them into one `nil`, and a
         // permissions error or a directory left at the artifact path would be

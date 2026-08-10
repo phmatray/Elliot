@@ -110,9 +110,19 @@ public actor RunScheduler: RunLaunching {
         self.verifier = verifier
         self.idleTimeout = idleTimeout
         self.harvester = harvester ?? ProposalHarvester(store: store, gh: GHClient(config: toolConfig))
-        // Defaulted from `store` exactly as `harvester` is, and injectable for
-        // the same reason: a test that wants to watch the harvest happen should
-        // not have to spawn a `claude` to reach it.
+        // Defaulted from `store` exactly as `harvester` is.
+        //
+        // ⚠️ **Not, as this said, so that a test can watch the harvest without
+        // spawning a `claude`** — that was never reachable and the branch's own
+        // test says so: `completeAppraisalRun` is private, reached only through
+        // `finish`, which is reached only through a real spawn. What the seam
+        // buys is narrower and real. `AppraisalHarvester` is a struct, so it
+        // cannot carry a spy; the one thing an injected one can differ in is
+        // **which store the three fields land in**, and
+        // `AppraisalEndToEndTests.theInjectedAppraiserIsTheOneThatWrites` varies
+        // exactly that — a second database holding the same repository and card,
+        // with both halves of its assertion flipping if `init` stops honouring
+        // the parameter. It spawns a fake `claude`, like every other test there.
         self.appraiser = appraiser ?? AppraisalHarvester(store: store)
         self.limits = limits
         self.ceiling = ceiling
