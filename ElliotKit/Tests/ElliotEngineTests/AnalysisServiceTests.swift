@@ -674,7 +674,7 @@ struct AnalysisServiceTests {
             ]
             """,
         report: AnalysisRunReport? = AnalysisRunReport(
-            harvestSource: .none, dropped: ["Elliot stopped before this analysis was harvested."]
+            harvestSource: .none, dropped: ["Elliot stopped before this run was harvested."]
         ),
         state: RunState = .failed
     ) async throws -> Orphan {
@@ -887,7 +887,7 @@ struct AnalysisServiceTests {
         let orphan = try await seedOrphanedRun(
             fixture,
             report: AnalysisRunReport(
-                harvestSource: .none, dropped: ["Elliot stopped before this analysis was harvested."])
+                harvestSource: .none, dropped: ["Elliot stopped before this run was harvested."])
         )
         try FileManager.default.removeItem(at: orphan.artifactURL)
 
@@ -899,7 +899,7 @@ struct AnalysisServiceTests {
             report.dropped.contains { $0.contains(orphan.artifactURL.path) },
             "the reader is told which file was not there: \(report.dropped)")
         #expect(
-            !report.dropped.contains("Elliot stopped before this analysis was harvested."),
+            !report.dropped.contains("Elliot stopped before this run was harvested."),
             "the previous complaint is replaced, not merged")
         #expect(try await fixture.store.proposals(runID: orphan.run.id).isEmpty)
         // Still offered, so a reader who restores the file from a backup can try

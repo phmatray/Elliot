@@ -57,13 +57,20 @@ public struct Reconciler: Sendable {
                 // the sentence — so it must not be dressed as its prose (#288).
                 orphan.setClosing(.elliot("Elliot stopped while this run was in flight."))
 
-                if run.isAnalysis {
+                if run.kind.isReadOnly {
                     // The artifact may well have been written before the app
                     // died, but the sentinel baseline died with it — say so
                     // rather than claim the tree was clean.
+                    //
+                    // `kind.isReadOnly` and not `isAnalysis`: an appraisal run
+                    // carries a `cardID`, so the boolean sent it down the other
+                    // branch, where `Verifier` answered `.unverified` and
+                    // `CardOutcome.applied` wrote that sentence into
+                    // `card.lastError` — an error banner about a pull request
+                    // the card has never had.
                     orphan.analysisReport = AnalysisRunReport(
                         harvestSource: .none,
-                        dropped: ["Elliot stopped before this analysis was harvested."]
+                        dropped: ["Elliot stopped before this run was harvested."]
                     )
                 } else if let cardID = run.cardID,
                           let card = try? await store.card(id: cardID),

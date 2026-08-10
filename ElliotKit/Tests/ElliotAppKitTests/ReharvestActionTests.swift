@@ -58,7 +58,7 @@ struct ReharvestActionTests {
         var run = started.runs[0]
         run.state = .failed
         run.analysisReport = AnalysisRunReport(
-            harvestSource: .none, dropped: ["Elliot stopped before this analysis was harvested."])
+            harvestSource: .none, dropped: ["Elliot stopped before this run was harvested."])
         try await store.saveRun(run)
 
         let artifactURL = StoreLocation.analysisArtifactURL(
