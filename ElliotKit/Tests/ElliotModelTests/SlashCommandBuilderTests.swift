@@ -170,7 +170,16 @@ struct SlashCommandBuilderTests {
                 switch kind {
                 case .implementIssue: action = .implementIssue(issueNumber: number)
                 case .mergePR: action = .mergePR(prNumber: number, followUps: noisy)
-                case .createIssue, .analyzeRepo:
+                // Unreachable, and a defect if it ever fires: the `guard` above
+                // only arrives here for a kind whose step this pack declares
+                // with a number-taking form, and none of the three carries a
+                // number to put first. `.appraiseCards` is the strongest of
+                // them — no pack declares any step for it
+                // (`SkillKindReadOnlyTests.appraisalIsElliotsOwnPrompt`), and it
+                // has no `TriggerAction`, so a pack declaring one would be
+                // asking for a number that does not exist rather than one this
+                // switch failed to supply.
+                case .createIssue, .analyzeRepo, .appraiseCards:
                     Issue.record("\(pack.id) takes a number for \(kind.skillName), which carries none")
                     continue
                 }

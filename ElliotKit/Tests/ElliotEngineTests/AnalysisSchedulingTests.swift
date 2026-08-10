@@ -34,7 +34,10 @@ struct AnalysisSchedulingTests {
     }
 
     @Test("An analysis waits for a merge in the same repo, and nothing else",
-          arguments: [(SkillKind.mergePR, false), (.implementIssue, true), (.createIssue, true), (.analyzeRepo, true)])
+          arguments: [
+            (SkillKind.mergePR, false), (.implementIssue, true), (.createIssue, true),
+            (.analyzeRepo, true), (.appraiseCards, true),
+          ])
     func analysisAdmission(inFlight: SkillKind, admitted: Bool) async throws {
         let (scheduler, repo) = try makeScheduler()
         await scheduler.testOnlyMarkInFlight(run(inFlight, repoID: repo.id))

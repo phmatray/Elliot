@@ -43,7 +43,7 @@ struct ReharvestRuleTests {
         let orphaned = AnalysisRunReport(
             harvestSource: .none,
             kept: 0,
-            dropped: ["Elliot stopped before this analysis was harvested."]
+            dropped: ["Elliot stopped before this run was harvested."]
         )
         #expect(orphaned.workingTreeChanged == nil, "the fixture is the orphan Reconciler writes")
 
@@ -139,7 +139,7 @@ struct ReharvestRuleTests {
             state: .failed,
             report: AnalysisRunReport(
                 harvestSource: .none,
-                dropped: ["Elliot stopped before this analysis was harvested."])
+                dropped: ["Elliot stopped before this run was harvested."])
         ).offersReharvest)
 
         // The parse that kept nothing: the file was there and unusable, or the

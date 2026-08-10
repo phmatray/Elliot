@@ -108,7 +108,8 @@ struct AnalysisEndToEndTests {
         let board = BoardService(store: store, launcher: scheduler)
         await scheduler.setSystemMover(board)
         let analysisService = AnalysisService(
-            store: store, launcher: scheduler, board: board, gh: GHClient(config: config)
+            store: store, launcher: scheduler, board: board, gh: GHClient(config: config),
+            gate: OpenGate()
         )
 
         let repo = Repo(

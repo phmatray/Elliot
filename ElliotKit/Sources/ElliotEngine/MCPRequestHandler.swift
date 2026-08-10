@@ -182,11 +182,22 @@ public struct MCPRequestHandler: Sendable {
                     message: error.localizedDescription,
                     hint: "Pick from: \(AnalysisAngle.allCases.map(\.rawValue).joined(separator: ", "))."
                 )
-            case .repoDisabled:
+            case .repoRefused(let refusal):
+                // The message is the rule's sentence; only the *remedy* is
+                // decided here, and it is switched over exhaustively so a new
+                // refusal cannot inherit a hint that names the wrong screen —
+                // which is what one merged sentence covering both would do. The
+                // refusal itself is not re-decided: this arm never asks why.
+                let hint =
+                    switch refusal {
+                    case .repoDisabled: "Enable the repository in Elliot's Preflight screen."
+                    case .preflightBlocked:
+                        "Open Elliot's Preflight screen and clear the failing check."
+                    }
                 return .failure(
                     code: .analysisRefused,
                     message: error.localizedDescription,
-                    hint: "Enable the repository in Elliot's Preflight screen."
+                    hint: hint
                 )
             case .angleAlreadyRunning:
                 return .failure(

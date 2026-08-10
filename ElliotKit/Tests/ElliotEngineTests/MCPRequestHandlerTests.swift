@@ -36,6 +36,12 @@ private actor LaunchSpy: RunLaunching {
     }
 }
 
+/// A gate that states Preflight's verdict instead of running six subprocesses
+/// and a networked `gh label list` for it.
+private struct AlwaysFailingGate: RepoGating {
+    func verdict(for repo: Repo) async -> PreflightState { .failing }
+}
+
 private struct Fixture {
     var store: BoardStore
     var board: BoardService
@@ -43,7 +49,9 @@ private struct Fixture {
     var handler: MCPRequestHandler
     var repo: Repo
 
-    static func make(enabled: Bool = true) async throws -> Fixture {
+    static func make(
+        enabled: Bool = true, gate: any RepoGating = OpenGate()
+    ) async throws -> Fixture {
         // `AnalysisService.start` computes an artifact path through
         // `StoreLocation` even with an in-memory store. Same reason
         // `AnalysisServiceTests` does this, and the only sanctioned way to
@@ -57,7 +65,8 @@ private struct Fixture {
         let spy = LaunchSpy(store: store)
         let board = BoardService(store: store, launcher: spy)
         let analysis = AnalysisService(
-            store: store, launcher: spy, board: board, gh: GHClient(config: config)
+            store: store, launcher: spy, board: board, gh: GHClient(config: config),
+            gate: gate
         )
         var repo = Repo(
             path: "/tmp/repo-\(UUID().uuidString)",
@@ -508,6 +517,36 @@ struct MCPRequestHandlerTests {
         )))
         #expect(refusal.code == .analysisRefused)
         #expect(refusal.hint?.contains("Preflight") == true)
+        #expect(refusal.message == UnattendedStartRefusal.repoDisabled.sentence)
+        // The remedy is the *switch*, not the finding. Both hints name Preflight,
+        // so `contains("Preflight")` above cannot tell the two arms apart — this
+        // is what does.
+        #expect(refusal.hint?.lowercased().contains("enable") == true)
+        #expect(refusal.hint?.lowercased().contains("failing check") == false)
+    }
+
+    /// ⛔ **The agent-facing half of the gate, and the one an agent acts on.**
+    ///
+    /// A refused start hands back a sentence and a remedy, and the remedy is the
+    /// only part that says what to *do*. Merging both arms into one hint that
+    /// mentions the switch and the finding together would tell an agent to
+    /// consider turning a repository back on that nobody turned off — which is
+    /// why `MCPRequestHandler` switches over the refusal exhaustively rather
+    /// than rendering `localizedDescription` twice.
+    @Test("A repository failing Preflight is refused, and pointed at the check")
+    func blockedRepoIsRefused() async throws {
+        let f = try await Fixture.make(gate: AlwaysFailingGate())
+        let refusal = try #require(failureOf(await f.handler.handle(
+            .analyzeRepo(repo: "phmatray/Elliot", angles: ["bugs"], maxStories: 5, instructions: "")
+        )))
+        #expect(refusal.code == .analysisRefused)
+        #expect(refusal.message == UnattendedStartRefusal.preflightBlocked.sentence)
+        #expect(refusal.hint?.lowercased().contains("clear the failing check") == true)
+        // Not the other arm's remedy, in any casing: this repository is switched
+        // on, and telling an agent to turn it back on is the wrong instruction.
+        #expect(refusal.hint?.lowercased().contains("enable") == false)
+        // And nothing was queued — the refusal is on the act, not on the reply.
+        #expect(try await f.store.runs(repoID: f.repo.id).isEmpty)
     }
 
     @Test("Starting an analysis queues one run per angle")

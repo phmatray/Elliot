@@ -55,4 +55,38 @@ struct StoreLocationTests {
                 == StoreLocation.home.appendingPathComponent("preferences.json")
         )
     }
+
+    /// An appraisal has no analysis to key on — that is the whole point of the
+    /// `cardID` decision — so its artifact is keyed on the run alone.
+    @Test("An appraisal artifact is keyed on its run, under the same owner-only tree")
+    func appraisalArtifactIsKeyedOnTheRun() {
+        _ = home
+        let runID = UUID()
+        let url = StoreLocation.appraisalArtifactURL(runID: runID)
+
+        #expect(url.lastPathComponent == "appraisal.json")
+        #expect(url.deletingLastPathComponent().lastPathComponent == runID.uuidString)
+        // Under `analysesDirectory`, which `ensureDirectories` already creates
+        // with 0o700 — one tree holds everything a read-only run writes.
+        #expect(url.path.hasPrefix(StoreLocation.analysesDirectory.path + "/"))
+        #expect(url.path.hasPrefix(StoreLocation.home.path))
+    }
+
+    @Test("Two appraisal runs never share a directory")
+    func appraisalDirectoriesAreDistinct() {
+        _ = home
+        #expect(
+            StoreLocation.appraisalRunDirectory(runID: UUID())
+                != StoreLocation.appraisalRunDirectory(runID: UUID())
+        )
+        // The artifact sits inside the directory, so creating that directory is
+        // enough for `--add-dir` to point at something that exists.
+        let appraisals = StoreLocation.analysesDirectory
+            .appendingPathComponent("appraisals", isDirectory: true)
+        #expect(
+            StoreLocation.appraisalArtifactURL(runID: UUID())
+                .deletingLastPathComponent().path
+                .hasPrefix(appraisals.path)
+        )
+    }
 }

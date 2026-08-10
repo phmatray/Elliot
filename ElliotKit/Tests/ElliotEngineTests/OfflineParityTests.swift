@@ -343,7 +343,8 @@ private struct ParityBoard {
         let launcher = NoLaunch()
         let board = BoardService(store: store, launcher: launcher)
         let analysis = AnalysisService(
-            store: store, launcher: launcher, board: board, gh: GHClient(config: config)
+            store: store, launcher: launcher, board: board, gh: GHClient(config: config),
+            gate: OpenGate()
         )
 
         let epoch = Date(timeIntervalSince1970: 1_700_000_000)

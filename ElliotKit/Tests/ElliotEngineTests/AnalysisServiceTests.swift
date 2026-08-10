@@ -26,7 +26,20 @@ struct AnalysisServiceTests {
         var repo: Repo
     }
 
-    private func makeFixture(enabled: Bool = true) async throws -> Fixture {
+    /// A gate that states a verdict instead of running six subprocesses and a
+    /// networked `gh label list` for one.
+    ///
+    /// The whole reason `RepoGating` is a protocol rather than a
+    /// `PreflightService` parameter: the service's own refusal is what these
+    /// tests are about, and a real sweep would make them measure Preflight.
+    private struct StubGate: RepoGating {
+        let state: PreflightState
+        func verdict(for repo: Repo) async -> PreflightState { state }
+    }
+
+    private func makeFixture(
+        enabled: Bool = true, gate: any RepoGating = OpenGate()
+    ) async throws -> Fixture {
         // `AnalysisService.start` computes its artifact path — and creates
         // the directory for it — through `StoreLocation`, even here where the
         // store is in-memory and nothing is actually spawned. `TestHome` is
@@ -41,7 +54,7 @@ struct AnalysisServiceTests {
         let spy = LaunchSpy()
         let board = BoardService(store: store, launcher: spy)
         let service = AnalysisService(
-            store: store, launcher: spy, board: board, gh: GHClient(config: config)
+            store: store, launcher: spy, board: board, gh: GHClient(config: config), gate: gate
         )
         var repo = Repo(path: "/tmp/r", nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
         repo.isEnabled = enabled
@@ -125,12 +138,16 @@ struct AnalysisServiceTests {
         #expect(runs[0].analysisAngle == .bugs)
     }
 
-    @Test("A disabled repository is refused, and no angles at all is refused")
+    /// ⚠️ **The disabled-repository clause moved out of here**, to
+    /// ``disabledIsRefusedByTheRule``, which names the case rather than
+    /// accepting any `AnalysisError`. Two tests over one guard is not belt and
+    /// braces when the weaker one would go green on the wrong refusal — and this
+    /// one would, now that a second guard throws the same error type.
+    ///
+    /// What is left is genuinely uncovered elsewhere: an empty angle set, and a
+    /// repository id that names nothing.
+    @Test("No angles at all is refused, and so is an unknown repository")
     func refusals() async throws {
-        let disabled = try await makeFixture(enabled: false)
-        await #expect(throws: AnalysisError.self) {
-            try await disabled.service.start(repoID: disabled.repo.id, angles: [.bugs], origin: .manual)
-        }
         let fixture = try await makeFixture()
         await #expect(throws: AnalysisError.self) {
             try await fixture.service.start(repoID: fixture.repo.id, angles: [], origin: .manual)
@@ -138,6 +155,96 @@ struct AnalysisServiceTests {
         await #expect(throws: AnalysisError.self) {
             try await fixture.service.start(repoID: UUID(), angles: [.bugs], origin: .manual)
         }
+    }
+
+    // MARK: - The one rule, asked by its second caller
+
+    /// ⛔ **The guarantee this suite did not hold until the gate existed.**
+    ///
+    /// `start` checked `isEnabled` and the in-flight dedupe and nothing else, so
+    /// up to eight unattended `claude -p` runs could begin at
+    /// `bypassPermissions` inside a checkout Preflight had already diagnosed as
+    /// broken. The only gate on this path was a computed property on a SwiftUI
+    /// model, which #151 nearly deleted — and which no service can reach anyway.
+    @Test("An analysis is refused for a repository Preflight is failing")
+    func analysisIsGatedOnPreflight() async throws {
+        let fixture = try await makeFixture(gate: StubGate(state: .failing))
+
+        await #expect(throws: AnalysisError.repoRefused(.preflightBlocked)) {
+            try await fixture.service.start(
+                repoID: fixture.repo.id, angles: [.bugs], origin: .manual)
+        }
+        // Refused on the act, not on the reply: nothing was queued and nothing
+        // was handed to the launcher.
+        #expect(try await fixture.store.runs(repoID: fixture.repo.id).isEmpty)
+        #expect(await fixture.spy.ids().isEmpty)
+    }
+
+    /// The same refusal for the other guard, through the same rule and the same
+    /// error case — so the sentence the reader sees is the rule's, once.
+    @Test("A disabled repository is refused by the same rule, and says which")
+    func disabledIsRefusedByTheRule() async throws {
+        let fixture = try await makeFixture(enabled: false)
+
+        await #expect(throws: AnalysisError.repoRefused(.repoDisabled)) {
+            try await fixture.service.start(
+                repoID: fixture.repo.id, angles: [.bugs], origin: .manual)
+        }
+        #expect(try await fixture.store.runs(repoID: fixture.repo.id).isEmpty)
+    }
+
+    /// ⛔ **The order is the rule's, and this caller does not get to re-derive
+    /// it.**
+    ///
+    /// A repository can be both switched off and failing a check. Naming the
+    /// diagnosis first sends someone hunting a finding when the answer is a
+    /// toggle they threw themselves, which is why `evaluateMove` asks
+    /// `repoIsEnabled` before `repoPreflight` and why `refusal(repo:preflight:)`
+    /// does too. Pinned here because a caller that short-circuited the gate to
+    /// save a probe would have to know this order — and a second copy of an
+    /// ordering is what the whole refactor removed.
+    @Test("Switched off wins over failing, because the rule says so")
+    func disabledWinsOverBlocked() async throws {
+        let fixture = try await makeFixture(enabled: false, gate: StubGate(state: .failing))
+
+        await #expect(throws: AnalysisError.repoRefused(.repoDisabled)) {
+            try await fixture.service.start(
+                repoID: fixture.repo.id, angles: [.bugs], origin: .manual)
+        }
+    }
+
+    /// ⚠️ **`notChecked` permits, and this service is where that costs the
+    /// most.**
+    ///
+    /// It is the board's answer too — blocking would freeze every repository for
+    /// the first seconds of each launch, and permanently whenever a rate-limited
+    /// `gh label list` stops a sweep finishing — but the board is a person
+    /// dragging one card, and this is up to eight unattended agents. So the
+    /// decision is asserted at this caller rather than inherited silently: an
+    /// analysis in a repository nobody has swept **starts**.
+    @Test("A repository nobody has swept still starts, deliberately")
+    func nobodySweptStillStarts() async throws {
+        let fixture = try await makeFixture(gate: StubGate(state: .notChecked))
+
+        let started = try await fixture.service.start(
+            repoID: fixture.repo.id, angles: [.bugs], origin: .manual)
+
+        #expect(started.runs.count == 1)
+        #expect(await fixture.spy.ids().count == 1)
+    }
+
+    /// The positive witness for all four above: a swept, clear repository starts.
+    ///
+    /// Without it the suite could be satisfied by a `start` that refuses
+    /// everything, which is the failure direction a gate makes easy.
+    @Test("A repository swept clear starts")
+    func sweptClearStarts() async throws {
+        let fixture = try await makeFixture(gate: StubGate(state: .passing))
+
+        let started = try await fixture.service.start(
+            repoID: fixture.repo.id, angles: [.bugs], origin: .manual)
+
+        #expect(started.runs.count == 1)
     }
 
     @Test("Accepting a proposal lands a Backlog card and runs nothing")
@@ -674,7 +781,7 @@ struct AnalysisServiceTests {
             ]
             """,
         report: AnalysisRunReport? = AnalysisRunReport(
-            harvestSource: .none, dropped: ["Elliot stopped before this analysis was harvested."]
+            harvestSource: .none, dropped: ["Elliot stopped before this run was harvested."]
         ),
         state: RunState = .failed
     ) async throws -> Orphan {
@@ -887,7 +994,7 @@ struct AnalysisServiceTests {
         let orphan = try await seedOrphanedRun(
             fixture,
             report: AnalysisRunReport(
-                harvestSource: .none, dropped: ["Elliot stopped before this analysis was harvested."])
+                harvestSource: .none, dropped: ["Elliot stopped before this run was harvested."])
         )
         try FileManager.default.removeItem(at: orphan.artifactURL)
 
@@ -899,7 +1006,7 @@ struct AnalysisServiceTests {
             report.dropped.contains { $0.contains(orphan.artifactURL.path) },
             "the reader is told which file was not there: \(report.dropped)")
         #expect(
-            !report.dropped.contains("Elliot stopped before this analysis was harvested."),
+            !report.dropped.contains("Elliot stopped before this run was harvested."),
             "the previous complaint is replaced, not merged")
         #expect(try await fixture.store.proposals(runID: orphan.run.id).isEmpty)
         // Still offered, so a reader who restores the file from a backup can try

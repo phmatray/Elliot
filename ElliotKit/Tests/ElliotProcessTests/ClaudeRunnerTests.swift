@@ -132,6 +132,52 @@ struct ClaudeInvocationTests {
         #expect(args[args.firstIndex(of: "--allowedTools")! + 1] == "Bash(git status *),Read")
     }
 
+    @Test("Extra directories are one --add-dir each, after the working directory")
+    func extraDirectories() {
+        var invocation = ClaudeInvocation(runID: UUID(), prompt: "x", cwd: "/tmp/checkout")
+        #expect(invocation.arguments().filter { $0 == "--add-dir" }.count == 1)
+
+        // Two spaces, the shape of the real home. One flag per directory keeps
+        // each path a single argv element; a variadic `--add-dir a b` would put
+        // the burden of quoting somewhere nobody is looking.
+        invocation.extraDirectories = ["/Users/p/Library/Application  Support/Elliot/analyses"]
+        let args = invocation.arguments()
+        let directories = args.enumerated()
+            .filter { $0.element == "--add-dir" }
+            .map { args[$0.offset + 1] }
+        #expect(directories == [
+            "/tmp/checkout", "/Users/p/Library/Application  Support/Elliot/analyses",
+        ])
+    }
+
+    /// ⛔ The one ordering neither of the two changes that claim this seam can
+    /// see on its own.
+    ///
+    /// The extra directories and the resume tokens are emitted at the same
+    /// point, by two changes written apart, and each one's own assertions leave
+    /// the other's input empty — so a reversed order would be unmeasured while
+    /// putting an `--add-dir` pair *between* `--resume` and `--fork-session`,
+    /// which is a CLI invocation nobody wrote and nobody would recognise. This
+    /// is the only test that sets both.
+    @Test("Extra directories are emitted before the resume tokens, not inside them")
+    func extraDirectoriesPrecedeTheResumeTokens() throws {
+        let previous = UUID()
+        var invocation = ClaudeInvocation(runID: UUID(), prompt: "x", cwd: "/tmp/checkout")
+        invocation.extraDirectories = ["/tmp/artifacts"]
+        invocation.resumeFrom = previous
+
+        let args = invocation.arguments()
+        let granted = try #require(args.lastIndex(of: "--add-dir"))
+        let resumed = try #require(args.firstIndex(of: "--resume"))
+        #expect(granted < resumed)
+        #expect(args[granted + 1] == "/tmp/artifacts")
+        // The resume trio stays contiguous — the failure mode being forbidden
+        // is a pair landing in the middle of it, not merely arriving early.
+        #expect(Array(args.dropFirst(resumed).prefix(3)) == [
+            "--resume", previous.uuidString.lowercased(), "--fork-session",
+        ])
+    }
+
     @Test("A per-run budget reaches the CLI, and is absent when there is no ceiling")
     func budgetFlag() {
         // The flag is the only thing that can stop a single runaway run: nothing

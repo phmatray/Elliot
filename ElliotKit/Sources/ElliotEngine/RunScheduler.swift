@@ -70,9 +70,19 @@ public actor RunScheduler: RunLaunching {
     /// mark stayed one-way. Nothing in the app passes anything but the default.
     private let idleTimeout: Duration
     private let harvester: ProposalHarvester
-    /// `git status --porcelain` taken just before each analysis spawned, keyed
-    /// by run. In memory only: if the app dies mid-run the baseline is gone and
-    /// the sweep reports the sentinel as unchecked rather than guessing.
+    /// The appraisal's harvester, beside the analysis's rather than inside it.
+    ///
+    /// Two read-only kinds, two harvesters, because they read two different
+    /// artifacts and write two different things: `ProposalHarvester` reads an
+    /// analysis's stories and files proposals; this one reads one card's
+    /// appraisal and writes three fields onto that card. Sharing a type would
+    /// mean a `kind` switch inside it, which is the split this task moved *out*
+    /// of a boolean and into `finish`.
+    private let appraiser: AppraisalHarvester
+    /// `git status --porcelain` taken just before each read-only run spawned,
+    /// keyed by run. In memory only: if the app dies mid-run the baseline is
+    /// gone and the sweep reports the sentinel as unchecked rather than
+    /// guessing.
     private var treeBaselines: [UUID: String] = [:]
     private let git: GitClient
 
@@ -90,6 +100,7 @@ public actor RunScheduler: RunLaunching {
         toolConfig: ToolConfig,
         verifier: Verifier,
         harvester: ProposalHarvester? = nil,
+        appraiser: AppraisalHarvester? = nil,
         limits: SchedulerLimits = .default,
         ceiling: SpendCeiling = .off,
         idleTimeout: Duration = ClaudeRun.defaultIdleTimeout
@@ -99,6 +110,20 @@ public actor RunScheduler: RunLaunching {
         self.verifier = verifier
         self.idleTimeout = idleTimeout
         self.harvester = harvester ?? ProposalHarvester(store: store, gh: GHClient(config: toolConfig))
+        // Defaulted from `store` exactly as `harvester` is.
+        //
+        // ⚠️ **Not, as this said, so that a test can watch the harvest without
+        // spawning a `claude`** — that was never reachable and the branch's own
+        // test says so: `completeAppraisalRun` is private, reached only through
+        // `finish`, which is reached only through a real spawn. What the seam
+        // buys is narrower and real. `AppraisalHarvester` is a struct, so it
+        // cannot carry a spy; the one thing an injected one can differ in is
+        // **which store the three fields land in**, and
+        // `AppraisalEndToEndTests.theInjectedAppraiserIsTheOneThatWrites` varies
+        // exactly that — a second database holding the same repository and card,
+        // with both halves of its assertion flipping if `init` stops honouring
+        // the parameter. It spawns a fake `claude`, like every other test there.
+        self.appraiser = appraiser ?? AppraisalHarvester(store: store)
         self.limits = limits
         self.ceiling = ceiling
         self.git = GitClient(config: toolConfig)
@@ -232,7 +257,7 @@ public actor RunScheduler: RunLaunching {
     /// What the caps are actually holding right now, for the UI to show beside
     /// them: a stepper reading "4" means nothing without "2 in flight".
     public var occupancy: (writers: Int, analyses: Int) {
-        let analyses = inFlight.values.filter { $0.kind == .analyzeRepo }.count
+        let analyses = inFlight.values.filter(\.kind.isReadOnly).count
         return (inFlight.count - analyses, analyses)
     }
 
@@ -245,11 +270,12 @@ public actor RunScheduler: RunLaunching {
     /// worktree and deletes a branch. Two `create-issue` runs would each do
     /// duplicate detection against a repo the other is about to change.
     ///
-    /// An analysis only reads, but it reads the working tree, so it must not
-    /// overlap a merge in the same repo: it would see a moving target, and the
-    /// git sentinel would fire on someone else's work. It gets its own lane
-    /// because the cap below exists to keep two *builds* out of one `.build/`,
-    /// and an analysis builds nothing.
+    /// A read-only run — an analysis, or an appraisal of one card — only reads,
+    /// but it reads the working tree, so it must not overlap a merge in the same
+    /// repo: it would see a moving target, and the git sentinel would fire on
+    /// someone else's work. Read-only runs get their own lane because the cap
+    /// below exists to keep two *builds* out of one `.build/`, and neither of
+    /// them builds anything.
     func canStart(_ run: SkillRun) -> Bool {
         refusal(for: run, overBudget: false) == nil
     }
@@ -271,14 +297,17 @@ public actor RunScheduler: RunLaunching {
         let sameRepo = inFlight.values.filter { $0.repoID == run.repoID }
         if sameRepo.contains(where: { $0.kind == .mergePR }) { return .mergeInFlightInRepo }
 
-        if run.kind == .analyzeRepo {
-            let analysesInFlight = inFlight.values.filter { $0.kind == .analyzeRepo }.count
-            guard analysesInFlight >= limits.maxConcurrentAnalyses else { return nil }
+        if run.kind.isReadOnly {
+            let readersInFlight = inFlight.values.filter(\.kind.isReadOnly).count
+            guard readersInFlight >= limits.maxConcurrentAnalyses else { return nil }
             return .analysisCapReached(
-                inFlight: analysesInFlight, cap: limits.maxConcurrentAnalyses)
+                inFlight: readersInFlight, cap: limits.maxConcurrentAnalyses)
         }
 
-        let writersInFlight = inFlight.values.filter { $0.kind != .analyzeRepo }.count
+        // ⚠ A negation, and the compiler does not check it. Inverted, every
+        // appraisal consumes the writer cap and every writer skips it.
+        // `SchedulerReadOnlyLaneTests` is the witness.
+        let writersInFlight = inFlight.values.filter { !$0.kind.isReadOnly }.count
         guard writersInFlight < limits.maxConcurrent else {
             return .writerCapReached(inFlight: writersInFlight, cap: limits.maxConcurrent)
         }
@@ -290,7 +319,7 @@ public actor RunScheduler: RunLaunching {
         case .createIssue:
             return sameRepo.contains { $0.kind == .createIssue }
                 ? .duplicateCreateIssueInRepo : nil
-        case .implementIssue, .analyzeRepo:
+        case .implementIssue, .analyzeRepo, .appraiseCards:
             return nil
         }
     }
@@ -414,6 +443,68 @@ public actor RunScheduler: RunLaunching {
 
     // MARK: - Running
 
+    /// How a run is spawned.
+    ///
+    /// `static` and `internal` so it can be asserted without spawning anything:
+    /// what a run is allowed to do is a rule, and a rule inside a spawn routine
+    /// is a rule nothing can test. The two facts that differ for an appraisal —
+    /// a tighter permission mode and the one directory outside the checkout it
+    /// must be allowed to write — travel together here rather than as two `if`s
+    /// in `start`, where only one of them would be remembered next time.
+    static func invocation(for run: SkillRun, repo: Repo, perRunUSD: Double?) -> ClaudeInvocation {
+        let isAppraisal = run.kind == .appraiseCards
+        return ClaudeInvocation(
+            runID: run.id,
+            prompt: run.prompt,
+            // The **run's** cwd, not the repository's. They are the same value
+            // for every run created today, and that is the point: a resumed run
+            // has to spawn where its first attempt spawned, because Claude Code
+            // keeps the transcript under a slug of that directory. Two sources
+            // for one fact make the fork fail with "No conversation found",
+            // which reads as an expired session rather than a wrong directory.
+            cwd: run.cwd,
+            permissionMode: isAppraisal
+                ? PermissionMode.appraisal(repo: repo.permissionMode)
+                : repo.permissionMode,
+            extraAllowedTools: repo.extraAllowedTools,
+            extraDirectories: isAppraisal
+                ? [StoreLocation.appraisalRunDirectory(runID: run.id).path]
+                : [],
+            maxBudgetUSD: perRunUSD,
+            resumeFrom: run.resumedFrom
+        )
+    }
+
+    /// Creates every directory the invocation grants beyond the checkout.
+    ///
+    /// ⛔ `--add-dir` on a path that is not there grants nothing, and it says
+    /// nothing either: the only symptom is the agent reporting it could not
+    /// write the file it was asked for — a failure that reads as the agent's,
+    /// one layer away from the grant that looks perfectly correct.
+    /// `StoreLocation.ensureDirectories()` creates `home`, `runs`, `analyses`
+    /// and `screenshots`, measured, and not `analyses/appraisals/<runID>`.
+    ///
+    /// Driven off `extraDirectories` rather than off `run.kind`, so what is
+    /// granted and what is created cannot drift apart, and a second kind with
+    /// an artifact of its own gets this by construction. `cwd` is excluded for
+    /// the same reason it is not in that list: the checkout is the operator's,
+    /// and creating a registered path Elliot found missing would hide a
+    /// repository that has moved.
+    ///
+    /// 0o700, matching `ensureDirectories`: these sit under `ELLIOT_HOME`,
+    /// beside the socket and the token. `try?`, matching `AnalysisService`: a
+    /// directory that could not be made costs the run its artifact and the
+    /// harvester says so, which is a better outcome than refusing to spawn.
+    static func prepareExtraDirectories(of invocation: ClaudeInvocation) {
+        for path in invocation.extraDirectories {
+            try? FileManager.default.createDirectory(
+                at: URL(fileURLWithPath: path, isDirectory: true),
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+        }
+    }
+
     private func start(_ run: SkillRun) async {
         // ⛔ This guard and the assignment four lines down must stay adjacent
         // and await-free. That adjacency is the mutual exclusion: the actor
@@ -469,29 +560,22 @@ public actor RunScheduler: RunLaunching {
             return
         }
 
-        let invocation = ClaudeInvocation(
-            runID: run.id,
-            prompt: run.prompt,
-            // The **run's** cwd, not the repository's. They are the same value
-            // for every run created today, and that is the point: a resumed run
-            // has to spawn where its first attempt spawned, because Claude Code
-            // keeps the transcript under a slug of that directory. Two sources
-            // for one fact make the fork fail with "No conversation found",
-            // which reads as an expired session rather than a wrong directory.
-            cwd: run.cwd,
-            permissionMode: repo.permissionMode,
-            extraAllowedTools: repo.extraAllowedTools,
-            maxBudgetUSD: ceiling.perRunUSD,
-            resumeFrom: run.resumedFrom
-        )
+        let invocation = Self.invocation(for: run, repo: repo, perRunUSD: ceiling.perRunUSD)
         updated.argv = [toolConfig.claudePath] + invocation.arguments()
 
         let logURL = URL(fileURLWithPath: run.logPath)
 
-        if updated.isAnalysis {
+        if updated.kind.isReadOnly {
             // The prompt forbids modifying the repository and no CLI flag can
             // enforce it, so record the tree now and compare after. Do not
             // trust the instruction; check the outcome.
+            //
+            // `kind.isReadOnly` and not `isAnalysis`: an appraisal reads the
+            // working tree under exactly the same unenforceable promise, and
+            // the boolean answers "is this an analysis", which is false for it.
+            // Armed on the boolean, an appraisal's report would say the tree
+            // was never looked at — the tri-state's `nil`, which is the one
+            // answer that must mean "nobody checked".
             treeBaselines[run.id] = await git.porcelainStatus(cwd: repo.path)
         }
 
@@ -501,6 +585,9 @@ public actor RunScheduler: RunLaunching {
                 at: logURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
+            // Before the child, not after: the grant in `--add-dir` above is
+            // inert until the directory it names exists.
+            Self.prepareExtraDirectories(of: invocation)
             claudeRun = try ClaudeRun.start(
                 invocation: invocation, config: toolConfig, logURL: logURL, idleTimeout: idleTimeout
             )
@@ -620,17 +707,27 @@ public actor RunScheduler: RunLaunching {
         // behind on an earlier attempt, and the only thing that knows is `gh`.
         let resume = ResumeVerdict.of(resumedFrom: updated.resumedFrom, result: outcome?.result)
 
-        // One split, in one place: a card run is verified against gh and writes
-        // back to its card; an analysis run is harvested and writes proposals.
-        // Letting `finish` acquire two personalities is how this method would
-        // become unreadable.
+        // The baseline is erased for **every** run, above the routing rather
+        // than inside a branch of it. The dictionary has exactly three sites —
+        // the two in `start` and this one — and a fourth path returning without
+        // an erasure leaks one entry per run for the lifetime of the process.
+        let treeBaseline = treeBaselines.removeValue(forKey: run.id)
+
+        // One split, in one place. A `switch` and not the `if updated.isAnalysis`
+        // this was: the boolean routed an appraisal — which carries a `cardID` —
+        // into `completeCardRun`, where `gh` is asked about an issue and a pull
+        // request the card does not have. A sixth kind is now a compile error
+        // here instead of a silent third meaning for an existing branch.
         //
-        // if/else rather than a ternary: `inout` arguments are not allowed in
-        // one.
+        // `var verified` outside, because `inout` arguments are not allowed in a
+        // ternary and the three branches do not all produce one.
         var verified: VerifiedOutcome?
-        if updated.isAnalysis {
-            await completeAnalysisRun(&updated)
-        } else {
+        switch updated.kind {
+        case .analyzeRepo:
+            await completeAnalysisRun(&updated, baseline: treeBaseline)
+        case .appraiseCards:
+            await completeAppraisalRun(&updated, baseline: treeBaseline)
+        case .createIssue, .implementIssue, .mergePR:
             verified = await completeCardRun(&updated, resume: resume)
         }
 
@@ -683,9 +780,11 @@ public actor RunScheduler: RunLaunching {
     }
 
     /// Harvest the artifact, then answer the sentinel's question.
-    private func completeAnalysisRun(_ run: inout SkillRun) async {
-        let baseline = treeBaselines.removeValue(forKey: run.id)
-
+    ///
+    /// The baseline arrives as a parameter rather than being taken from
+    /// `treeBaselines` here: `finish` erases it for every run, above the
+    /// routing, so no branch of that `switch` can be the one that forgets.
+    private func completeAnalysisRun(_ run: inout SkillRun, baseline: String?) async {
         guard let analysisID = run.analysisID,
               let analysis = try? await store.analysis(id: analysisID),
               let repo = try? await store.repo(id: run.repoID)
@@ -703,21 +802,53 @@ public actor RunScheduler: RunLaunching {
             repo: repo,
             artifactURL: StoreLocation.analysisArtifactURL(analysisID: analysisID, runID: run.id)
         )
+        await sealSentinel(&report, baseline: baseline, repoPath: repo.path)
+        run.analysisReport = report
+    }
 
-        if let baseline {
-            let after = await git.porcelainStatus(cwd: repo.path)
-            let changed = after != baseline
-            // Explicit even when unchanged: a checked-and-clean tree (`false`)
-            // must not read the same as a tree the sentinel never got to look
-            // at (`nil`) — that collapse is exactly what let an orphaned run
-            // masquerade as verified-clean.
-            report.workingTreeChanged = changed
-            if changed {
-                report.workingTreeDiff = after
-            }
+    /// The same two steps for an appraisal: harvest the artifact, then answer
+    /// the sentinel.
+    ///
+    /// It has no analysis to look up — that is the whole of the `cardID`
+    /// decision — so the artifact is keyed on the run alone.
+    private func completeAppraisalRun(_ run: inout SkillRun, baseline: String?) async {
+        guard let repo = try? await store.repo(id: run.repoID) else {
+            run.analysisReport = AnalysisRunReport(
+                harvestSource: .none,
+                dropped: ["The repository this appraisal ran in could not be found."]
+            )
+            return
         }
 
+        var report = await appraiser.harvest(
+            run: run,
+            repo: repo,
+            artifactURL: StoreLocation.appraisalArtifactURL(runID: run.id)
+        )
+        await sealSentinel(&report, baseline: baseline, repoPath: repo.path)
         run.analysisReport = report
+    }
+
+    /// Folds the git sentinel's answer onto a read-only run's report.
+    ///
+    /// One implementation for both read-only kinds. Two copies of these lines
+    /// would be two copies of the argument in them, which is the shape #146
+    /// caught in `ChildProcess`: when the *explanation* of an invariant has been
+    /// copied word for word, the invariant has been copied too.
+    ///
+    /// Explicit even when unchanged: a checked-and-clean tree (`false`) must not
+    /// read the same as a tree the sentinel never got to look at (`nil`) — that
+    /// collapse is exactly what let an orphaned run masquerade as verified-clean.
+    private func sealSentinel(
+        _ report: inout AnalysisRunReport, baseline: String?, repoPath: String
+    ) async {
+        guard let baseline else { return }
+        let after = await git.porcelainStatus(cwd: repoPath)
+        let changed = after != baseline
+        report.workingTreeChanged = changed
+        if changed {
+            report.workingTreeDiff = after
+        }
     }
 
     static func state(for outcome: ClaudeRunOutcome?) -> RunState {

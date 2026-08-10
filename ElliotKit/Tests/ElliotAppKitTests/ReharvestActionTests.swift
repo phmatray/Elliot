@@ -49,7 +49,8 @@ struct ReharvestActionTests {
             gh: GHClient(
                 config: ToolConfig(
                     claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
-                    gitPath: "/usr/bin/false", environment: [:]))
+                    gitPath: "/usr/bin/false", environment: [:])),
+            gate: OpenGate()
         )
         let repo = Repo(path: "/tmp/r", nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
         try await store.saveRepo(repo)
@@ -58,7 +59,7 @@ struct ReharvestActionTests {
         var run = started.runs[0]
         run.state = .failed
         run.analysisReport = AnalysisRunReport(
-            harvestSource: .none, dropped: ["Elliot stopped before this analysis was harvested."])
+            harvestSource: .none, dropped: ["Elliot stopped before this run was harvested."])
         try await store.saveRun(run)
 
         let artifactURL = StoreLocation.analysisArtifactURL(

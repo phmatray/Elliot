@@ -1,4 +1,5 @@
 import Foundation
+import Testing
 
 /// Reads the `@State` a view declares, for the gates that decide whether a hide
 /// may destroy it.
@@ -48,14 +49,71 @@ enum HiddenFaceState {
     ///
     /// Cutting at `//` would also cut one inside a string literal; none of the
     /// needles these gates use can occur after one.
+    ///
+    /// ⚠️ **That last clause is weaker than it reads, and one caller has already
+    /// left the range it was written for.** It is safe for a *structural* needle —
+    /// `selectedRepoID`, `message.fixes` — which no plausible line puts after a
+    /// `//`. ``UnattendedStartDelegationTests`` sweeps whole English sentences, and
+    /// a source line ending `// … "This repository is switched off in Preflight."`
+    /// would be cut and the copy missed. The failure direction is a false
+    /// **negative** — a gate that misses a duplication, not one that invents it —
+    /// which is why it is a caveat rather than a defect, and why the sentence
+    /// gates also assert a positive witness (the rule's own file must still hold
+    /// each sentence exactly once).
     static func code(of file: String) throws -> String {
-        try source(of: file)
+        stripped(try source(of: file))
+    }
+
+    /// The cut itself, for a gate reading a file this enum does not resolve.
+    ///
+    /// ``UnattendedStartDelegationTests`` sweeps the whole of `Sources/` rather
+    /// than one module's directory, and needs exactly this cut — measured, not
+    /// assumed: `RunsPane.swift` documents *"a card whose repository is switched
+    /// off in Preflight"*, which is one of the two sentences that gate claims has
+    /// a single home. Written once here for the reason the header gives: a
+    /// mechanism written twice has already cost this repository three defects.
+    static func stripped(_ source: String) -> String {
+        source
             .components(separatedBy: "\n")
             .map { line -> String in
                 guard let comment = line.range(of: "//") else { return line }
                 return String(line[line.startIndex..<comment.lowerBound])
             }
             .joined(separator: "\n")
+    }
+
+    /// One function's body, by brace matching from its signature.
+    ///
+    /// ⚠️ **The fourth copy of this walk is the reason it is here, and three of
+    /// them remain.** `AnalysisRefusalTests`, `AnalysisPanelViewSourceTests` and
+    /// `AnalysisReviewRowTests` each carry their own; measured while adding this,
+    /// the first two are byte-identical to it and the third is **not** (twenty
+    /// lines against eighteen), so it needs reading rather than assuming. Folding
+    /// them in also means editing `AnalysisRefusalTests`, whose byte-identity is
+    /// live evidence for the change that introduced this helper. So: new gates
+    /// reach for this one, the count stops growing, and consolidating the three is
+    /// named as its own change rather than done half-way inside a fix round.
+    ///
+    /// Honest only where the target function holds no brace inside a string
+    /// literal, and comments are expected to be cut already — the callers point it
+    /// at `decide`, `reason` and `footer`, none of which do.
+    static func body(of signature: String, in source: String) throws -> String {
+        let start = try #require(source.range(of: signature))
+        var depth = 0
+        var open: String.Index?
+        var index = start.upperBound
+        while index < source.endIndex {
+            if source[index] == "{" {
+                if depth == 0 { open = source.index(after: index) }
+                depth += 1
+            } else if source[index] == "}" {
+                depth -= 1
+                if depth == 0, let open { return String(source[open..<index]) }
+            }
+            index = source.index(after: index)
+        }
+        Issue.record("no matching brace for \(signature)")
+        return ""
     }
 
     /// Every `@State private var` declared anywhere in a file, by name.

@@ -17,6 +17,10 @@ public enum SkillKind: String, Codable, CaseIterable, Sendable, Hashable {
     case mergePR
     /// Reading a repository through one lens. Not a plugin skill — see below.
     case analyzeRepo
+    /// Reading one card, and the repository around it, to fill in the signals a
+    /// hand-written card never carried. Read-only, and not a plugin skill —
+    /// Elliot owns this prompt, the same way it owns the analysis one.
+    case appraiseCards
 
     /// The bare skill name, and the one word every layer uses for this skill:
     /// `RunDTO.kind`, `MoveDTO.triggered` and `NextDTO.wouldTrigger` all read
@@ -40,6 +44,34 @@ public enum SkillKind: String, Codable, CaseIterable, Sendable, Hashable {
         case .implementIssue: "implement-issue"
         case .mergePR: "merge-pr"
         case .analyzeRepo: "analyze-repo"
+        case .appraiseCards: "appraise-cards"
+        }
+    }
+
+    /// Whether this kind may only read.
+    ///
+    /// It decides two things at once: which scheduling lane a run is admitted
+    /// into, and whether the working-tree sentinel is armed before it spawns.
+    /// Both were written five times over as `kind == .analyzeRepo` in
+    /// `RunScheduler`, which was exactly true until an appraisal became the
+    /// second read-only kind — and one of those five is a negation
+    /// (`filter { !$0.kind.isReadOnly }`) that no compiler checks, which is why
+    /// it ships with its own witness in `SchedulerReadOnlyLaneTests`.
+    ///
+    /// A `switch` and not a set membership: a sixth kind is a compile error
+    /// here rather than a silent default into the writer lane, where it would
+    /// consume the cap that exists to keep two builds out of one `.build/`.
+    ///
+    /// `public`, and not by habit: `RunScheduler` and `Reconciler` live in
+    /// `ElliotEngine` and read this across a module boundary, where an
+    /// internal member is invisible. Its neighbour `skillName` is `public` for
+    /// the same reason — and was its only neighbour once #363 removed
+    /// `slashName`, which hardcoded one plugin's names where `MethodPack` now
+    /// decides per repository.
+    public var isReadOnly: Bool {
+        switch self {
+        case .createIssue, .implementIssue, .mergePR: false
+        case .analyzeRepo, .appraiseCards: true
         }
     }
 }

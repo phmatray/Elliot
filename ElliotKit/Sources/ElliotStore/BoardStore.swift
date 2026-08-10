@@ -537,6 +537,40 @@ public final class BoardStore: Sendable {
         try await requireWriter().write { [card] db in try card.save(db) }
     }
 
+    /// Writes an appraisal onto a card, reading and writing in **one
+    /// transaction**.
+    ///
+    /// Deliberately not `saveCard(_:)`. That takes a whole `Card` the caller read
+    /// some `await`s earlier and writes every column of it — which is how a move
+    /// committed in between loses its column, and how an appraisal written the
+    /// other way round loses its three fields. Here the read and the write are
+    /// the same transaction, so there is no window to lose anything in.
+    ///
+    /// Three fields and no more, for the reason the v8 migration records: what
+    /// writes a card field is supposed to be enumerable. This is the fourth
+    /// writer, it is named, and it can write nothing else.
+    ///
+    /// Answers with the card as it now stands, or `nil` if it has been deleted —
+    /// which is not an error. A card can be forgotten while a run that mentions
+    /// it is still finishing.
+    @discardableResult
+    public func applyAppraisal(
+        cardID: UUID, effort: Effort, evidence: [Evidence], at: Date
+    ) async throws -> Card? {
+        // `db -> Card? in` spelled out: the closure's only `nil` is a bare
+        // `return nil`, and leaving the optionality to inference is the classic
+        // way to end up with `T == Card` and an error on that line.
+        try await requireWriter().write { db -> Card? in
+            guard var card = try Card.fetchOne(db, key: cardID.databaseKey) else { return nil }
+            card.effort = effort
+            card.evidence = evidence
+            card.appraisedAt = at
+            card.updatedAt = Date()
+            try card.update(db)
+            return card
+        }
+    }
+
     /// Runs the v6 backfill again. Idempotent — it only writes rows whose
     /// `angle` is still NULL — and exists so a test can assert what the
     /// migration does without reaching into `grdb_migrations`.
@@ -856,6 +890,39 @@ public final class BoardStore: Sendable {
 
     public func saveRun(_ run: SkillRun) async throws {
         try await requireWriter().write { db in try run.save(db) }
+    }
+
+    /// Inserts a run **only if** no active run already holds its card.
+    ///
+    /// The same compare-and-set `claimProposal` is, and for the same reason: a
+    /// "fetch, check, insert" written out by the caller reads a snapshot and
+    /// writes across an `await`, so two starts for one card can both pass the
+    /// check before either writes. Here the check and the insert are one
+    /// transaction.
+    ///
+    /// `false` is a refusal, not an error: somebody else holds the card, which
+    /// is exactly what the caller wanted to know.
+    ///
+    /// The card **is** the claim. `activeRun(cardID:)` answers with this run for
+    /// its whole life, so `BoardService.proposeMove` — which reads that same
+    /// query — returns `.blocked(.runAlreadyInFlight)` while it goes. That is
+    /// what closes the card's write window in both directions, and it is why an
+    /// appraisal run carries a `cardID` rather than a synthetic analysis.
+    ///
+    /// A run with no card cannot claim one: an analysis run is refused here
+    /// rather than inserted unguarded, because "no card to hold" is not "the
+    /// card is free".
+    public func claimCardForRun(_ run: SkillRun) async throws -> Bool {
+        guard let cardID = run.cardID else { return false }
+        return try await requireWriter().write { db in
+            let held = try SkillRun
+                .filter(SkillRun.Columns.cardID == cardID.databaseKey)
+                .filter(Self.activeStates.contains(SkillRun.Columns.state))
+                .fetchCount(db)
+            guard held == 0 else { return false }
+            try run.insert(db)
+            return true
+        }
     }
 
     /// The run currently holding a card, if any.

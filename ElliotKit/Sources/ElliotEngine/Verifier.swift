@@ -47,10 +47,13 @@ public struct Verifier: Sendable {
                 return try await verifyImplementIssue(run: run, card: card, repo: repo)
             case .mergePR:
                 return try await verifyMergePR(run: run, card: card, repo: repo)
-            case .analyzeRepo:
-                // Unreachable: analysis runs are completed by ProposalHarvester,
-                // and there is nothing on GitHub to check an opinion against.
-                return .unverified(reason: "An analysis has no GitHub outcome to verify.")
+            case .analyzeRepo, .appraiseCards:
+                // Unreachable: read-only runs are completed by their own
+                // harvesters, and there is nothing on GitHub to check an
+                // opinion or an estimate against. `RunScheduler.finish` switches
+                // on `run.kind` so this branch cannot be reached by a routing
+                // mistake — it exists so the switch stays total.
+                return .unverified(reason: "A read-only run has no GitHub outcome to verify.")
             }
         } catch {
             return .unverified(reason: error.localizedDescription)
