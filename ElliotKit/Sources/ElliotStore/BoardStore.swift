@@ -1089,16 +1089,39 @@ public final class BoardStore: Sendable {
 
     // MARK: - Dismissals
 
-    public func dismissals(repoID: UUID) async throws -> Set<ExternalRef> {
+    /// The one read of `dismissedExternal`, in the one shape that keeps
+    /// everything the table stores.
+    ///
+    /// `repoID: nil` is every repository — the meaning *All repositories* has on
+    /// the board's picker — and an id that matches nothing is an empty list
+    /// rather than the whole table.
+    ///
+    /// A row whose `kind` does not decode is dropped, which is what `dismissals`
+    /// has always done: the column is a `String` and the enum is closed, so a
+    /// value written by a newer build names a kind this one cannot act on.
+    /// Dropping it costs a suppression its row in the list; keeping it would
+    /// need a `DismissedItem` that cannot say what it is.
+    ///
+    /// Ordered through ``DismissalDigest/rows(_:repoID:)`` rather than by a
+    /// `SQL ORDER BY`, so the sort the reader sees is decided **once**, in the
+    /// pure type that is tested for being total. The filter has already happened
+    /// in SQL, hence `repoID: nil` here.
+    public func dismissedItems(repoID: UUID?) async throws -> [DismissedItem] {
         try await reader.read { db in
-            let rows = try DismissalRecord
-                .filter(SQLColumn("repoID") == repoID.databaseKey)
-                .fetchAll(db)
-            return Set(
-                rows.compactMap { row in
-                    ExternalKind(rawValue: row.kind).map { ExternalRef(kind: $0, number: row.number) }
-                })
+            var request = DismissalRecord.all()
+            if let repoID { request = request.filter(SQLColumn("repoID") == repoID.databaseKey) }
+            return Self.items(try request.fetchAll(db))
         }
+    }
+
+    /// The importer's view: the keys, and nothing else.
+    ///
+    /// A **projection** of ``dismissedItems(repoID:)`` since #334, not a second
+    /// SELECT over the same table. `GitHubImporter.plan` is still its only
+    /// caller and still needs only the keys; what changed is that the reader's
+    /// query and the importer's cannot drift apart, because there is one query.
+    public func dismissals(repoID: UUID) async throws -> Set<ExternalRef> {
+        Set(try await dismissedItems(repoID: repoID).map(\.ref))
     }
 
     /// Idempotent: dismissing something already dismissed is not an error, and
@@ -1112,10 +1135,67 @@ public final class BoardStore: Sendable {
         }
     }
 
+    /// Deletes **exactly one** suppression — the whole point of #334, against a
+    /// board whose only undo was ``clearDismissals(repoID:)``.
+    ///
+    /// Keyed on all three columns of the primary key. A delete keyed on the
+    /// number alone would take issue 5 *and* pull request 5, which is the pair a
+    /// single card writes; keyed without the repository it would reach into
+    /// every repository at once, which is the bulk act this method exists to
+    /// avoid.
+    ///
+    /// Idempotent, matching ``dismiss(_:repoID:now:)`` from the other side: a
+    /// row the last refresh already brought back is a row *Restore* can be
+    /// pressed on twice.
+    ///
+    /// ⚠️ This creates **no card**. The importer creates cards; a second path
+    /// that inserted one would be the second write path `BoardService` exists to
+    /// prevent. The row goes, and the next refresh brings the card back.
+    public func undismiss(_ ref: ExternalRef, repoID: UUID) async throws {
+        _ = try await requireWriter().write { db in
+            try DismissalRecord
+                .filter(SQLColumn("repoID") == repoID.databaseKey)
+                .filter(SQLColumn("kind") == ref.kind.rawValue)
+                .filter(SQLColumn("number") == ref.number)
+                .deleteAll(db)
+        }
+    }
+
     public func clearDismissals(repoID: UUID) async throws {
         _ = try await requireWriter().write { db in
             try DismissalRecord.filter(SQLColumn("repoID") == repoID.databaseKey).deleteAll(db)
         }
+    }
+
+    /// Every suppression, live.
+    ///
+    /// Its own observation for the reason `observePRStatuses` has one: nothing
+    /// about a dismissal touches a card row, so a figure refreshed off the card
+    /// observation would follow a restore exactly never. It is what makes the
+    /// status-bar figure a reading of the table rather than of the last import
+    /// summary — a stale count cannot outlive the fact it reports.
+    public func observeDismissals() -> AsyncValueObservation<[DismissedItem]> {
+        ValueObservation
+            .tracking { db in Self.items(try DismissalRecord.fetchAll(db)) }
+            .removeDuplicates()
+            .values(in: reader)
+    }
+
+    /// Rows to items, in one place, so the three readers above cannot disagree
+    /// about what a row means or what order they arrive in.
+    ///
+    /// The ordering matters to `removeDuplicates()` as much as to the eye: two
+    /// deliveries of an unchanged table must compare equal, and an array whose
+    /// order is SQLite's rowid order is only accidentally stable across a delete
+    /// and a re-insert.
+    private static func items(_ rows: [DismissalRecord]) -> [DismissedItem] {
+        let items = rows.compactMap { row -> DismissedItem? in
+            guard let kind = ExternalKind(rawValue: row.kind) else { return nil }
+            return DismissedItem(
+                repoID: row.repoID, ref: ExternalRef(kind: kind, number: row.number),
+                dismissedAt: row.dismissedAt)
+        }
+        return DismissalDigest.rows(items, repoID: nil)
     }
 
     // MARK: - Audit
