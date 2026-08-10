@@ -9,24 +9,29 @@ import SwiftUI
 /// to answer, and the review's finding was that the four windows were peers with
 /// no home among them.
 ///
-/// One screen, not four features. Three bands, each the visible half of work
-/// already landed and tested:
+/// One screen, not four features. Bands, each the visible half of work already
+/// landed and tested — listed by what they are, not in the order they are drawn:
 ///
 /// - **Up next** — `rankNextSteps` (#67), the order `board_next` gives an agent.
+///   Since #304 it is `UpNextBand`, the whole list rather than a preview of one,
+///   and **the only band here a gesture acts through**.
 /// - **Workers** — the caps (#56) and the queue with its reasons (#58) and its
 ///   commands (#59).
 /// - **Spending** — the aggregates (#61) against the ceiling (#57).
 ///
 /// It computes nothing. Every number here was decided by the engine or the
 /// store, and a second opinion in this file would be a fifth place for the
-/// board's rules to live.
+/// board's rules to live. ⛔ That held for the *numbers* and did not hold for the
+/// **rows**: this file drew its own Up next list for as long as it existed, and
+/// the copy was inert where the original could act. `UpNextBandSourceTests` is
+/// what stops it coming back.
 ///
-/// `public` only because `ElliotApp` names it in a `Scene`.
+/// `public` only because `ConsoleRegion` renders it as a face — the `Scene` that
+/// used to name it is gone.
 public struct OperationsView: View {
     public init() {}
 
     @Environment(AppModel.self) private var model
-    @Environment(\.openWindow) private var openWindow
 
     public var body: some View {
         ScrollView {
@@ -76,7 +81,16 @@ public struct OperationsView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(spoken(entry))
                 }
-                Button("Open Preflight") { openWindow(id: "preflight") }
+                // ⚠️ `showConsoleFace`, not `openWindow(id: "preflight")`. This
+                // and the two below were `openWindow` calls naming a scene the
+                // console deleted, so all three did **nothing at all** — SwiftUI
+                // logs an unknown scene id and returns. Found while folding Up
+                // next into this screen (#304); the same defect one door over,
+                // and the same reason it was invisible: a button that silently
+                // does nothing looks exactly like a button nobody pressed.
+                // `ConsoleReachabilityTests` now refuses an `openWindow` id that
+                // `ElliotApp` does not declare.
+                Button("Open Preflight") { model.showConsoleFace(.preflight) }
                     .controlSize(.small)
             }
         }
@@ -182,7 +196,7 @@ public struct OperationsView: View {
                     "Analyses", used: model.occupancy.analyses,
                     cap: model.limits.maxConcurrentAnalyses)
                 Spacer()
-                Button("Change the limits") { openWindow(id: "preflight") }
+                Button("Change the limits") { model.showConsoleFace(.preflight) }
                     .controlSize(.small)
             }
         }
@@ -301,7 +315,7 @@ public struct OperationsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                Button("Set a ceiling") { openWindow(id: "preflight") }
+                Button("Set a ceiling") { model.showConsoleFace(.preflight) }
                     .controlSize(.small)
             }
             byKindRow
@@ -398,45 +412,22 @@ public struct OperationsView: View {
 
     // MARK: - Up next
 
-    /// The first three, and a way to the rest. The whole list is `NextStepsView`
-    /// and has its own window; repeating it here in full would make this screen
-    /// a scroll rather than a summary.
+    /// The ranking, drawn once, and able to act.
+    ///
+    /// ⛔ **This band held a second drawing of it until #304**, and the two
+    /// differed in exactly the way that matters: `NextStepsView`'s rows were
+    /// buttons through `model.move(cardID:to:)` and carried
+    /// `.disabled(consequence.isRefused)`; these were inert `HStack`s that read
+    /// `isRefused` for a *colour* and offered nothing. *"See all N"* then opened
+    /// the other drawing purely to hand back the affordance the reader was
+    /// already looking at — and counted `N` off the unfiltered board while
+    /// opening a screen the repository picker had narrowed, so with a filter set
+    /// "See all 12" opened a list of four.
+    ///
+    /// `UpNextBand` is that one drawing. Everything this screen contributes is
+    /// the `ConsoleLabel` below; the band draws no title of its own.
     private var upNextBand: some View {
-        band("Up next") {
-            let steps = model.nextSteps
-            if steps.isEmpty {
-                Text("Nothing Elliot can advance on its own.")
-                    .font(Type.prose)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(steps.prefix(3).enumerated()), id: \.element.card.id) { index, step in
-                    let consequence = Consequence.of(step.outcome)
-                    HStack(alignment: .top, spacing: 8) {
-                        Text("\(index + 1)")
-                            .font(Type.factSmall)
-                            .foregroundStyle(.tertiary)
-                            .frame(width: 18, alignment: .trailing)
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Fact(text: step.repoName, tint: Palette.quiet, small: true)
-                            Text(step.card.displayTitle)
-                                .font(Type.prose)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Text(consequence.summary)
-                                .font(Type.prose)
-                                .foregroundStyle(
-                                    consequence.isRefused ? Palette.refused : consequence.tint
-                                )
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .accessibilityElement(children: .combine)
-                }
-                Button("See all \(steps.count)") { openWindow(id: "nextSteps") }
-                    .controlSize(.small)
-            }
-        }
+        band("Up next") { UpNextBand() }
     }
 
     // MARK: - Chrome

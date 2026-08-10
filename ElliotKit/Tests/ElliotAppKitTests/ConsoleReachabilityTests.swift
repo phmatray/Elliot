@@ -122,6 +122,97 @@ struct ConsoleReachabilityTests {
         )
     }
 
+    // MARK: - 2b. A door that opens nothing
+
+    /// Every `.swift` under both targets that can put a control on screen, with
+    /// `//` comments cut away.
+    ///
+    /// ⚠️ Comments are stripped for the reason `AnalysisPanelViewSourceTests`
+    /// records: three files here *discuss* `openWindow` at length, including the
+    /// one that stopped calling it, and a gate matching raw text would fail on
+    /// the explanation of the rule it enforces.
+    ///
+    /// ⚠️ An empty walk is a failure, not a pass — a renamed directory would
+    /// otherwise silently reduce this gate's coverage while it stayed green.
+    private static func viewCode() throws -> [(file: String, code: String)] {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // ElliotAppKitTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // ElliotKit
+            .appendingPathComponent("Sources")
+        var found: [(file: String, code: String)] = []
+        for target in ["ElliotAppKit", "ElliotApp"] {
+            let directory = sources.appendingPathComponent(target)
+            let names = try FileManager.default
+                .contentsOfDirectory(atPath: directory.path)
+                .filter { $0.hasSuffix(".swift") }
+                .sorted()
+            #expect(!names.isEmpty, "\(target) contributed no files; has it moved or been renamed?")
+            for name in names {
+                let text = try String(contentsOf: directory.appendingPathComponent(name), encoding: .utf8)
+                let code = text.components(separatedBy: "\n")
+                    .map { line -> String in
+                        guard let comment = line.range(of: "//") else { return line }
+                        return String(line[line.startIndex..<comment.lowerBound])
+                    }
+                    .joined(separator: "\n")
+                found.append((file: "\(target)/\(name)", code: code))
+            }
+        }
+        return found
+    }
+
+    /// ⛔ **A button that opens a scene nobody declares does nothing, silently.**
+    ///
+    /// Found in #304 while folding Up next in: `OperationsView` carried four
+    /// `openWindow(id:)` calls — three naming `preflight`, one naming
+    /// `nextSteps` — and every one of those scenes had been deleted by an earlier
+    /// console wave. SwiftUI logs an unknown id and returns, so *Open Preflight*,
+    /// *Change the limits* and *Set a ceiling* had been inert for as long as the
+    /// console had existed, on the screen whose whole job is to be acted on.
+    ///
+    /// The two directions this suite already guards are a face with a scene still
+    /// standing, and a scene deleted with no face put in its place. This is the
+    /// third: a **caller** left behind by a scene deletion. It is the one the
+    /// console migration could produce every wave, because a deleted scene takes
+    /// its declaration with it and leaves every `openWindow` naming it compiling
+    /// perfectly.
+    @Test("Every openWindow call names a scene ElliotApp actually declares")
+    func noViewOpensASceneThatDoesNotExist() throws {
+        let app = try Self.source("ElliotApp", "ElliotApp.swift")
+        let scenes = Self.declaredScenes(in: app)
+        #expect(!scenes.isEmpty, "parsed no scenes; the parser has drifted from ElliotApp.swift")
+
+        var opened: [(site: String, id: String)] = []
+        for file in try Self.viewCode() {
+            var rest = Substring(file.code)
+            while let call = rest.range(of: "openWindow(id: \"") {
+                let after = rest[call.upperBound...]
+                guard let end = after.firstIndex(of: "\"") else { break }
+                opened.append((site: file.file, id: String(after[..<end])))
+                rest = after[end...]
+            }
+        }
+
+        // A negative needs its positive witness: a parser that matched nothing
+        // would make the claim below vacuously true for ever.
+        #expect(
+            !opened.isEmpty,
+            "parsed no openWindow(id:) call sites at all — the matcher has drifted from the code")
+
+        let dangling = opened.filter { !scenes.contains($0.id) }
+        #expect(
+            dangling.isEmpty,
+            """
+            \(dangling.map { "\($0.site) opens \"\($0.id)\"" }.joined(separator: " · ")) — \
+            no such scene is declared in ElliotApp.swift, which declares \(scenes.sorted()). \
+            SwiftUI logs an unknown id and does nothing, so the control is dead while looking \
+            perfectly alive. A screen that became a console face is reached with \
+            model.showConsoleFace(_:) instead (#304)
+            """
+        )
+    }
+
     // MARK: - 3. The funnel
 
     @Test("The model's console methods are the transitions, not a second copy of them")
@@ -133,9 +224,9 @@ struct ConsoleReachabilityTests {
         model.pressConsoleDoor(.operations)
         #expect(model.console.face == nil, "the door stopped being a toggle on the way through")
 
-        model.showConsoleFace(.nextSteps)
-        model.showConsoleFace(.nextSteps)
-        #expect(model.console.face == .nextSteps, "the menu item closed the screen it names")
+        model.showConsoleFace(.archive)
+        model.showConsoleFace(.archive)
+        #expect(model.console.face == .archive, "the menu item closed the screen it names")
 
         model.closeConsole()
         #expect(model.console.face == nil)

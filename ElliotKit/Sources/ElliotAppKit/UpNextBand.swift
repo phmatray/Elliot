@@ -1,7 +1,8 @@
 import ElliotModel
 import SwiftUI
 
-/// What Elliot thinks should happen next, in order.
+/// What Elliot thinks should happen next, in order — and the one place on the
+/// Operations screen where a gesture does work.
 ///
 /// This list already existed. `rankNextSteps` is pure, tested, and served to
 /// agents over MCP as `board_next`; the human got five columns and rebuilt the
@@ -9,66 +10,70 @@ import SwiftUI
 /// only to the robot.
 ///
 /// The view reads. It ranks nothing, sorts nothing and words nothing of its own:
-/// the order is `rankNextSteps`', and each row's sentence comes from
-/// `Consequence.of`, which is what the column headers already say. A second
-/// wording here would drift from the board it is describing.
+/// the order is `rankNextSteps`', each row's sentence comes from
+/// `Consequence.of`, which is what the column headers already say, and how much
+/// of the list a folded band draws is `NextStepsWindow.band(expanded:)`'s. A
+/// second wording — or a second prefix — here would drift from the board it is
+/// describing.
 ///
-/// Self-contained so the Operations screen (#69) can compose it.
+/// ⛔ **It was a `NextStepsView`, a screen of its own, until #304 — and the whole
+/// point of this file is that it is not one any more.** The same ranking was
+/// drawn twice: this list's rows called `model.move(cardID:to:)`, the Operations
+/// band's rows were inert `HStack`s, and *"See all N"* existed only to carry a
+/// reader from the drawing that could not act to the one that could. Two
+/// drawings of one ranking is two places for `.disabled(consequence.isRefused)`
+/// to be true, and it was already only true in one of them. `UpNextBandSourceTests`
+/// is the gate that keeps it at one.
 ///
-/// `public` only because `ElliotApp` names it in a `Scene`.
-public struct NextStepsView: View {
-    public init() {}
-
+/// **It draws no title of its own.** `OperationsView.band(_:)` supplies the
+/// `ConsoleLabel`, and the console header above supplies the screen's name. A
+/// header here would be the third *"Up next"* on one screen.
+struct UpNextBand: View {
     @Environment(AppModel.self) private var model
 
-    public var body: some View {
+    var body: some View {
         @Bindable var model = model
         let window = model.nextStepsView
-        return VStack(alignment: .leading, spacing: 0) {
-            header
-            filters($model)
-            Divider()
-            if window.steps.isEmpty {
-                ContentUnavailableView(
-                    "Nothing waiting", systemImage: "checkmark.circle",
-                    description: Text(emptyMessage)
-                )
-                .frame(maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 6) {
-                        ForEach(Array(window.steps.enumerated()), id: \.element.card.id) {
-                            index, step in
-                            row(step, position: index + 1)
-                        }
-                        if window.isCapped {
-                            Text(cappedNote(window))
-                                .font(Type.factSmall)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.top, 2)
-                        }
-                    }
-                    .padding(10)
-                }
-            }
-        }
-        // No `.navigationTitle`: this is a console face now, and a title set
-        // here propagates to the *board window* and renames it — measured, and
-        // not stopped by a nested NavigationStack nor by an ancestor re-asserting
-        // the board's own. The console header names the screen.
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            ConsoleLabel(text: "Up next")
+        let band = window.band(expanded: model.nextStepsExpanded)
+        return VStack(alignment: .leading, spacing: 8) {
             Text(summary)
                 .font(Type.prose)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            filters($model)
+            if window.steps.isEmpty {
+                // A sentence, like every other band's empty state — not a
+                // `ContentUnavailableView`, which claims a whole screen and
+                // would push the five bands above it out of one glance. What it
+                // said is kept; only its furniture is dropped.
+                Text(emptyMessage)
+                    .font(Type.prose)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                // `LazyVStack` and no `ScrollView`: `OperationsView` already
+                // scrolls, and a scroll view inside a scroll view gives the
+                // reader two of them fighting over one gesture.
+                LazyVStack(spacing: 6) {
+                    ForEach(Array(band.shown.enumerated()), id: \.element.card.id) {
+                        index, step in
+                        row(step, position: index + 1)
+                    }
+                }
+                // `canFold`, never `isFolded`: an expanded band whose ranking has
+                // since shrunk holds nothing back, and offering "Show fewer"
+                // there is a control that does nothing.
+                if band.canFold {
+                    disclosure(band)
+                }
+                if window.isCapped {
+                    Text(cappedNote(window))
+                        .font(Type.factSmall)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
     }
 
     /// Ready first is the whole ordering, so the count that matters is how many
@@ -112,8 +117,6 @@ public struct NextStepsView: View {
             Spacer(minLength: 0)
         }
         .controlSize(.small)
-        .padding(.horizontal, 14)
-        .padding(.bottom, 10)
     }
 
     /// Why the list is empty — three different facts that look identical.
@@ -131,8 +134,35 @@ public struct NextStepsView: View {
         return "Every card is either finished or somewhere Elliot cannot advance on its own."
     }
 
+    /// The rest of the list, one press away and in this band.
+    ///
+    /// ⛔ **It replaced a button that opened a second window** (#304), and the
+    /// count is the reason that shape could not simply be kept honest: *"See all
+    /// N"* counted `AppModel.nextSteps` — the whole board — and opened a screen
+    /// rendering `nextStepsView`, which the repository picker and the blocked
+    /// toggle above have already narrowed. `band.folded` is counted off the rows
+    /// this very band would reveal, so the number and the reveal cannot disagree.
+    ///
+    /// No `.keyboardShortcut(.defaultAction)`, and not merely because pressing it
+    /// is harmless: this band sits in the board window beside `DetailPanelView`'s
+    /// Save, and `DefaultAction` names the three controls Return belongs to.
+    private func disclosure(_ band: NextStepsBand) -> some View {
+        Button(band.isFolded ? "Show \(band.folded) more" : "Show fewer") {
+            model.nextStepsExpanded.toggle()
+        }
+        .controlSize(.small)
+        .accessibilityHint(
+            band.isFolded
+                ? "Unfolds the rest of the ranking in this band"
+                : "Folds the ranking back to its first \(NextStepsWindow.bandLimit)")
+    }
+
     /// A cap that does not announce itself reads as a board with nothing more
     /// on it.
+    ///
+    /// ⚠️ A different fact from the disclosure above, deliberately worded apart.
+    /// These rows are gone from the ranking — the reader's own toggle or the
+    /// blocked cap removed them — and no press of *Show more* brings them back.
     private func cappedNote(_ window: NextStepsWindow) -> String {
         let n = window.hiddenBlocked
         let cards = "\(n) blocked card\(n == 1 ? "" : "s")"
@@ -183,6 +213,12 @@ public struct NextStepsView: View {
             }
         }
         .buttonStyle(.plain)
+        // ⛔ **Load-bearing, and the half the Operations band never had.** A row
+        // the rules refuse must not be pressable: pressing one is a real move
+        // through `BoardService`, and three of the five transitions start an
+        // unattended `claude -p` at `bypassPermissions` inside a real checkout.
+        // The refusal is still *stated* — that is `consequence.summary` above,
+        // in `Palette.refused` — it is simply not offered.
         .disabled(consequence.isRefused)
         .help(consequence.summary)
         .accessibilityElement(children: .combine)

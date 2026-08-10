@@ -336,9 +336,14 @@ private struct OpenWindowButtons: View {
 
     var body: some View {
         Button("Operations") { model.showConsoleFace(.operations) }
-        Button("Up Next") { model.showConsoleFace(.nextSteps) }
-        // No Analysis entry: it is not a window any more (#151). Show/Hide
-        // Analysis lives with the other View items, beside Show/Hide Details.
+        // No Up Next entry: it is not a screen any more (#304). It is the
+        // acting band of Operations, so this item and that one would name one
+        // destination twice — and a second door to a screen is what the console
+        // migration spent six waves removing.
+        //
+        // No Analysis entry either, for a different reason: it is not a window
+        // any more (#151). Show/Hide Analysis lives with the other View items,
+        // beside Show/Hide Details.
         Button("Repositories") { model.showConsoleFace(.repositories) }
         Button("Preflight") { model.showConsoleFace(.preflight) }
         Button("Archive") { model.showConsoleFace(.archive) }
