@@ -45,6 +45,16 @@ public enum CheckFix: Sendable, Hashable, Identifiable {
     case createLabels(repoID: UUID, nameWithOwner: String, labels: [RequiredLabel])
     /// Put a card in Backlog describing work someone should look at.
     case seedCard(repoID: UUID, title: String, story: UserStory)
+    /// Record that this repository requires exactly these labels.
+    ///
+    /// Writes `Repo.labelPolicy`, which until #199 had no writer at all — the
+    /// shape #333 found one field over, where a column with three readers and
+    /// nothing that assigned it made a documented capability fictional.
+    ///
+    /// The labels are carried rather than read back, so the button applies the
+    /// set the reader was *shown*: a policy resolved again at press time could
+    /// differ from the one the sentence above the button described.
+    case adoptLabelPolicy(repoID: UUID, labels: [RequiredLabel])
 
     /// The button's text. Named here rather than in the view for the reason
     /// `RepoFix.label` is: two screens must not spell the same act two ways.
@@ -56,6 +66,11 @@ public enum CheckFix: Sendable, Hashable, Identifiable {
             "Create \(labels.count) label\(labels.count == 1 ? "" : "s")"
         case .seedCard:
             "Add a card"
+        case .adoptLabelPolicy(_, let labels):
+            // Says what it settles, not what it changes: it changes nothing
+            // about which labels are checked. The count is present for
+            // `createLabels`' reason — a button whose scope is guesswork.
+            "Require these \(labels.count)"
         }
     }
 
@@ -65,6 +80,8 @@ public enum CheckFix: Sendable, Hashable, Identifiable {
             "createLabels:\(repoID):\(labels.map(\.name).joined(separator: ","))"
         case .seedCard(let repoID, let title, _):
             "seedCard:\(repoID):\(title)"
+        case .adoptLabelPolicy(let repoID, let labels):
+            "adoptLabelPolicy:\(repoID):\(labels.map(\.name).joined(separator: ","))"
         }
     }
 
@@ -76,7 +93,9 @@ public enum CheckFix: Sendable, Hashable, Identifiable {
     /// is a fix applied to the wrong one waiting to happen.
     public var repoID: UUID {
         switch self {
-        case .createLabels(let repoID, _, _), .seedCard(let repoID, _, _): repoID
+        case .createLabels(let repoID, _, _), .seedCard(let repoID, _, _),
+            .adoptLabelPolicy(let repoID, _):
+            repoID
         }
     }
 }
@@ -398,9 +417,12 @@ public struct PreflightService: Sendable {
     public func labelsCheck(
         _ repo: Repo,
         nameWithOwner: String? = nil,
-        required: [RequiredLabel] = LabelPolicy.default
+        policy: LabelPolicy.Resolved? = nil
     ) async -> CheckResult {
         let target = nameWithOwner ?? repo.nameWithOwner
+        // The repository's own answer when it has one, Elliot's floor when it
+        // does not — resolved once, so nothing below has to remember which.
+        let policy = policy ?? LabelPolicy.resolved(for: repo)
 
         guard let present = try? await gh.labels(repo: target) else {
             // ⚠️ Not "every label is missing". A failure to *ask* is not a
@@ -415,12 +437,27 @@ public struct PreflightService: Sendable {
             )
         }
 
-        let missing = LabelPolicy.missing(required: required, present: present)
+        let missing = LabelPolicy.missing(required: policy.required, present: present)
         guard !missing.isEmpty else {
+            // ⚠️ **A pass, and possibly still an unanswered question.** These are
+            // two different things and this check conflated them until #200:
+            // *"are the labels this policy names present?"* is about GitHub's
+            // state, and *"has anyone decided what this repository should
+            // require?"* is about the repository — and a `.pass` on the first
+            // cannot answer the second. The floor is GitHub's four stock labels,
+            // deliberately chosen in #172 as something a fresh repository
+            // already satisfies, so on the repositories that most need the
+            // taxonomy conversation the check passed and offered **no fixes at
+            // all**. Verified on phmatray/Elliot, which has all four.
             return CheckResult(
                 id: "repo.labels", title: "Labels", status: .pass,
-                detail: "All \(required.count) labels Elliot's skills apply are present.",
-                command: "gh label list --repo \(target)"
+                detail: policy.isUndecided
+                    ? "All \(policy.required.count) labels \(policy.whose) are present — but "
+                        + "nobody has said what this repository should require, so Elliot's "
+                        + "floor is what was applied."
+                    : "All \(policy.required.count) labels \(policy.whose) are present.",
+                command: "gh label list --repo \(target)",
+                fixes: Self.taxonomyFixes(repo, policy: policy, satisfied: true)
             )
         }
 
@@ -436,27 +473,59 @@ public struct PreflightService: Sendable {
                 // The **resolved** name, not the stored one — see the case's
                 // own comment for what diverges and what it costs.
                 .createLabels(repoID: repo.id, nameWithOwner: target, labels: missing),
-                // For the case the button cannot serve: a repository that wants
-                // its *own* taxonomy. Deciding one edits `repo-profile.md`, a
-                // committed file, so it belongs in an issue and a pull request —
-                // which is the pipeline the board already drives.
-                .seedCard(
-                    repoID: repo.id,
-                    title: "Decide this repository's label taxonomy",
-                    story: UserStory(
-                        role: "maintainer of \(target)",
-                        want: "a label taxonomy recorded in .claude/skills/repo-profile.md",
-                        benefit: "create-issue labels issues the way this repository wants, "
-                            + "instead of dropping labels it cannot find",
-                        acceptanceCriteria: [
-                            "The profile's Labels section names a real taxonomy, not a TODO.",
-                            "Every label it names exists on the repository.",
-                            "Elliot's Preflight labels check passes for \(target).",
-                        ]
-                    )
-                ),
-            ]
+            ] + Self.taxonomyFixes(repo, policy: policy, satisfied: false)
         )
+    }
+
+    /// The two ways to answer *"what should this repository require?"*, offered
+    /// only while it is unanswered.
+    ///
+    /// ⛔ **Empty once the repository has decided** — criterion 4 of #200. A
+    /// repository that declared its own set, *including an empty one*, has given
+    /// the answer, and re-offering the conversation would be nagging it for
+    /// something it already said.
+    ///
+    /// The two are the `createLabels`/`seedCard` split CLAUDE.md draws, applied
+    /// to a different question:
+    ///
+    /// - **Keeping the floor is deterministic** — one right answer, nothing
+    ///   committed, no judgement — so it writes the column directly and runs no
+    ///   agent. It changes *nothing* about what is checked; its whole effect is
+    ///   to record that somebody looked, which is what stops the nag.
+    /// - **Wanting a different taxonomy is a judgement that edits a committed
+    ///   file** (`repo-profile.md`), so it goes on the board and through a pull
+    ///   request. Reaching an unattended `claude -p` from a Preflight button
+    ///   would be a second place outside the board that starts a run.
+    /// `satisfied` is whether the policy in force is currently met, and it
+    /// decides whether *keeping the floor* is offered at all.
+    ///
+    /// ⛔ Not offered while labels are missing, deliberately. "Require these
+    /// four" beside "Create four labels" is two buttons for a reader who has
+    /// been told what is absent, and adopting a policy the repository does not
+    /// yet meet records a decision while leaving the warning standing — a muddle
+    /// where the row is already doing its job. The reachability #200 is about is
+    /// the **passing** row, which offered nothing at all.
+    static func taxonomyFixes(
+        _ repo: Repo, policy: LabelPolicy.Resolved, satisfied: Bool
+    ) -> [CheckFix] {
+        guard policy.isUndecided else { return [] }
+        return (satisfied ? [.adoptLabelPolicy(repoID: repo.id, labels: policy.required)] : []) + [
+            .seedCard(
+                repoID: repo.id,
+                title: "Decide this repository's label taxonomy",
+                story: UserStory(
+                    role: "maintainer of \(repo.nameWithOwner)",
+                    want: "a label taxonomy recorded in .claude/skills/repo-profile.md",
+                    benefit: "create-issue labels issues the way this repository wants, "
+                        + "instead of dropping labels it cannot find",
+                    acceptanceCriteria: [
+                        "The profile's Labels section names a real taxonomy, not a TODO.",
+                        "Every label it names exists on the repository.",
+                        "Elliot's Preflight labels check passes for \(repo.nameWithOwner).",
+                    ]
+                )
+            ),
+        ]
     }
 
     // MARK: - Acting on a finding
@@ -471,8 +540,13 @@ public struct PreflightService: Sendable {
     /// `board` is passed in rather than held, because **`BoardService` is the
     /// only thing that creates a card** — the seed fix calls the funnel, it does
     /// not write a row.
+    /// `store` is here for `adoptLabelPolicy` alone, which writes a repository
+    /// row rather than touching `gh`. It is a parameter rather than a stored
+    /// property because this service is built fresh per sweep from a
+    /// `ToolConfig`, and giving it a database would make every check's
+    /// construction depend on one.
     public func apply(
-        _ fix: CheckFix, repo: Repo, board: BoardService
+        _ fix: CheckFix, repo: Repo, board: BoardService, store: BoardStore? = nil
     ) async -> CheckFixOutcome {
         switch fix {
         case .createLabels(_, let nameWithOwner, let labels):
@@ -549,6 +623,34 @@ public struct PreflightService: Sendable {
             } catch {
                 return CheckFixOutcome(
                     succeeded: false, detail: "Could not add the card: \(error.localizedDescription)"
+                )
+            }
+
+        case .adoptLabelPolicy(_, let labels):
+            guard let store else {
+                // Said out loud rather than reported as done. A fix that
+                // silently no-ops is the failure this whole screen is being
+                // taught to avoid.
+                return CheckFixOutcome(
+                    succeeded: false, detail: "Elliot is still starting; try again in a moment."
+                )
+            }
+            do {
+                var updated = repo
+                updated.labelPolicy = labels
+                try await store.saveRepo(updated)
+                return CheckFixOutcome(
+                    succeeded: true,
+                    detail: labels.isEmpty
+                        ? "This repository now requires no labels. Preflight will stop asking."
+                        : "This repository now requires \(labels.count) "
+                            + "label\(labels.count == 1 ? "" : "s"): "
+                            + labels.map(\.name).joined(separator: ", ") + "."
+                )
+            } catch {
+                return CheckFixOutcome(
+                    succeeded: false,
+                    detail: "Could not record the policy: \(error.localizedDescription)"
                 )
             }
         }

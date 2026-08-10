@@ -311,6 +311,21 @@ enum Migrations {
             try db.execute(sql: Migrations.backfillCardAppraisalsSQL)
         }
 
+        // Nullable, with **no default and no backfill** (#199, #200).
+        //
+        // ⛔ Defaulting existing rows to `LabelPolicy.default` is the tempting
+        // one and it destroys the whole distinction: it would make every
+        // repository in the field *assert* a taxonomy nobody chose, and the
+        // check would then stop offering the conversation on exactly the
+        // repositories that have never had it. NULL means "never asked"; an
+        // empty JSON array means "asked, and chose to require nothing". Those
+        // are different answers and the column exists to keep them apart.
+        migrator.registerMigration("v13_repoLabelPolicy") { db in
+            try db.alter(table: "repo") { t in
+                t.add(column: "labelPolicy", .text)     // JSON array, or NULL
+            }
+        }
+
         return migrator
     }
 
