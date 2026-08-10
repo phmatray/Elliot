@@ -60,6 +60,59 @@ struct ClaudeInvocationTests {
         ])
     }
 
+    @Test("A resumed run carries --resume, its session and --fork-session, in that order")
+    func resumedArgumentList() {
+        let runID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let previous = UUID(uuidString: "DDDDDDDD-CCCC-BBBB-AAAA-999999999999")!
+        var invocation = ClaudeInvocation(
+            runID: runID,
+            prompt: "/ai-migration-kit:implement-issue 47",
+            cwd: "/Users/philippe/repo/gh-phmatray/Elliot"
+        )
+        invocation.resumeFrom = previous
+
+        // The whole list, not a `contains`: where the block sits is part of the
+        // contract. `--session-id` above stays authoritative because the fork
+        // makes the CLI report back the id we passed, so `runID == sessionID`
+        // survives and the run stays one row with one log.
+        #expect(invocation.arguments() == [
+            "-p", "/ai-migration-kit:implement-issue 47",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--permission-mode", "bypassPermissions",
+            "--session-id", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "--add-dir", "/Users/philippe/repo/gh-phmatray/Elliot",
+            "--resume", "dddddddd-cccc-bbbb-aaaa-999999999999",
+            "--fork-session",
+        ])
+    }
+
+    /// The pairing is a property of the shape rather than of a caller
+    /// remembering it. The CLI refuses `--session-id` alongside `--resume`
+    /// unless `--fork-session` is there too — *"--session-id can only be used
+    /// with --continue or --resume if --fork-session is also specified"* — and
+    /// one `if let` makes that refusal one we can never meet.
+    @Test("--resume is never expressible without --fork-session")
+    func resumeTokensAreInseparable() throws {
+        var invocation = ClaudeInvocation(runID: UUID(), prompt: "x", cwd: "/tmp")
+        #expect(!invocation.arguments().contains("--resume"))
+        #expect(!invocation.arguments().contains("--fork-session"))
+
+        let previous = UUID()
+        invocation.resumeFrom = previous
+        let args = invocation.arguments()
+        let index = try #require(args.firstIndex(of: "--resume"))
+        // A bounded slice rather than two indexed reads: an implementation that
+        // emitted `--resume` *without* `--fork-session` — the one thing this
+        // test exists to forbid — would make `args[index + 2]` trap with
+        // `Fatal error: Index out of range` and take the whole test process down
+        // instead of failing here. `prefix(3)` returns what is actually there.
+        #expect(Array(args.dropFirst(index).prefix(3)) == [
+            "--resume", previous.uuidString.lowercased(), "--fork-session",
+        ])
+        #expect(args.filter { $0 == "--fork-session" }.count == 1)
+    }
+
     @Test("The session id is lowercase, as the CLI's UUID validation expects")
     func sessionIDIsLowercased() {
         let invocation = ClaudeInvocation(runID: UUID(), prompt: "x", cwd: "/tmp")
@@ -139,10 +192,33 @@ struct ClaudeRunnerTests {
                 switch update {
                 case .event(let event): events.append(event)
                 case .finished(let result): outcome = result
-                case .started, .stalled: break
+                case .started, .stalled, .resumed: break
                 }
             }
             return (events, outcome)
+        }
+    }
+
+    /// The silence notices a run emitted, in order, with everything else
+    /// dropped.
+    ///
+    /// Separate from `collect` rather than folded into it: the tests above care
+    /// about events and the outcome, this one cares about nothing but the
+    /// alternation, and a tuple growing a third member for one caller would be
+    /// churn in fifteen call sites for no reading gained.
+    private func collectSilences(
+        _ run: ClaudeRun, timeout: Duration = .seconds(30)
+    ) async throws -> [RunSilence] {
+        try await withTimeout(timeout) {
+            var silences: [RunSilence] = []
+            for await update in run.updates {
+                switch update {
+                case .stalled: silences.append(.wentQuiet)
+                case .resumed: silences.append(.startedTalkingAgain)
+                case .started, .event, .finished: break
+                }
+            }
+            return silences
         }
     }
 
@@ -553,7 +629,13 @@ struct ClaudeRunnerTests {
         )
         let outcome = evaluateMove(
             from: .backlog, to: .todo, card: card,
-            context: MoveContext(repoIsEnabled: true, activeRunID: nil, allowSideEffects: true)
+            context: MoveContext(
+                repoIsEnabled: true, activeRunID: nil, allowSideEffects: true,
+                // A human's move, and backlog → todo besides: the green guard has
+                // nothing to say about filing an issue, and there is no pull
+                // request for it to have read.
+                requiresVerifiedGreen: false, prVerdict: nil
+            )
         )
         guard case .action(let action) = outcome else {
             Issue.record("the move produced no action: \(outcome)")
@@ -634,6 +716,72 @@ struct ClaudeRunnerTests {
                 }
             }
         }
+    }
+
+    // MARK: - Silence, and the end of it
+
+    @Test("A silence notice becomes exactly one kind of update")
+    func aNoticeBecomesOneUpdate() {
+        // The one place a direction becomes an update. Pure, so the mapping is
+        // pinned without a spawn — and the spawn test below is then only about
+        // the wiring, not about which case is which.
+        let quietSince = Date(timeIntervalSince1970: 1_700_000_000)
+        guard case .stalled(let since) =
+            RunUpdate.announcing(.wentQuiet, lastOutput: quietSince)
+        else {
+            Issue.record("a stall must announce as .stalled")
+            return
+        }
+        #expect(since == quietSince)
+
+        guard case .resumed = RunUpdate.announcing(.startedTalkingAgain, lastOutput: quietSince)
+        else {
+            Issue.record("a recovery must announce as .resumed")
+            return
+        }
+    }
+
+    @Test("A run that goes quiet and talks again announces both, alternating")
+    func silenceAndRecoveryAlternate() async throws {
+        // The wiring, against a real child. `ClaudeRun` cleared its announce
+        // latch on the next byte of output and yielded nothing at all, so the
+        // stall could be announced and never withdrawn — the whole of #309, and
+        // the step between the pure latch and the update stream that no test
+        // could see.
+        //
+        // ⛔ Nothing here measures a duration. The fixture's own pace is what
+        // creates the silences (`FAKE_CLAUDE_DELAY_MS` sleeps *after* every
+        // line, so eight lines give seven gaps that are followed by more
+        // output), the window is short so the watchdog polls inside them, and
+        // the assertions are about the *order* of what arrived.
+        let dir = try TestPaths.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let run = try ClaudeRun.start(
+            invocation: ClaudeInvocation(runID: UUID(), prompt: "x", cwd: dir.path),
+            config: config(environment: [
+                "FAKE_CLAUDE_FIXTURE": TestPaths.fixture("create-issue-success.ndjson"),
+                "FAKE_CLAUDE_DELAY_MS": "150",
+            ]),
+            logURL: dir.appendingPathComponent("run.ndjson"),
+            idleTimeout: .milliseconds(20)
+        )
+        defer { run.cancel() }
+
+        let silences = try await collectSilences(run)
+
+        #expect(!silences.isEmpty, "the watchdog never looked inside a gap")
+        // The half that did not exist. Without it the list is all `.wentQuiet`.
+        #expect(
+            silences.contains(.startedTalkingAgain),
+            Comment(rawValue: "a run that talked again announced only \(silences)")
+        )
+        // A silence is announced once and withdrawn once: two of either in a row
+        // is a latch that stopped latching, and it is the latch that keeps the
+        // two streams of notices in step with each other.
+        #expect(silences.first == .wentQuiet, "a recovery cannot precede a silence")
+        let alternates = zip(silences, silences.dropFirst()).allSatisfy { $0 != $1 }
+        #expect(alternates, Comment(rawValue: "notices did not alternate: \(silences)"))
     }
 
     @Test("The runner refuses a claude path that is not executable")

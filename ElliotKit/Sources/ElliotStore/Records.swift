@@ -85,6 +85,9 @@ extension StoryProposal: FetchableRecord, PersistableRecord {
     public enum Columns {
         public static let analysisID = GRDB.Column("analysisID")
         public static let repoID = GRDB.Column("repoID")
+        /// The lens run that landed the row — which is what makes "has this run
+        /// already been harvested?" a query rather than a guess (#330).
+        public static let runID = GRDB.Column("runID")
         public static let status = GRDB.Column("status")
         public static let createdAt = GRDB.Column("createdAt")
     }

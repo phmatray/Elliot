@@ -100,7 +100,11 @@ struct PreflightMethodTests {
         #expect(method.allSatisfy { $0.status == .warn })
         // ⛔ The claim #249 made load-bearing. A repository without a PRD still
         // works; freezing it would be absurd.
-        #expect(!PreflightService.isBlocking(method))
+        //
+        // Asked through `PreflightReading` because `PreflightService.isBlocking`
+        // was deleted by #302 — two names for one question, and the survivor is
+        // the one that cannot be built without the moment it was taken at.
+        #expect(PreflightReading(results: method, checkedAt: .now).verdict == .passing)
     }
 
     @Test("Each gap carries a card seeded under the requirement's own key")
@@ -158,7 +162,7 @@ struct PreflightMethodTests {
         let check = try #require(results.first { $0.id == "repo.method" })
 
         #expect(check.status == .fail)
-        #expect(PreflightService.isBlocking([check]))
+        #expect(PreflightReading(results: [check], checkedAt: .now).verdict == .failing)
         #expect(check.detail.contains("no-such-method"))
         // And nothing was probed on its behalf: we do not know which artefacts
         // to look for, so reporting gaps would be reporting another method's.

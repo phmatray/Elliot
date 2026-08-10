@@ -87,3 +87,31 @@ public struct AnalysisRunReport: Codable, Sendable, Hashable {
         self.workingTreeDiff = workingTreeDiff
     }
 }
+
+public extension AnalysisRunReport {
+    /// What a repeat harvest leaves on the run.
+    ///
+    /// The harvest's own answer — `harvestSource`, `kept`, `dropped` — comes
+    /// from `self`, the fresh read. Replacing it outright is the whole point of
+    /// reading the file again: a merged `dropped` would keep complaining about
+    /// a parse that has since succeeded, and a `kept` that took the larger of
+    /// the two would report stories no proposal in the store corresponds to.
+    ///
+    /// The sentinel comes from `previous`, and is **never computed here**. A
+    /// repeat harvest touches no git: `git status` an hour after the run says
+    /// what has happened since, not what the run did. So `nil` stays `nil` —
+    /// the tempting `workingTreeChanged = false` would claim a check that never
+    /// ran, which is exactly the collapse the tri-state exists to prevent
+    /// (#39), and a run orphaned by a crash is precisely the case that would be
+    /// laundered into "verified clean" by being read a second time (#330).
+    ///
+    /// The diff travels with the flag rather than beside it, because the two
+    /// are one fact: a `true` that lost its `workingTreeDiff` is a red badge
+    /// with nothing under it.
+    func inheritingSentinel(from previous: AnalysisRunReport?) -> AnalysisRunReport {
+        var carried = self
+        carried.workingTreeChanged = previous?.workingTreeChanged
+        carried.workingTreeDiff = previous?.workingTreeDiff
+        return carried
+    }
+}

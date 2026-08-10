@@ -17,17 +17,34 @@ import Foundation
 /// fix for #232 arrives as a breaking change to the one caller it exists to
 /// serve.
 ///
-/// ⚠️ **This type is not yet reached by any view.** It is the vocabulary landing
-/// ahead of the move, so that the move is a change of rendering rather than a
-/// change of meaning. `ConsoleFaceTests` pins the one relationship that matters
-/// while both worlds coexist: no screen may vanish between them.
+/// ⚠️ **`nextSteps` was a case here and is not one now (#304).** Up next did not
+/// move to a third way of being reached — it stopped being a screen. It is a
+/// *band* of Operations, in the way Workers, Waiting and Spending are, and a face
+/// for it meant one ranking drawn twice: the face's rows moved a card, the band's
+/// rows did nothing, and *"See all N"* opened the face purely to recover the
+/// affordance the reader was already looking at.
+///
+/// The published-id promise below is not weakened by that, and the reason is
+/// worth stating rather than assuming. These raw values reach **no runtime
+/// caller**: `board_screenshot` resolves a window through `ElliotWindows.all` and
+/// prints `ElliotWindows.sentence`, both of which have said `board` alone since
+/// the console landed. So `window=nextSteps` has answered `window_not_found` for
+/// as long as the face existed, and retiring the case changes nothing an agent
+/// can observe. What changes is the *count of screens*, which is what
+/// `ConsoleFaceTests` freezes — so that literal moves, in front of a comment
+/// saying where Up next went.
 public enum ConsoleFace: String, CaseIterable, Sendable, Hashable, Identifiable, Codable {
     case repositories
     case operations
-    case nextSteps
     case preflight
     case archive
     case newStory
+    /// The first face **born** in the console rather than migrated into it, so
+    /// it is the first raw value that is not also a retired scene id. Nothing
+    /// downstream cares — an id is an id — but `ConsoleFaceTests` does: the
+    /// promise it keeps is about the ids screens were *published* under, and
+    /// this screen was never published under any.
+    case dismissed
 
     public var id: String { rawValue }
 
@@ -43,21 +60,31 @@ public enum ConsoleFace: String, CaseIterable, Sendable, Hashable, Identifiable,
         switch self {
         case .repositories: "Repositories"
         case .operations: "Operations"
-        case .nextSteps: "Up next"
         case .preflight: "Preflight"
         case .archive: "Archive"
         case .newStory: "New story"
+        // The one title with no window to inherit from. Named for what the
+        // screen lists rather than for the act that fills it, because the reader
+        // arrives from a figure reading "3 dismissed" and must meet the same
+        // word at the other end of the press.
+        case .dismissed: "Dismissed"
         }
     }
 
     /// Every screen Elliot has, however it is currently reached.
     ///
     /// The union — not the equality — because the two halves are *supposed* to
-    /// move: today `ElliotWindows.all` holds all seven and the console holds
-    /// nothing, and when the console lands `ElliotWindows.all` shrinks to
-    /// `["board"]` while these six stay exactly where they are. Through the whole
-    /// migration this set is constant, which is the one property worth a test:
-    /// a screen may change how it is reached and may not stop existing.
+    /// move: `ElliotWindows.all` held all seven ids before the console and holds
+    /// `["board"]` now, while the faces gained exactly what it lost. Through that
+    /// migration this set was constant, which is the property worth a test: a
+    /// screen may change how it is reached and may not stop existing.
+    ///
+    /// ⚠️ **It is one smaller since #304, and that is a different kind of change
+    /// from the migration this set was written for.** Up next was not re-reached;
+    /// it was absorbed into Operations as a band. A set called *every screen
+    /// Elliot has* that still listed it would be keeping a test literal frozen by
+    /// telling a lie, so the name leaves — and `ConsoleFaceTests` records where it
+    /// went rather than quietly dropping it.
     ///
     /// Written here rather than in `ElliotWindows` because `ElliotWindows` is the
     /// list of *scenes* — a fact about `ElliotApp.swift` that a test already

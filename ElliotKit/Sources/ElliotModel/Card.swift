@@ -87,6 +87,24 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
     /// first attempt.
     public var idempotencyKey: String?
 
+    /// What an appraisal established about this card, and when.
+    ///
+    /// Columns on the card rather than a table of their own, and the criterion
+    /// is the one written above migration v8: a datum produced *inside* the
+    /// funnel, by a run that owns this card for its whole life, is provenance
+    /// and belongs on the row; an observation written by a poller about an
+    /// object outside the card belongs in its own table.
+    ///
+    /// `evidence` is optional rather than `[]`, and `appraisedAt` is the third
+    /// state that makes the optionality mean something: without it, "nobody has
+    /// ever read this card" and "this card was read and there was nothing to
+    /// find" are the same value. An older file has no column at all, and GRDB
+    /// decodes an absent optional as `nil` — which is the truth, since nothing
+    /// could have written a value the column did not exist to hold.
+    public var effort: Effort?
+    public var evidence: [Evidence]?
+    public var appraisedAt: Date?
+
     public init(
         id: UUID = UUID(),
         repoID: UUID,
@@ -106,7 +124,10 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
         lastError: String? = nil,
         createdAt: Date,
         updatedAt: Date,
-        idempotencyKey: String? = nil
+        idempotencyKey: String? = nil,
+        effort: Effort? = nil,
+        evidence: [Evidence]? = nil,
+        appraisedAt: Date? = nil
     ) {
         self.id = id
         self.repoID = repoID
@@ -127,6 +148,9 @@ public struct Card: Identifiable, Codable, Sendable, Hashable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.idempotencyKey = idempotencyKey
+        self.effort = effort
+        self.evidence = evidence
+        self.appraisedAt = appraisedAt
     }
 }
 
@@ -155,6 +179,52 @@ public extension Card {
     var hasIncompleteStory: Bool {
         guard let story else { return false }
         return !story.isComplete
+    }
+
+    /// Why Elliot may no longer rewrite this card's own words — or `nil` while
+    /// it still may.
+    ///
+    /// One definition of the freeze, in the layer with no dependencies, because
+    /// there were **three** and they did not agree. `BoardService.updateCard`
+    /// refused a card carrying an issue *or* a pull request;
+    /// `CardEditor.begin` and the panel's Edit button both looked only at the
+    /// issue. A card imported from a pull request that closes no issue
+    /// therefore had `issueNumber == nil` and `prNumber != nil`: it was offered
+    /// "Edit story", it entered the editor, and Save was guaranteed to throw.
+    ///
+    /// ⛔ **A reason rather than a `Bool`**, so that reading the rule and
+    /// naming the record are the same act. `updateCard` has two distinct errors
+    /// to throw and used to pick between them with its own pair of `if let`s —
+    /// which is how the two spellings drifted apart in the first place. Over an
+    /// enum the choice is exhaustive, and a fourth record added to `Card` fails
+    /// to compile here rather than silently reading as editable.
+    var editRefusal: EditRefusal? {
+        // Issue first: a card carrying both is a filed issue that grew a pull
+        // request, and the issue is the record the reader is sent to.
+        if let issueNumber { return .filedAsIssue(issueNumber) }
+        if let prNumber { return .tracksPullRequest(prNumber) }
+        return nil
+    }
+
+    /// Whether the card's own words are still Elliot's to change.
+    var isEditable: Bool { editRefusal == nil }
+}
+
+/// What a card points at on github.com, once that is the record rather than
+/// this board.
+public enum EditRefusal: Sendable, Hashable {
+    case filedAsIssue(Int)
+    case tracksPullRequest(Int)
+
+    /// What the panel says instead of an Edit button. One sentence per record,
+    /// because "edit it on GitHub" points somewhere different in each case.
+    public var sentence: String {
+        switch self {
+        case .filedAsIssue:
+            "The issue is the record now — edit it on GitHub, not here."
+        case .tracksPullRequest(let number):
+            "This card came from pull request \(number) — edit it on GitHub, not here."
+        }
     }
 }
 

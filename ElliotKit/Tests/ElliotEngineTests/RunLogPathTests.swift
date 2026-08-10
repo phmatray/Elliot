@@ -39,7 +39,7 @@ struct RunLogPathTests {
             )
         ).card
         guard case .moved(let runID?) = try await board.move(
-            cardID: card.id, to: .todo, origin: .userDrag
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false
         ) else {
             Issue.record("backlog → todo should have queued a run")
             return

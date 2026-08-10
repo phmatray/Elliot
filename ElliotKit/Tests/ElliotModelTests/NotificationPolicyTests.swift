@@ -51,7 +51,7 @@ struct NotificationPolicyTests {
             logPath: "/tmp/a.ndjson", stderrPath: "/tmp/a.stderr",
             verifiedOutcome: outcome, createdAt: .distantPast
         )
-        run.resultText = resultText
+        run.setClosing(resultText.map { ClosingRemark(text: $0, source: .agent) })
         return run
     }
 
@@ -224,6 +224,47 @@ struct NotificationPolicyTests {
         )
         #expect(mergedPosted.body.contains("PR #57"))
         #expect(mergedPosted.body.contains("Done"))
+    }
+
+    // `throws` + `try #require`, deliberately unlike the `try!` its neighbours in
+    // this file use. A failed `#require` throws; `try!` turns that into a trap,
+    // which takes the whole `swift test` process down and reports a crash rather
+    // than a named failing test — and these two are *written to fail first*, so
+    // that difference is the whole of step 2 below.
+
+    @Test("An auto-dev move posts, and says which column it reached")
+    func autoDevMovesArePosted() throws {
+        // The load-bearing positive. `systemMoveNotification` filtered on
+        // `guard case .system`, so the one feature that runs with nobody
+        // watching would have produced no notification at all — the worst
+        // possible silence, and one that reads exactly like a session that
+        // never started.
+        let moved = MoveAudit(
+            cardID: UUID(), from: .inReview, to: .done,
+            origin: .autoDev(sessionID: UUID()), at: .distantPast
+        )
+        let posted = try #require(decide(.systemMove(audit: moved, card: card(pr: 57), repo: repo)))
+
+        #expect(posted.category == .boardMovedItself)
+        #expect(posted.body.contains("PR #57"))
+        #expect(posted.body.contains("Done"))
+        #expect(!posted.playsSound, "an unattended session running normally is not an interruption")
+    }
+
+    @Test("An auto-dev move with no pull request yet names the card instead")
+    func autoDevMoveWithoutAPullRequestNamesTheCard() throws {
+        // Backlog → To Do is the first move a session makes, and there is no
+        // pull request at that point. A body reading "PR #nil" would be worse
+        // than one reading the title.
+        let filed = MoveAudit(
+            cardID: UUID(), from: .backlog, to: .todo,
+            origin: .autoDev(sessionID: UUID()), at: .distantPast
+        )
+        let posted = try #require(
+            decide(.systemMove(audit: filed, card: card(title: "Stream the run log"), repo: repo))
+        )
+        #expect(posted.body.contains("Stream the run log"))
+        #expect(posted.body.contains("To Do"))
     }
 
     @Test("An analysis that found nothing still says so")

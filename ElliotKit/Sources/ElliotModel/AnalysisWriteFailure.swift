@@ -59,4 +59,36 @@ public enum AnalysisWriteFailure: Equatable, Sendable {
         if let failure { return failure.sentence }
         return count == 1 ? "Rejected 1 proposal." : "Rejected \(count) proposals."
     }
+
+    /// What the panel says after asking to restore `asked` proposals, of which
+    /// `restored` actually moved.
+    ///
+    /// ⚠️ **Two counts, where ``rejectionNote(count:failure:)`` takes one, and
+    /// the asymmetry is deliberate.** Reject's claim can only lose to a decision
+    /// already made, so "Rejected 3" overstates nothing a reader would act on.
+    /// Restore's can lose to something that leaves a *card on the board*: a
+    /// proposal carrying an `acceptedCardID` is refused outright, because
+    /// putting it back on the triage list is how one story grows two Backlog
+    /// cards. Announcing "Restored 3" when one of the three was refused would
+    /// hide exactly the case the refusal exists for, so the sentence counts what
+    /// the store actually changed rather than what the button asked for.
+    ///
+    /// Here rather than as an `if` in `AppModel` for `rejectionNote`'s reason,
+    /// which is not a style preference: `restoreProposals` writes to
+    /// `analysis?.note`, and `analysis` is nil on a model that has never opened
+    /// one — so an assertion about that note reaches nothing, and reverting the
+    /// rule on purpose leaves the suite green.
+    public static func restorationNote(
+        asked: Int, restored: Int, failure: AnalysisWriteFailure?
+    ) -> String {
+        if let failure { return failure.sentence }
+        if restored == 0 {
+            return "Nothing to restore — those proposals were decided elsewhere, "
+                + "or have already produced a card."
+        }
+        if restored == asked {
+            return restored == 1 ? "Restored 1 proposal." : "Restored \(restored) proposals."
+        }
+        return "Restored \(restored) of \(asked) — the rest had already produced a card."
+    }
 }

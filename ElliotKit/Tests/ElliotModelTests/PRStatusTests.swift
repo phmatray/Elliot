@@ -68,10 +68,53 @@ struct PRStatusTests {
     @Test("A green pull request is passing, and says how many judged it")
     func passingCountsTheChecks() {
         let resolved = status(checks: [run("build", "SUCCESS"), run("test", "SUCCESS")]).fresh
-        #expect(resolved.ci == .passing(2))
+        #expect(resolved.ci == .passing(["build", "test"]))
         // Nothing is wrong, so the card draws nothing at all — which is not the
         // same as `.unknown`, and the difference is the whole point.
         #expect(resolved.sign == nil)
+    }
+
+    @Test("A passing rollup carries the names, not just how many there were")
+    func passingNamesTheChecks() {
+        // The names exist at this exact point and were thrown away one line
+        // later. `isMergeableUnattended` is the reader that needs them: an
+        // unattended merge has to be able to ask whether anything that
+        // *builds* went green, and a count cannot answer that.
+        let resolved = status(checks: [run("build", "SUCCESS"), run("test", "SUCCESS")]).fresh
+        #expect(resolved.ci == .passing(["build", "test"]))
+    }
+
+    @Test("A non-verdict conclusion is left out of the names as well as the count")
+    func passingNamesExcludeNonVerdicts() {
+        let resolved = status(checks: [run("build", "SUCCESS"), run("deploy", "SKIPPED")]).fresh
+        #expect(resolved.ci == .passing(["build"]))
+    }
+
+    @Test("An analyser is a passing check and is not a build verdict")
+    func analysersAreNotBuildVerdicts() {
+        // Both halves matter, and they are deliberately different answers about
+        // the same rollup: `ci` still says two checks passed — that is the #174
+        // arbitration, and it is untouched — while `hasBuildVerdict` says
+        // nothing here built anything.
+        let analysersOnly = status(checks: [
+            run("CodeQL", "SUCCESS"), run("renovate/stability-days", "SUCCESS"),
+        ]).fresh
+        #expect(analysersOnly.ci == .passing(["CodeQL", "renovate/stability-days"]))
+        #expect(!analysersOnly.ci.hasBuildVerdict)
+
+        let withABuild = status(checks: [
+            run("CodeQL", "SUCCESS"), run("build-and-test", "SUCCESS"),
+        ]).fresh
+        #expect(withABuild.ci.hasBuildVerdict)
+    }
+
+    @Test("Every state that is not a pass has no build verdict")
+    func onlyPassingCanCarryABuildVerdict() {
+        #expect(!CIState.noChecks.hasBuildVerdict)
+        #expect(!CIState.running.hasBuildVerdict)
+        #expect(!CIState.failing(["build"]).hasBuildVerdict)
+        #expect(!CIState.unknown.hasBuildVerdict)
+        #expect(!CIState.passing([]).hasBuildVerdict)
     }
 
     @Test("A failing check names itself")
@@ -96,7 +139,7 @@ struct PRStatusTests {
 
     @Test("Legacy status contexts are read too, by state rather than conclusion")
     func legacyContextsAreRead() {
-        #expect(status(checks: [legacy("ci/travis", "SUCCESS")]).fresh.ci == .passing(1))
+        #expect(status(checks: [legacy("ci/travis", "SUCCESS")]).fresh.ci == .passing(["ci/travis"]))
         #expect(status(checks: [legacy("ci/travis", "FAILURE")]).fresh.ci == .failing(["ci/travis"]))
         #expect(status(checks: [legacy("ci/travis", "PENDING")]).fresh.ci == .running)
     }
@@ -115,7 +158,7 @@ struct PRStatusTests {
         // not a green" trap — the exact false green `noChecks` exists to name,
         // arriving by a different route.
         let resolved = status(checks: [run("build", "SUCCESS"), run("deploy", conclusion)]).fresh
-        #expect(resolved.ci == .passing(1))
+        #expect(resolved.ci == .passing(["build"]))
     }
 
     @Test("A rollup where NOTHING reached a verdict is no build at all")
@@ -131,18 +174,27 @@ struct PRStatusTests {
         // renovate/* — which needs maintaining and drifts. This reads GitHub's
         // own `conclusion` vocabulary: no list, nothing to keep in sync. A
         // CodeQL run that genuinely succeeded still counts.
-        #expect(status(checks: [run("CodeQL", "SUCCESS")]).fresh.ci == .passing(1))
+        #expect(status(checks: [run("CodeQL", "SUCCESS")]).fresh.ci == .passing(["CodeQL"]))
         #expect(status(checks: [run("CodeQL", "SKIPPED")]).fresh.ci == .noChecks)
     }
 
-    @Test("Inert checks are NOT discounted — that judgement is deliberately not made here")
+    /// ⚠️ The title and the comment here said the inert-check judgement "is
+    /// deliberately not made" — a claim about the whole app, and false since
+    /// #322 shipped `NonBuildChecks`. What is true, and what this actually
+    /// pins, is narrower: `CIState` does not discount by name, so an inert
+    /// green is still a green on the card and in the panel. The list-based
+    /// judgement exists and answers a different question — *may an unattended
+    /// agent merge on this?* — in `ResolvedPRStatus.isMergeableUnattended`,
+    /// which `MergeableUnattendedTests` pins.
+    @Test("CIState does not discount inert checks — a different question decides merges")
     func inertChecksStillCountAsPassing() {
-        // Arbitrated on #174: encoding a non-build list in Swift would be a third
-        // implementation of a rule whose data lives in repo-audit. The panel
-        // prints the real names so a human judges; the model does not guess.
         let resolved = status(checks: [run("CodeQL", "SUCCESS"), run("renovate/stability-days", "SUCCESS")]).fresh
-        #expect(resolved.ci == .passing(2))
+        #expect(resolved.ci == .passing(["CodeQL", "renovate/stability-days"]))
         #expect(resolved.sign == nil)
+        // The same reading, through the gate that does hold a list: nothing
+        // here built, so an unattended merge is refused. Asserted beside its
+        // opposite so the two questions cannot be read as one.
+        #expect(resolved.ci.hasBuildVerdict == false)
     }
 
     // MARK: - Mergeability
@@ -245,7 +297,7 @@ struct PRStatusTests {
         let justInTime = stored.checkedAt.addingTimeInterval(PRStatus.maximumAge - 1)
         let resolved = stored.resolved(now: justInTime, currentHeadOid: head)
         #expect(!resolved.isStale)
-        #expect(resolved.ci == .passing(1))
+        #expect(resolved.ci == .passing(["build"]))
     }
 
     @Test("Not knowing the current head disables the sha rule but not the age rule")

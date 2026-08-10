@@ -42,7 +42,7 @@ public struct ProposalHarvester: Sendable {
             dropped.append("Run had no recorded angle; defaulted to \(angle).")
         }
 
-        let existing = await existingTitles(repo: repo)
+        let existing = await existingTitles(repo: repo, analysisID: analysis.id)
         let now = Date()
         let proposals = harvest.stories.map { story in
             StoryProposal(
@@ -139,7 +139,16 @@ public struct ProposalHarvester: Sendable {
 
     // MARK: - Duplicates
 
-    private func existingTitles(repo: Repo) async -> [DuplicateHint] {
+    /// Everything a new story could already be: a card, an open issue, and the
+    /// proposals its **sibling lenses** have already landed in this analysis.
+    ///
+    /// ⚠️ **Order is the tie-break, and it is deliberate.**
+    /// `TextSimilarity.bestMatch` keeps the *first* of equally-scoring
+    /// candidates, so cards and open issues come before siblings: "this is
+    /// already on the board" is a stronger thing to tell the reader than "the
+    /// Bugs lens said something similar", and at an equal score they should get
+    /// the stronger one.
+    private func existingTitles(repo: Repo, analysisID: UUID) async -> [DuplicateHint] {
         var hints: [DuplicateHint] = []
         for card in (try? await store.cards(repoID: repo.id)) ?? [] {
             let title = card.displayTitle
@@ -151,6 +160,24 @@ public struct ProposalHarvester: Sendable {
         where issue.isOpen {
             hints.append(.issue(number: issue.number, title: issue.title))
         }
+        // The other lenses of this same analysis. Runs land independently, so
+        // this is whatever has been harvested *before* now — which is what
+        // makes the hint one-directional and why the label says "already
+        // proposed" rather than pairing the two rows (#295).
+        //
+        // ⛔ **Self-matching is impossible by construction, not by a filter.**
+        // This run's own proposals are saved further down `harvest`, after the
+        // hints are scored, so they are not in the store yet. Reordering those
+        // two steps would make every story a duplicate of itself.
+        //
+        // Every status, not only `.proposed`: a sibling the reader has already
+        // rejected is exactly the case where knowing they have seen this text
+        // before is worth most.
+        for sibling in (try? await store.proposals(analysisID: analysisID)) ?? []
+        where !sibling.title.isEmpty {
+            hints.append(
+                .proposal(id: sibling.id, title: sibling.title, angle: sibling.angle))
+        }
         return hints
     }
 
@@ -159,6 +186,7 @@ public struct ProposalHarvester: Sendable {
             switch hint {
             case .card(_, let title): title
             case .issue(_, let title): title
+            case .proposal(_, let title, _): title
             }
         }
         guard let match = TextSimilarity.bestMatch(for: title, among: titles) else { return nil }

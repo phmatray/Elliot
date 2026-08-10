@@ -85,7 +85,15 @@ public enum CIState: Sendable, Hashable {
     /// Nothing has run. Not a pass — an absence of measurement.
     case noChecks
     case running
-    case passing(Int)
+    /// The checks that reached a verdict and passed, by name.
+    ///
+    /// Symmetric with `failing([String])`, which has always carried its labels.
+    /// The names exist at `ciState` and were discarded one line later, which
+    /// made the one question an unattended merge has to ask — *did anything
+    /// that builds go green?* — unanswerable from this type. `ResolvedPRStatus`
+    /// carries only the `CIState`, so a count could never have reached
+    /// `isMergeableUnattended`.
+    case passing([String])
     case failing([String])
     case unknown
 
@@ -320,8 +328,8 @@ public extension PRStatus {
         // nothing but skipped jobs has judged this pull request exactly as much
         // as an empty one has, and must say the same thing — see
         // `StatusCheck.isNonVerdict`.
-        let passed = checks.count { !$0.isNonVerdict }
-        return passed == 0 ? .noChecks : .passing(passed)
+        let passed = checks.filter { !$0.isNonVerdict }.map(\.label)
+        return passed.isEmpty ? .noChecks : .passing(passed)
     }
 
     private var mergeState: MergeState {

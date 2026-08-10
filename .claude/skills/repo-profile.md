@@ -32,11 +32,26 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**1669 tests in 190 suites**, 5 of 5 samples on
-  `feat/standards-pure-core` on 2026-08-08 at `3660d68`, i.e. after merging `main` at `a29d019`;
+- **Full test:** `cd ElliotKit && swift test` (**2138 tests in 245 suites**, 5 of 5 samples on
+  `feat/231-archive-dayrows-cost` on 2026-08-10 at `d2d4da9`+1, on a wiped `.build`;
+  ⚠️ **this line was corrected twice in one evening and the second correction is the interesting
+  one.** It went in at 2006/230 off `feat/333-repo-run-terms`, honestly measured — and was stale
+  within the hour, because four pull requests landed in sequence and `main` measured **2135 in 244**
+  before this branch added a line. That is not the `#138` drift (a value right, a stamp behind); it
+  is the value going wrong *while nobody edited it*, which is what a busy afternoon does to any
+  number written down in prose. Filled from a `PLACEHOLDER` overwritten by the run, per the ⛔ bullet
+  below;
   needs no Xcode,
   no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
   real `claude`)
+  - ⛔ **This is the only place the count lives, and `README.md` deliberately carries none** (#176).
+    The README's line said *459 tests* while the suite ran 1167 — understating it 2.5× for a long
+    time, because nothing had ever checked it, in the one document a stranger reads first. Correcting
+    it would have bought a few days and re-armed the trap this entry's own history documents below.
+    It now states what does not decay: *"the whole suite; no Xcode, no tokens, no network."*
+    `ReadmeCarriesNoCountTests` fails if a count comes back — narrowly, on `N tests` / `N suites`
+    only, because the README also carries figures that are **records of a past experiment** and those
+    are permanently true. **Do not "fix" the README by adding the number back.**
   - ⚠️ **Read this number as a date-stamp, not a fact — it drifts every feature PR, and it has been
     wrong here three times.** It said 408 while the suite ran 517, then 517 while it ran 788, then
     **820 while it ran 996** — a gap of 176 tests and 21 suites, i.e. the line had gone stale faster
@@ -501,8 +516,13 @@ above within seconds.
     first here rather than a fallback. ⚠️ It cannot draw
     sheets, popovers **or the toolbar's controls** — the last one is measured, not theoretical, and
     the toolbar is a conflict hot-spot in the table above. Every reply lists what it left out in
-    `not_included`; read that before believing something is missing. Keep `ELLIOT_HOME` short or the
-    unix socket exceeds `sun_path`'s 104 bytes and the helper reports a running app as absent.
+    `not_included`; read that before believing something is missing. **Keep `ELLIOT_HOME` short** —
+    over `sun_path`'s 104 bytes the app cannot bind its socket, so the helper cannot reach it. Since
+    #168 that is a named refusal (`app_unavailable`, quoting the byte count and `ELLIOT_HOME`) rather
+    than the old `source: offline-db`, *"Elliot is not running"*, and #193 widened it to every cause
+    a path can be unbindable for — a missing, non-directory or read-only parent, each named
+    separately. `CLAUDE.md` § *A long `ELLIOT_HOME` silently costs you the MCP socket* has the
+    measurement; the constraint here is unchanged, only the symptom is.
   - **Which grants *you* hold is a two-line answer** — `AXIsProcessTrusted()` and
     `CGPreflightScreenCaptureAccess()`, neither of which prompts. `CLAUDE.md` § *Looking and touching
     are two different grants* has those probes, the ancestry walk that names the identity they speak

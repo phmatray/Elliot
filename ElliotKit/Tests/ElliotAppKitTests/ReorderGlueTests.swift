@@ -85,8 +85,19 @@ struct ReorderGlueTests {
     /// `enabled: false` is the refusal case: it produces the same `repoDisabled`
     /// block a repository Preflight has rejected does, which is what the board
     /// draws as "Repository blocked — see Preflight".
+    /// - Parameter observing: `false` builds the same real board and store but
+    ///   never starts the card observation, seeding `model.cards` once instead.
+    ///
+    ///   That is the adversarial fixture for #205, and it is deliberately
+    ///   *stronger* than reality: the pump does not merely deliver late, it never
+    ///   delivers at all. The old `reorder` re-read `cards` after the move to
+    ///   confirm the card had arrived, so under this fixture its guard was false
+    ///   **every single time** — turning a race nobody could reproduce on demand
+    ///   into a deterministic failure. It is what makes "the placement no longer
+    ///   depends on the delivery" provable rather than merely sampled.
     private static func withBoard(
         enabled: Bool = true,
+        observing: Bool = true,
         build: (UUID) -> [Card],
         _ body: (Fixture) async throws -> Void
     ) async throws {
@@ -107,7 +118,7 @@ struct ReorderGlueTests {
         let model = AppModel()
         model.testOnlySeedStore(store)
         model.testOnlyAttachBoard(board)
-        model.observe(store: store)
+        if observing { model.observe(store: store) } else { model.testOnlySeed(repos: [repo], cards: cards) }
 
         // Inside the same `do` as `body`, not before it: a timeout here throws
         // too, and teardown that only wrapped `body` would leave three
@@ -118,9 +129,11 @@ struct ReorderGlueTests {
             // Bounded, and on the value rather than the clock: the board has
             // been observing since `start()` long before any drag, so a test
             // that raced the first delivery would be measuring its own set-up.
-            try await withTimeout(.seconds(10)) {
-                while await MainActor.run(body: { model.cards.count }) != cards.count {
-                    try await Task.sleep(for: .milliseconds(5))
+            if observing {
+                try await withTimeout(.seconds(10)) {
+                    while await MainActor.run(body: { model.cards.count }) != cards.count {
+                        try await Task.sleep(for: .milliseconds(5))
+                    }
                 }
             }
             try await body(fixture)
@@ -137,10 +150,10 @@ struct ReorderGlueTests {
 
     /// Three cards: one waiting in Backlog, two already in To Do.
     private static func withCrossColumnBoard(
-        enabled: Bool, _ body: (Fixture) async throws -> Void
+        enabled: Bool, observing: Bool = true, _ body: (Fixture) async throws -> Void
     ) async throws {
         try await withBoard(
-            enabled: enabled,
+            enabled: enabled, observing: observing,
             build: { repoID in
                 [
                     card(repoID: repoID, "moving", column: .backlog, order: 10),
@@ -176,35 +189,25 @@ struct ReorderGlueTests {
             #expect(
                 try await f.store.run(id: runID)?.kind == .createIssue,
                 "and the act is the one To Do promises: create-issue")
-            // ⚠️ This one assertion rides an unsynchronised delivery, and that is
-            // a property of the code rather than of the test. `reorder` performs
-            // the move, then re-reads `cards` to confirm the destination before
-            // placing — and `cards`' only writer is the observation pump, which
-            // nothing sequences against the move.
+            // ✅ Read once, with no wait, and that is the whole of #205.
             //
-            // Reading it once raced that delivery, and the race is real: measured
-            // 25/25 at authoring, 22/22 in review, and 40/40 again at the merge —
-            // idle and under 12-way load, on two laptops — it still lost the very
-            // first time it ran on the CI runner (#204, run 31260387518). A local
-            // sample says nothing about a machine with a different core count and
-            // scheduler, which is exactly what the gate runs on.
+            // This assertion used to sit behind a 10-second polling loop, added
+            // because it had lost on a CI runner. The loop was the wrong remedy
+            // and the comment above it stated the wrong cause: it described the
+            // observation delivery as *late*, something a bounded wait could
+            // absorb. It was **lost**. `reorder` moved the card, re-read `cards`
+            // to confirm it had arrived, and dropped the placement when the
+            // delivery had not landed — and nothing retries a guard that has
+            // already returned, so there was never a value on its way.
             //
-            // So wait for the value, bounded, the way the set-up above waits for
-            // the first delivery and for the same reason. The claim is unchanged —
-            // still exactly 150 — it simply no longer depends on winning a race.
-            // `try?` keeps the diagnostics: if the value genuinely never arrives,
-            // the `#expect` below reports what the order actually was, which a
-            // timeout thrown from here would replace with a bare cancellation.
+            // The loop proved that itself: it expired in full on this repository's
+            // gate (run 31307389925) and the assertion failed anyway. A wait that
+            // times out is not a slow success, and reading one as flakiness is how
+            // a live defect stays filed as latent.
             //
-            // If this ever goes red anyway, read it as the scheduling losing, not
-            // as the placement arithmetic being wrong — that is `CardReorderTests`,
-            // it is pure, and it cannot be affected by timing. The production
-            // consequence is unchanged and tracked separately, in #205.
-            try? await withTimeout(.seconds(10)) {
-                while try await Self.order(f.store, moving.id) != 150 {
-                    try await Task.sleep(for: .milliseconds(5))
-                }
-            }
+            // The placement now travels with the move, so there is nothing to
+            // synchronise and nothing to wait for. Restoring a wait here would
+            // hide the regression this test exists to catch.
             #expect(
                 try await Self.order(f.store, moving.id) == 150,
                 "and it lands where it was dropped: between first(100) and second(200)")
@@ -232,6 +235,82 @@ struct ReorderGlueTests {
                 try await Self.order(f.store, moving.id) == 10,
                 "a refused move must not write an orderIndex")
             #expect(await f.launcher.launchedRuns().isEmpty, "nothing may run")
+        }
+    }
+
+    // MARK: - #205 criterion 3 — the placement does not depend on the delivery
+
+    /// The proof, and the reason it is not simply "run the drop test again".
+    ///
+    /// The cross-column test above cannot detect this regression on a developer's
+    /// machine: the observation pump usually wins, so restoring the old guard
+    /// leaves it green. It stayed green through 25 samples at authoring, 22 in
+    /// review and 40 at the merge — and lost on the very first CI run, twice.
+    /// A test that only fails on someone else's scheduler is not a gate.
+    ///
+    /// So this one removes the scheduler from the question. With no observation,
+    /// `model.cards` never learns the card moved — the *permanent* form of "the
+    /// delivery has not arrived". The old code's guard
+    /// `card(id: cardID)?.column == destination` is then false with certainty and
+    /// the placement is dropped with certainty. Verified by reverting the fix:
+    /// this fails at 10, the index the card never left.
+    @Test("A cross-column placement lands even when the card observation never delivers")
+    func placementDoesNotDependOnTheObservation() async throws {
+        try await Self.withCrossColumnBoard(enabled: true, observing: false) { f in
+            let moving = try f.card("moving")
+            let second = try f.card("second")
+
+            await f.model.reorder(cardID: moving.id, in: .todo, above: second)
+
+            #expect(
+                try await f.store.card(id: moving.id)?.column == .todo,
+                "the move itself never depended on the delivery")
+            #expect(
+                try await Self.order(f.store, moving.id) == 150,
+                """
+                the placement was dropped because model.cards had not learned the card moved. \
+                That is #205 exactly: the index travels with the move, or it is lost — nothing \
+                retries a guard that has already returned
+                """
+            )
+        }
+    }
+
+    // MARK: - The invariant the cross-column placement now rests on (#205)
+
+    /// `CardReorder.placement` reads the destination column's neighbours **before**
+    /// the move, and since #205 that index travels with the move instead of being
+    /// applied after it. So the index computed from those neighbours has to still
+    /// be right once the card has arrived — which holds only because `commitMove`
+    /// writes the moving card's row and leaves every other row alone.
+    ///
+    /// That was true before this change too, and nothing asserted it. It is the
+    /// invariant a future "renumber the column on arrival" would break, and it
+    /// would break it *silently*: the card would land at a plausible index, just
+    /// not the one it was dropped at. This test is here so that arrives as a
+    /// named failure instead.
+    @Test("A cross-column move leaves the destination's other cards where they were")
+    func neighboursAreNotRenumberedByAMove() async throws {
+        try await Self.withCrossColumnBoard(enabled: true) { f in
+            let moving = try f.card("moving")
+            let first = try f.card("first")
+            let second = try f.card("second")
+
+            await f.model.reorder(cardID: moving.id, in: .todo, above: second)
+
+            #expect(
+                try await Self.order(f.store, first.id) == 100,
+                "the neighbour above kept its index, so the midpoint it anchored is still the midpoint")
+            #expect(
+                try await Self.order(f.store, second.id) == 200,
+                "and so did the neighbour below")
+            // Stated as the relation as well as the two numbers: the claim is
+            // that the arrival still sits *between* them, which is what the
+            // reader saw when they let go.
+            let landed = try #require(try await Self.order(f.store, moving.id))
+            let above = try #require(try await Self.order(f.store, first.id))
+            let below = try #require(try await Self.order(f.store, second.id))
+            #expect(above < landed && landed < below)
         }
     }
 

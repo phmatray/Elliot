@@ -14,14 +14,24 @@ struct RepoMethodMigrationTests {
     /// Named once. When the next migration lands on top of this one, the tests
     /// below must keep asking about the schema *before* the method column rather
     /// than silently starting to test the newest thing instead.
-    private static let migrationBeforeMethod = "v10_repoPreflight"
+    ///
+    /// ⚠️ It has already happened, which is why nothing here spells a number any
+    /// more. The method column shipped as `v11_repoMethodID`, sat unmerged while
+    /// four migrations landed on `main`, and became `v15_repoMethodID`; this
+    /// constant moved from `v10_repoPreflight` to `v14_repoLabelPolicy` with it.
+    /// The helper below was called `preV11Database`, and a name carrying the
+    /// number is a name that rots — it is `databaseBeforeTheMethodColumn` now,
+    /// after what it *is* rather than after where it once sat.
+    private static let migrationBeforeMethod = "v14_repoLabelPolicy"
 
     /// A database migrated only as far as the release before this column, with
     /// one repository row seeded through raw SQL — the record type knows about a
     /// column these fixtures must not have.
-    private func preV11Database() throws -> (url: URL, repoID: String, remove: () -> Void) {
+    private func databaseBeforeTheMethodColumn() throws
+        -> (url: URL, repoID: String, remove: () -> Void)
+    {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("elliot-v10-\(UUID().uuidString).sqlite")
+            .appendingPathComponent("elliot-pre-method-\(UUID().uuidString).sqlite")
         let queue = try DatabaseQueue(path: url.path)
         try Migrations.migrator.migrate(queue, upTo: Self.migrationBeforeMethod)
         let repoID = UUID().uuidString.uppercased()
@@ -54,12 +64,12 @@ struct RepoMethodMigrationTests {
     /// looks, and throw `keyNotFound` here, refusing **every** repository in
     /// exactly the window `openReadOnly` is there to serve. This is the class of
     /// regression `OlderDatabaseTests` exists to catch.
-    @Test("A pre-v11 database still decodes its repositories through openReadOnly")
+    @Test("A pre-method database still decodes its repositories through openReadOnly")
     func olderDatabaseStillDecodesRepositories() async throws {
-        let fixture = try preV11Database()
+        let fixture = try databaseBeforeTheMethodColumn()
         defer { fixture.remove() }
 
-        // The fixture is genuinely pre-v11 rather than a current database that
+        // The fixture is genuinely pre-method rather than a current database that
         // happens to hold a NULL. Without this self-check the test would pass
         // against the newest schema and prove nothing at all.
         let check = try DatabaseQueue(path: fixture.url.path)
@@ -67,14 +77,14 @@ struct RepoMethodMigrationTests {
             Set(try Row.fetchAll(db, sql: "PRAGMA table_info(repo)")
                 .compactMap { $0["name"] as String? })
         }
-        #expect(!columns.contains("methodID"), "the fixture is not actually a pre-v11 database")
+        #expect(!columns.contains("methodID"), "the fixture is not actually a pre-method database")
         try check.close()
 
         let older = try BoardStore.openReadOnly(at: fixture.url)
         let loaded = try #require(
             try await older.repos().first,
-            "openReadOnly answered no repository at all on a pre-v11 database")
-        #expect(loaded.displayName == "Koine", "the pre-v11 row is still there, unchanged")
+            "openReadOnly answered no repository at all on a pre-method database")
+        #expect(loaded.displayName == "Koine", "the pre-method row is still there, unchanged")
         #expect(loaded.methodID == nil, "the added column reads as absent, not as a decode failure")
 
         guard case .unset(let pack) = loaded.method else {
@@ -86,21 +96,21 @@ struct RepoMethodMigrationTests {
 
     /// ⛔ The test the migration's own fifteen-line comment needs in order to be
     /// worth anything.
-    @Test("Running v11 over an existing row leaves methodID NULL — there is no DEFAULT")
-    func v11DoesNotBackfillExistingRows() throws {
+    @Test("Running v15 over an existing row leaves methodID NULL — there is no DEFAULT")
+    func v15DoesNotBackfillExistingRows() throws {
         // Without this, `ADD COLUMN methodID TEXT DEFAULT 'ai-migration-kit'`
         // passes every other test in this plan: SQLite backfills every existing
         // row, every pre-packs repository silently becomes `.chosen` instead of
         // `.unset`, and the whole suite stays green. `olderDatabaseStillDecodes…`
-        // cannot see it because it stops *before* v11 runs.
-        let fixture = try preV11Database()
+        // cannot see it because it stops *before* v15 runs.
+        let fixture = try databaseBeforeTheMethodColumn()
         defer { fixture.remove() }
 
         let queue = try DatabaseQueue(path: fixture.url.path)
-        try Migrations.migrator.migrate(queue)   // the full set, v11 included
+        try Migrations.migrator.migrate(queue)   // the full set, v15 included
         let loaded = try queue.read { db in try Repo.fetchOne(db, key: fixture.repoID) }
         let repo = try #require(loaded)
-        #expect(repo.methodID == nil, "v11 backfilled an existing row — it must carry no DEFAULT")
+        #expect(repo.methodID == nil, "v15 backfilled an existing row — it must carry no DEFAULT")
         guard case .unset = repo.method else {
             Issue.record("an existing row stopped reading as never-chosen: \(repo.method)")
             return

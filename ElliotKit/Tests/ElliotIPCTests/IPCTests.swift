@@ -382,6 +382,118 @@ struct IPCTests {
         #expect(!UnixSocket.pathFits(accented))
     }
 
+    // MARK: - Why a path is unbindable (#193)
+
+    /// A scratch directory that removes itself. Real filesystem rather than a
+    /// stub: the whole claim is about what `bind` would meet, and a stub would
+    /// assert that this function agrees with a *model* of the filesystem rather
+    /// than with the filesystem.
+    ///
+    /// ⚠️ **Under `/tmp`, not `NSTemporaryDirectory()`, and that is the subject
+    /// of these tests biting the tests themselves.** macOS returns a per-user
+    /// `/var/folders/hp/xyc…/T/` path; add a UUID and a filename and every case
+    /// below comes back `.tooLong(bytes: 116…128)` before it can reach the cause
+    /// it means to assert — measured, all five at once. It is the same reason
+    /// `CLAUDE.md` insists a scratch `ELLIOT_HOME` be `/tmp/elliot-check`: the
+    /// obvious temporary directory does not fit in `sun_path`.
+    private func withScratch(_ body: (String) throws -> Void) throws {
+        let root = "/tmp/eo-" + UUID().uuidString.prefix(8)
+        try FileManager.default.createDirectory(
+            atPath: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try body(root)
+    }
+
+    @Test("A healthy directory has no obstruction")
+    func aUsablePathIsNotObstructed() throws {
+        try withScratch { root in
+            #expect(UnixSocket.obstruction(to: root + "/elliot.sock") == nil)
+        }
+    }
+
+    /// #168's cause, now one case of four rather than the only one measured.
+    @Test("Too long is reported with both numbers, so the reader can see the margin")
+    func tooLongCarriesItsMeasurements() {
+        let long = "/tmp/" + String(repeating: "a", count: UnixSocket.maxPathBytes)
+        #expect(
+            UnixSocket.obstruction(to: long)
+                == .tooLong(bytes: long.utf8.count, limit: UnixSocket.maxPathBytes))
+    }
+
+    /// The cause #193 is about: every one of these used to fall through to
+    /// "does something answer at this path", whose "no" is the same "no" an app
+    /// that was never launched gives.
+    @Test("A missing directory is named as missing, not as an absent app")
+    func aMissingDirectoryIsNamed() throws {
+        try withScratch { root in
+            let absent = root + "/no-such-dir"
+            #expect(UnixSocket.obstruction(to: absent + "/elliot.sock") == .directoryMissing(absent))
+        }
+    }
+
+    @Test("A file where the directory should be is named as not a directory")
+    func aFileInTheWayIsNamed() throws {
+        try withScratch { root in
+            let file = root + "/imposter"
+            try Data().write(to: URL(filePath: file))
+            #expect(UnixSocket.obstruction(to: file + "/elliot.sock") == .notADirectory(file))
+        }
+    }
+
+    @Test("A read-only directory is named as not writable")
+    func aReadOnlyDirectoryIsNamed() throws {
+        try withScratch { root in
+            let locked = root + "/locked"
+            try FileManager.default.createDirectory(
+                atPath: locked, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o500])
+            defer {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700], ofItemAtPath: locked)
+            }
+            #expect(
+                UnixSocket.obstruction(to: locked + "/elliot.sock")
+                    == .directoryNotWritable(locked))
+        }
+    }
+
+    /// ⛔ The one that decides whether this guard may run ahead of "is the app
+    /// up" at all — #193's fourth criterion, and the reason the socket-file
+    /// check is not an optimisation.
+    ///
+    /// A bound socket needs its *directory* writable only at bind time;
+    /// `connect` needs no such thing. So a directory whose permissions changed
+    /// after launch describes an app that is running and answering — and a
+    /// probe that reported it unusable would invert the very answer this whole
+    /// mechanism exists to get right, more confidently than the bug it replaces.
+    @Test("A socket that exists is never called unusable, whatever its directory now says")
+    func aBoundSocketSurvivesAnUnwritableDirectory() throws {
+        try withScratch { root in
+            let directory = root + "/live"
+            try FileManager.default.createDirectory(
+                atPath: directory, withIntermediateDirectories: true)
+            let socket = directory + "/elliot.sock"
+            try Data().write(to: URL(filePath: socket))
+            // The directory becomes unwritable *after* the socket exists, which
+            // is the only ordering that can produce the false refusal.
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o500], ofItemAtPath: directory)
+            defer {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700], ofItemAtPath: directory)
+            }
+
+            #expect(
+                UnixSocket.obstruction(to: socket) == nil,
+                """
+                the socket is right there and something bound it, yet the probe called the path \
+                unusable — that refuses a live app by reading its directory's permissions, which \
+                connect() never consults
+                """
+            )
+        }
+    }
+
     /// The guard and the check are one expression, so a caller that asks
     /// `pathFits` first can never be told yes by a path `makeAddress` rejects.
     @Test("What pathFits refuses is exactly what binding refuses")
@@ -443,8 +555,18 @@ struct IPCTests {
     /// The plan for #139 said "4 → 5"; `main` had already reached 6 by the time
     /// it was executed, and writing 5 would have *lowered* the version and
     /// readmitted exactly the helpers the bump exists to refuse.
-    @Test("Widening the outcome bumped the protocol version")
-    func protocolVersionIsSeven() {
-        #expect(elliotProtocolVersion == 7)
+    ///
+    /// It happened again at 8: #288's plan said "bump from 6", against a base
+    /// that had reached 7. This is the assertion that turns that mistake into a
+    /// red test rather than a version silently standing still — so when it
+    /// fails, **read `Protocol.swift` and raise both**, never lower the
+    /// constant to match the number written here.
+    /// And again at 9: `RepoDTO` gained `extraAllowedTools` (#333), the other
+    /// half of the terms a run gets. Until then neither term could be *written*,
+    /// so every row reported the same defaults and a reply carrying half of them
+    /// was indistinguishable from the whole.
+    @Test("Widening the outcome, attributing closing text, and reporting run terms, bumped it")
+    func protocolVersionIsNine() {
+        #expect(elliotProtocolVersion == 9)
     }
 }

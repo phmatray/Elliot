@@ -62,7 +62,10 @@ struct MethodRuleTests {
         let stepless = try #require(MethodCatalog.builtIn.first { $0.steps.isEmpty })
         let outcome = evaluateMove(
             from: .backlog, to: .todo, card: card(.backlog),
-            context: MoveContext(repoPreflight: .passing, method: .chosen(stepless))
+            context: MoveContext(
+                repoPreflight: .passing, method: .chosen(stepless),
+                requiresVerifiedGreen: false, prVerdict: nil
+            )
         )
         guard case .blocked(.methodHasNoStep(let method, let kind)) = outcome else {
             Issue.record("expected methodHasNoStep, got \(outcome)")
@@ -81,7 +84,10 @@ struct MethodRuleTests {
         let candidate = NextCandidate(
             card: card(.backlog),
             repoName: "phmatray/elliot",
-            context: MoveContext(repoPreflight: .passing, method: .chosen(stepless))
+            context: MoveContext(
+                repoPreflight: .passing, method: .chosen(stepless),
+                requiresVerifiedGreen: false, prVerdict: nil
+            )
         )
         let step = try #require(rankNextSteps([candidate]).first)
         #expect(!step.isReady, "the board offered a move its own commit would refuse")
@@ -100,7 +106,10 @@ struct MethodRuleTests {
 
         let filing = evaluateMove(
             from: .backlog, to: .todo, card: card(.backlog),
-            context: MoveContext(repoPreflight: .passing, method: .chosen(gsd))
+            context: MoveContext(
+                repoPreflight: .passing, method: .chosen(gsd),
+                requiresVerifiedGreen: false, prVerdict: nil
+            )
         )
         guard case .action(.createIssue) = filing else {
             Issue.record("GSD declares create-issue and must be offered it, got \(filing)")
@@ -109,7 +118,10 @@ struct MethodRuleTests {
 
         let implementing = evaluateMove(
             from: .todo, to: .inProgress, card: card(.todo, filed: true),
-            context: MoveContext(repoPreflight: .passing, method: .chosen(gsd))
+            context: MoveContext(
+                repoPreflight: .passing, method: .chosen(gsd),
+                requiresVerifiedGreen: false, prVerdict: nil
+            )
         )
         #expect(implementing == .blocked(.methodHasNoStep(
             method: gsd.displayName, kind: SkillKind.implementIssue.skillName)))
@@ -121,7 +133,10 @@ struct MethodRuleTests {
     /// what any of them would run. Placed beside `repoBlocked` for that reason.
     @Test("An unknown method blocks every transition, not only the ones that run something")
     func unknownMethodBlocksEverything() {
-        let context = MoveContext(repoPreflight: .passing, method: .unknown("gsd-v2"))
+        let context = MoveContext(
+            repoPreflight: .passing, method: .unknown("gsd-v2"),
+            requiresVerifiedGreen: false, prVerdict: nil
+        )
         for (from, to) in [
             (Column.backlog, Column.todo),
             (Column.todo, Column.inProgress),
@@ -144,19 +159,71 @@ struct MethodRuleTests {
 
     // MARK: - The repository that never chose
 
-    /// The wave's own refactor claim, at the rule-engine layer: omitting the
-    /// argument means "never chosen", which is what every board did before this
-    /// branch and what every existing test in this target was written against.
+    /// The wave's own refactor claim, at the rule-engine layer: "never chosen"
+    /// is what every board did before this branch and what every existing test
+    /// in this target was written against, and it must still mean that.
+    ///
+    /// ⚠️ This used to make the point by **omitting** the argument, and that is
+    /// exactly the spelling that had to go: `method` lost its default when a
+    /// review measured two of its three production sites unpinned. The claim is
+    /// about the *value* `.unset` and survives intact; only the shorthand died.
     @Test("A repository that never chose still gets the moves it always got")
     func unsetIsUnchanged() {
         let defaulted = evaluateMove(
             from: .backlog, to: .todo, card: card(.backlog),
-            context: MoveContext(repoPreflight: .passing)
+            context: MoveContext(
+                repoPreflight: .passing, method: MethodCatalog.resolve(nil),
+                requiresVerifiedGreen: false, prVerdict: nil
+            )
         )
         guard case .action(.createIssue) = defaulted else {
             Issue.record("a repository with no method chosen lost its create-issue, got \(defaulted)")
             return
         }
+    }
+
+    // MARK: - The assembly step
+
+    /// The half of I2 that no test held, found by an independent review after
+    /// the repair had been written and merged into a branch review.
+    ///
+    /// `evaluateMove` and `rankNextSteps` were both pinned; the **assembly**
+    /// between them was not. `nextCandidates` reads the method off the `Repo`
+    /// row, and deleting that one argument left the whole suite green at
+    /// 1840/1840 — restoring finding I2 on the exact path the repair names,
+    /// silently. `MoveContext.method` has lost its default since, so the
+    /// omission no longer compiles; this covers the other half, a site that
+    /// passes *something* but not the repository's own answer.
+    ///
+    /// ⚠️ `OfflineParityTests` cannot see this. The live path and the offline
+    /// path both call this one function, so the two halves would agree with each
+    /// other and both be wrong — which is the one regression a parity test is
+    /// structurally unable to catch.
+    @Test("nextCandidates carries the method, so board_next refuses too")
+    func nextCandidatesCarriesTheMethod() throws {
+        let stepless = try #require(
+            MethodCatalog.builtIn.first { $0.steps.isEmpty },
+            "the catalogue no longer ships a stepless pack — this test needs one")
+        var repo = Repo(
+            path: "/tmp/stepless",
+            nameWithOwner: "phmatray/stepless",
+            displayName: "stepless",
+            methodID: stepless.id
+        )
+        repo.preflight = .passing
+
+        var subject = card(.backlog)
+        subject.repoID = repo.id
+
+        let steps = rankNextSteps(
+            nextCandidates(cards: [subject], repos: [repo], activeRunIDs: [:])
+        )
+        let step = try #require(steps.first)
+
+        #expect(!step.isReady, "the board offered a move its own commit would refuse")
+        #expect(step.triggers == nil)
+        #expect(step.block == .methodHasNoStep(
+            method: stepless.displayName, kind: SkillKind.createIssue.skillName))
     }
 
     // MARK: - Ordering
@@ -167,7 +234,10 @@ struct MethodRuleTests {
     func preflightOutranksTheMethod() {
         let outcome = evaluateMove(
             from: .backlog, to: .todo, card: card(.backlog),
-            context: MoveContext(repoPreflight: .failing, method: .unknown("gsd-v2"))
+            context: MoveContext(
+                repoPreflight: .failing, method: .unknown("gsd-v2"),
+                requiresVerifiedGreen: false, prVerdict: nil
+            )
         )
         #expect(outcome == .blocked(.repoBlocked))
     }

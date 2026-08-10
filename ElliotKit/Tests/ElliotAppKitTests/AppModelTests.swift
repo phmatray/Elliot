@@ -202,12 +202,54 @@ struct AppModelTests {
             let expected = evaluateMove(
                 from: backlog.column, to: column, card: backlog,
                 context: MoveContext(
-                    repoIsEnabled: true, activeRunID: nil,
-                    allowSideEffects: true, providedFollowUps: nil
+                    repoIsEnabled: true,
+                    // `a.method`, never a literal: read off the same row
+                    // `preview` reads, so a `preview` that stopped consulting
+                    // the repository disagrees here. Restating the resolution as
+                    // `MethodCatalog.resolve(nil)` would make both sides agree
+                    // by construction on a fixture that never chose — which is
+                    // how this test passed while `preview` was unpinned.
+                    method: a.method,
+                    activeRunID: nil,
+                    allowSideEffects: true, providedFollowUps: nil,
+                    // The same answer `AppModel.preview` gives, and this test
+                    // exists to prove the two agree rather than to restate one.
+                    requiresVerifiedGreen: false, prVerdict: nil
                 )
             )
             #expect(model.preview(backlog, to: column) == expected, "disagreed about \(column)")
         }
+    }
+
+    /// The sibling above proves `preview` and `evaluateMove` *agree*; this proves
+    /// `preview` reads the repository's method at all.
+    ///
+    /// They are not the same claim, and an independent review measured the gap:
+    /// deleting `method:` from `AppModel.preview` left the whole suite green,
+    /// because the test above builds its expected context by hand and its
+    /// fixture never chose a method — so both sides took the same value whether
+    /// or not `preview` consulted the row. This asserts the **conclusion**
+    /// instead of restating the context, which is what makes it stay red.
+    ///
+    /// Without it the Backlog → To Do caption reads *"Files a GitHub issue."* in
+    /// `Palette.armed` for a repository whose pack declares no such step, the
+    /// drop is accepted, the card animates across, and `commitMove` refuses it.
+    @Test("preview refuses a card whose method has no step for the move")
+    func previewSeesTheMethod() throws {
+        let stepless = try #require(
+            MethodCatalog.builtIn.first { $0.steps.isEmpty },
+            "the catalogue no longer ships a stepless pack — this test needs one")
+        var r = repo("Elliot")
+        r.methodID = stepless.id
+        r.preflight = .passing
+        let backlog = card("write it", repoID: r.id, column: .backlog, order: 1)
+        let model = model(repos: [r], cards: [backlog])
+
+        #expect(
+            model.preview(backlog, to: .todo)
+                == .blocked(
+                    .methodHasNoStep(
+                        method: stepless.displayName, kind: SkillKind.createIssue.skillName)))
     }
 
     @Test("A switched-off repository is refused, and preview says so before the drop")
@@ -276,15 +318,12 @@ struct AppModelTests {
         // before `explain` was folded into `Consequence.reason`. This pins that
         // they cannot drift apart again.
         //
-        // Listed rather than iterated: `MoveBlock` carries an associated value
-        // so it is not `CaseIterable`, and a `default` here would let a new case
-        // arrive unworded — which is the failure this test exists to catch.
-        let blocks: [MoveBlock] = [
-            .sameColumn, .emptyIdea, .incompleteStory, .missingIssueNumber,
-            .missingPRNumber, .repoDisabled, .runAlreadyInFlight(runID: UUID()),
-        ]
-        // Every `code` distinct proves the list above is complete: a case added
-        // to the enum and forgotten here leaves `codes` short of `blocks`.
+        // `MoveBlockCase` rather than a literal list. The literal was the
+        // failure this test was written to catch, one level up: it claimed to
+        // cover every block and could fall behind the enum without reddening,
+        // which it duly did. The shadow's `of(_:)` is exhaustive over
+        // `MoveBlock`, so a case added to the model cannot reach here unnamed.
+        let blocks = MoveBlockCase.allBlocks
         #expect(Set(blocks.map(\.code)).count == blocks.count)
 
         for block in blocks {
@@ -611,30 +650,57 @@ struct AppModelTests {
         #expect(model.analysis?.runs.first?.state == .running)
     }
 
-    @Test("A run that finished before the notice arrived keeps its outcome")
-    func stallDoesNotResurrectATerminalRun() {
-        // The guard is `RunScheduler.markStalled`'s, spelled the same way on
-        // purpose. The idle watcher notices silence and the run can end while
-        // the notice is in flight; dragging a succeeded run back to `.stalled`
-        // would be a finished run the board says is still going, and `.stalled`
-        // is not terminal, so it would also hold its card against a further
-        // move.
-        for finished in [RunState.succeeded, .failed, .cancelled, .completedWithDenials, .timedOut] {
-            let done = run(cardID: UUID(), state: finished)
-            #expect(AppModel.stalling(done.id, done).state == finished)
+    @Test("A run that starts talking again stops being stalled, on every screen")
+    func resumeReachesTheUI() {
+        // The mirror of the test above, and the whole of #309. The mark was
+        // one-way: `ClaudeRun` cleared its announce latch on the next byte and
+        // yielded nothing, so a `merge-pr` that waited twenty-one minutes on CI
+        // and then produced its next tool call kept the attention tint and "No
+        // output for a while" until it exited. Silence is the only signal a
+        // wedged run gives — there is deliberately no wall-clock kill — so a
+        // mark that never clears makes the signal mean nothing.
+        let model = model(repos: [], cards: [])
+        let cardID = UUID()
+        let talking = run(cardID: cardID, state: .stalled)
+        let other = run(cardID: nil, state: .stalled)
+
+        model.testOnlySeedRuns(
+            active: [cardID: talking],
+            byCard: [cardID: [talking]],
+            recent: [talking],
+            analysis: [other]
+        )
+
+        model.apply(.runResumed(runID: talking.id))
+
+        #expect(model.activeRuns[cardID]?.state == .running)
+        #expect(model.runsByCard[cardID]?.first?.state == .running)
+        #expect(model.recentRuns.first?.state == .running)
+        // Named by id, exactly as the stall is: another stalled run is untouched.
+        #expect(model.analysis?.runs.first?.state == .stalled)
+    }
+
+    @Test("A late notice, either way, never resurrects a run that has ended")
+    func aLateNoticeNeverResurrectsAFinishedRun() {
+        // The state matrix itself is `RunState.applying`'s and is pinned
+        // exhaustively in `ElliotModelTests`; what this asserts is that the
+        // four-collection walk goes through it rather than round it. A run can
+        // end while either notice is in flight, and `.stalled` and `.running`
+        // are both non-terminal — so a resurrected run is one the board says is
+        // still going, holding its card against any further move.
+        let model = model(repos: [], cards: [])
+        let cardID = UUID()
+        let done = run(cardID: cardID, state: .succeeded)
+        model.testOnlySeedRuns(
+            active: [cardID: done], byCard: [cardID: [done]], recent: [done]
+        )
+
+        for notice in RunSilence.allCases {
+            model.mark(notice, runID: done.id)
+            #expect(model.activeRuns[cardID]?.state == .succeeded)
+            #expect(model.runsByCard[cardID]?.first?.state == .succeeded)
+            #expect(model.recentRuns.first?.state == .succeeded)
         }
-        // Queued and cancelling are not "running" either: a queued run has
-        // produced no output because it has not started, and a cancelling one
-        // has already had its SIGTERM.
-        for other in [RunState.queued, .cancelling] {
-            let run = run(cardID: UUID(), state: other)
-            #expect(AppModel.stalling(run.id, run).state == other)
-        }
-        // And the one case that does stall.
-        let running = run(cardID: UUID())
-        #expect(AppModel.stalling(running.id, running).state == .stalled)
-        // Another run's notice changes nothing.
-        #expect(AppModel.stalling(UUID(), running).state == .running)
     }
 
     // MARK: - A run that just started has to reach the panel
@@ -1130,7 +1196,7 @@ struct AppModelTests {
         // The header's *Earlier analyses* menu. What is on screen afterwards is
         // an analysis that did run; a sentence about one that did not would be
         // read as belonging to it.
-        model.openAnalysis(id: UUID())
+        model.openAnalysis(analysisFixture(repoID: UUID()))
 
         #expect(model.startFailure == nil)
     }
@@ -1157,6 +1223,111 @@ struct AppModelTests {
         // so the sentence is exactly as true as it was.
         model.selectedRepoID = a.id
         #expect(model.startFailure != nil)
+    }
+
+    // MARK: - Lenses that are already reading
+
+    /// The setup grid could not know: `runningAngles` reads the open session's
+    /// runs, and in setup there is no session — so all eight tiles looked
+    /// identical whether an angle was free or busy, and arming eight while one
+    /// was running started **nothing** and said one sentence about one lens
+    /// (#293).
+    @Test("A lens with a run already holding it comes back busy, with the tile's own words")
+    func aBusyLensIsVisibleFromSetup() async throws {
+        let store = try BoardStore.inMemory()
+        let subject = repo("subject")
+        let model = analysisModel(store: store, repo: subject)
+        try await store.saveRepo(subject)
+
+        // Nothing is reading yet, so nothing is marked. The positive witness for
+        // every negative below.
+        await model.refreshBusyLenses()
+        #expect(AnalysisAngle.allCases.allSatisfy { model.lensBusy($0) == nil })
+
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+        #expect(model.analysis != nil)
+        // Back to the setup form, which is the only place the tiles are drawn.
+        // The Bugs run is still in flight — `InertLauncher` never finishes it.
+        model.closeAnalysis()
+
+        await model.refreshBusyLenses()
+        // Queued rather than reading: the launcher is inert, so the run has been
+        // accepted and never spawned — and that state has no elapsed time,
+        // which is why `LensBusy` has two cases rather than an optional date.
+        #expect(model.lensBusy(.bugs) == .queued)
+        #expect(model.lensBusy(.techDebt) == nil)
+    }
+
+    @Test("Only the armed lenses clash, and they are what the footer names")
+    func clashesAreTheArmedBusyOnes() async throws {
+        let store = try BoardStore.inMemory()
+        let subject = repo("subject")
+        let model = analysisModel(store: store, repo: subject)
+        try await store.saveRepo(subject)
+
+        await model.startAnalysis(
+            repoID: subject.id, angles: [.bugs], instructions: "", maxStories: 8)
+        model.closeAnalysis()
+        await model.refreshBusyLenses()
+
+        // Busy but not armed: no clash, because Start is not being asked for it.
+        model.analysisAngles = [.tests]
+        #expect(model.clashingLenses.isEmpty)
+
+        model.analysisAngles = [.bugs, .tests]
+        #expect(model.clashingLenses == [.bugs])
+        // Through the value the footer renders, so this covers the sentence and
+        // not merely the storage.
+        let shown = AnalysisFooterMessage.setup(
+            angleCount: model.analysisAngles.count,
+            clashing: model.clashingLenses,
+            failure: model.startFailure,
+            refusal: model.analysisRefusal)
+        #expect(shown.text.hasPrefix("Bugs already had a run in flight"))
+    }
+
+    /// ⛔ #213's axis, on the seal this time. The picker can move while the read
+    /// is in flight, and a set of angles that did not carry its repository would
+    /// be drawn under the header of one it was never read for.
+    @Test("A reading taken for one repository marks nothing in another")
+    func busyLensesAreScopedToTheirRepository() async throws {
+        let store = try BoardStore.inMemory()
+        let a = repo("a")
+        let b = repo("b")
+        let model = AppModel()
+        model.testOnlySeed(repos: [a, b], cards: [])
+        model.selectedRepoID = a.id
+        model.testOnlyAttachAnalysisService(analysisService(store: store))
+        try await store.saveRepo(a)
+        try await store.saveRepo(b)
+
+        await model.startAnalysis(repoID: a.id, angles: [.bugs], instructions: "", maxStories: 8)
+        model.closeAnalysis()
+        await model.refreshBusyLenses()
+        model.analysisAngles = [.bugs]
+        #expect(model.lensBusy(.bugs) == .queued)
+        #expect(model.clashingLenses == [.bugs])
+
+        // The picker moves. B has nothing reading it, and A's reading says
+        // nothing about B — before any refresh has had a chance to run.
+        model.selectedRepoID = b.id
+        #expect(model.lensBusy(.bugs) == nil)
+        #expect(model.clashingLenses.isEmpty)
+
+        // And back: the reading is still A's, and still true of A.
+        model.selectedRepoID = a.id
+        #expect(model.lensBusy(.bugs) == .queued)
+    }
+
+    @Test("The armed lenses are read in the strip's order, by Start and by the footer alike")
+    func armedAnglesFollowTheStrip() {
+        let model = AppModel()
+        model.analysisAngles = [.bestPractices, .bugs, .tests]
+        #expect(model.armedAngles == [.bugs, .tests, .bestPractices])
+
+        model.analysisAngles = []
+        #expect(model.armedAngles.isEmpty)
     }
 
     @Test("A failure outranks the consequence until it is cleared, whatever the lenses do")
@@ -1194,7 +1365,7 @@ struct AppModelTests {
         // `failureSurvivesTogglingLenses` above is where the teeth are.
         let model = AppModel()
         model.testOnlySeed(repos: [], cards: [])
-        model.openAnalysis(id: UUID())
+        model.openAnalysis(analysisFixture(repoID: UUID()))
 
         model.closeAnalysis()
 

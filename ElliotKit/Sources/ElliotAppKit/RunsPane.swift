@@ -24,6 +24,18 @@ struct RunsPane: View {
                     ConsoleLabel(text: "Runs")
                     Fact(text: "\(runs.count)", tint: Palette.quiet, small: true)
                 }
+                // The read is `store.runs(cardID:limit:)` and the count above is
+                // what it returned — not how many the card has. Read at the cap
+                // it is a floor, and saying so costs one quiet line.
+                //
+                // `MoveHistory.isCapped` rather than `>=` written out again: the
+                // predicate is the same one the move list uses, `limit:` is its
+                // parameter, and one implementation is the point.
+                if MoveHistory.isCapped(count: runs.count, limit: AppModel.runWindow) {
+                    Text("Showing the most recent \(AppModel.runWindow) runs; there may be more.")
+                        .font(Type.prose)
+                        .foregroundStyle(.tertiary)
+                }
                 ForEach(runs) { run in
                     RunBox(run: run, live: model.liveLog[run.id] ?? [])
                 }
@@ -143,12 +155,73 @@ extension RunsPane {
         return run.permissionDenials
     }
 
-    /// The typed rows of one run, capped at the tail the panel can show.
+    /// How many rows of one log the panel will draw.
+    nonisolated static let logRowLimit = 300
+
+    /// The rows the panel can show, and how many older ones that left out.
     ///
-    /// The cap is on rows rather than on events so a tool call and the result
-    /// nested under it cannot be separated by it.
-    nonisolated static func rows(of run: SkillRun, events: [StreamEvent]) -> [RunLogRow] {
-        Array(RunLog.rows(from: events, denials: denials(of: run, in: events)).suffix(300))
+    /// The count is the whole reason this is a type rather than an array. The
+    /// cap used to be a bare `.suffix(300)`, so the head of a long log was
+    /// simply absent and nothing said so — and the log whose head goes missing
+    /// is exactly the `merge-pr` run that waited hours on CI. One pane over,
+    /// `MoveHistoryBlock` already refuses to present a truncated list as a
+    /// complete one; this is the same claim about the same panel.
+    struct LogWindow: Sendable, Hashable {
+        /// The newest rows, at most `logRowLimit` of them.
+        var rows: [RunLogRow]
+        /// How many older rows the cap left behind. `0` means the log is whole.
+        var dropped: Int
+    }
+
+    /// Keeps the newest `limit` rows and counts what that dropped.
+    ///
+    /// ⚠️ The cap is on **rows** rather than on events, and that has to stay
+    /// true: `RunLog.rows` has already attached each `tool_result` to its
+    /// `tool_use` by id, so a row *is* the pair and no boundary can fall
+    /// between them. Counting events here would reintroduce exactly that split.
+    nonisolated static func trimmed(_ rows: [RunLogRow], limit: Int = logRowLimit) -> LogWindow {
+        guard rows.count > limit else { return LogWindow(rows: rows, dropped: 0) }
+        return LogWindow(rows: Array(rows.suffix(limit)), dropped: rows.count - limit)
+    }
+
+    /// The typed rows of one run, capped at the tail the panel can show.
+    nonisolated static func rows(of run: SkillRun, events: [StreamEvent]) -> LogWindow {
+        trimmed(RunLog.rows(from: events, denials: denials(of: run, in: events)))
+    }
+
+    /// What one run says about its own clock: how long ago, and how long for.
+    ///
+    /// Every field here already exists — the duration is drawn today, but only
+    /// inside the expanded log's terminal line — so this surfaces a fact rather
+    /// than inventing one.
+    ///
+    /// ⚠️ **`createdAt` is never presented as a finish time.** A queued run has
+    /// no `endedAt` and may have no `startedAt`, so the age falls back through
+    /// the three stamps in order and `help` names *which one it read*. A single
+    /// "Finished …" tooltip over a queued run would be a claim about a run that
+    /// has not started.
+    nonisolated static func timing(
+        of run: SkillRun, at now: Date = .now
+    ) -> (age: String, duration: String?, help: String) {
+        let (stamp, verb) =
+            if let ended = run.endedAt { (ended, "Finished") }
+            else if let started = run.startedAt { (started, "Started") }
+            else { (run.createdAt, "Queued") }
+
+        // Only a run with both ends has a duration. A run still going has a
+        // length, but it is the strip's stopwatch, not this box's fact.
+        let duration =
+            if let started = run.startedAt, let ended = run.endedAt {
+                Elapsed.short(from: started, to: ended)
+            } else {
+                String?.none
+            }
+
+        return (
+            age: Elapsed.age(of: stamp, at: now),
+            duration: duration,
+            help: "\(verb) \(stamp.formatted(date: .abbreviated, time: .shortened))"
+        )
     }
 
     /// What VoiceOver is told when the filter changes — one announcement, and it
@@ -181,7 +254,12 @@ struct RunBox: View {
     /// `nil` is "not read yet", which is not "empty" — the read is asynchronous
     /// now, so for the first frame after the box opens there is a difference
     /// between the two, and `emptyNote` has to be able to tell them apart.
-    @State private var diskRows: [RunLogRow]?
+    @State private var diskRows: RunsPane.LogWindow?
+
+    /// Closed by default, and closed rather than absent: a story prompt runs to
+    /// hundreds of lines, so this is a thing you go and look at, not a thing the
+    /// panel puts in front of you.
+    @State private var showsInputs = false
 
     private var expanded: Bool { expandedOverride ?? run.state.isActive }
 
@@ -202,9 +280,23 @@ struct RunBox: View {
                         .help("What this run cost")
                 }
             }
-            Text(run.state.label)
-                .font(Type.prose)
-                .foregroundStyle(run.state.tint)
+            // The state name keeps this row to itself and the clock is pushed to
+            // the trailing edge, because the two long strings on this box —
+            // "Finished, tools refused" and a duration — must never queue up
+            // behind one another. That is the same constraint that made the
+            // header two rows in the first place.
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(run.state.label)
+                    .font(Type.prose)
+                    .foregroundStyle(run.state.tint)
+                Spacer(minLength: 4)
+                let clock = RunsPane.timing(of: run)
+                Fact(text: clock.age, tint: Palette.quiet, small: true)
+                    .help(clock.help)
+                if let duration = clock.duration {
+                    Fact(text: "took \(duration)", tint: Palette.quiet, small: true)
+                }
+            }
 
             VerdictBlock(run: run)
 
@@ -220,6 +312,8 @@ struct RunBox: View {
                 .foregroundStyle(Palette.attention)
                 .fixedSize(horizontal: false, vertical: true)
             }
+
+            inputs
 
             HStack(spacing: 8) {
                 Button(expanded ? "Hide log" : "Show log") { expandedOverride = !expanded }
@@ -247,11 +341,61 @@ struct RunBox: View {
         .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
     }
 
+    // MARK: What it was sent
+
+    /// The exact `-p` argument and the full argv, which `SkillRun` documents as
+    /// "kept so a run can be reproduced by hand" and which nothing rendered.
+    ///
+    /// The editor shows "What create-issue will receive" while a story is still
+    /// being written, and then that visibility ends the moment the card freezes
+    /// — so for `implement-issue` and `merge-pr`, the two runs that write code
+    /// and merge it, a reader could never see what was actually asked, nor that
+    /// the run carried `--permission-mode bypassPermissions`.
+    ///
+    /// ⛔ **`Text(verbatim:)`, and no syntax colouring.** A prompt carrying
+    /// `#123` or `%@` through `LocalizedStringKey` is the locale bug
+    /// `MergeConfirmation` and `paneTitle` both document, and
+    /// `CodeTokenKind.tint` spends `armed` and `verified` on tokens strictly
+    /// inside a fence — letting that escape into a run box would put `armed`
+    /// beside a Cancel button.
+    private var inputs: some View {
+        DisclosureGroup(isExpanded: $showsInputs) {
+            VStack(alignment: .leading, spacing: 6) {
+                ScrollView {
+                    Text(verbatim: run.prompt)
+                        .font(Type.log)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(6)
+                }
+                // Bounded rather than free-growing: a story prompt is hundreds
+                // of lines, and letting it run would push the log — the thing
+                // the box is for — off the pane's own ScrollView.
+                .frame(maxHeight: 160)
+                .background(Surface.well)
+                .clipShape(RoundedRectangle(cornerRadius: Metric.nestedRadius))
+
+                Text(verbatim: run.argv.joined(separator: " "))
+                    .font(Type.factSmall)
+                    .foregroundStyle(Palette.quiet)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 6)
+        } label: {
+            Text("What it was sent")
+                .font(Type.prose)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     // MARK: The log
 
     private var logView: some View {
         @Bindable var model = model
-        let all = rows
+        let window = rows
+        let all = window.rows
         let shown = RunLog.filter(all, by: model.logFilter)
 
         return VStack(alignment: .leading, spacing: 4) {
@@ -276,6 +420,17 @@ struct RunBox: View {
                     )
                 )
                 .post()
+            }
+
+            // Outside the ScrollView on purpose. It is a *head* note about rows
+            // that are gone, and the log scrolls itself to the bottom on every
+            // appended line — inside, the one line saying the head is missing
+            // would be the first thing scrolled out of sight.
+            if window.dropped > 0 {
+                Text("\(window.dropped) earlier rows are not shown — the full log is on disk.")
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.quiet)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             ScrollViewReader { proxy in
@@ -348,8 +503,10 @@ struct RunBox: View {
     /// it is at most the 300 events `AppModel` caps the tail at, it is already
     /// in memory, and it has to be re-read to be live at all. Only the disk half
     /// is held, because only the disk half is a file read.
-    private var rows: [RunLogRow] {
-        live.isEmpty ? (diskRows ?? []) : RunsPane.rows(of: run, events: live)
+    private var rows: RunsPane.LogWindow {
+        live.isEmpty
+            ? (diskRows ?? RunsPane.LogWindow(rows: [], dropped: 0))
+            : RunsPane.rows(of: run, events: live)
     }
 
     /// Reads the log off the main actor and folds it, once per `LogSource`.
@@ -404,9 +561,10 @@ private struct LogSource: Equatable {
 
 // MARK: - The verdict
 
-/// What the agent said, and what `gh` established, one above the other.
+/// What the run said for itself, and what `gh` established, one above the
+/// other.
 ///
-/// This is the app's whole epistemology drawn as two rows. The claim is set in
+/// This is the app's whole epistemology drawn as two rows. A *claim* is set in
 /// `Type.hearsay` — demoted, italic, proportional — and is never parsed for a
 /// number. The receipt is set in the fact face and takes its tint **and** its
 /// icon from `VerifiedOutcome.receipt`, verbatim.
@@ -415,6 +573,14 @@ private struct LogSource: Equatable {
 /// verified tint on the `gh` side would paint "Not merged — the branch is
 /// behind" green, in the one block built to stop exactly that. The tint is read
 /// from the outcome, never chosen here.
+///
+/// ⛔ And the top row is only a claim when the text is one. A run that died
+/// before its terminal event stores stderr, and a run Elliot could not start
+/// stores a sentence Elliot wrote; both were captioned "IT SAID" and demoted
+/// into italic, which inverted the rule inside the block built to show it
+/// (#288). Which tier a text belongs to is decided by `ClosingRemark` in
+/// `ElliotModel` — `swift test` cannot see a caption drawn in a view, so a
+/// caption chosen here is a caption nothing checks.
 struct VerdictBlock: View {
     var run: SkillRun
 
@@ -422,22 +588,23 @@ struct VerdictBlock: View {
         let verdict = RunVerdict.of(run)
         let receipt = Self.receipt(for: run)
 
-        if verdict.itSaid != nil || receipt != nil {
+        if verdict.closing != nil || receipt != nil {
             VStack(alignment: .leading, spacing: 0) {
-                if let said = verdict.itSaid {
-                    row(caption: "it said", ground: Surface.recessFaint) {
-                        Text(said)
-                            .font(Type.hearsay)
-                            .foregroundStyle(.secondary)
+                if let closing = verdict.closing {
+                    let style = Self.style(for: closing)
+                    row(caption: closing.caption, ground: style.ground) {
+                        Text(closing.text)
+                            .font(style.font)
+                            .foregroundStyle(style.tint)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel("It said, \(said)")
+                    .accessibilityLabel("\(closing.spokenLead), \(closing.text)")
                 }
 
                 if let receipt {
-                    if verdict.itSaid != nil {
+                    if verdict.closing != nil {
                         Rectangle()
                             .fill(Surface.hairline)
                             .frame(height: 1)
@@ -486,6 +653,25 @@ struct VerdictBlock: View {
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(ground)
+    }
+
+    /// How the top row is drawn, decided from the attribution and nothing else.
+    ///
+    /// `static` and `nonisolated` for the reason `receipt(for:)` is: it is the
+    /// only part of this view a test can hold, and the mapping is exactly what
+    /// #288 got wrong. Two tiers, not three — `ClosingRemark.isHearsay` is the
+    /// model's answer and this spends no fourth colour on the difference
+    /// between stderr and Elliot's own note, which the caption already carries.
+    ///
+    /// `Palette.refused` is "a move was refused, or a run failed", which is the
+    /// only way either fact-tier source is ever produced: both mean the agent
+    /// never got to its terminal event.
+    nonisolated static func style(
+        for closing: ClosingRemark
+    ) -> (font: Font, tint: Color, ground: Color) {
+        closing.isHearsay
+            ? (Type.hearsay, .secondary, Surface.recessFaint)
+            : (Type.fact, Palette.refused, Surface.washFaint(Palette.refused))
     }
 
     /// What the `gh` side draws, or `nil` while there is nothing to say yet.

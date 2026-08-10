@@ -211,7 +211,12 @@ struct DetailPanelView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if !editor.isEditing, card.issueNumber == nil {
+            // `card.isEditable`, which is `CardEditor.begin`'s guard and
+            // `BoardService.updateCard`'s refusal — one rule, read three times.
+            // Offering a button whose action is refused one layer down is how
+            // this drifted: the panel asked a looser question than the service
+            // answered.
+            if !editor.isEditing, card.isEditable {
                 Button("Edit story", systemImage: "pencil") { editor.begin(from: card) }
                     .controlSize(.small)
             }
@@ -225,6 +230,8 @@ struct DetailPanelView: View {
                     if let pending = pendingMerge(card) {
                         MergeConfirmation(pending: pending)
                     }
+                case .lastError:
+                    lastError(card)
                 case .nextStep:
                     nextStep(card)
                 case .paneSwitch:
@@ -240,8 +247,50 @@ struct DetailPanelView: View {
             spans: model.panelSpans,
             isEditing: editor.isEditing,
             isMergePending: pendingMerge(card) != nil,
-            hasNextStep: card.column.naturalNext != nil
+            hasNextStep: card.column.naturalNext != nil,
+            hasLastError: card.lastError != nil
         )
+    }
+
+    // MARK: - What went wrong
+
+    /// The card's `lastError`, in full and selectable.
+    ///
+    /// `CardView` was the only place in the app that drew this: 11pt, two lines,
+    /// no tooltip, no selection, inside a column that can be 226pt wide. The
+    /// panel — two to three columns across, and the thing a reader opens
+    /// *because* something went wrong — never mentioned it at all.
+    ///
+    /// A header region rather than a pane, so the pane switch cannot hide it —
+    /// the same guarantee `PanelLayout.headerRegions` spells out for the merge
+    /// confirmation, and it comes for free from being in that list.
+    ///
+    /// ⚠️ It spends `Palette.refused` on a surface and can sit directly above a
+    /// refused next step washed in the same tint. They are told apart by their
+    /// console labels and by this one's border, which the next step only draws
+    /// on its own button — but it is a real adjacency and the pair is what an
+    /// on-screen check should look at first.
+    @ViewBuilder
+    private func lastError(_ card: Card) -> some View {
+        if let message = card.lastError {
+            VStack(alignment: .leading, spacing: 4) {
+                ConsoleLabel(text: "Last error", tint: Palette.refused)
+                Text(message)
+                    .font(Type.prose)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(Surface.washFaint(Palette.refused))
+            .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+            .overlay {
+                RoundedRectangle(cornerRadius: Metric.cardRadius)
+                    .strokeBorder(Surface.washBorder(Palette.refused), lineWidth: 1)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Last error, \(message)")
+        }
     }
 
     /// The armed merge, but only this card's. `pendingFollowUps` is one field on
@@ -451,8 +500,12 @@ struct DetailPanelView: View {
                 if let branch = card.branch {
                     row("Branch", branch, url: nil)
                 }
-                if card.issueNumber != nil {
-                    Text("The issue is the record now — edit it on GitHub, not here.")
+                // Exactly when the Edit button is absent, and saying which
+                // record replaced it. A card imported from a pull request that
+                // closes no issue used to get no sentence at all — and an Edit
+                // button, which is the other half of the same drift.
+                if let refusal = card.editRefusal {
+                    Text(refusal.sentence)
                         .font(Type.prose)
                         .foregroundStyle(.tertiary)
                         .padding(.top, 2)

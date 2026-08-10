@@ -64,7 +64,7 @@ private struct Stack {
 
     static func make(
         fixture: String, extraEnv: [String: String] = [:], gitPath: String = "/usr/bin/false",
-        ghPath: String = "/usr/bin/false"
+        ghPath: String = "/usr/bin/false", idleTimeout: Duration = ClaudeRun.defaultIdleTimeout
     ) async throws -> Stack {
         let home = TestHome.scratch("board-e2e")
         try FileManager.default.createDirectory(
@@ -88,7 +88,8 @@ private struct Stack {
             environment: environment
         )
         let scheduler = RunScheduler(
-            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config))
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)),
+            idleTimeout: idleTimeout
         )
         let board = BoardService(store: store, launcher: scheduler)
         await scheduler.setSystemMover(board)
@@ -160,7 +161,8 @@ struct EndToEndTests {
             )
         ).card
 
-        let result = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        let result = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         guard case .moved(let runID?) = result else {
             Issue.record("expected a run, got \(result)")
             return
@@ -196,6 +198,69 @@ struct EndToEndTests {
         let audits = try await stack.store.audits(cardID: card.id)
         #expect(audits.first?.origin == .userDrag)
         #expect(audits.first?.runID == runID)
+    }
+
+    @Test("A run that goes quiet and talks again is announced to the board both ways")
+    func silenceAndRecoveryReachTheBoard() async throws {
+        // The step between `ClaudeRun`'s stream and the board: `consume` routes
+        // a notice to a `SchedulerUpdate` and to the row. Only `.stalled` had a
+        // route, so the mark could be put on and never taken off — a `merge-pr`
+        // that waited twenty-one minutes on CI and then produced its next tool
+        // call kept the attention tint until it exited.
+        //
+        // ⛔ Nothing here measures a duration. The fixture's own pace makes the
+        // silences — `FAKE_CLAUDE_DELAY_MS` sleeps after every line, so eight
+        // lines give seven gaps that are followed by more output — the window is
+        // short so the watchdog looks inside them, and what is asserted is the
+        // *order* of what arrived.
+        let stack = try await Stack.make(
+            fixture: "create-issue-success.ndjson",
+            extraEnv: ["FAKE_CLAUDE_DELAY_MS": "150"],
+            idleTimeout: .milliseconds(20)
+        )
+        defer { stack.cleanUp() }
+
+        // Hoisted out of the closure below: the stream is `Sendable`, the whole
+        // stack is not, and this is the only member the collector needs.
+        let updates = stack.scheduler.updates
+
+        let card = try await stack.board.createCard(
+            repoID: stack.repo.id,
+            title: "A run that talks after a long silence",
+            story: UserStory(
+                role: "developer",
+                want: "a stalled run to stop being stalled when it talks again",
+                benefit: "silence still means something",
+                acceptanceCriteria: ["the mark clears"]
+            )
+        ).card
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
+
+        let silences = try await withTimeout(.seconds(45)) { () -> [RunSilence] in
+            var seen: [RunSilence] = []
+            for await update in updates {
+                switch update {
+                case .runStalled: seen.append(.wentQuiet)
+                case .runResumed: seen.append(.startedTalkingAgain)
+                case .runFinished: return seen
+                // Written out rather than `default`, so a case added to
+                // `SchedulerUpdate` has to be considered here rather than
+                // silently ignored by a collector that judges an ordering.
+                case .runStarted, .runOutput, .queueChanged: break
+                }
+            }
+            return seen
+        }
+
+        #expect(!silences.isEmpty, "the watchdog never looked inside a gap")
+        #expect(
+            silences.contains(.startedTalkingAgain),
+            Comment(rawValue: "the run talked again and the board heard only \(silences)")
+        )
+        #expect(silences.first == .wentQuiet, "a recovery cannot precede a silence")
+        let alternates = zip(silences, silences.dropFirst()).allSatisfy { $0 != $1 }
+        #expect(alternates, Comment(rawValue: "notices did not alternate: \(silences)"))
     }
 
     /// Pins the behaviour the scheduler already had, so the refactor that moves
@@ -234,7 +299,8 @@ struct EndToEndTests {
         card.lastError = "create-issue exited 1"
         try await stack.store.saveCard(card)
 
-        _ = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         let run = try await stack.awaitRun(cardID: card.id)
         #expect(run.state == .succeeded)
 
@@ -252,7 +318,8 @@ struct EndToEndTests {
         defer { stack.cleanUp() }
 
         let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Push something").card
-        _ = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
 
         let run = try await stack.awaitRun(cardID: card.id)
         #expect(run.exitCode == 0)
@@ -270,12 +337,21 @@ struct EndToEndTests {
         defer { stack.cleanUp() }
 
         let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Anything").card
-        _ = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
 
         let run = try await stack.awaitRun(cardID: card.id)
         #expect(run.state == .failed)
         #expect(run.exitCode == 3)
         #expect(run.resultText?.contains("simulated failure") == true)
+        // ⛔ And it is recorded as the process's, not the agent's. This is the
+        // whole of #288 measured through a real spawn: the child died before
+        // any terminal event, so what survives is stderr, and the panel used to
+        // caption it "IT SAID" in demoted italic — an inversion of the board's
+        // central rule inside the one block built to show it.
+        #expect(run.resultSource == .stderr)
+        #expect(run.closing?.isHearsay == false)
+        #expect(RunVerdict.of(run).itSaid == nil)
     }
 
     @Test("Cancelling a run stops it and records the cancellation")
@@ -292,7 +368,7 @@ struct EndToEndTests {
 
         let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Long one").card
         guard case .moved(let runID?) = try await stack.board.move(
-            cardID: card.id, to: .todo, origin: .userDrag
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false
         ) else {
             Issue.record("expected a run")
             return
@@ -313,6 +389,60 @@ struct EndToEndTests {
         #expect(run.exitCode == 143)
     }
 
+    /// Criterion 2 of #333, asserted end to end for the first time.
+    ///
+    /// `RunScheduler` has always read `repo.permissionMode` and
+    /// `repo.extraAllowedTools` at spawn, and `ClaudeInvocation.arguments()` has
+    /// always emitted both flags — but nothing ever *wrote* either column, so
+    /// every run in the suite's history was made under the same defaults and the
+    /// path was never exercised with anything else. This pins the half of the
+    /// feature that was already built.
+    ///
+    /// Asserted positionally rather than with `contains`, because an argument
+    /// landing next to the wrong flag is exactly what `contains` cannot see.
+    @Test("A repository's run terms reach the spawn")
+    func runTermsReachTheSpawn() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var repo = stack.repo
+        repo.permissionMode = .acceptEdits
+        repo.extraAllowedTools = ["Read", "Bash(git status *)"]
+        try await stack.store.saveRepo(repo)
+
+        let card = try await stack.board.createCard(repoID: repo.id, title: "Tightened").card
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
+        let run = try await stack.awaitRun(cardID: card.id)
+
+        let mode = try #require(run.argv.firstIndex(of: "--permission-mode"))
+        #expect(run.argv[mode + 1] == "acceptEdits")
+
+        let tools = try #require(run.argv.firstIndex(of: "--allowedTools"))
+        #expect(run.argv[tools + 1] == "Read,Bash(git status *)")
+    }
+
+    /// The other half of the same criterion, and the reason `ExtraAllowedTools`
+    /// exists: an empty list must produce **no flag at all**, so a list holding
+    /// one blank string is not "no tools" but `--allowedTools ""`.
+    @Test("A repository allowing no extra tools passes no such flag")
+    func noExtraToolsMeansNoFlag() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        var repo = stack.repo
+        repo.extraAllowedTools = ExtraAllowedTools.normalise(["  ", ""])
+        try await stack.store.saveRepo(repo)
+
+        let card = try await stack.board.createCard(repoID: repo.id, title: "Untightened").card
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
+        let run = try await stack.awaitRun(cardID: card.id)
+
+        #expect(!run.argv.contains("--allowedTools"))
+        #expect(!run.argv.contains(""))
+    }
+
     @Test("A move that triggers nothing spawns nothing")
     func inertMoveSpawnsNothing() async throws {
         let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
@@ -324,10 +454,146 @@ struct EndToEndTests {
         card.prNumber = 279
         try await stack.store.saveCard(card)
 
-        let result = try await stack.board.move(cardID: card.id, to: .inReview, origin: .userDrag)
+        let result = try await stack.board.move(
+            cardID: card.id, to: .inReview, origin: .userDrag, requiresVerifiedGreen: false)
         #expect(result == .moved(runID: nil))
         try await Task.sleep(for: .milliseconds(200))
         #expect(try await stack.store.runs(cardID: card.id).isEmpty)
+    }
+
+    /// The two facts a resume depends on, in one assertion: the fork tokens are
+    /// there, and the child runs in the cwd of the **first** attempt.
+    ///
+    /// The cwd matters as much as the flags. Claude Code keeps a session's
+    /// transcript under a slug of the directory it ran in, so a fork launched
+    /// from anywhere else finds nothing — and fails by saying "No conversation
+    /// found", which reads as a lost session rather than a wrong directory.
+    @Test("A resumed run forks the session it names, from where the first attempt ran")
+    func resumedRunCarriesTheForkTokensAndTheFirstAttemptsCwd() async throws {
+        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        defer { stack.cleanUp() }
+
+        // A directory of the first attempt's own, deliberately not `repo.path`:
+        // while `start` built its invocation from `repo.path`, this test could
+        // not tell the two apart.
+        let firstCwd = stack.home.appendingPathComponent("first-attempt", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstCwd, withIntermediateDirectories: true)
+
+        let card = try await stack.board.createCard(
+            repoID: stack.repo.id, title: "Resume me").card
+        let now = Date()
+
+        let first = SkillRun.card(
+            cardID: card.id, repoID: stack.repo.id, kind: .createIssue,
+            prompt: "/ai-migration-kit:create-issue Resume me", cwd: firstCwd.path,
+            state: .failed,
+            startedAt: now.addingTimeInterval(-1_800),
+            endedAt: now.addingTimeInterval(-1_700),
+            logPath: stack.home.appendingPathComponent("runs/first.ndjson").path,
+            stderrPath: stack.home.appendingPathComponent("runs/first.log").path,
+            createdAt: now.addingTimeInterval(-1_800)
+        )
+        try await stack.store.saveRun(first)
+
+        // `.queued`, so `pump()` admits it; seeded straight into the store
+        // because no transition creates a resumed run — that is PR4's.
+        let resumed = SkillRun.card(
+            cardID: card.id, repoID: stack.repo.id, kind: .createIssue,
+            prompt: "/ai-migration-kit:create-issue Resume me", cwd: firstCwd.path,
+            resumedFrom: first.id,
+            logPath: stack.home.appendingPathComponent("runs/resumed.ndjson").path,
+            stderrPath: stack.home.appendingPathComponent("runs/resumed.log").path,
+            createdAt: now
+        )
+        try await stack.store.saveRun(resumed)
+        await stack.scheduler.launch(runID: resumed.id)
+
+        let run = try await stack.awaitRun(cardID: card.id)
+        #expect(run.id == resumed.id)
+
+        // Adjacency, not membership: where the block sits is the contract, and
+        // `--add-dir` naming the first attempt's directory is half of it.
+        //
+        // Read as a bounded slice, never by index. Before the fix below ships,
+        // `--add-dir <cwd>` is the *last* pair argv has: `Stack` builds its
+        // scheduler with `ceiling: .off`, so no `--max-budget-usd` follows, and
+        // the repository's `extraAllowedTools` is empty, so no `--allowedTools`
+        // does either. `argv[addDir + 2]` would therefore trap with
+        // `Fatal error: Index out of range` — killing the whole test process
+        // instead of failing this expectation, and looking exactly like the
+        // intermittent signal abort CLAUDE.md warns about. `prefix(5)` is total:
+        // it returns what is there and this reports the difference.
+        let argv = run.argv
+        let addDir = try #require(argv.firstIndex(of: "--add-dir"))
+        #expect(Array(argv.dropFirst(addDir).prefix(5)) == [
+            "--add-dir", firstCwd.path,
+            "--resume", first.id.uuidString.lowercased(),
+            "--fork-session",
+        ])
+    }
+
+    /// A resume that finds no conversation never had a turn, so its closing
+    /// prose is the CLI complaining about a missing transcript. Copy that into
+    /// `.noIssueCreated(reason:)` and the card says the idea was already covered
+    /// — which is exactly the sentence an unattended loop reads as "nothing to
+    /// do here", on a card for which nothing whatsoever was attempted.
+    @Test("A resume that finds no conversation is not recorded as a duplicate skip")
+    func sessionGoneIsNotADuplicateSkip() async throws {
+        let stack = try await Stack.make(
+            fixture: "resume-session-gone.ndjson",
+            // `gh` has to answer, so the title sweep reaches the sentence: with
+            // no FAKE_GH_ISSUES the fake prints `[]`, which is what `gh` returns
+            // for a repository with nothing matching.
+            ghPath: TestPaths.fakeGH
+        )
+        defer { stack.cleanUp() }
+
+        let card = try await stack.board.createCard(
+            repoID: stack.repo.id, title: "Stream the run log inside the card").card
+        let now = Date()
+
+        let first = SkillRun.card(
+            cardID: card.id, repoID: stack.repo.id, kind: .createIssue,
+            prompt: "/ai-migration-kit:create-issue Stream the run log inside the card",
+            cwd: stack.repo.path,
+            state: .failed,
+            startedAt: now.addingTimeInterval(-1_800),
+            endedAt: now.addingTimeInterval(-1_700),
+            logPath: stack.home.appendingPathComponent("runs/gone-first.ndjson").path,
+            stderrPath: stack.home.appendingPathComponent("runs/gone-first.log").path,
+            createdAt: now.addingTimeInterval(-1_800)
+        )
+        try await stack.store.saveRun(first)
+
+        let resumed = SkillRun.card(
+            cardID: card.id, repoID: stack.repo.id, kind: .createIssue,
+            prompt: "/ai-migration-kit:create-issue Stream the run log inside the card",
+            cwd: stack.repo.path,
+            resumedFrom: first.id,
+            logPath: stack.home.appendingPathComponent("runs/gone-resumed.ndjson").path,
+            stderrPath: stack.home.appendingPathComponent("runs/gone-resumed.log").path,
+            createdAt: now
+        )
+        try await stack.store.saveRun(resumed)
+        await stack.scheduler.launch(runID: resumed.id)
+
+        let run = try await stack.awaitRun(cardID: card.id)
+        #expect(run.id == resumed.id)
+        // `is_error`, so the run failed; `num_turns: 0`, so it never started.
+        // Exit code zero throughout — the state comes from the result, not the
+        // shell.
+        #expect(run.state == .failed)
+        #expect(run.exitCode == 0)
+        #expect(run.numTurns == 0)
+        // The prose exists, and is exactly what must NOT become the reason.
+        #expect(run.resultText?.hasPrefix("No conversation found") == true)
+        // The CLI's complaint travels through the terminal event's `result`
+        // field, so `ClosingRemark.of` attributes it to the agent — never to
+        // stderr, and never unattributed.
+        #expect(run.resultSource == .agent)
+
+        #expect(run.verifiedOutcome == .noIssueCreated(
+            reason: "The conversation this run tried to resume no longer exists, so nothing ran."))
     }
 
     @Test("The launch sweep admits runs that died with the app")
@@ -362,6 +628,11 @@ struct EndToEndTests {
         let recovered = try #require(try await stack.store.run(id: orphan.id))
         #expect(recovered.state == .failed)
         #expect(recovered.resultText?.contains("Elliot stopped") == true)
+        // Elliot's own sentence about a child that died with it. The agent
+        // never spoke — that is what the sentence *says* — so it must not be
+        // attributed to it (#288).
+        #expect(recovered.resultSource == .elliot)
+        #expect(RunVerdict.of(recovered).itSaid == nil)
         // gh is unavailable here, so the outcome is honestly "unverified"
         // rather than a guess.
         if case .unverified = recovered.verifiedOutcome {} else {

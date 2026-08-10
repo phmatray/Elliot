@@ -50,7 +50,25 @@ import Foundation
 /// finished it (#139). Additive on the wire, like 6, and degrading the same
 /// quiet way — but a 6 helper renders a Done card's receipt with no pull
 /// request at all, which is the defect this closes rather than a cosmetic loss.
-public let elliotProtocolVersion = 7
+///
+/// **8** — `RunDTO` carries `resultSource`: whose words `resultText` is, one of
+/// `agent`, `stderr` or `elliot` (#288). Additive on the wire, and refused in
+/// the direction that matters for the same reason 4 was. The field is
+/// tri-state by absence: **absent** means the run finished before anything
+/// recorded a source, which is a real answer about history and not a synonym
+/// for `agent`. An 8 helper talking to a 7 app would find it absent on *every*
+/// run — including the ones that stored stderr — and would report the whole
+/// board as the agent's prose, which is the defect this closes rather than a
+/// cosmetic loss. One number, one wire.
+///
+/// ⚠️ The issue that asked for this said "bump from 6", read off a base that
+/// had since reached 7. Writing 7 would have left the number unchanged while
+/// the wire moved. Read this constant, never a plan.
+///
+/// **9** — `RepoDTO` carries `extraAllowedTools` (#333). Until then a
+/// repository's run terms could not be *written* at all, so every row reported
+/// the same defaults and half a reply looked exactly like the whole of one.
+public let elliotProtocolVersion = 9
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
@@ -232,11 +250,12 @@ public enum ElliotErrorCode: String, Codable, Sendable {
 /// `ElliotMCPKit` both depend on it already, so nothing about the layering
 /// moves to share these words.
 ///
-/// ⚠️ **One case, not a sweep.** `repo_not_found` is still written twice —
-/// message *and* its `"Known: …"` hint, in `MCPRequestHandler` and
-/// `OfflineResponder` — so the drift this type closes for `card_not_found`
-/// remains open one refusal over. This enum is where those words go when
-/// somebody moves them; its existence is not evidence that anybody has.
+/// ⚠️ **One case, deliberately.** `repo_not_found` was written twice when this
+/// type landed, and it is now `ElliotResponse.repoNotFound(name:in:)` — a
+/// function rather than a constant here, because that refusal is parameterised
+/// on both halves and carries a `code` this enum structurally cannot hold. A
+/// constant is the right shape for `card_not_found` and the wrong one for its
+/// neighbour; see that factory for the argument.
 public enum RefusalHint {
     public static let cardNotFound = "board_list_cards lists the cards this board holds."
 }
@@ -244,6 +263,43 @@ public enum RefusalHint {
 public enum ElliotResponse: Codable, Sendable {
     case ok(ElliotPayload)
     case failure(code: ElliotErrorCode, message: String, hint: String?)
+}
+
+extension ElliotResponse {
+    /// The one definition of how Elliot refuses a repository it does not know.
+    ///
+    /// A **function** rather than a `RefusalHint` constant because this refusal
+    /// is parameterised on both halves — the message carries the name that was
+    /// asked for, the hint lists the repositories that exist — and once it is a
+    /// function it may as well own the `code` too, which is the field
+    /// `RefusalHint` cannot hold at all.
+    ///
+    /// ⛔ **The thing that was duplicated is not a string, it is an answer.**
+    /// `MCPRequestHandler.unknownRepo` and `OfflineResponder.filter` each built
+    /// all three fields, byte for byte identically, in two targets that must not
+    /// import each other. Sharing only the words would leave each caller
+    /// assembling the *combination* — and assembling the same reply twice is
+    /// precisely the failure mode being closed. Returning the finished
+    /// `.failure` makes divergence impossible for all three fields at once.
+    ///
+    /// ⚠️ `OfflineParityTests.unknownRepoRefusalAgrees` byte-compares the two
+    /// paths and would have caught a one-sided edit — but only *after* someone
+    /// wrote it, at CI, on a machine that is not theirs. That is the same
+    /// argument `RefusalHint` records above: **a guard fires once the two texts
+    /// have already parted.** One definition moves the failure to compile time,
+    /// where there is nothing to detect because there is nothing to diverge.
+    ///
+    /// Here rather than in either caller because `ElliotIPC` is the intersection
+    /// both already depend on, so nothing about the layering moves — in
+    /// particular `ElliotMCPKit` still imports neither `ElliotEngine` nor
+    /// `ElliotProcess`.
+    public static func repoNotFound(name: String, in repos: [Repo]) -> ElliotResponse {
+        .failure(
+            code: .repoNotFound,
+            message: "No registered repository matches \"\(name)\".",
+            hint: "Known: \(repos.map(\.nameWithOwner).joined(separator: ", "))"
+        )
+    }
 }
 
 public enum ElliotPayload: Codable, Sendable {
@@ -414,11 +470,20 @@ public enum ElliotTimeouts {
 /// picture, and collapsing the three into the headline would hide "green, but in
 /// conflict" — a combination this board sees regularly.
 ///
-/// `checks` carries the real names rather than a verdict about them. Elliot
-/// deliberately does not decide that `CodeQL` or `renovate/stability-days` is
-/// not a build: that judgement's data already lives in `repo-audit`, and a
-/// second copy here would drift. Printing what actually ran lets the reader
-/// judge, and `ci == "no_checks"` states the one thing that needs no list.
+/// `checks` carries the real names rather than a verdict about them, and that
+/// is still true — but not for the reason this comment used to give.
+///
+/// It said Elliot "deliberately does not decide" that `CodeQL` or
+/// `renovate/stability-days` is not a build. Elliot does decide that, since
+/// #322: once, in `NonBuildChecks`, read by `ResolvedPRStatus`
+/// `.isMergeableUnattended` and by nothing else, because that is the one caller
+/// allowed to merge to a default branch on github.com with nobody watching.
+///
+/// This DTO is unaffected **by design**, not by omission. An agent reading
+/// `board_get_card` gets every name that ran so it can judge for itself, and
+/// `ci == "no_checks"` states the one thing that needs no list. Discounting
+/// names here would hide from the reader exactly what the merge gate is
+/// reasoning about.
 public struct PRStatusDTO: Codable, Sendable, Hashable {
     /// The most blocking known fact, or absent when there is nothing to report.
     /// Absent here is an *answer*; `"unknown"` is the refusal to give one.
@@ -642,6 +707,16 @@ public struct RepoDTO: Codable, Sendable, Hashable {
     /// see that before it moves anything.
     public var permissionMode: String
 
+    /// The other half of the terms a run in this repository gets.
+    ///
+    /// Reported beside the mode rather than left out because the tool's own
+    /// description tells an agent to read the terms before moving a card for
+    /// the first time, and a reply carrying half of them invites a conclusion
+    /// drawn from the half that arrived. Empty is the common answer and is
+    /// rendered as an empty array, never as a missing key: "allows nothing
+    /// extra" and "this reply does not say" must not look the same.
+    public var extraAllowedTools: [String]
+
     public init(repo: Repo) {
         id = repo.id
         nameWithOwner = repo.nameWithOwner
@@ -650,6 +725,7 @@ public struct RepoDTO: Codable, Sendable, Hashable {
         defaultBranch = repo.defaultBranch
         isEnabled = repo.isEnabled
         permissionMode = repo.permissionMode.rawValue
+        extraAllowedTools = repo.extraAllowedTools
     }
 
     public init(
@@ -659,7 +735,8 @@ public struct RepoDTO: Codable, Sendable, Hashable {
         path: String,
         defaultBranch: String,
         isEnabled: Bool,
-        permissionMode: String
+        permissionMode: String,
+        extraAllowedTools: [String] = []
     ) {
         self.id = id
         self.nameWithOwner = nameWithOwner
@@ -668,6 +745,7 @@ public struct RepoDTO: Codable, Sendable, Hashable {
         self.defaultBranch = defaultBranch
         self.isEnabled = isEnabled
         self.permissionMode = permissionMode
+        self.extraAllowedTools = extraAllowedTools
     }
 }
 
@@ -854,9 +932,19 @@ public struct RunDTO: Codable, Sendable, Hashable {
     public var endedAt: Date?
     public var totalCostUSD: Double?
     public var numTurns: Int?
-    /// The `result` field of the terminal event. Display only — never parse it
-    /// for issue or PR numbers; that is what `verifiedOutcome` is for.
+    /// The run's closing text. Display only — never parse it for issue or PR
+    /// numbers; that is what `verifiedOutcome` is for.
     public var resultText: String?
+    /// Whose words `resultText` is: `agent`, `stderr` or `elliot`.
+    ///
+    /// ⚠️ Read it before quoting the text as the agent's. `agent` is the
+    /// terminal event's own `result` field; `stderr` is what the process left
+    /// behind when it died before emitting one, and is a fact rather than a
+    /// claim; `elliot` is a sentence the board wrote about a run that could not
+    /// be started or was orphaned by a crash — on those paths no agent ever
+    /// spoke. **Absent** means the run finished before this was recorded, which
+    /// is an absence of a record and not a fourth kind.
+    public var resultSource: String?
     public var permissionDenials: [String]
     /// NDJSON, one Claude Code `stream-json` event per line.
     public var logPath: String
@@ -885,6 +973,7 @@ public struct RunDTO: Codable, Sendable, Hashable {
         totalCostUSD = run.totalCostUSD
         numTurns = run.numTurns
         resultText = run.resultText
+        resultSource = run.resultSource?.rawValue
         permissionDenials = run.permissionDenials
         logPath = run.logPath
         stderrPath = run.stderrPath
@@ -912,6 +1001,7 @@ public struct RunDTO: Codable, Sendable, Hashable {
         totalCostUSD: Double? = nil,
         numTurns: Int? = nil,
         resultText: String? = nil,
+        resultSource: String? = nil,
         permissionDenials: [String] = [],
         logPath: String,
         stderrPath: String,
@@ -934,6 +1024,7 @@ public struct RunDTO: Codable, Sendable, Hashable {
         self.totalCostUSD = totalCostUSD
         self.numTurns = numTurns
         self.resultText = resultText
+        self.resultSource = resultSource
         self.permissionDenials = permissionDenials
         self.logPath = logPath
         self.stderrPath = stderrPath

@@ -21,12 +21,34 @@ struct AnalysisModelTests {
         #expect(Set(AnalysisAngle.allCases.map(\.symbol)).count == AnalysisAngle.allCases.count)
     }
 
-    @Test("An unrecognised effort degrades rather than dropping the story", arguments: [
+    /// An unrecognised size is now recorded as unstated rather than folded onto
+    /// `.medium`. For a display badge the fold was a kindness; as an input to an
+    /// unattended ranking it is an invention, and the ranking cannot tell an
+    /// invented medium from a stated one.
+    @Test("An unstated effort is recorded as unstated, never invented", arguments: [
         ("small", Effort.small), ("MEDIUM", .medium), (" large ", .large),
-        ("XL", .medium), ("", .medium), ("trivial", .medium),
+        ("XL", .unstated), ("", .unstated), ("trivial", .unstated),
+        // The case round-trips through its own raw value, so a stored
+        // `.unstated` reads back as itself rather than as an unrecognised word.
+        ("unstated", .unstated),
     ])
     func effortParsing(raw: String, expected: Effort) {
         #expect(Effort.parse(raw) == expected)
+    }
+
+    /// The two decode defaults had to move with `parse`, and leaving either
+    /// behind would keep inventing the answer by a second route: an artifact
+    /// with no `effort` key would decode to `"medium"`, parse cleanly, and
+    /// nothing would ever be marked unstated.
+    @Test("A story that never mentions effort decodes as unstated")
+    func absentEffortIsUnstated() throws {
+        let raw = Data(
+            #"{"title":"T","role":"dev","want":"w","benefit":"b","evidence":["A.swift:1"]}"#.utf8
+        )
+        let decoded = try JSONDecoder().decode(ProposedStory.self, from: raw)
+        #expect(decoded.effort == "")
+        #expect(Effort.parse(decoded.effort) == .unstated)
+        #expect(ProposedStory(title: "T", role: "dev", want: "w", benefit: "b").effort == "")
     }
 
     @Test("Evidence splits on the trailing line number only", arguments: [
@@ -71,6 +93,53 @@ struct AnalysisModelTests {
     func duplicateHintLabels() {
         #expect(DuplicateHint.issue(number: 12, title: "Idle leak").label.contains("#12"))
         #expect(DuplicateHint.card(id: UUID(), title: "Dark mode").label.contains("Dark mode"))
+    }
+
+    /// ⚠️ The hint from a sibling lens is **one-directional** — only the later
+    /// row carries it — so the wording has to say so rather than pair the two.
+    @Test("A sibling lens's hint names the lens, and reads as the later of the two")
+    func siblingHintNamesItsLensAndItsDirection() {
+        let label = DuplicateHint
+            .proposal(id: UUID(), title: "Cache the login shell", angle: .bugs)
+            .label
+        #expect(label.contains("Cache the login shell"))
+        #expect(label.contains("Bugs"))
+        // "already proposed" is the direction. A symmetric wording — "the same
+        // as", "matches" — would claim a pairing only one row knows about.
+        #expect(label.contains("already proposed"))
+    }
+
+    /// ⛔ `duplicateOf` is persisted as JSON on a table already in the field, so
+    /// a new case must leave old rows readable. Swift's synthesised enum coding
+    /// writes one key per case, which makes adding one additive — and renaming
+    /// one unreadable. Asserted against literal JSON rather than a round trip:
+    /// a round trip through today's code cannot fail this way.
+    @Test("A hint written before the sibling case existed still decodes")
+    func oldHintsStillDecode() throws {
+        let card = UUID()
+        let rows = [
+            #"{"card":{"id":"\#(card.uuidString)","title":"Dark mode"}}"#,
+            #"{"issue":{"number":12,"title":"Idle leak"}}"#,
+        ]
+        let decoded = try rows.map {
+            try JSONDecoder().decode(DuplicateHint.self, from: Data($0.utf8))
+        }
+        #expect(decoded[0] == .card(id: card, title: "Dark mode"))
+        #expect(decoded[1] == .issue(number: 12, title: "Idle leak"))
+    }
+
+    /// The flag the panel's bulk selection reads, beside `isGrounded`.
+    @Test("A proposal knows whether it was flagged, and it is only ever a flag")
+    func looksDuplicatedIsAFlagNotAStatus() {
+        var proposal = StoryProposal(
+            analysisID: UUID(), runID: UUID(), repoID: UUID(), angle: .bugs, title: "A story",
+            story: UserStory(role: "dev", want: "w", benefit: "b"), createdAt: Date())
+        #expect(!proposal.looksDuplicated)
+
+        proposal.duplicateOf = .proposal(id: UUID(), title: "A story", angle: .techDebt)
+        #expect(proposal.looksDuplicated)
+        // ⛔ A courtesy, never a refusal: being flagged decides nothing.
+        #expect(proposal.status == .proposed)
     }
 
     @Test("Exactly one of card or analysis owns a run")

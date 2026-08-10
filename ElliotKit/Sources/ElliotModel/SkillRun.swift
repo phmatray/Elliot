@@ -24,6 +24,32 @@ public enum RunState: String, Codable, CaseIterable, Sendable, Hashable {
     /// A run in one of these states holds its card: no further move is allowed.
     public var isActive: Bool { !isTerminal }
 
+    /// Started, and not finished — a run the machine is actually *doing*.
+    ///
+    /// The one case where this differs from ``isActive`` is `queued`, and the
+    /// difference is the whole reason it exists. A queued run is one the
+    /// scheduler is **holding**, and Operations already draws it in the Waiting
+    /// band together with the rule holding it (#58). A *Running now* band built
+    /// on `isActive` would list that same run a second time, under a heading
+    /// saying it is going, with no elapsed time and nothing to cancel — one run
+    /// reported twice and described two ways.
+    ///
+    /// It also matches what `RunScheduler.occupancy` counts, which is
+    /// `inFlight`: the runs it has started and not yet reaped. That is not a
+    /// coincidence to preserve by hand — it is why the band's row count and the
+    /// Workers gauge beside it agree.
+    ///
+    /// **Exhaustive, with no `default`**, for the reason `MoveOrigin
+    /// .allowsSideEffects` gives: a case added to this enum must be classified
+    /// deliberately rather than inherit whichever answer the shorter spelling
+    /// happened to give.
+    public var isUnderway: Bool {
+        switch self {
+        case .running, .cancelling, .stalled: true
+        case .queued, .succeeded, .completedWithDenials, .failed, .cancelled, .timedOut: false
+        }
+    }
+
     /// Still worth offering a stop to. A run already winding down is not —
     /// `cancelling` means the SIGTERM has gone out, so a second Cancel changes
     /// nothing and reads as a button that does not work.
@@ -77,15 +103,45 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     /// The full argv, kept so a run can be reproduced by hand.
     public var argv: [String]
     public var cwd: String
+    /// The last attempt that actually created a session.
+    ///
+    /// Unchanged when the predecessor was refused, advanced when it ran.
+    /// Anything vaguer makes the chain unreadable after two failures: if a
+    /// refused fork moved this pointer, the second failure would name a session
+    /// that never existed and the window a resumed run is verified over would
+    /// have no first attempt to anchor on.
+    ///
+    /// Next to `cwd` because the two are read together — Claude Code keeps a
+    /// session's transcript under a slug of the directory it ran in, so a fork
+    /// launched from anywhere else finds nothing.
+    ///
+    /// ⚠️ `Optional`, and not because a predecessor is rare. A non-optional
+    /// `UUID` here would be decoded with `decode(_:forKey:)` rather than
+    /// `decodeIfPresent` — a default value does not change that — and would
+    /// throw `keyNotFound` on every run recorded before v13, in exactly the
+    /// window `BoardStore.openReadOnly` exists to serve. `MigrationsTests`
+    /// pins it.
+    public var resumedFrom: UUID?
     public var state: RunState
     public var startedAt: Date?
     public var endedAt: Date?
     public var exitCode: Int32?
     public var logPath: String
     public var stderrPath: String
-    /// The `result` field of the terminal event. Display only — never parsed
-    /// for issue or PR numbers.
-    public var resultText: String?
+    /// The run's closing text. Display only — never parsed for issue or PR
+    /// numbers.
+    ///
+    /// ⛔ `private(set)`, together with `resultSource` below: the two are one
+    /// fact and setting them apart is the defect. It was a plain `var`, four
+    /// writers assigned it, and only one of those four was storing the agent's
+    /// prose — the other three stored stderr or a sentence Elliot had written,
+    /// and the panel captioned all four "IT SAID" (#288). `setClosing(_:)` is
+    /// the only way in, and it cannot be called without naming a source.
+    public private(set) var resultText: String?
+    /// Whose words `resultText` is. `nil` for a run that finished before this
+    /// column existed — see `ClosingRemark.source`, which is where that absence
+    /// is reasoned about and where it degrades.
+    public private(set) var resultSource: RunResultSource?
     public var totalCostUSD: Double?
     public var numTurns: Int?
     public var permissionDenials: [String]
@@ -106,13 +162,14 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         prompt: String,
         argv: [String] = [],
         cwd: String,
+        resumedFrom: UUID? = nil,
         state: RunState = .queued,
         startedAt: Date? = nil,
         endedAt: Date? = nil,
         exitCode: Int32? = nil,
         logPath: String,
         stderrPath: String,
-        resultText: String? = nil,
+        closing: ClosingRemark? = nil,
         totalCostUSD: Double? = nil,
         numTurns: Int? = nil,
         permissionDenials: [String] = [],
@@ -129,13 +186,15 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         self.prompt = prompt
         self.argv = argv
         self.cwd = cwd
+        self.resumedFrom = resumedFrom
         self.state = state
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.exitCode = exitCode
         self.logPath = logPath
         self.stderrPath = stderrPath
-        self.resultText = resultText
+        resultText = closing?.text
+        resultSource = closing?.source
         self.totalCostUSD = totalCostUSD
         self.numTurns = numTurns
         self.permissionDenials = permissionDenials
@@ -147,6 +206,53 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
 
 public extension SkillRun {
     var isAnalysis: Bool { kind == .analyzeRepo }
+
+    /// A finished analysis run whose harvest kept nothing — the crash case and
+    /// the parsed-nothing case, which are the two a re-harvest recovers (#330).
+    ///
+    /// **Not gated on `.succeeded`.** The orphan `Reconciler.sweep` writes is
+    /// `.failed`, and it is the case with the *best* chance of a complete
+    /// artifact: the file was written before the app died, and the report says
+    /// only that Elliot never got round to reading it.
+    ///
+    /// **`analysisReport != nil` is required**, and that is the half worth
+    /// stating. A terminal analysis run with no report at all has never been
+    /// through `completeAnalysisRun` — nothing in the codebase produces one —
+    /// so offering the action for it would be guessing about a state that does
+    /// not exist. `(analysisReport?.kept ?? 0) == 0` would have answered `true`
+    /// for it, which is the two-valued answer to a three-valued question this
+    /// project keeps paying for.
+    var offersReharvest: Bool {
+        guard isAnalysis, state.isTerminal, let report = analysisReport else { return false }
+        return report.kept == 0
+    }
+}
+
+public extension SkillRun {
+    /// The closing text and its attribution, put back together.
+    ///
+    /// The pair is stored as two columns because that is what an additive
+    /// migration can do to a table already in the field, and read as one value
+    /// because they are one fact. A row saved before `resultSource` existed
+    /// comes back `.unattributed`, which is an absence of a record rather than
+    /// a claim about what the text is.
+    var closing: ClosingRemark? {
+        guard let resultText else { return nil }
+        guard let resultSource else { return .unattributed(resultText) }
+        return ClosingRemark(text: resultText, source: resultSource)
+    }
+
+    /// The one write path for what a run has to say for itself.
+    ///
+    /// ⛔ There is deliberately no way to set the text alone. Four writers used
+    /// to assign `resultText` directly and only one of them held the agent's
+    /// prose; the panel believed all four (#288). A fifth writer now has to
+    /// answer *whose words are these* before the code compiles, which is the
+    /// difference between a rule and a convention.
+    mutating func setClosing(_ remark: ClosingRemark?) {
+        resultText = remark?.text
+        resultSource = remark?.source
+    }
 }
 
 public extension SkillRun {
@@ -161,13 +267,14 @@ public extension SkillRun {
         prompt: String,
         argv: [String] = [],
         cwd: String,
+        resumedFrom: UUID? = nil,
         state: RunState = .queued,
         startedAt: Date? = nil,
         endedAt: Date? = nil,
         exitCode: Int32? = nil,
         logPath: String,
         stderrPath: String,
-        resultText: String? = nil,
+        closing: ClosingRemark? = nil,
         totalCostUSD: Double? = nil,
         numTurns: Int? = nil,
         permissionDenials: [String] = [],
@@ -176,9 +283,10 @@ public extension SkillRun {
     ) -> SkillRun {
         SkillRun(
             id: id, cardID: cardID, repoID: repoID, analysisID: nil, analysisAngle: nil,
-            kind: kind, prompt: prompt, argv: argv, cwd: cwd, state: state,
+            kind: kind, prompt: prompt, argv: argv, cwd: cwd, resumedFrom: resumedFrom,
+            state: state,
             startedAt: startedAt, endedAt: endedAt, exitCode: exitCode,
-            logPath: logPath, stderrPath: stderrPath, resultText: resultText,
+            logPath: logPath, stderrPath: stderrPath, closing: closing,
             totalCostUSD: totalCostUSD, numTurns: numTurns, permissionDenials: permissionDenials,
             verifiedOutcome: verifiedOutcome, analysisReport: nil, createdAt: createdAt
         )
@@ -201,7 +309,7 @@ public extension SkillRun {
         exitCode: Int32? = nil,
         logPath: String,
         stderrPath: String,
-        resultText: String? = nil,
+        closing: ClosingRemark? = nil,
         totalCostUSD: Double? = nil,
         numTurns: Int? = nil,
         permissionDenials: [String] = [],
@@ -212,7 +320,7 @@ public extension SkillRun {
             id: id, cardID: nil, repoID: repoID, analysisID: analysisID, analysisAngle: analysisAngle,
             kind: .analyzeRepo, prompt: prompt, argv: argv, cwd: cwd, state: state,
             startedAt: startedAt, endedAt: endedAt, exitCode: exitCode,
-            logPath: logPath, stderrPath: stderrPath, resultText: resultText,
+            logPath: logPath, stderrPath: stderrPath, closing: closing,
             totalCostUSD: totalCostUSD, numTurns: numTurns, permissionDenials: permissionDenials,
             verifiedOutcome: nil, analysisReport: analysisReport, createdAt: createdAt
         )
@@ -225,6 +333,29 @@ public enum MoveOrigin: Codable, Sendable, Hashable {
     case userDrag
     case mcp(client: String)
     case system(reason: SystemReason)
+    /// A move an auto-dev session made on its own, with nobody watching.
+    ///
+    /// It carries the session so the trail can be read back per session — a
+    /// board that recorded only "the board did it" could not tell one night's
+    /// run from the next.
+    ///
+    /// **Persisted, and there is no downgrade path.** `moveAudit.origin` is a
+    /// JSON column (`Migrations.swift`, the v1 schema) written through the
+    /// synthesised `Codable`, so this case is additive for reading rows an older
+    /// build wrote, and unreadable by an older build that meets a row this one
+    /// wrote. It does **not** travel the IPC wire: `ElliotRequest.moveCard`
+    /// carries `(id, to, followUps)`, `MoveDTO` carries no origin, and
+    /// `MCPRequestHandler.moveCard` hardcodes `.mcp(client:)` — so this change
+    /// does not bump `elliotProtocolVersion`.
+    ///
+    /// ⚠️ This said "`elliotProtocolVersion` stays 6" until the branch was
+    /// merged with `origin/main`, where it is **7**. The claim that mattered —
+    /// no bump — was right; the number was read off a base twenty-three commits
+    /// behind, which is the same mistake, one field over, as the premise this
+    /// whole branch was planned on. A version written down beside the code that
+    /// does not change it is a number nothing keeps true: say *this does not
+    /// bump it*, and let `Protocol.swift` hold the value.
+    case autoDev(sessionID: UUID)
 
     public enum SystemReason: String, Codable, Sendable, Hashable {
         case prBecameReady
@@ -237,9 +368,18 @@ public enum MoveOrigin: Codable, Sendable, Hashable {
 
     /// System moves react to reality rather than changing it, so they must
     /// never fire a skill.
+    ///
+    /// **Exhaustive, with no `default:` and no `if case`.** It was
+    /// `if case .system = self { return false }; return true`, and that shape
+    /// hands `true` to every case added after it — silently, on the single
+    /// property that decides whether an unattended `claude -p` starts at
+    /// `bypassPermissions` inside a real checkout. A switch makes the next case
+    /// a compile error instead of a gift.
     public var allowsSideEffects: Bool {
-        if case .system = self { return false }
-        return true
+        switch self {
+        case .userDrag, .mcp, .autoDev: true
+        case .system: false
+        }
     }
 }
 

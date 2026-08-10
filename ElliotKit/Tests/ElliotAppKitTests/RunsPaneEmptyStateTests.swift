@@ -124,10 +124,13 @@ struct RunsPaneEmptyStateTests {
     /// never do is promise a run: the move cannot be made.
     @Test("A refused move is stated, never dressed up as a run waiting to happen")
     func theRefusedMove() {
-        let blocks: [MoveBlock] = [
-            .emptyIdea, .incompleteStory, .missingIssueNumber,
-            .missingPRNumber, .repoDisabled, .runAlreadyInFlight(runID: UUID()),
-        ]
+        // Every case except `.sameColumn`, from the compiler-checked shadow.
+        // `.sameColumn` is excluded because this pane only ever previews
+        // `naturalNext`, so a card cannot be refused here for being where it
+        // already is — an exclusion by name, not a list that can fall behind.
+        let blocks = MoveBlockCase.allCases
+            .filter { $0 != .sameColumn }
+            .map(\.sample)
 
         for block in blocks {
             let outcome = MoveOutcome.blocked(block)

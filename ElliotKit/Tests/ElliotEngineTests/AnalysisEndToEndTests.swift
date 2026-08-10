@@ -211,7 +211,8 @@ struct AnalysisEndToEndTests {
 
         // And it behaves like any other card: dragging it to To Do runs
         // create-issue, through the same funnel and the same rule engine.
-        let result = try await stack.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        let result = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         guard case .moved(let runID?) = result else {
             Issue.record("expected a run, got \(result)")
             return

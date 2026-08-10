@@ -51,6 +51,31 @@ public struct Repo: Identifiable, Codable, Sendable, Hashable {
     /// not a missing value, and it means the same thing as `.notChecked`.
     public var preflight: PreflightState?
 
+    /// The labels *this* repository requires, or `nil` if nobody has chosen.
+    ///
+    /// ⚠️ **`nil` and `[]` are different answers and the difference is the whole
+    /// point** (#199, #200). `nil` means the taxonomy question has never been
+    /// put to this repository, so `LabelPolicy.default` — Elliot's floor —
+    /// applies and Preflight still offers to have the conversation. `[]` means
+    /// this repository was asked and chose to require nothing, which is a
+    /// decision and must not be nagged again.
+    ///
+    /// Elliot drives *other people's* repositories and their taxonomies are not
+    /// Elliot's. The floor shipped in #172 deliberately set to GitHub's four
+    /// stock labels so the mechanism could land without an argument about
+    /// taxonomy; this is that argument's answer, per repository.
+    ///
+    /// ⛔ **Optional, and it has to be** — the same reason ``preflight`` is.
+    /// `BoardStore.openReadOnly` accepts a database older than the code reading
+    /// it, and that tolerance is exactly "an added column reads as absent",
+    /// which only holds for an optional. Declared non-optional this throws
+    /// `GRDB.RowDecodingError` and the helper refuses every repository.
+    ///
+    /// Read it through ``LabelPolicy/resolved(for:)``, never directly: that is
+    /// the one place `nil` becomes the floor, and it returns *whose* policy it
+    /// gave you along with it.
+    public var labelPolicy: [RequiredLabel]?
+
     /// What the rule engine reads: the verdict, with "this row predates the
     /// column" folded into "nobody has swept it".
     ///
@@ -105,8 +130,10 @@ public struct Repo: Identifiable, Codable, Sendable, Hashable {
         isEnabled: Bool = true,
         visibility: RepoVisibility? = nil,
         preflight: PreflightState? = nil,
+        labelPolicy: [RequiredLabel]? = nil,
         methodID: String? = nil
     ) {
+        self.labelPolicy = labelPolicy
         self.id = id
         self.path = path
         self.nameWithOwner = nameWithOwner

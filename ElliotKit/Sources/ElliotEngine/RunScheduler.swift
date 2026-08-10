@@ -22,6 +22,14 @@ public enum SchedulerUpdate: Sendable {
     case runStarted(runID: UUID, cardID: UUID?)
     case runOutput(runID: UUID, event: StreamEvent)
     case runStalled(runID: UUID, since: Date)
+    /// The mirror of `.runStalled`: the run started talking again and is no
+    /// longer holding a mark that nothing could take off.
+    ///
+    /// Engine-local, like every case here — it does not cross `ElliotIPC`, so
+    /// this does not bump `elliotProtocolVersion`. `Protocol.swift` holds that
+    /// value; a number written down beside code that does not change it is a
+    /// number nothing keeps true.
+    case runResumed(runID: UUID)
     case runFinished(runID: UUID, cardID: UUID?, state: RunState, outcome: VerifiedOutcome?)
     /// The pending queue changed. Pushed rather than polled — the UI must not
     /// ask a question whose answer only the scheduler knows.
@@ -50,6 +58,17 @@ public actor RunScheduler: RunLaunching {
     /// Not persisted, deliberately: a relaunch should start working, not stay
     /// silently stopped.
     private var isPaused = false
+    /// How long a spawned run may say nothing before the silence is announced.
+    ///
+    /// A constructor parameter rather than the constant `ClaudeRun.start`
+    /// defaults to, and **not** part of `SchedulerLimits`: those are persisted as
+    /// JSON, and a new non-optional field there would fail to decode every row
+    /// written by an older build. This is construction-time only.
+    ///
+    /// It exists because the window was unreachable from a test, so the whole
+    /// stall path had no end-to-end coverage at all — which is precisely how the
+    /// mark stayed one-way. Nothing in the app passes anything but the default.
+    private let idleTimeout: Duration
     private let harvester: ProposalHarvester
     /// `git status --porcelain` taken just before each analysis spawned, keyed
     /// by run. In memory only: if the app dies mid-run the baseline is gone and
@@ -72,11 +91,13 @@ public actor RunScheduler: RunLaunching {
         verifier: Verifier,
         harvester: ProposalHarvester? = nil,
         limits: SchedulerLimits = .default,
-        ceiling: SpendCeiling = .off
+        ceiling: SpendCeiling = .off,
+        idleTimeout: Duration = ClaudeRun.defaultIdleTimeout
     ) {
         self.store = store
         self.toolConfig = toolConfig
         self.verifier = verifier
+        self.idleTimeout = idleTimeout
         self.harvester = harvester ?? ProposalHarvester(store: store, gh: GHClient(config: toolConfig))
         self.limits = limits
         self.ceiling = ceiling
@@ -150,14 +171,7 @@ public actor RunScheduler: RunLaunching {
         let cleared = pending
         pending = []
         lastRefusals = [:]
-        for runID in cleared {
-            guard var run = try? await store.run(id: runID), run.state == .queued else { continue }
-            run.state = .cancelled
-            run.endedAt = Date()
-            try? await store.saveRun(run)
-            continuation.yield(
-                .runFinished(runID: runID, cardID: run.cardID, state: .cancelled, outcome: nil))
-        }
+        for runID in cleared { await discardQueued(runID) }
         // Emptying `pending` above is not enough, because this method suspends on
         // every row it cancels. A `launch` landing in one of those windows puts
         // its id back on the queue, and the `pump` it calls reads a row this loop
@@ -170,6 +184,37 @@ public actor RunScheduler: RunLaunching {
         lastRefusals = lastRefusals.filter { pending.contains($0.key) }
         await publishQueue()
         return cleared.count
+    }
+
+    /// Takes one run out of the queue and marks it `.cancelled`.
+    ///
+    /// The single definition of *discarding queued work*, because there are two
+    /// callers — `drain` and the pending branch of `cancel` — and they disagreed
+    /// in three ways that all failed silently. `cancel` left the recorded
+    /// refusal behind, never yielded `.runFinished`, and never published the
+    /// queue: so cancelling one entry left its row on screen until the next
+    /// `pump`, and left the card's `activeRunID` set in `AppModel`, which reads
+    /// that event and nothing else to clear it.
+    ///
+    /// ⛔ **`pending` and `lastRefusals` are edited before the first `await`.**
+    /// That ordering is `pump`'s documented invariant, not a style: a pump whose
+    /// `store.run` read landed after the removal comes back holding a stale
+    /// `.queued` row, and its own post-await containment check is what stops it
+    /// spawning a run the user just discarded.
+    ///
+    /// Returns whether a queued row was actually cancelled, so a caller can say
+    /// what it did rather than guess.
+    @discardableResult
+    private func discardQueued(_ runID: UUID) async -> Bool {
+        pending.removeAll { $0 == runID }
+        lastRefusals.removeValue(forKey: runID)
+        guard var run = try? await store.run(id: runID), run.state == .queued else { return false }
+        run.state = .cancelled
+        run.endedAt = Date()
+        try? await store.saveRun(run)
+        continuation.yield(
+            .runFinished(runID: runID, cardID: run.cardID, state: .cancelled, outcome: nil))
+        return true
     }
 
     /// Moves one entry to the head of the queue.
@@ -410,9 +455,13 @@ public actor RunScheduler: RunLaunching {
             // that has silently disappeared until the next launch sweep.
             updated.state = .failed
             updated.endedAt = Date()
-            updated.resultText = repoReadError.map {
+            // `.elliot`, not the agent: nothing was spawned, so there is no
+            // agent to attribute this to. Recording it as prose is what put a
+            // sentence Elliot wrote under the panel's "IT SAID" caption (#288).
+            let sentence = repoReadError.map {
                 "Elliot could not read this run's repository: \($0.localizedDescription)"
             } ?? "The repository this run belongs to no longer exists."
+            updated.setClosing(.elliot(sentence))
             try? await store.saveRun(updated)
             continuation.yield(.runFinished(
                 runID: run.id, cardID: run.cardID, state: .failed, outcome: nil
@@ -423,10 +472,17 @@ public actor RunScheduler: RunLaunching {
         let invocation = ClaudeInvocation(
             runID: run.id,
             prompt: run.prompt,
-            cwd: repo.path,
+            // The **run's** cwd, not the repository's. They are the same value
+            // for every run created today, and that is the point: a resumed run
+            // has to spawn where its first attempt spawned, because Claude Code
+            // keeps the transcript under a slug of that directory. Two sources
+            // for one fact make the fork fail with "No conversation found",
+            // which reads as an expired session rather than a wrong directory.
+            cwd: run.cwd,
             permissionMode: repo.permissionMode,
             extraAllowedTools: repo.extraAllowedTools,
-            maxBudgetUSD: ceiling.perRunUSD
+            maxBudgetUSD: ceiling.perRunUSD,
+            resumeFrom: run.resumedFrom
         )
         updated.argv = [toolConfig.claudePath] + invocation.arguments()
 
@@ -445,7 +501,9 @@ public actor RunScheduler: RunLaunching {
                 at: logURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            claudeRun = try ClaudeRun.start(invocation: invocation, config: toolConfig, logURL: logURL)
+            claudeRun = try ClaudeRun.start(
+                invocation: invocation, config: toolConfig, logURL: logURL, idleTimeout: idleTimeout
+            )
         } catch {
             // The baseline was taken above whether or not the spawn survives;
             // `finish` is never reached from here, so nothing else would ever
@@ -458,7 +516,9 @@ public actor RunScheduler: RunLaunching {
             inFlight[run.id] = nil
             updated.state = .failed
             updated.endedAt = Date()
-            updated.resultText = error.localizedDescription
+            // The spawn itself failed, so this is Elliot reporting a `Process`
+            // that never started — not an agent's account of anything.
+            updated.setClosing(.elliot(error.localizedDescription))
             try? await store.saveRun(updated)
             continuation.yield(.runFinished(
                 runID: run.id, cardID: run.cardID, state: .failed, outcome: nil
@@ -479,7 +539,6 @@ public actor RunScheduler: RunLaunching {
 
     private func consume(_ claudeRun: ClaudeRun, run: SkillRun) async {
         var finalOutcome: ClaudeRunOutcome?
-        var stalled = false
 
         for await update in claudeRun.updates {
             switch update {
@@ -487,21 +546,46 @@ public actor RunScheduler: RunLaunching {
                 break
             case .event(let event):
                 continuation.yield(.runOutput(runID: run.id, event: event))
+            // Both directions yield *before* they await the write, and the two
+            // are deliberately identical in shape: `AppModel` marks its copies
+            // in place rather than re-reading, so a refresh racing the write
+            // would read the row as it was and undo the answer.
             case .stalled(let since):
-                stalled = true
                 continuation.yield(.runStalled(runID: run.id, since: since))
-                await markStalled(run.id)
+                await mark(.wentQuiet, on: run.id)
+            case .resumed:
+                continuation.yield(.runResumed(runID: run.id))
+                await mark(.startedTalkingAgain, on: run.id)
             case .finished(let outcome):
                 finalOutcome = outcome
             }
         }
-        _ = stalled
         await finish(run: run, outcome: finalOutcome)
     }
 
-    private func markStalled(_ runID: UUID) async {
-        guard var run = try? await store.run(id: runID), run.state == .running else { return }
-        run.state = .stalled
+    /// Writes a silence notice onto the run's row, if the row will take it.
+    ///
+    /// One method for both directions, over `RunState.applying`. This was
+    /// `markStalled`, whose guard was hand-copied into `AppModel.stalling` with
+    /// a comment in each saying it was spelled the same way as the other — and
+    /// only ever written in the one direction. The pair now lives once, in
+    /// `ElliotModel`, and is called from here and from `AppModel.mark`.
+    ///
+    /// ⛔ The resume guard is load-bearing: a run can end while the recovery
+    /// notice is in flight, and `.succeeded` is not `.stalled`, so it stays
+    /// `.succeeded`. `cancel` is the sharp case — it writes `.cancelling` over
+    /// whatever the run was, so the last byte a stalled run emits on its way out
+    /// cannot drag it back to `.running` and hold its card against a move.
+    ///
+    /// Internal rather than private, like `canStart` and `refusal` above: this
+    /// is the *durable* half of the mark, and a store write is worth measuring
+    /// on its own rather than only through a spawned child. What reaches it —
+    /// the `consume` switch — is measured end to end.
+    func mark(_ notice: RunSilence, on runID: UUID) async {
+        guard var run = try? await store.run(id: runID),
+              let next = run.state.applying(notice)
+        else { return }
+        run.state = next
         try? await store.saveRun(run)
     }
 
@@ -516,11 +600,25 @@ public actor RunScheduler: RunLaunching {
         var updated = (try? await store.run(id: run.id)) ?? run
         updated.endedAt = Date()
         updated.exitCode = outcome?.exitCode
-        updated.resultText = outcome?.result?.text ?? outcome?.stderr
+        // The `??` this used to be lives in `ClosingRemark.of` now, because
+        // choosing between the agent's words and the process's *is* the
+        // attribution — and settling it here left the panel to assume it (#288).
+        updated.setClosing(
+            .of(agentText: outcome?.result?.text, stderr: outcome?.stderr)
+        )
         updated.totalCostUSD = outcome?.result?.totalCostUSD
         updated.numTurns = outcome?.result?.numTurns
         updated.permissionDenials = outcome?.result?.permissionDenials.map(\.toolName) ?? []
         updated.state = Self.state(for: outcome)
+
+        // Computed here because this is the only place the terminal result
+        // exists: `numTurns` and `errors` live on `outcome.result`, and by the
+        // time anything downstream sees the row they are gone.
+        //
+        // Passed **to** `completeCardRun` rather than used to skip it. A run
+        // that could not resume may still have left an issue or a pull request
+        // behind on an earlier attempt, and the only thing that knows is `gh`.
+        let resume = ResumeVerdict.of(resumedFrom: updated.resumedFrom, result: outcome?.result)
 
         // One split, in one place: a card run is verified against gh and writes
         // back to its card; an analysis run is harvested and writes proposals.
@@ -533,7 +631,7 @@ public actor RunScheduler: RunLaunching {
         if updated.isAnalysis {
             await completeAnalysisRun(&updated)
         } else {
-            verified = await completeCardRun(&updated)
+            verified = await completeCardRun(&updated, resume: resume)
         }
 
         try? await store.saveRun(updated)
@@ -544,15 +642,41 @@ public actor RunScheduler: RunLaunching {
     }
 
     /// Verify against `gh`, then write what it said onto the card.
-    private func completeCardRun(_ run: inout SkillRun) async -> VerifiedOutcome? {
+    private func completeCardRun(
+        _ run: inout SkillRun, resume: ResumeVerdict
+    ) async -> VerifiedOutcome? {
         guard let cardID = run.cardID,
               let card = try? await store.card(id: cardID),
               let repo = try? await store.repo(id: run.repoID)
         else { return nil }
 
-        // Verify even a cancelled run: implement-issue may well have opened the
-        // pull request before it was stopped, and both skills are resume-safe.
-        let verified = await verifier.verify(run: run, card: card, repo: repo)
+        // Every run of this card, so the verifier can walk `resumedFrom` back to
+        // the attempt the chain started with — or a refusal, when the read
+        // failed and this run resumed. `ResumeWindow` holds both halves of that
+        // rule and says at length why neither `?? []` nor a blanket refusal is
+        // right.
+        //
+        // What the page bounds is worth stating precisely, because the two
+        // framings have different remedies: it is `BoardStore.runs`' default
+        // **page depth** of 100, not a chain length. The rows are this card's
+        // newest runs of every kind, so a two-link chain is truncated just as
+        // surely once 100 later runs exist on the card — a larger `limit`
+        // answers one framing, a `since`-anchored or chain-following query the
+        // other. Nothing here notices when it happens, though
+        // `BoardStore.runCount(cardID:)` two functions away would make it
+        // detectable.
+        let verified: VerifiedOutcome
+        if let cardRuns = await ResumeWindow.page(resumedFrom: run.resumedFrom, reading: {
+            try await store.runs(cardID: cardID)
+        }) {
+            // Verify even a cancelled run: implement-issue may well have opened
+            // the pull request before it was stopped, and both skills are
+            // resume-safe.
+            verified = await verifier.verify(
+                run: run, card: card, repo: repo, cardRuns: cardRuns, resume: resume)
+        } else {
+            verified = .unverified(reason: ResumeWindow.unknownWindowReason)
+        }
         run.verifiedOutcome = verified
         await apply(verified, to: card)
         return verified
@@ -626,9 +750,24 @@ public actor RunScheduler: RunLaunching {
 
     // MARK: - Cancellation
 
+    /// Stops one run, whether it is queued or already going.
+    ///
+    /// Three cases, and they are genuinely different acts: a **queued** run is
+    /// discarded through `discardQueued`, the one definition `drain` also uses;
+    /// a **live** run gets a SIGTERM and is marked `.cancelling`, because its
+    /// termination handler is what will finish the job; anything else is a row
+    /// the store still believes is active with nothing behind it — a crash the
+    /// launch sweep would otherwise resolve — and is closed out in place.
     public func cancel(runID: UUID) async {
         guard let claudeRun = live[runID] else {
-            pending.removeAll { $0 == runID }
+            if pending.contains(runID) {
+                await discardQueued(runID)
+                // Without this the discarded row stays on screen until something
+                // else happens to pump the queue, which is the silent-drop class
+                // the queue snapshot exists to end.
+                await publishQueue()
+                return
+            }
             if var run = try? await store.run(id: runID), run.state.isActive {
                 run.state = .cancelled
                 run.endedAt = Date()

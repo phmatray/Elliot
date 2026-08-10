@@ -49,7 +49,6 @@ final class ArchiveReader {
     /// Here rather than in the view because a fold is something the reader
     /// expressed, and because Done's own tail draws the same days — one owner is
     /// what stops the two disagreeing about a folded day.
-    var collapsedDays: Set<Date> = []
 
     private(set) var state = ArchiveState()
     private(set) var isLoading = false
@@ -132,16 +131,6 @@ final class ArchiveReader {
         guard !isLoading else { return }
         await load(generation: generation, from: source)
     }
-
-    func toggleDay(_ start: Date) {
-        if collapsedDays.contains(start) {
-            collapsedDays.remove(start)
-        } else {
-            collapsedDays.insert(start)
-        }
-    }
-
-    func isCollapsed(_ start: Date) -> Bool { collapsedDays.contains(start) }
 
     /// `""` when there is nothing to summarise, so the caller draws nothing.
     var summary: String {

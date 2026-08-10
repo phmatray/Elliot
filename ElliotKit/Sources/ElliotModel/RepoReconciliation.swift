@@ -207,6 +207,30 @@ public enum RepoFix: Sendable, Hashable {
         case .pull: "Pull"
         }
     }
+
+    /// What to say while it is running, in the present participle.
+    ///
+    /// Beside `label` rather than in the view, so the verb on the button and the
+    /// verb in the header cannot drift apart — and because a `clone` is bounded
+    /// at 600 seconds, which is long enough that "which act am I waiting on" is
+    /// the whole difference between a slow page and a broken one.
+    ///
+    /// Names its subject in every case: "Cloning…" alone, on a page of
+    /// repositories, does not say which.
+    public var runningSentence: String {
+        switch self {
+        case .clone(let nameWithOwner, let into):
+            "Cloning \(nameWithOwner) into \((into as NSString).lastPathComponent)…"
+        case .move(let from, let to):
+            "Moving \((from as NSString).lastPathComponent) into \((to as NSString).lastPathComponent)…"
+        case .register(let path):
+            "Registering \((path as NSString).lastPathComponent)…"
+        case .pull(let path):
+            "Pulling \((path as NSString).lastPathComponent)…"
+        case .forget:
+            "Forgetting…"
+        }
+    }
 }
 
 /// What a row can do about the **board**, as opposed to about itself.
@@ -461,8 +485,26 @@ public enum RepoReconciler {
                 fixes: [.register(path: actual)])
         }
 
+        // ⛔ **Not `detail: actual`.** The path is carried by `path`, and this
+        // was the one verdict of ten whose `detail` was not a sentence — so a
+        // row rendered straight from the reconciler showed the same path twice,
+        // in two faces (#218).
+        //
+        // ⚠️ It is deliberately **not** "Up to date." That is
+        // `RepoRegistryService.explain`'s sentence for the *probe's* `.ok`, and
+        // the two `.ok`s do not mean the same thing: the probe has fetched and
+        // found the clone clean, attached and level with upstream, whereas this
+        // one has only established that the repository is registered and cloned
+        // where the layout says it belongs. Copying that sentence here would be
+        // a claim about git made by code that never ran it.
+        //
+        // Fixed here rather than by having the view suppress a `detail` equal to
+        // `path`: that is a reader compensating for a writer, and it leaves the
+        // duplicate in the model for the next reader to meet. Same argument as
+        // #191, one type over.
         return RepoRow(
             id: name, nameWithOwner: name, path: actual, repoID: repo.id,
-            visibility: remote.repoVisibility, issue: .ok, detail: actual)
+            visibility: remote.repoVisibility, issue: .ok,
+            detail: "Cloned where it belongs.")
     }
 }

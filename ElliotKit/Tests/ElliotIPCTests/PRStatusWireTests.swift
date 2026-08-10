@@ -105,7 +105,7 @@ struct PRStatusWireTests {
         #expect(PRSign.checksFailing(count: 2).code == "checks_failing")
         #expect(PRSign.noBuild.code == "no_build")
         #expect(CIState.noChecks.code == "no_checks")
-        #expect(CIState.passing(3).code == "passing")
+        #expect(CIState.passing(["build", "test", "lint"]).code == "passing")
         #expect(MergeState.conflict.code == "conflict")
         #expect(ReviewState.changesRequested.code == "changes_requested")
     }

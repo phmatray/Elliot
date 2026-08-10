@@ -35,7 +35,14 @@ private func candidate(
     NextCandidate(
         card: card,
         repoName: repoName,
-        context: MoveContext(providedFollowUps: followUps)
+        context: MoveContext(
+            method: MethodCatalog.resolve(nil),
+            providedFollowUps: followUps,
+            // What `nextCandidates` itself answers — see
+            // `nextCandidatesAnswerForAHumansProxy` below for why.
+            requiresVerifiedGreen: false,
+            prVerdict: nil
+        )
     )
 }
 
@@ -129,5 +136,35 @@ struct NextStepTests {
         let pending = card(column: .inReview, prNumber: 279)
         #expect(rankNextSteps([candidate(pending)]).first?.isReady == true)
         #expect(rankNextSteps([candidate(pending, followUps: nil)]).first?.isReady == false)
+    }
+
+    /// The name carries the reason, because two tests already established this
+    /// by accident and neither said why.
+    @Test("board_next never demands a verified green, because an agent has a human behind it")
+    func nextCandidatesAnswerForAHumansProxy() throws {
+        // `board_next` answers *what an agent can do*, and an agent is a
+        // human's proxy with a human behind it. The restraint belongs to the
+        // caller that has nobody — `AutoDevService` builds its own
+        // `MoveContext`; it does not borrow the board's.
+        //
+        // The sharper reason is that `OfflineResponder` cannot know a verdict:
+        // it holds a read-only snapshot and can reach neither `gh` nor the
+        // network. If `nextCandidates` demanded one, the snapshot's answer would
+        // *mean* "I could not ask" while *encoding* as "the CI is not green" —
+        // and `OfflineParityTests` compares encoded bytes, so it would pass
+        // green on exactly that disagreement.
+        let merge = card(column: .inReview, prNumber: 7)
+        let repo = Repo(
+            id: merge.repoID, path: "/tmp/e", nameWithOwner: "phmatray/Elliot", displayName: "Elliot"
+        )
+        let candidates = nextCandidates(cards: [merge], repos: [repo], activeRunIDs: [:])
+        let candidate = try #require(candidates.first)
+
+        #expect(candidate.context.requiresVerifiedGreen == false)
+        #expect(candidate.context.prVerdict == nil)
+        // And the consequence that matters: it still reads as ready. A verdict
+        // demanded here would have reported the one move an agent can actually
+        // make as blocked.
+        #expect(rankNextSteps(candidates).first?.isReady == true)
     }
 }

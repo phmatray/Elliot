@@ -108,17 +108,22 @@ public struct RepoRegistryService: Sendable {
 
         var repos: [GHRepoSummary] = []
         var failures: [OwnerListingFailure] = []
-        var named: Set<String> = []
         for (owner, result) in listed {
             switch result {
             case .success(let listed): repos += listed
             case .failure(let error):
-                // One line per owner, whatever the layout says. A duplicate
-                // entry in `owners` fans out twice and would fail twice, and the
-                // banner's `ForEach` keys on the owner — two rows with one id is
-                // undefined in SwiftUI, and "2 owners could not be listed" would
-                // be a count of *attempts*, which is not what the sentence says.
-                guard named.insert(owner).inserted else { continue }
+                // One line per owner. There used to be a `named.insert(owner)`
+                // guard here, because a duplicate entry in `owners` fanned out
+                // twice and failed twice — the banner's `ForEach` keys on the
+                // owner, so two rows carried one id, and "2 owners could not be
+                // listed" counted *attempts* while saying **owners**.
+                //
+                // Removed rather than kept as belt-and-braces (#191). The fan-out
+                // above reads `layout.owners`, which `RepoTreeLayout` now
+                // deduplicates at construction *and* at decoding, so this guard
+                // could not fire — and a guard that cannot fire is one the next
+                // reader cannot tell is load-bearing. The guarantee is pinned
+                // where it now lives, by `RepoTreeLayoutTests`.
                 failures.append(
                     OwnerListingFailure(owner: owner, reason: Self.reason(error)))
             }
@@ -188,22 +193,60 @@ public struct RepoRegistryService: Sendable {
         }
     }
 
-    /// Mirrors `AppModel.addRepo(path:)`, plus the visibility the path implies.
-    private func register(path: String, layout: RepoTreeLayout) async throws -> RepoFixOutcome {
+    /// Registers a checkout — **the** implementation, for every caller.
+    ///
+    /// `AppModel.addRepo` used to be a second one, and the two stored different
+    /// rows for the same directory: it wrote no `visibility` and never checked
+    /// for a `.git`. `visibility` is what `expectedPath` uses to decide where a
+    /// clone belongs, so the same repository could later be reported misplaced —
+    /// or silently exempted — purely according to which button had registered
+    /// it. `public` so Preflight's *Add a repository…* reaches this one.
+    ///
+    /// ⛔ **Idempotent on `path`, and that is not a convenience.** `Repo.save`
+    /// keys on `id`, so registering a directory that is already registered used
+    /// to insert a *second* row with a fresh `UUID` — an orphan the cards do not
+    /// point at, and nothing on the page distinguishes it from the real one. The
+    /// existing row is updated in place instead, which is also what repairs a
+    /// row registered the old way: it is how a nil `visibility` gets filled.
+    ///
+    /// ⚠️ Only the derived fields are rewritten. `permissionMode`,
+    /// `extraAllowedTools`, `isEnabled` and the stored preflight verdict are the
+    /// user's, and re-registering is not a request to reset them.
+    public func register(path: String, layout: RepoTreeLayout) async throws -> RepoFixOutcome {
         guard FileManager.default.fileExists(atPath: path + "/.git") else {
-            return RepoFixOutcome(succeeded: false, detail: "\(path) is not a git repository.")
+            // Says which directory to choose instead. This is now the only way
+            // in, so a refusal that only says "no" leaves the reader with the
+            // failing check they can no longer reach by registering first.
+            return RepoFixOutcome(
+                succeeded: false,
+                detail:
+                    "\(path) is not a git repository — it contains no .git. Choose the checkout itself, not the folder above it."
+            )
         }
         let slot = layout.slot(forPath: path)
         let info = try? await gh.repoInfo(cwd: path)
-        let repo = Repo(
-            path: path,
-            nameWithOwner: info?.nameWithOwner ?? slot?.nameWithOwner
-                ?? URL(fileURLWithPath: path).lastPathComponent,
-            defaultBranch: info?.defaultBranch ?? "main",
-            displayName: URL(fileURLWithPath: path).lastPathComponent,
-            visibility: slot?.visibility)
+        let existing = try await store.repo(path: path)
+        var repo =
+            existing
+            ?? Repo(
+                path: path,
+                nameWithOwner: URL(fileURLWithPath: path).lastPathComponent,
+                defaultBranch: "main",
+                displayName: URL(fileURLWithPath: path).lastPathComponent)
+        repo.nameWithOwner =
+            info?.nameWithOwner ?? slot?.nameWithOwner ?? repo.nameWithOwner
+        repo.defaultBranch = info?.defaultBranch ?? repo.defaultBranch
+        repo.displayName = URL(fileURLWithPath: path).lastPathComponent
+        // `?? repo.visibility`, never a bare assignment: a repository outside
+        // the layout has no slot, and letting that erase a visibility already
+        // recorded would move its expected path on the next reconcile.
+        repo.visibility = slot?.visibility ?? repo.visibility
         try await store.saveRepo(repo)
-        return RepoFixOutcome(succeeded: true, detail: "Registered \(repo.nameWithOwner).")
+        return RepoFixOutcome(
+            succeeded: true,
+            detail: existing == nil
+                ? "Registered \(repo.nameWithOwner)."
+                : "Updated the registration for \(repo.nameWithOwner).")
     }
 
     /// Refines the rows that have a clone to ask about — `RepoIssue.isProbeable`,
@@ -298,6 +341,13 @@ public struct RepoRegistryService: Sendable {
     /// The observation is what git actually saw — "Up to date." — which is the
     /// half worth reporting. Where git overruled, the two are the same value and
     /// this is exactly the behaviour an `.ok` row has always had.
+    ///
+    /// ⚠️ The `!= .ok` arm still **discards** the reconciler's sentence, and
+    /// since #218 that is a judgement rather than a tidy-up. It used to drop a
+    /// duplicate of the row's own path; it now drops *"Cloned where it
+    /// belongs."*, which "Up to date." already implies — the probe fetched, so
+    /// it knows strictly more. Every other probeable verdict keeps its sentence
+    /// because the reconciler's half is not implied by git's.
     private static func detail(observed: RepoIssue, refining row: RepoRow, path: String) -> String {
         guard row.issue.isProbeable, row.issue != .ok else { return explain(observed, path: path) }
         return "\(explain(observed, path: path)) \(row.detail)"

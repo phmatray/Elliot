@@ -35,6 +35,61 @@ private struct Fixture {
         try await store.saveRepo(repo)
         return Fixture(store: store, board: board, launcher: launcher, repo: repo)
     }
+
+    /// The head `Fixtures/gh/prs-head-oid.json` reports for pull request 7.
+    ///
+    /// Named here as well as in `PRVerdictReaderTests` because the two suites
+    /// are asking different questions of the same fixture — that one tests the
+    /// reader, this one tests which policy `BoardService` hands it — and a
+    /// shared constant would need a target both can import, which `TestSupport`
+    /// deliberately is not (it "depends on nothing", `Package.swift`).
+    static let liveHead = "b7c1f0aa5d2e4c9188ff0e6a2d3b4c5d6e7f8091"
+
+    /// A board that can actually establish a verdict, and a card in In Review
+    /// whose stored reading is clean, approved and carries a real build check.
+    ///
+    /// `headRefOid` is the one thing a caller varies: pass `liveHead` and the
+    /// row is about the commit `gh` reports, so it is fresh and the merge is
+    /// allowed; pass anything else and the row is about a commit that has been
+    /// pushed past, which only the sha rule can see.
+    static func green(headRefOid: String) async throws -> (Fixture, Card) {
+        var f = try await make()
+        // A real `PRVerdictReader`, spawning the real `ProcessRunner` against
+        // `Scripts/fake-gh.sh`: the seam `GHClient` already has, so the spawn,
+        // the subprocess and the ISO-8601 decode all stay under test.
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // ElliotEngineTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // ElliotKit
+            .deletingLastPathComponent()  // repository root
+        let gh = GHClient(config: ToolConfig(
+            claudePath: "", ghPath: root.appendingPathComponent("Scripts/fake-gh.sh").path,
+            gitPath: "",
+            environment: [
+                "FAKE_GH_MODE": "ok",
+                "FAKE_GH_PRS": root.appendingPathComponent("Fixtures/gh/prs-head-oid.json").path,
+            ]))
+        f.board = BoardService(
+            store: f.store, launcher: f.launcher,
+            verdicts: PRVerdictReader(store: f.store, gh: gh))
+
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
+        card.column = .inReview
+        card.prNumber = 7
+        try await f.store.saveCard(card)
+
+        // Seconds old, so `PRStatus.maximumAge` (600 s) has nothing to say and
+        // the sha rule is the only thing that can call this reading stale.
+        try await f.store.savePRStatus(PRStatus(
+            repoID: f.repo.id, prNumber: 7, headRefOid: headRefOid, checkedAt: Date(),
+            rawMergeStateStatus: "CLEAN", rawMergeable: "MERGEABLE",
+            rawReviewDecision: "APPROVED",
+            checks: [
+                GHMergeStatus.StatusCheck(
+                    name: "build-and-test", conclusion: "SUCCESS", status: "COMPLETED"),
+            ]))
+        return (f, card)
+    }
 }
 
 @Suite("Board service")
@@ -53,7 +108,8 @@ struct BoardServiceTests {
             )
         ).card
 
-        let result = try await f.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        let result = try await f.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         guard case .moved(let runID?) = result else {
             Issue.record("expected a run, got \(result)")
             return
@@ -76,7 +132,8 @@ struct BoardServiceTests {
         card.issueNumber = 47
         try await f.store.saveCard(card)
 
-        let result = try await f.board.move(cardID: card.id, to: .inProgress, origin: .userDrag)
+        let result = try await f.board.move(
+            cardID: card.id, to: .inProgress, origin: .userDrag, requiresVerifiedGreen: false)
         guard case .moved(let runID?) = result else {
             Issue.record("expected a run")
             return
@@ -93,14 +150,15 @@ struct BoardServiceTests {
         card.prNumber = 279
         try await f.store.saveCard(card)
 
-        let asked = try await f.board.move(cardID: card.id, to: .done, origin: .userDrag)
+        let asked = try await f.board.move(
+            cardID: card.id, to: .done, origin: .userDrag, requiresVerifiedGreen: false)
         #expect(asked == .needsInput(.followUps(prNumber: 279)))
         // Nothing moved while the question is outstanding.
         #expect(try await f.store.card(id: card.id)?.column == .inReview)
 
         let merged = try await f.board.move(
             cardID: card.id, to: .done, origin: .userDrag,
-            followUps: ["add snapshot tests"]
+            followUps: ["add snapshot tests"], requiresVerifiedGreen: false
         )
         guard case .moved(let runID?) = merged else {
             Issue.record("expected a run")
@@ -117,7 +175,8 @@ struct BoardServiceTests {
         let card = try await f.board.createCard(repoID: f.repo.id, title: "Add CSV export").card
 
         let result = try await f.board.move(
-            cardID: card.id, to: .todo, origin: .mcp(client: "claude-code")
+            cardID: card.id, to: .todo, origin: .mcp(client: "claude-code"),
+            requiresVerifiedGreen: false
         )
         guard case .moved(let runID?) = result else {
             Issue.record("expected a run")
@@ -138,7 +197,8 @@ struct BoardServiceTests {
         card.column = .todo
         try await f.store.saveCard(card)
 
-        let result = try await f.board.move(cardID: card.id, to: .inProgress, origin: .userDrag)
+        let result = try await f.board.move(
+            cardID: card.id, to: .inProgress, origin: .userDrag, requiresVerifiedGreen: false)
         #expect(result == .blocked(.missingIssueNumber))
         #expect(try await f.store.card(id: card.id)?.column == .todo)
         #expect(try await f.store.runs(cardID: card.id).isEmpty)
@@ -149,13 +209,15 @@ struct BoardServiceTests {
     func blockedWhileRunning() async throws {
         let f = try await Fixture.make()
         let card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
-        _ = try await f.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        _ = try await f.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
 
         var running = try #require(try await f.store.runs(cardID: card.id).first)
         running.state = .running
         try await f.store.saveRun(running)
 
-        let second = try await f.board.move(cardID: card.id, to: .inProgress, origin: .userDrag)
+        let second = try await f.board.move(
+            cardID: card.id, to: .inProgress, origin: .userDrag, requiresVerifiedGreen: false)
         #expect(second == .blocked(.runAlreadyInFlight(runID: running.id)))
     }
 
@@ -167,7 +229,8 @@ struct BoardServiceTests {
         try await f.store.saveRepo(repo)
 
         let card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
-        let result = try await f.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        let result = try await f.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         #expect(result == .blocked(.repoDisabled))
     }
 
@@ -179,7 +242,8 @@ struct BoardServiceTests {
             title: "Run log",
             story: UserStory(role: "developer", want: "the log", benefit: "")
         ).card
-        let result = try await f.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        let result = try await f.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         #expect(result == .blocked(.incompleteStory))
         #expect(try await f.store.runs(cardID: card.id).isEmpty)
     }
@@ -240,7 +304,8 @@ struct BoardServiceTests {
     func sameColumnRefused() async throws {
         let f = try await Fixture.make()
         let card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
-        let result = try await f.board.move(cardID: card.id, to: .backlog, origin: .userDrag)
+        let result = try await f.board.move(
+            cardID: card.id, to: .backlog, origin: .userDrag, requiresVerifiedGreen: false)
         #expect(result == .blocked(.sameColumn))
     }
 
@@ -248,7 +313,8 @@ struct BoardServiceTests {
     func unknownCard() async throws {
         let f = try await Fixture.make()
         await #expect(throws: BoardError.self) {
-            try await f.board.move(cardID: UUID(), to: .todo, origin: .userDrag)
+            try await f.board.move(
+                cardID: UUID(), to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         }
     }
 
@@ -374,6 +440,104 @@ struct BoardServiceTests {
         let stored = try #require(try await f.store.card(id: card.id))
         #expect(stored.title == "Run log v2")
         #expect(stored.labels == ["bug", "documentation"], "an unspoken field is not an empty one")
+    }
+
+    // MARK: - The green guard
+
+    @Test("A merge asked for under the green guard is refused when nothing was read")
+    func unattendedMergeWithoutAVerdictIsRefused() async throws {
+        // The board's half of the guard. `Fixture.make` builds a `BoardService`
+        // with no `PRVerdictReader`, so there is nothing that could establish a
+        // verdict — and the answer to that has to be a refusal, never a merge.
+        let f = try await Fixture.make()
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
+        card.column = .inReview
+        card.prNumber = 279
+        try await f.store.saveCard(card)
+
+        let result = try await f.board.move(
+            cardID: card.id, to: .done, origin: .autoDev(sessionID: UUID()),
+            followUps: [], requiresVerifiedGreen: true
+        )
+        #expect(result == .blocked(.notVerifiedGreen(reason: .noReading)))
+        #expect(try await f.store.card(id: card.id)?.column == .inReview)
+        let launched = await f.launcher.launchedRuns()
+        #expect(launched.isEmpty, "a merge ran on a verdict nobody established")
+    }
+
+    @Test("The same merge, not asked to be verified, still runs")
+    func watchedMergeStillRuns() async throws {
+        // The control the refusal above cannot be: without it, a board that
+        // refused *every* merge would pass.
+        let f = try await Fixture.make()
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Run log").card
+        card.column = .inReview
+        card.prNumber = 279
+        try await f.store.saveCard(card)
+
+        let result = try await f.board.move(
+            cardID: card.id, to: .done, origin: .userDrag, followUps: [],
+            requiresVerifiedGreen: false
+        )
+        guard case .moved(let runID?) = result else {
+            Issue.record("expected a run, got \(result)")
+            return
+        }
+        #expect(try await f.store.run(id: runID)?.kind == .mergePR)
+    }
+
+    /// ⛔ **The gate has to be able to open, or it is not a gate.**
+    ///
+    /// Every other test of `requiresVerifiedGreen: true` in this package asserts
+    /// a refusal, so deleting the verdict read from `proposeMove` outright — the
+    /// two lines that call `PRVerdictReader` — turns the guard into a permanent
+    /// "no" and every one of them stays green. This is the test that goes red,
+    /// and it is the only one: measured, by making exactly that deletion.
+    @Test("A verified green really does merge — the guard opens, not just closes")
+    func unattendedMergeOnAVerifiedGreen() async throws {
+        let (f, card) = try await Fixture.green(headRefOid: Fixture.liveHead)
+
+        let result = try await f.board.move(
+            cardID: card.id, to: .done, origin: .autoDev(sessionID: UUID()),
+            followUps: [], requiresVerifiedGreen: true
+        )
+        guard case .moved(let runID?) = result else {
+            Issue.record("a verified green was refused: \(result)")
+            return
+        }
+        #expect(try await f.store.run(id: runID)?.kind == .mergePR)
+        #expect(try await f.store.card(id: card.id)?.column == .done)
+    }
+
+    /// ⛔ **The merge path asks `gh` for the real head; the age rule alone is not
+    /// enough.**
+    ///
+    /// `PRVerdictReader` already pins the difference between its two policies
+    /// (`PRVerdictReaderTests.movedHeadIsStale`), but nothing pinned which one
+    /// `BoardService` picks — so `head: .establish` could be changed to
+    /// `.ageAlone` and the suite stayed green, because the only test reaching
+    /// this code had no stored row and both policies answer nil to that.
+    ///
+    /// Here the row is seconds old, so `PRStatus.maximumAge` says nothing at
+    /// all: the sha rule is the *only* thing that can catch it, and only
+    /// `.establish` asks. Under `.ageAlone` this reading is clean, approved,
+    /// build-checked and fresh — it merges. Measured, by making that change.
+    @Test("A reading about a commit that is no longer the head refuses the merge")
+    func unattendedMergeRefusesAReadingAboutAnOlderCommit() async throws {
+        // `gh` reports `liveHead` for this pull request; the stored row is about
+        // a commit somebody has since pushed past.
+        let (f, card) = try await Fixture.green(
+            headRefOid: "0000000000000000000000000000000000000000")
+
+        let result = try await f.board.move(
+            cardID: card.id, to: .done, origin: .autoDev(sessionID: UUID()),
+            followUps: [], requiresVerifiedGreen: true
+        )
+        // `.sign(.unknown)`, not `.noReading`: the row was read, and it is about
+        // an older commit. That is the sentence `PRSign.unknown.summary` writes.
+        #expect(result == .blocked(.notVerifiedGreen(reason: .sign(.unknown))))
+        #expect(try await f.store.card(id: card.id)?.column == .inReview)
+        #expect(await f.launcher.launchedRuns().isEmpty)
     }
 }
 

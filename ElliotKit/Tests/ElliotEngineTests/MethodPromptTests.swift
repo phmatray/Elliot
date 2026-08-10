@@ -78,7 +78,8 @@ struct MethodPromptTests {
         let f = try await Fixture.make()
         let card = try await f.filedCard()
 
-        let result = try await f.board.move(cardID: card.id, to: .inProgress, origin: .userDrag)
+        let result = try await f.board.move(
+            cardID: card.id, to: .inProgress, origin: .userDrag, requiresVerifiedGreen: false)
         guard case .moved(let runID?) = result else {
             Issue.record("expected a run, got \(result)")
             return
@@ -116,7 +117,8 @@ struct MethodPromptTests {
         let card = try await f.board.createCard(repoID: f.repo.id, title: "Add a dark mode toggle")
             .card
 
-        let result = try await f.board.move(cardID: card.id, to: .todo, origin: .userDrag)
+        let result = try await f.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         guard case .moved(let runID?) = result else {
             Issue.record("expected a run, got \(result)")
             return
@@ -148,7 +150,8 @@ struct MethodPromptTests {
         let f = try await Fixture.make(methodID: "no-such-method")
         let card = try await f.filedCard()
 
-        let result = try await f.board.move(cardID: card.id, to: .inProgress, origin: .userDrag)
+        let result = try await f.board.move(
+            cardID: card.id, to: .inProgress, origin: .userDrag, requiresVerifiedGreen: false)
         #expect(result == .blocked(.unknownMethod("no-such-method")))
 
         #expect(try await f.store.card(id: card.id)?.column == .todo)
@@ -180,7 +183,8 @@ struct MethodPromptTests {
         // ⚠️ A `MoveBlock` since finding I2, not a `BoardError` throw — the same
         // change, and for the same reason, as `unknownMethodRefuses` above:
         // whatever refuses a move has to be visible to whatever predicts it.
-        let result = try await f.board.move(cardID: card.id, to: .inProgress, origin: .userDrag)
+        let result = try await f.board.move(
+            cardID: card.id, to: .inProgress, origin: .userDrag, requiresVerifiedGreen: false)
         #expect(result == .blocked(.methodHasNoStep(
             method: stepless.displayName, kind: SkillKind.implementIssue.skillName)))
 

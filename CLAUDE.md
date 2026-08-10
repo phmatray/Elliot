@@ -328,12 +328,31 @@ family *Things that bite* catalogues below, and like the other five it never say
 prints the resolved path (`/opt/homebrew/bin/gh — gh version …`, never `/tmp/shim/gh`) and *Login shell
 environment* prints `Captured via /bin/zsh -lic — 47 PATH entries` — or `.warn`s *"Could not read the
 login shell"*, which is the one case where the shim really is stripped, because both `-lic` and `-lc`
-failed and `capture()` fell back to a built-in `PATH`. **Instead:** from a test, point
-`ToolConfig.ghPath` at `Scripts/fake-gh.sh` — the seam *Testing discipline* describes below, no
-production change; from a launched app, cause a *genuine* failure, e.g. an owner handle that does not
-exist (`gh repo list phmatray-does-not-exist-9f3a` → *"the owner handle … was not recognized as either
-a GitHub user or an organization"*, exit 1), which is what #183 did and is stronger evidence than a
-simulated one.
+failed and `capture()` fell back to a built-in `PATH`.
+
+✅ **Since #238 there is a mechanism that works, and it is the first thing to reach for:**
+
+```bash
+open -n --env ELLIOT_HOME=/tmp/elliot-check --env ELLIOT_GH_PATH=/tmp/shim/gh dist/Elliot.app
+```
+
+`ELLIOT_<TOOL>_PATH` — `ELLIOT_GH_PATH`, `ELLIOT_CLAUDE_PATH`, `ELLIOT_GIT_PATH`, and any fourth tool
+for free, since the name is derived rather than listed. It is read *ahead* of the captured `PATH`, so
+it cannot be out-ranked the way a prepended directory is, and Preflight's row says `— set by
+ELLIOT_GH_PATH` so an override never changes which binary runs without the screen saying so.
+
+⛔ **An override that names something unrunnable is a Preflight failure, not a fall-back.** That is the
+whole point of the case existing: `ToolLocator.find` used to fall through to `PATH`, so "I told it
+which `gh` to use and it quietly ran a different one" was the design. Measured while fixing it — with
+the fall-through restored, an override of `/tmp/definitely-not-here-9f3a` resolved to
+`/opt/homebrew/bin/gh`, a different binary, reporting `foundVia: "PATH (/bin/zsh -lic)"` and no error
+anywhere.
+
+The older advice still holds where it is stronger: from a test, point `ToolConfig.ghPath` at
+`Scripts/fake-gh.sh` — the seam *Testing discipline* describes below, no production change; and to see
+a real failure rather than a simulated one, cause a genuine one (`gh repo list
+phmatray-does-not-exist-9f3a` → *"the owner handle … was not recognized as either a GitHub user or an
+organization"*, exit 1), which is what #183 did.
 
 **Since #155 the *agent* can look too: `board_screenshot`.** Elliot renders its own window with
 `NSView.cacheDisplay` and hands back a PNG as an MCP image block, so no permission is involved and
@@ -370,6 +389,50 @@ human has opened it. Plan an on-screen pass for a secondary window as *needing a
 discovering it after building the bundle and seeding a store. The refusal is at least honest — it
 names the two cases apart and lists what is open — which is the one thing this file's false-negative
 family never does.
+
+⚠️ **Re-measured 2026-08-09 (#333) on a bundle built from `main`, and the reply has changed — the
+conclusion has not, it has hardened.** Those six scenes are no longer *windows*; the console
+refactor made them **faces of the board window**, so there is nothing to be "not open":
+
+| call | reply |
+|---|---|
+| `board_screenshot window=preflight` | `window_not_found` · *"No Elliot window is called "preflight"."* · hint: **"Known windows: board."** |
+| `board_screenshot window=board` | `is_visible: true`, `source: live`, 1510×995 |
+
+⛔ **I wrote here that "a console face cannot be photographed by an agent at all", and that is
+wrong.** It is a fact about `window=`, not about photographing a face. The console unfolds **inside
+the board window**, so `window=board` *contains* whichever face is open — a face is photographable
+the moment it **is** open. What is actually missing is a way to open one: `AppModel.console` is
+deliberately not persisted ("a board that reopened onto Operations would be reporting on a machine
+state from a previous session"), so which face is showing cannot be arranged in the database the way
+a card or a repository can, and every face needs a **press**.
+
+The honest rule: **a console face is unverifiable from a session holding no Accessibility grant, and
+verifiable from one that does** — press the door or the View-menu item, then `board_screenshot
+window=board`. Two sessions on 2026-08-10 measured `AXIsProcessTrusted()` and
+`CGPreflightScreenCaptureAccess()` both **`true`** against the table above, and one used exactly that
+route to verify a whole feature (#334) including a figure decrementing live.
+
+⛔ **Do not read either table as durable, and do not read the sentence I got wrong as a reason to
+skip looking.** Measure the two preflights in the session you are in — which is what this section
+already said, and what I failed to do before writing a ⛔ over it.
+
+⚠️ **Five, not six: Up next stopped being a face in #304** and is now the acting band of Operations.
+The two lists further down that still name it are *records of measurements taken in #162*, when it
+was a scene, and stay as they were — correcting a dated reading would turn evidence into a claim.
+This paragraph is the live one, which is why it is the one that moves.
+
+The `elliot` helper registered with Claude Code points at whichever `ELLIOT_HOME` it was registered
+under, so to reach a scratch instance, spawn one yourself and speak JSON-RPC at its stdin — and
+⚠️ **keep stdin open**: `subprocess.communicate()` closes it, and this helper then exits 0 having
+written nothing at all, which reads exactly like a helper that failed to start. Send `initialize`,
+then `notifications/initialized`, then `tools/call`, reading replies as they arrive.
+
+⚠️ **A repository inserted with `sqlite3` while the app is running does not appear on the board**,
+though `board_list_repos` reports it the same second. That is not a defect and not a race: SQLite
+does not notify *other processes* of writes, which is the whole reason the app is the sole writer —
+the in-app MCP handler re-reads per call and sees it, the app's `ValueObservation` never fires. Seed
+**before** launching, then `PRAGMA wal_checkpoint(TRUNCATE)`.
 
 ⚠️ **A long `ELLIOT_HOME` silently costs you the MCP socket.** `sun_path` is capped at 104 bytes on
 macOS, so a scratch home under a deep path makes `startIPC` fail; the app runs fine, and Preflight
@@ -615,7 +678,9 @@ sqlite3 "$ELLIOT_HOME/elliot.sqlite" "PRAGMA wal_checkpoint(TRUNCATE);"
 Point the seeded repo at a throwaway `git init` directory, not one of Philippe's checkouts: the cards
 then render "Repository blocked — see Preflight", which is the state you want for a look-only pass
 because no transition can spawn an agent from it. Leave **To Do** and **In Progress** empty if you
-want to exercise the "arrows skip empty columns" rule.
+want to exercise the "arrows skip empty columns" rule. (Since #298 a swept blocked card names the
+check instead — *"Blocked: Main checkout"* — and the older generic sentence survives only for a
+repository whose verdict was restored from the database with no reading behind it yet.)
 
 ⛔ **That sentence was false from the day it was written until #249, and it is the most expensive
 false claim this file has carried** — it invited a verification pass to leave an armed board on
@@ -625,6 +690,12 @@ dragged perfectly well and spawned `claude -p` at `bypassPermissions` inside the
 Two other documents asserted the same gate — `PreflightService.isBlocking`'s doc comment ("whether a
 repo's cards can be dragged at all") and `labelsCheck`, which was made a *warning* rather than a
 failure on the strength of it. **Three assertions, no implementation.**
+
+⚠️ **`PreflightService.isBlocking` no longer exists** (#302). Every sentence about it here is history
+and stays that way; the function was deleted rather than kept as a wrapper, because two names for one
+question is what this section is about. Its replacement is `PreflightReading` in `ElliotEngine` —
+checks *plus the moment they were taken*, so it **cannot be built without a sweep having happened**
+and the absent case is a missing value rather than an empty array.
 
 It is true now: `Repo.preflight` carries the verdict, `BoardService.proposeMove` reads it off the row
 it already loads, and `evaluateMove` refuses with `MoveBlock.repoBlocked`. Held by `BlockedRepoTests`,
@@ -636,7 +707,16 @@ whenever a rate-limited `gh label list` stops the sweep finishing. So a seeded b
 **once its repositories have actually been swept**; between launch and the first sweep every
 repository is `notChecked` and every transition is live. The lesson generalises past this bug: a
 two-valued answer to a three-valued question is how the gap hid for as long as it did —
-`isBlocking([])` is `false`, so "nobody looked" and "it passed" were the same value.
+`isBlocking([])` **was** `false`, so "nobody looked" and "it passed" were the same value.
+
+⚠️ **And the same two-valued answer was still being given one layer up until #302.** The rule engine
+could say `notChecked`; the *screens* could not, because both callers reached `isBlocking` through
+`repoChecks[id] ?? []`, which turns an unswept repository into a pass. Two live consequences fell out
+of fixing it, neither of which the issue predicted: the verdict is **persisted** and the readings are
+not, so a repository that failed last session refused every drag while its cards drew nothing at all
+until the first sweep landed — and the checks' disclosure state was keyed on `CheckResult.id` alone,
+which repeats across repositories, so collapsing *Labels* on one collapsed it on all. Both were
+invisible with a single repository registered, which is how every scratch board is seeded.
 
 ### Board transitions
 
@@ -910,8 +990,35 @@ There is no wall-clock kill (`merge-pr` waiting hours on CI is legitimate). What
 **silence**: 20 minutes without output marks the run stalled and asks. Cancellation is a plain SIGTERM —
 Claude Code handles it, aborts the turn, kills its Bash process tree, runs SessionEnd hooks, exits 143.
 
-Runs default to `--permission-mode bypassPermissions`; `permissionMode` is a per-repo column if you want
-to tighten one.
+Runs default to `--permission-mode bypassPermissions`. **Since #333 a single repository can actually be
+tightened** — Preflight ▸ each repository ▸ *Run terms*, holding the mode picker and the extra allowed
+tools, written through `AppModel.setRunTerms` → `saveRepo`.
+
+⚠️ **This line claimed that capability for the whole life of the project and it did not exist.**
+`permissionMode` and `extraAllowedTools` are **v1** columns; `RunScheduler` read both at spawn,
+`ClaudeInvocation.arguments()` emitted both flags, `board_list_repos` reported the mode, and **nothing
+anywhere ever assigned either one**. Every registration took `bypassPermissions` and `[]` permanently,
+so every drag in every registered repository started `claude -p` accepting every tool call and asking
+nobody. Three documents described the knob — this file, `Repo.permissionMode`'s doc comment, and
+`ListReposTool`'s description telling an agent to *"read `permissionMode` before you move a card"* — and
+not one of them was wrong about what the value *meant*; they were wrong that it could ever be anything
+else. It is the milder cousin of the `isBlocking` defect below: not a gate asserted in three places and
+implemented in none, but a setting readable everywhere and writable nowhere. **A column with readers is
+not a feature until something writes it.**
+
+Two things worth keeping from the fix:
+
+- **Only `bypassPermissions` has ever been run.** The picker offers all six tokens `claude --help`
+  accepts and explains exactly one of them, because the CLI documents no semantics for any and this
+  board has exercised no other. The five say so. Inventing their behaviour would be the `x402-dotnet`
+  mistake in miniature — prose that afterwards reads as a measurement.
+- ⛔ **A sweep must not write back a row it captured before a network call.** `refreshRepoChecks`
+  captures `repos`, then per repository awaits `preflight.repoChecks(repo)` — `gh` and `git`, so
+  *seconds* — and used to save the captured row whole. That silently reverted anything saved during the
+  window, and a first sweep after launch opens it for every repository at once. Harmless while the only
+  field at risk was `isEnabled`; not harmless when it is the one bounding what an unattended agent may
+  do. `BoardStore.saveRepoPreflight` writes the verdict column alone, and `setRunTerms` re-reads the row
+  rather than editing the copy the view was rendering — the same hazard pointed the other way.
 
 ### Artefact retention
 

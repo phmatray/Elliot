@@ -86,10 +86,55 @@ public final class BoardStore: Sendable {
         return writer
     }
 
+    /// Raw SQL, for tests only.
+    ///
+    /// **`internal`, so only `@testable import` reaches it** — the app and the
+    /// MCP helper cannot call this, which is the point. It exists because some
+    /// claims are about rows the *type system cannot write*: a `skillRun` whose
+    /// `kind` is a skill this build has never heard of is what a newer build
+    /// leaves behind, and `daySpend`'s two-statement shape is written for
+    /// exactly that row. There is no way to produce it through `saveRun`, so
+    /// without this the reasoning in that comment could only be asserted.
+    ///
+    /// ⛔ Not a general escape hatch. Anything a test can express through the
+    /// typed API belongs there: raw SQL passes straight through the schema, so
+    /// it can also create rows no migration would ever produce, which is a test
+    /// proving something about a database that cannot exist.
+    func testOnlyExecute(_ sql: String) async throws {
+        try await requireWriter().write { db in try db.execute(sql: sql) }
+    }
+
     // MARK: - Repos
 
     public func saveRepo(_ repo: Repo) async throws {
         try await requireWriter().write { db in try repo.save(db) }
+    }
+
+    /// Writes Preflight's verdict and **only** Preflight's verdict.
+    ///
+    /// `AppModel.refreshRepoChecks` captures `repos`, then per repository awaits
+    /// `preflight.repoChecks(repo)` — which shells out to `gh` and `git`, so the
+    /// suspension is seconds long, not microseconds. Writing the captured row
+    /// back through ``saveRepo(_:)`` therefore reverts anything saved during
+    /// that window, and a first sweep after launch moves every repository from
+    /// `notChecked`, so the window opens for all of them at once.
+    ///
+    /// The hazard has existed since the verdict was persisted and never
+    /// mattered, because `isEnabled` and a sweep are rarely touched together. It
+    /// starts mattering the moment the field being silently reverted is the one
+    /// bounding what an unattended agent may do to a checkout: a safety control
+    /// that quietly returns to `bypassPermissions` while the screen still shows
+    /// the tightened value is worse than no control at all.
+    ///
+    /// A single-column `UPDATE` rather than a read-modify-write, so there is no
+    /// window of its own to reason about.
+    public func saveRepoPreflight(id: UUID, verdict: PreflightState) async throws {
+        _ = try await requireWriter().write { db in
+            try db.execute(
+                sql: "UPDATE repo SET preflight = ? WHERE id = ?",
+                arguments: [verdict.rawValue, id.databaseKey]
+            )
+        }
     }
 
     public func deleteRepo(id: UUID) async throws {
@@ -115,7 +160,7 @@ public final class BoardStore: Sendable {
                 .filter(Analysis.Columns.repoID == repoID.databaseKey)
                 .fetchCount(db)
             let proposals = try Self
-                .proposalQuery(analysisID: nil, repoID: repoID, status: nil)
+                .proposalQuery(analysisID: nil, repoID: repoID, runID: nil, status: nil)
                 .fetchCount(db)
             return ForgetImpact(
                 cards: cards, runs: runs, analyses: analyses, proposals: proposals)
@@ -307,6 +352,30 @@ public final class BoardStore: Sendable {
         }
     }
 
+    /// The day's spend, total and split by skill, from **one** boundary.
+    ///
+    /// The two aggregates above were both public and both took a `since`, and
+    /// the only caller that wants both — a screen showing a total with its
+    /// breakdown under it — had to read the clock twice. Across midnight those
+    /// are two different days: the split would then not add up to the total
+    /// beside it, silently, on the one screen whose subject is money.
+    ///
+    /// So the boundary is taken once here and travels in the answer. Nothing is
+    /// computed that the two queries did not already compute; what this method
+    /// adds is that the pair cannot be assembled from two midnights.
+    ///
+    /// Two statements rather than one grouped query with a rollup: the total
+    /// must keep counting runs whose `kind` no longer decodes, which a `GROUP BY`
+    /// summed in Swift would quietly drop — `spendByKind` skips an unknown raw
+    /// value, and it is right to.
+    public func daySpend(since: Date) async throws -> DaySpend {
+        DaySpend(
+            since: since,
+            total: try await spend(since: since),
+            byKind: try await spendByKind(since: since)
+        )
+    }
+
     /// What one analysis cost, across all of its lenses.
     public func spend(analysisID: UUID) async throws -> Spend {
         try await reader.read { db in
@@ -443,6 +512,17 @@ public final class BoardStore: Sendable {
     public func backfillCardAngles() async throws {
         try await requireWriter().write { db in
             try db.execute(sql: Migrations.backfillCardAnglesSQL)
+        }
+    }
+
+    /// Runs the v12 backfill again. Idempotent — it only writes a card whose
+    /// `appraisedAt` is still NULL **and** which has a proposal to read one
+    /// from, so it can neither redo an appraisal nor blank one it has nothing
+    /// to say about — and exists so a test can assert what the migration does
+    /// without reaching into `grdb_migrations`.
+    public func backfillCardAppraisals() async throws {
+        try await requireWriter().write { db in
+            try db.execute(sql: Migrations.backfillCardAppraisalsSQL)
         }
     }
 
@@ -905,29 +985,48 @@ public final class BoardStore: Sendable {
         try await saveProposals([proposal])
     }
 
-    /// Flips a proposal from `.proposed` to `status`, atomically: `true` means
-    /// this call won, `false` means it does not exist or another caller
-    /// already decided it first — accepted or rejected, in either direction.
+    /// Moves a proposal along one ``ProposalClaim``, atomically: `true` means
+    /// this call won, `false` means it does not exist or was not in the status
+    /// the claim moves out of — because another caller decided it first, in
+    /// either direction, or because it has already produced a card.
     ///
     /// `AnalysisService` is a reentrant actor — concurrent `accept`/`reject`
-    /// calls for the same id (a double-tap, an MCP retry, or — once Task 13's
-    /// Analysis window ships — an ordinary double-click on *Reject* and
-    /// *→ Backlog* sitting side by side over one multi-selection) can each be
-    /// past a `fetch → check .proposed` read before any of them has written.
-    /// A single conditional `UPDATE` is what makes that safe: SQLite
-    /// serializes every write, so only the first caller whose `UPDATE` still
-    /// finds `status = 'proposed'` changes anything, and every other caller —
-    /// including one deciding the *opposite* way — sees zero rows changed
-    /// rather than a stale read it has no way to know is stale. This is the
-    /// same reason a losing `reject` can never wipe an already-`.accepted`
-    /// row's `acceptedCardID`: it never issues an unconditional write at all.
-    public func claimProposal(id: UUID, to status: ProposalStatus) async throws -> Bool {
+    /// calls for the same id (a double-tap, an MCP retry, or an ordinary
+    /// double-click on *Reject* and *Accept* sitting 6pt apart over one
+    /// multi-selection) can each be past a `fetch → check .proposed` read
+    /// before any of them has written. A single conditional `UPDATE` is what
+    /// makes that safe: SQLite serializes every write, so only the first caller
+    /// whose `UPDATE` still finds the expected status changes anything, and
+    /// every other caller — including one deciding the *opposite* way — sees
+    /// zero rows changed rather than a stale read it has no way to know is
+    /// stale. This is the same reason a losing `reject` can never wipe an
+    /// already-`.accepted` row's `acceptedCardID`: it never issues an
+    /// unconditional write at all.
+    ///
+    /// ⛔ **`restore` had to arrive inside this statement, not beside it.** The
+    /// obvious undo — read the row, check it is `.rejected`, write `.proposed`
+    /// — is character for character the fetch/check/write this method exists to
+    /// replace, and it reintroduces the same race one direction further round:
+    /// a restore that loses to a concurrent accept would put a proposal whose
+    /// card already exists back on the triage list. Because the claim carries
+    /// both ends of its transition, it stays one statement (#292).
+    ///
+    /// ⚠️ **`acceptedCardID IS NULL` is redundant for `accept` and `reject` and
+    /// load-bearing for `restore`** — which is exactly why it is written once,
+    /// here, rather than per claim. Both of the first two move *out of*
+    /// `.proposed`, a status no reachable path leaves a card id on, so the
+    /// predicate can only ever be true for them; `restore` moves out of
+    /// `.rejected`, where a card id genuinely can sit, and letting that row
+    /// through is how one story grows two Backlog cards. A fourth claim
+    /// inherits the guard instead of having to remember it.
+    public func claimProposal(id: UUID, _ claim: ProposalClaim) async throws -> Bool {
         try await requireWriter().write { db in
             try db.execute(
                 sql: #"""
-                    UPDATE "storyProposal" SET "status" = ? WHERE "id" = ? AND "status" = ?
+                    UPDATE "storyProposal" SET "status" = ?
+                     WHERE "id" = ? AND "status" = ? AND "acceptedCardID" IS NULL
                     """#,
-                arguments: [status.rawValue, id.databaseKey, ProposalStatus.proposed.rawValue]
+                arguments: [claim.to.rawValue, id.databaseKey, claim.from.rawValue]
             )
             return db.changesCount > 0
         }
@@ -937,21 +1036,27 @@ public final class BoardStore: Sendable {
         try await reader.read { db in try StoryProposal.fetchOne(db, key: id.databaseKey) }
     }
 
+    /// Every filter is `nil`-means-unfiltered and they compose, so
+    /// `proposals(runID:)` answers "what did *this lens* land" — which is what
+    /// a repeat harvest has to know before it writes anything (#330).
     public func proposals(
         analysisID: UUID? = nil,
         repoID: UUID? = nil,
+        runID: UUID? = nil,
         status: ProposalStatus? = nil,
         limit: Int = 500
     ) async throws -> [StoryProposal] {
         try await reader.read { db in
-            try Self.proposalQuery(analysisID: analysisID, repoID: repoID, status: status)
-                .limit(limit)
-                .fetchAll(db)
+            try Self.proposalQuery(
+                analysisID: analysisID, repoID: repoID, runID: runID, status: status
+            )
+            .limit(limit)
+            .fetchAll(db)
         }
     }
 
     private static func proposalQuery(
-        analysisID: UUID?, repoID: UUID?, status: ProposalStatus?
+        analysisID: UUID?, repoID: UUID?, runID: UUID?, status: ProposalStatus?
     ) -> QueryInterfaceRequest<StoryProposal> {
         var request = StoryProposal.all()
         if let analysisID {
@@ -959,6 +1064,9 @@ public final class BoardStore: Sendable {
         }
         if let repoID {
             request = request.filter(StoryProposal.Columns.repoID == repoID.databaseKey)
+        }
+        if let runID {
+            request = request.filter(StoryProposal.Columns.runID == runID.databaseKey)
         }
         if let status {
             request = request.filter(StoryProposal.Columns.status == status.rawValue)
@@ -971,7 +1079,9 @@ public final class BoardStore: Sendable {
     public func observeProposals(analysisID: UUID) -> AsyncValueObservation<[StoryProposal]> {
         ValueObservation
             .tracking { db in
-                try Self.proposalQuery(analysisID: analysisID, repoID: nil, status: nil).fetchAll(db)
+                try Self.proposalQuery(
+                    analysisID: analysisID, repoID: nil, runID: nil, status: nil
+                ).fetchAll(db)
             }
             .removeDuplicates()
             .values(in: reader)
@@ -979,16 +1089,39 @@ public final class BoardStore: Sendable {
 
     // MARK: - Dismissals
 
-    public func dismissals(repoID: UUID) async throws -> Set<ExternalRef> {
+    /// The one read of `dismissedExternal`, in the one shape that keeps
+    /// everything the table stores.
+    ///
+    /// `repoID: nil` is every repository — the meaning *All repositories* has on
+    /// the board's picker — and an id that matches nothing is an empty list
+    /// rather than the whole table.
+    ///
+    /// A row whose `kind` does not decode is dropped, which is what `dismissals`
+    /// has always done: the column is a `String` and the enum is closed, so a
+    /// value written by a newer build names a kind this one cannot act on.
+    /// Dropping it costs a suppression its row in the list; keeping it would
+    /// need a `DismissedItem` that cannot say what it is.
+    ///
+    /// Ordered through ``DismissalDigest/rows(_:repoID:)`` rather than by a
+    /// `SQL ORDER BY`, so the sort the reader sees is decided **once**, in the
+    /// pure type that is tested for being total. The filter has already happened
+    /// in SQL, hence `repoID: nil` here.
+    public func dismissedItems(repoID: UUID?) async throws -> [DismissedItem] {
         try await reader.read { db in
-            let rows = try DismissalRecord
-                .filter(SQLColumn("repoID") == repoID.databaseKey)
-                .fetchAll(db)
-            return Set(
-                rows.compactMap { row in
-                    ExternalKind(rawValue: row.kind).map { ExternalRef(kind: $0, number: row.number) }
-                })
+            var request = DismissalRecord.all()
+            if let repoID { request = request.filter(SQLColumn("repoID") == repoID.databaseKey) }
+            return Self.items(try request.fetchAll(db))
         }
+    }
+
+    /// The importer's view: the keys, and nothing else.
+    ///
+    /// A **projection** of ``dismissedItems(repoID:)`` since #334, not a second
+    /// SELECT over the same table. `GitHubImporter.plan` is still its only
+    /// caller and still needs only the keys; what changed is that the reader's
+    /// query and the importer's cannot drift apart, because there is one query.
+    public func dismissals(repoID: UUID) async throws -> Set<ExternalRef> {
+        Set(try await dismissedItems(repoID: repoID).map(\.ref))
     }
 
     /// Idempotent: dismissing something already dismissed is not an error, and
@@ -1002,10 +1135,67 @@ public final class BoardStore: Sendable {
         }
     }
 
+    /// Deletes **exactly one** suppression — the whole point of #334, against a
+    /// board whose only undo was ``clearDismissals(repoID:)``.
+    ///
+    /// Keyed on all three columns of the primary key. A delete keyed on the
+    /// number alone would take issue 5 *and* pull request 5, which is the pair a
+    /// single card writes; keyed without the repository it would reach into
+    /// every repository at once, which is the bulk act this method exists to
+    /// avoid.
+    ///
+    /// Idempotent, matching ``dismiss(_:repoID:now:)`` from the other side: a
+    /// row the last refresh already brought back is a row *Restore* can be
+    /// pressed on twice.
+    ///
+    /// ⚠️ This creates **no card**. The importer creates cards; a second path
+    /// that inserted one would be the second write path `BoardService` exists to
+    /// prevent. The row goes, and the next refresh brings the card back.
+    public func undismiss(_ ref: ExternalRef, repoID: UUID) async throws {
+        _ = try await requireWriter().write { db in
+            try DismissalRecord
+                .filter(SQLColumn("repoID") == repoID.databaseKey)
+                .filter(SQLColumn("kind") == ref.kind.rawValue)
+                .filter(SQLColumn("number") == ref.number)
+                .deleteAll(db)
+        }
+    }
+
     public func clearDismissals(repoID: UUID) async throws {
         _ = try await requireWriter().write { db in
             try DismissalRecord.filter(SQLColumn("repoID") == repoID.databaseKey).deleteAll(db)
         }
+    }
+
+    /// Every suppression, live.
+    ///
+    /// Its own observation for the reason `observePRStatuses` has one: nothing
+    /// about a dismissal touches a card row, so a figure refreshed off the card
+    /// observation would follow a restore exactly never. It is what makes the
+    /// status-bar figure a reading of the table rather than of the last import
+    /// summary — a stale count cannot outlive the fact it reports.
+    public func observeDismissals() -> AsyncValueObservation<[DismissedItem]> {
+        ValueObservation
+            .tracking { db in Self.items(try DismissalRecord.fetchAll(db)) }
+            .removeDuplicates()
+            .values(in: reader)
+    }
+
+    /// Rows to items, in one place, so the three readers above cannot disagree
+    /// about what a row means or what order they arrive in.
+    ///
+    /// The ordering matters to `removeDuplicates()` as much as to the eye: two
+    /// deliveries of an unchanged table must compare equal, and an array whose
+    /// order is SQLite's rowid order is only accidentally stable across a delete
+    /// and a re-insert.
+    private static func items(_ rows: [DismissalRecord]) -> [DismissedItem] {
+        let items = rows.compactMap { row -> DismissedItem? in
+            guard let kind = ExternalKind(rawValue: row.kind) else { return nil }
+            return DismissedItem(
+                repoID: row.repoID, ref: ExternalRef(kind: kind, number: row.number),
+                dismissedAt: row.dismissedAt)
+        }
+        return DismissalDigest.rows(items, repoID: nil)
     }
 
     // MARK: - Audit

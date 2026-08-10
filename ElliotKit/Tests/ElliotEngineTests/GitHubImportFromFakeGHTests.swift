@@ -270,6 +270,75 @@ struct GitHubImportFromFakeGHTests {
         #expect(third.skippedDismissed == 0)
     }
 
+    // MARK: - #334: one dismissal undone, and only that one
+
+    /// Criterion 2, end to end and through the real subprocess: *restoring one
+    /// removes only that row, and the next refresh brings the item back*.
+    ///
+    /// `clearDismissalsUndoesIt` above proves the bulk act, and it cannot
+    /// distinguish "restored the one I pressed" from "restored everything" —
+    /// which was the only undo the board had.
+    @Test("Restoring one dismissal brings back that card and leaves the other suppressed")
+    func restoringOneBringsBackOnlyThatCard() async throws {
+        let s = try await stack()
+        _ = try await importRepo(s)
+
+        // Two separate units: issue 101 carries no pull request, issue 103
+        // carries the draft PR 202.
+        for number in [101, 103] {
+            let doomed = try #require(
+                try await s.store.cards(repoID: s.repo.id).first { $0.issueNumber == number })
+            try await s.board.deleteCard(id: doomed.id)
+        }
+        let second = try await importRepo(s)
+        #expect(second.created == 0)
+        #expect(second.skippedDismissed >= 2)
+        #expect(try await s.store.cards(repoID: s.repo.id).count == 1)
+
+        try await s.store.undismiss(ExternalRef(kind: .issue, number: 101), repoID: s.repo.id)
+        let third = try await importRepo(s)
+
+        let after = try await s.store.cards(repoID: s.repo.id)
+        #expect(after.contains { $0.issueNumber == 101 }, "the restored issue came back")
+        #expect(
+            !after.contains { $0.issueNumber == 103 },
+            "and the one still dismissed stayed away — otherwise this is the bulk act again")
+        #expect(third.created == 1)
+        #expect(third.skippedDismissed >= 1)
+    }
+
+    /// The edge case the face's own footer describes, asserted rather than only
+    /// written down: a card carrying **both** an issue and its pull request left
+    /// two rows, and `plan` skips the unit if *either* is dismissed
+    /// (`contains(where: dismissed.contains)`). So restoring one half changes
+    /// nothing a reader can see, which is precisely why the list shows both.
+    @Test("Restoring one half of a pair leaves the unit suppressed until both are back")
+    func restoringOneHalfOfAPairKeepsTheUnitSuppressed() async throws {
+        let s = try await stack()
+        _ = try await importRepo(s)
+
+        // Issue 102 is paired with PR 201 by its branch, so this one card holds
+        // two refs and `deleteCard` writes two rows.
+        let paired = try #require(
+            try await s.store.cards(repoID: s.repo.id).first { $0.issueNumber == 102 })
+        #expect(paired.prNumber == 201, "the fixture stopped pairing them; this test needs a pair")
+        try await s.board.deleteCard(id: paired.id)
+
+        let issue = ExternalRef(kind: .issue, number: 102)
+        let pr = ExternalRef(kind: .pullRequest, number: 201)
+        #expect(try await s.store.dismissals(repoID: s.repo.id) == [issue, pr])
+
+        try await s.store.undismiss(issue, repoID: s.repo.id)
+        _ = try await importRepo(s)
+        #expect(
+            try await s.store.cards(repoID: s.repo.id).allSatisfy { $0.issueNumber != 102 },
+            "half a restore is not a restore: the pull request still suppresses the unit")
+
+        try await s.store.undismiss(pr, repoID: s.repo.id)
+        _ = try await importRepo(s)
+        #expect(try await s.store.cards(repoID: s.repo.id).contains { $0.issueNumber == 102 })
+    }
+
     // MARK: - #17's criterion 7: one unreachable repository is not the others' problem
 
     @Test("A gh failure becomes ImportSummary.failure rather than throwing out of importRepo")

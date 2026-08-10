@@ -172,29 +172,45 @@ public enum RunLog {
 
 /// The two halves of what a finished run amounts to, kept apart on purpose.
 ///
-/// `itSaid` is the agent's own closing prose. It is displayed and never parsed —
-/// no issue number, no PR number, no verdict is ever taken from it. `ghSays` is
-/// derived from `verifiedOutcome`, which `Verifier` obtained from `gh … --json`.
-/// The app's whole epistemology is that these are different kinds of thing, and
-/// this type is where that stops being a convention.
+/// `closing` is what the run left behind **and whose words they are**. `ghSays`
+/// is derived from `verifiedOutcome`, which `Verifier` obtained from
+/// `gh … --json`. The app's whole epistemology is that these are different kinds
+/// of thing, and this type is where that stops being a convention.
+///
+/// ⚠️ The claim side used to be a bare `itSaid: String?`, and that name was the
+/// bug: it asserted an author the field could not vouch for. A run that died
+/// before its terminal event stored *stderr* there, and a run Elliot could not
+/// start stored a sentence Elliot had written — both rendered as the agent's
+/// prose, in the one block built to say which of two things may be believed
+/// (#288). `itSaid` survives below as the hearsay half only, and it is now a
+/// question the type can answer rather than a label it applies by default.
 public struct RunVerdict: Sendable, Hashable {
-    /// `run.resultText`. Demoted italic proportional. Never parsed.
-    public var itSaid: String?
+    /// What the run had to say for itself, attributed. Never parsed.
+    public var closing: ClosingRemark?
     /// `run.verifiedOutcome?.receiptText`. Fact face.
     public var ghSays: String?
 
-    public init(itSaid: String? = nil, ghSays: String? = nil) {
-        self.itSaid = itSaid
+    public init(closing: ClosingRemark? = nil, ghSays: String? = nil) {
+        self.closing = closing
         self.ghSays = ghSays
     }
 
-    /// Splits a run into claim and fact. Pure, and it reads exactly two fields:
-    /// nothing on the `ghSays` side can come from `resultText`, whatever that
-    /// text happens to claim.
+    /// The agent's own prose, and only ever that.
+    ///
+    /// Stderr and Elliot's own notes cannot appear here whatever the run
+    /// stored, because this reads the attribution rather than the field. That
+    /// is the guarantee the old spelling could not make.
+    public var itSaid: String? {
+        closing.flatMap { $0.isHearsay ? $0.text : nil }
+    }
+
+    /// Splits a run into what it said and what `gh` found. Pure, and nothing on
+    /// the `ghSays` side can come from the closing text, whatever that text
+    /// happens to claim — nor, now, can the closing text be taken for the
+    /// agent's when it was the process's.
     public static func of(_ run: SkillRun) -> RunVerdict {
-        let said = run.resultText?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return RunVerdict(
-            itSaid: (said?.isEmpty ?? true) ? nil : said,
+        RunVerdict(
+            closing: run.closing?.trimmed(),
             ghSays: run.verifiedOutcome?.receiptText
         )
     }

@@ -143,17 +143,28 @@ struct ElliotApp: App {
         // menus with a shortcut, not reachable only by dragging — which is
         // slow across four columns and impossible without a pointer.
         CommandMenu("Card") {
-            Button("Advance") {
+            // Titles and enabled state come from `nudgeOffer`, which reaches
+            // `preview` — the same pure `evaluateMove` a drop commits with. The
+            // menu therefore names the consequence the column caption already
+            // shows, rather than holding a second opinion about the move.
+            //
+            // ⚠️ `model` stays passed in, never read from the environment:
+            // `Commands` sits outside the `.environment(model)` each Window
+            // carries, which is the #64 launch crash.
+            let advance = model.nudgeOffer(forward: true)
+            let back = model.nudgeOffer(forward: false)
+
+            Button(advance.title) {
                 Task { await model.nudgeSelection(forward: true) }
             }
             .keyboardShortcut(.rightArrow, modifiers: .command)
-            .disabled(model.selectedCard == nil)
+            .disabled(advance.isEnabled == false)
 
-            Button("Move back") {
+            Button(back.title) {
                 Task { await model.nudgeSelection(forward: false) }
             }
             .keyboardShortcut(.leftArrow, modifiers: .command)
-            .disabled(model.selectedCard == nil)
+            .disabled(back.isEnabled == false)
 
             Divider()
 
@@ -269,7 +280,9 @@ private struct NewStoryMenuItem: View {
 
     var body: some View {
         Button("New Story…") {
-            model.newCardRepoID = model.defaultRepoIDForNewCard
+            // See the toolbar button in `BoardView`: the face resolves its own
+            // repository, so nothing is assigned here. These two sites used to
+            // carry the identical pair of lines (#314).
             model.showConsoleFace(.newStory)
         }
         .keyboardShortcut("n")
@@ -323,12 +336,23 @@ private struct OpenWindowButtons: View {
 
     var body: some View {
         Button("Operations") { model.showConsoleFace(.operations) }
-        Button("Up Next") { model.showConsoleFace(.nextSteps) }
-        // No Analysis entry: it is not a window any more (#151). Show/Hide
-        // Analysis lives with the other View items, beside Show/Hide Details.
+        // No Up Next entry: it is not a screen any more (#304). It is the
+        // acting band of Operations, so this item and that one would name one
+        // destination twice — and a second door to a screen is what the console
+        // migration spent six waves removing.
+        //
+        // No Analysis entry either, for a different reason: it is not a window
+        // any more (#151). Show/Hide Analysis lives with the other View items,
+        // beside Show/Hide Details.
         Button("Repositories") { model.showConsoleFace(.repositories) }
         Button("Preflight") { model.showConsoleFace(.preflight) }
         Button("Archive") { model.showConsoleFace(.archive) }
+        // Load-bearing rather than decorative, unlike its four neighbours: the
+        // Dismissed door in the status bar is absent whenever nothing is
+        // dismissed, so without this item the face is unreachable at exactly the
+        // moment a reader would go looking to find out that it is empty.
+        // `ConsoleReachabilityTests` fails by name if it goes.
+        Button("Dismissed") { model.showConsoleFace(.dismissed) }
     }
 }
 

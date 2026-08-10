@@ -20,17 +20,26 @@ public struct MCPRequestHandler: Sendable {
     /// parity harness — genuinely has none, and a handler that manufactured one
     /// would report a picture of nothing as a picture.
     private let capture: (any WindowCapturing)?
+    /// The one reader of a pull request's stored verdict, shared with
+    /// `BoardService` so a page of cards and the merge that follows it read one
+    /// `gh pr list` between them rather than one each.
+    private let verdicts: PRVerdictReader
 
     public init(
         store: BoardStore,
         board: BoardService,
         analysis: AnalysisService,
-        capture: (any WindowCapturing)? = nil
+        capture: (any WindowCapturing)? = nil,
+        verdicts: PRVerdictReader? = nil
     ) {
         self.store = store
         self.board = board
         self.analysis = analysis
         self.capture = capture
+        // A handler built without one gets a reader that cannot reach `gh`.
+        // That is honest rather than lossy: every read here uses `.ageAlone`,
+        // which never asks `gh` anything.
+        self.verdicts = verdicts ?? PRVerdictReader(store: store, gh: nil)
     }
 
     /// Exhaustive by construction — no `default`. A request case added to the
@@ -173,6 +182,20 @@ public struct MCPRequestHandler: Sendable {
                     code: .analysisRefused,
                     message: error.localizedDescription,
                     hint: "Poll board_list_runs and try again when it finishes."
+                )
+            case .runNotFound, .notAnAnalysisRun, .runStillRunning, .alreadyHarvested,
+                 .reharvestInFlight:
+                // The five refusals of a repeat harvest (#330). **No wire case
+                // reaches them today** — `board_reharvest_run` is that issue's
+                // named non-goal, and a write case would have to refuse offline
+                // as well, which is a second design. They are classified anyway
+                // rather than swept into a `default`, because a `default` here
+                // is what would silently give a *new* analysis refusal whichever
+                // answer the shortest spelling happened to produce.
+                return .failure(
+                    code: .analysisRefused,
+                    message: error.localizedDescription,
+                    hint: "Harvest again from the lens row in Elliot's analysis panel."
                 )
             }
         } catch {
@@ -322,7 +345,12 @@ public struct MCPRequestHandler: Sendable {
         // An omitted list already became `[]` at the MCP boundary: an agent
         // saying nothing about follow-ups means "none", not "ask me".
         let result = try await board.move(
-            cardID: id, to: column, origin: .mcp(client: client), followUps: followUps
+            cardID: id, to: column, origin: .mcp(client: client), followUps: followUps,
+            // `false`: an MCP call is an agent acting as a human's proxy, with
+            // that human behind it and reading the reply. The restraint belongs
+            // to the caller that has nobody — and that caller does not arrive
+            // over this wire, which carries no origin of its own.
+            requiresVerifiedGreen: false
         )
 
         switch result {
@@ -575,12 +603,12 @@ public struct MCPRequestHandler: Sendable {
         return .one(match)
     }
 
+    /// Deliberately a one-line delegation rather than the words themselves: the
+    /// offline responder answers the same question and must answer it in the
+    /// same bytes, and the two targets cannot import each other. See
+    /// ``ElliotIPC/ElliotResponse/repoNotFound(name:in:)`` (#219).
     private static func unknownRepo(_ name: String, in repos: [Repo]) -> ElliotResponse {
-        .failure(
-            code: .repoNotFound,
-            message: "No registered repository matches \"\(name)\".",
-            hint: "Known: \(repos.map(\.nameWithOwner).joined(separator: ", "))"
-        )
+        .repoNotFound(name: name, in: repos)
     }
 
     private static func names(of repos: [Repo]) -> [UUID: String] {
@@ -602,24 +630,28 @@ public struct MCPRequestHandler: Sendable {
 
     /// The stored reading, resolved against the clock.
     ///
-    /// `currentHeadOid` is `nil` here on purpose: establishing the pull
-    /// request's head right now would mean a network call inside a read, and
-    /// `PRWatcher` already re-reads whenever the head moves. What remains in
-    /// force is the age rule, which is the one that matters when nothing has
-    /// been running — the app closed, asleep, or unable to reach `gh`.
+    /// `.ageAlone`, on purpose: establishing the pull request's head right now
+    /// would mean a `gh pr list` per card inside a read, and `PRWatcher` already
+    /// re-reads whenever the head moves. What remains in force is the age rule,
+    /// which is the one that matters when nothing has been running — the app
+    /// closed, asleep, or unable to reach `gh`.
     ///
-    /// `OfflineResponder` holds the identical five lines. They cannot be shared:
-    /// `ElliotMCPKit` imports neither this target nor `ElliotProcess`, so the
-    /// helper cannot hold a copy of the rules. `OfflineParityTests` is what keeps
-    /// them equal.
+    /// `OfflineResponder` computes the identical answer, and still cannot share
+    /// this code: `ElliotMCPKit` imports neither this target nor `ElliotProcess`,
+    /// so the helper holds no copy of the rules. `OfflineParityTests` is what
+    /// keeps them equal, and `.ageAlone` is what keeps them *able* to be equal —
+    /// a snapshot can never establish a head, so a live answer that did would
+    /// diverge from it by construction.
     private func prStatusDTO(for card: Card) async throws -> PRStatusDTO? {
         // In Review only — the same gate the watcher and the board apply. A card
         // `merge-pr` has just moved to Done would otherwise serve its pre-merge
         // reading as fresh for the whole `maximumAge` window, and the app and
         // this surface would disagree about the same card.
         guard card.column == .inReview, let number = card.prNumber else { return nil }
-        guard let status = try await store.prStatus(repoID: card.repoID, prNumber: number)
+        guard let repo = try await store.repo(id: card.repoID) else { return nil }
+        guard let reading = try await verdicts.reading(
+            repo: repo, prNumber: number, now: Date(), head: .ageAlone)
         else { return nil }
-        return PRStatusDTO(status, resolved: status.resolved(now: Date(), currentHeadOid: nil))
+        return PRStatusDTO(reading.status, resolved: reading.resolved)
     }
 }

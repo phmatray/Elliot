@@ -64,7 +64,7 @@ struct PRStatusPresentationTests {
         #expect(resolved.sign == .conflict)
         #expect(resolved.merge == .conflict)
         // The facets stay apart: the passing check is not swallowed by the sign.
-        #expect(resolved.ci == .passing(1))
+        #expect(resolved.ci == .passing(["build"]))
     }
 
     @Test("A card nothing has read draws nothing — an unestablished all-clear is the bug")

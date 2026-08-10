@@ -1,7 +1,10 @@
+import ElliotModel
+
 /// What the analysis panel's setup footer says, decided once.
 ///
-/// The setup slot answers three questions with one line — why Start is refused,
-/// why the last Start did not happen, and what the next one will spend — and
+/// The setup slot answers four questions with one line — why Start is refused,
+/// why the last Start did not happen, why the next one would be refused, and
+/// what it would otherwise spend — and
 /// until #138 it answered them with a chain of `if`s in `AnalysisPanelView`'s
 /// body. That is where the defect lived rather than merely where it showed:
 /// `swift test` cannot enter a view body, so the branch that could have
@@ -32,31 +35,110 @@ struct AnalysisFooterMessage: Equatable {
     let symbol: String
     let tone: Tone
 
+    /// What the reader can press about ``text``, and nothing else's.
+    ///
+    /// ⛔ **The fix travels with the sentence, and that is the whole reason it is
+    /// here rather than read straight off `AppModel.analysisRefusal` in the
+    /// view.** This value is what decides which of four sentences is on screen;
+    /// a footer that drew its button from the refusal would keep offering
+    /// *Switch … on* underneath a *failure* sentence about a start that threw
+    /// for some other reason — a remedy rendered under a diagnosis it does not
+    /// belong to. That is #134's defect (a sentence shown under a subject it is
+    /// not about) with a control attached, and one value carrying both is what
+    /// makes it unrepresentable.
+    ///
+    /// Empty for every branch but the refusal, by construction: the three
+    /// remaining sentences are about the *next* press rather than about
+    /// something standing in its way, and there is nothing to go and do about
+    /// what a start is about to spend.
+    let fixes: [AnalysisFix]
+
+    init(text: String, symbol: String, tone: Tone, fixes: [AnalysisFix] = []) {
+        self.text = text
+        self.symbol = symbol
+        self.tone = tone
+        self.fixes = fixes
+    }
+
     /// The setup slot's whole decision, in precedence order.
     ///
-    /// **Refusal ▸ failure ▸ consequence**, and each step of that order is a
-    /// claim rather than a preference:
+    /// **Refusal ▸ failure ▸ clash ▸ consequence**, and each step of that order
+    /// is a claim rather than a preference:
     ///
     /// - A **refusal** wins because Start is `.disabled` while one stands, so
     ///   nothing the reader does to the lenses can be attempted and a failure
     ///   underneath it is about an attempt that can no longer be repeated. The
-    ///   refusal is the only one of the three that names something to go and do.
-    /// - A **failure** outranks the consequence because toggling a lens changes
-    ///   what the *next* start would spend; it does not un-fail the last one.
-    ///   Falling back to the consequence line is precisely the bug — a sentence
-    ///   about what the button is about to spend, printed after it has already
-    ///   failed to spend it.
+    ///   refusal is the only one of the four that names something to go and do.
+    /// - A **failure** outranks the clash and the consequence because toggling a
+    ///   lens changes what the *next* start would do; it does not un-fail the
+    ///   last one. Falling back to a sentence about the next press is precisely
+    ///   the bug — a sentence about what the button is about to spend, printed
+    ///   after it has already failed to spend it.
+    /// - A **clash** outranks the consequence for the mirror-image reason. Both
+    ///   are about the next press, and the clash is the one that says it will
+    ///   not happen; a cost printed over a press that starts nothing is the same
+    ///   defect one step further along.
+    ///
+    /// ⛔ **The clash does not reduce the count, it replaces the sentence.**
+    /// `AnalysisService.start` refuses the whole set on the first clash before
+    /// it saves anything, so "reads the repository 7 times" for eight armed
+    /// lenses with one busy would be a figure for something that cannot happen.
+    /// The all-or-nothing rule is stated here because it is the one place the
+    /// reader meets it before pressing.
+    ///
+    /// ⚠️ **And it is worded as the reading it is.** The clash comes from a
+    /// snapshot the panel took; a lens can finish, or start, in between. Hence
+    /// *"when the lenses were last checked"* rather than a claim about now —
+    /// the same distinction the board draws between what `gh` established and
+    /// what an agent said.
     ///
     /// The three consequence sentences are the ones the view used to hold, moved
     /// verbatim so the copy cannot drift between here and there.
-    static func setup(angleCount: Int, failure: String?, refusal: String?) -> AnalysisFooterMessage {
+    ///
+    /// ⚠️ **`refusal` is an ``AnalysisRefusal`` rather than a `String` since
+    /// #294**, and the type change is the fix: the sentence and the button that
+    /// answers it arrive together, so the branch that chooses the sentence is
+    /// the one that hands on the button. Nothing else here may carry one — see
+    /// ``fixes``.
+    static func setup(
+        angleCount: Int,
+        clashing: [AnalysisAngle] = [],
+        failure: String?,
+        refusal: AnalysisRefusal?
+    ) -> AnalysisFooterMessage {
         if let refusal {
             return AnalysisFooterMessage(
-                text: refusal, symbol: "exclamationmark.octagon.fill", tone: .refused)
+                text: refusal.text, symbol: "exclamationmark.octagon.fill", tone: .refused,
+                fixes: refusal.fixes)
         }
         if let failure {
             return AnalysisFooterMessage(
                 text: failure, symbol: "exclamationmark.triangle.fill", tone: .refused)
+        }
+        if !clashing.isEmpty {
+            let names = Self.list(clashing.map(\.title))
+            let one = clashing.count == 1
+            // ⛔ "in flight", not "reading". A clashing lens may be *queued* —
+            // the service refuses on queued and running alike — and a queued
+            // run has not begun reading anything. The tile carries the two
+            // states separately because it has the room; this sentence names
+            // several lenses at once, so it needs the word that is true of
+            // both. Found by looking at the running app, where a queued lens
+            // read "Already reading   queued".
+            return AnalysisFooterMessage(
+                text: "\(names) already had \(one ? "a run" : "runs") in flight when the lenses "
+                    + "were last checked — Start is all or nothing, so untick "
+                    + "\(one ? "it" : "them") or wait.",
+                // The lens strip's own word for a run in flight, so the tile and
+                // the sentence about it read as one thing.
+                symbol: "hourglass",
+                // ⛔ Not a sixth accent, and not a third `Tone`. The sentence
+                // predicts a refusal — Start will throw — and `refused` is
+                // already what this value says for "Pick at least one lens.",
+                // which is just as mild and just as self-inflicted. A new tone
+                // here is a design decision, and this is not the change that
+                // should make it.
+                tone: .refused)
         }
         switch angleCount {
         case 0:
@@ -72,5 +154,17 @@ struct AnalysisFooterMessage: Equatable {
                 text: "Reads the repository \(angleCount) times — one run per lens.",
                 symbol: "bolt.fill", tone: .armed)
         }
+    }
+
+    /// `"Bugs"`, `"Bugs and Tech debt"`, `"Bugs, Tests and Tech debt"`.
+    ///
+    /// Here rather than `ListFormatter`: that one is locale-aware and this
+    /// sentence is not — the rest of it is written in English in this file, and
+    /// a half-localised sentence reads worse than an unlocalised one. It also
+    /// keeps the value testable against a literal.
+    private static func list(_ items: [String]) -> String {
+        guard let last = items.last else { return "" }
+        guard items.count > 1 else { return last }
+        return items.dropLast().joined(separator: ", ") + " and " + last
     }
 }

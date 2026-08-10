@@ -47,7 +47,10 @@ struct CardView: View {
             }
 
             if let run = activeRun {
-                RunningStrip(run: run, lastLine: lastLine(of: run))
+                // No `context:` and no `cancel:`: the card *is* the run's
+                // context, and Cancel is in its menu. Operations' band passes
+                // both — one component, two surfaces.
+                RunningStrip(run: run, lastLine: model.lastLine(of: run))
             } else if let receipt = lastReceipt {
                 // What `gh` established, not what the agent said about itself.
                 HStack(spacing: 5) {
@@ -110,10 +113,30 @@ struct CardView: View {
                 }
             }
 
-            if isBlockedRepo {
-                Label("Repository blocked — see Preflight", systemImage: "exclamationmark.triangle.fill")
-                    .font(Type.prose)
-                    .foregroundStyle(Palette.attention)
+            // Names the check that refused this card, and goes there.
+            //
+            // A real `Button`, like `LinkBadge` above it, rather than a tap
+            // gesture on the label: a gesture here would be a second claimant on
+            // the card's own tap, which is the ancestor/descendant problem this
+            // board has already paid for four times.
+            //
+            // `lineLimit(1)` because a check title is not this file's to bound —
+            // it comes from `PreflightService` — and a card is a narrow surface
+            // whose height is shared with the columns either side of it. A long
+            // title truncates; it does not reflow the card.
+            if let badge = blockedBadge {
+                Button {
+                    model.openPreflight(badge)
+                } label: {
+                    Label(badge.sentence, systemImage: "exclamationmark.triangle.fill")
+                        .font(Type.prose)
+                        .foregroundStyle(Palette.attention)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .help(badge.openHint)
             }
 
             if let refusal = model.refusal, refusal.cardID == card.id {
@@ -149,6 +172,17 @@ struct CardView: View {
         // operable to assistive technology and do nothing when operated. The
         // tap gesture is invisible to it; this is the same act, exposed.
         .accessibilityAction { toggleSelection() }
+        // The badge's button is inside an element `.combine` has already
+        // flattened, so assistive technology can read the sentence and cannot
+        // press it — the same gap the default action above exists to close, for
+        // the same reason. Offered only when there is one, because an action
+        // that resolves to nothing is the confident-looking no-op this file
+        // keeps refusing to ship.
+        .accessibilityActions {
+            if let badge = blockedBadge {
+                Button(badge.openHint) { model.openPreflight(badge) }
+            }
+        }
         .contextMenu { menu }
         .task(id: card.id) { await model.refreshRuns(cardID: card.id) }
         // Where the caret points. A card's y inside a `LazyVStack` inside a
@@ -204,17 +238,6 @@ struct CardView: View {
     private var isSelected: Bool { model.selectedCardID == card.id }
     private var activeRun: SkillRun? { model.activeRuns[card.id] }
 
-    /// The most recent event of this run that says anything in one line.
-    ///
-    /// Searched backwards rather than taken from the end: `liveLog` holds every
-    /// event now, and most of them — a successful tool result, a `system` line,
-    /// a partial — collapse to nothing. Taking the last event outright would
-    /// blank the strip every time one of those arrived last.
-    private func lastLine(of run: SkillRun) -> String? {
-        guard let events = model.liveLog[run.id] else { return nil }
-        return events.reversed().lazy.compactMap(AppModel.describe).first
-    }
-
     private var refusalMessage: String? {
         model.refusal?.cardID == card.id ? model.refusal?.message : nil
     }
@@ -231,8 +254,11 @@ struct CardView: View {
         return card.stagnation(now: .now)
     }
 
-    private var isBlockedRepo: Bool {
-        model.repo(for: card).map { model.isBlocked($0) } == true
+    /// Why this card cannot move, when it cannot — the sentence and the
+    /// destination in one value, decided by `AppModel` against the same verdict
+    /// the drop is decided by.
+    private var blockedBadge: BlockedBadge? {
+        model.repo(for: card).flatMap { model.blockedBadge(for: $0) }
     }
 
     /// The one mark the card has room for.
@@ -289,65 +315,6 @@ struct CardView: View {
 }
 
 // MARK: - Pieces
-
-/// A run in flight, on the card. Says how long it has been going and what it
-/// last did — a bare spinner cannot distinguish a healthy ten-minute run from a
-/// wedged one.
-struct RunningStrip: View {
-    let run: SkillRun
-    let lastLine: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 5) {
-                // Queued, running and cancelling used to share one spinner, so
-                // pressing Cancel changed nothing on screen. A spinner means
-                // output is arriving; anything else says which state it is in.
-                if run.state == .running {
-                    ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
-                } else {
-                    Image(systemName: run.state.icon)
-                        .font(.system(size: 10))
-                        .foregroundStyle(run.state.tint)
-                        .frame(width: 12, height: 12)
-                }
-                Text(run.kind.skillName)
-                    .font(Type.fact)
-                    .foregroundStyle(run.state.tint)
-                if run.state != .running {
-                    Text(run.state.label)
-                        .font(Type.prose)
-                        .foregroundStyle(run.state.tint)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                if let started = run.startedAt {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Fact(text: Elapsed.short(from: started, to: context.date), small: true)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-            if let lastLine, !lastLine.isEmpty {
-                Text(lastLine)
-                    .font(Type.factSmall)
-                    .foregroundStyle(Palette.quiet)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            if run.state == .stalled {
-                Text("No output for a while. It may still be thinking.")
-                    .font(Type.prose)
-                    .foregroundStyle(Palette.attention)
-            }
-        }
-        .padding(6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Surface.wash(run.state.tint))
-        .clipShape(RoundedRectangle(cornerRadius: Metric.nestedRadius))
-    }
-
-}
 
 /// A fact that is also a link. A real button, so it can be reached by keyboard
 /// and shows a focus ring — the previous version was a tap gesture on a capsule,

@@ -219,15 +219,184 @@ enum Migrations {
         // What matters is that neither spelling is a pass. Every row predating
         // this column has genuinely never been swept, and defaulting them to a
         // pass would be the same lie the change exists to remove:
-        // `isBlocking([])` answering `false` for an unmeasured repository is
-        // what let three documents assert a gate nobody had written.
+        // `PreflightService.isBlocking([])` answering `false` for an unmeasured
+        // repository is what let three documents assert a gate nobody had
+        // written. (That function no longer exists — #302 replaced it with
+        // `PreflightReading`, which cannot be built without a sweep — but the
+        // column still has to survive the row it was written for.)
         migrator.registerMigration("v10_repoPreflight") { db in
             try db.alter(table: "repo") { t in
                 t.add(column: "preflight", .text)
             }
         }
 
-        // v11, additive: which method pack this repository's transitions run.
+        // v11, additive: whose words a run's `resultText` holds.
+        //
+        // The column exists because one field held two kinds of thing —  the
+        // agent's closing prose and, when the process died before emitting a
+        // terminal event, its stderr — and recorded which of them nowhere, so
+        // the panel captioned a machine's diagnosis "IT SAID" and set it in the
+        // demoted face (#288).
+        //
+        // **Nullable, with no default**, and both halves are deliberate — the
+        // same trade v10 made one table over, for the same reason.
+        //
+        // Nullable because `SkillRun.resultSource` is an `Optional`, and it has
+        // to be so `openReadOnly` keeps tolerating a database older than the
+        // helper, where an added column reads as absent.
+        //
+        // No default of `'agent'`, which is the tempting one: it is the
+        // commonest case, and every row it touched would then *assert* an
+        // author nobody recorded. ⛔ Nor may the source be inferred from a
+        // proxy — `numTurns IS NULL`, a state of `failed`, an exit code —
+        // because a guess written into the database is indistinguishable
+        // afterwards from a measurement, and guessing is the whole of what this
+        // column exists to stop. NULL means "nobody recorded it", and
+        // `ClosingRemark` degrades that to the wording these rows already had
+        // rather than claiming stderr for history it cannot know.
+        //
+        // No backfill for the same reason v9 had none: nothing anywhere has
+        // ever recorded where an existing run's text came from.
+        migrator.registerMigration("v11_runResultSource") { db in
+            try db.alter(table: "skillRun") { t in
+                t.add(column: "resultSource", .text)
+            }
+        }
+
+        // v12, additive: what an appraisal established about a card's value.
+        //
+        // ⚠️ **This shipped as `v11_cardAppraisal` and moved to v12 at the
+        // merge** — the second time this file has recorded that sentence, and it
+        // is the rule rather than an exception to it. Two unmerged branches both
+        // claimed v11; `v11_runResultSource` reached `main` first (#344), so it
+        // keeps the number and the unshipped one moves. Renaming the shipped one
+        // instead would run a second, different migration on every database that
+        // had already seen it.
+        //
+        // No `RenamedMigration`, and that half is measured rather than assumed —
+        // twice, because the answer changed underneath the first measurement. A
+        // rename entry records a migration that *actually reached a database*
+        // under the old name; `git log --all -S'cardAppraisal'` finds it on no
+        // ref but this branch, and the developer's own store
+        // (`~/Library/Application Support/Elliot`) holds `v1_initial …
+        // v11_runResultSource` with **zero** rows matching `%cardAppraisal%`
+        // under any number. Nothing was in the field under either name, so
+        // moving it costs nothing — v10's precedent, one migration on.
+        //
+        // Columns on `card` rather than a table of its own, and the criterion is
+        // the one written above v8. A pull request's status is an observation
+        // about an object outside the card, written by a poller, so it got a
+        // table. This is the opposite family: the appraisal run carries a
+        // `cardID`, so `activeRun(cardID:)` holds the card for the run's whole
+        // life and no poller can be half-way through the same row. That makes it
+        // provenance, and v7's columns the right precedent.
+        //
+        // The counterpart is measured and favourable: `observeCards()` already
+        // tracks the whole card row and de-duplicates, so a column write is
+        // observable for free — a separate table would cost a second
+        // `ValueObservation`.
+        //
+        // The backfill is not a guess. `storyProposal` has carried the effort,
+        // the resolved citations and the moment they were resolved since v4,
+        // next to the id of the card it produced, so every accepted card already
+        // carries the answer one join away. Without this the feature would ship
+        // empty on every existing board and look like a feature that does not
+        // work — v7's stated reason, unchanged.
+        migrator.registerMigration("v12_cardAppraisal") { db in
+            try db.alter(table: "card") { t in
+                t.add(column: "effort", .text)
+                t.add(column: "evidence", .text)        // JSON array
+                t.add(column: "appraisedAt", .datetime)
+            }
+            try db.execute(sql: Migrations.backfillCardAppraisalsSQL)
+        }
+
+        // v13, additive: which attempt this run forked its session from.
+        //
+        // A column and not a table, so a helper one version behind still reads
+        // the row — `openReadOnly` accepts a database older than the build, and
+        // an absent column decodes as nil where an absent table throws. That
+        // only holds while `SkillRun.resumedFrom` stays `Optional`: the
+        // synthesised decoder emits `decode` for a non-optional and would throw
+        // `keyNotFound` on every run ever recorded. `MigrationsTests` pins both
+        // halves against this same table, next to v11's.
+        //
+        // ⚠️ **This was planned as `v9_runResumedFrom` and is v13**, which is
+        // the third time this file has recorded that sentence in this exact
+        // form — v10 and v12 above — and the seventh time it has recorded the
+        // trade at all, counting v3, v4, v6 and v7. It is the rule rather than
+        // an exception. Four migrations landed between the plan
+        // being written and this branch: v9_cardLabels, v10_repoPreflight,
+        // v11_runResultSource (#344) and v12_cardAppraisal (#339). Every one of
+        // them reached `main` first, so every one of them keeps its number and
+        // the unshipped one moves.
+        //
+        // No `RenamedMigration`, and that half is measured rather than assumed,
+        // exactly as v12's comment above describes. A rename entry records a
+        // migration that *actually reached a database* under the old name;
+        // `git log --all -S'runResumedFrom' -- Migrations.swift` finds it on no
+        // ref at all, and the developer's own store (`~/Library/Application
+        // Support/Elliot`) holds `v1_initial … v12_cardAppraisal` with zero rows
+        // matching `%runResumedFrom%` under any number. Nothing was in the field
+        // under the old name, so moving it costs nothing.
+        //
+        // No backfill: nothing before this build ever forked a session, so nil
+        // is the truth about these rows rather than a default standing in for
+        // an unknown. Inferring one — from the argv, from two runs sharing a
+        // card — would write a guess where nothing afterwards could tell it
+        // from a measurement, which is v11's stated reason one column over.
+        migrator.registerMigration("v13_runResumedFrom") { db in
+            try db.alter(table: "skillRun") { t in
+                t.add(column: "resumedFrom", .text)
+            }
+        }
+
+        // v14, additive: the labels *this* repository requires (#199, #200).
+        //
+        // ⚠️ **Written as `v13_repoLabelPolicy` and moved**, which is the eighth
+        // time this file has recorded that trade — and the first where the two
+        // claimants were written the same evening: `v13_runResumedFrom` (#355)
+        // reached `main` while this sat unpushed, so it keeps the number and
+        // this one moves. No `RenamedMigration` entry: the old name reached no
+        // database, because the branch was never merged and the column has never
+        // existed under it.
+        //
+        // ⛔ **No default and no backfill.** Defaulting existing rows to
+        // `LabelPolicy.default` is the tempting one and it destroys the whole
+        // distinction: it would make every repository in the field *assert* a
+        // taxonomy nobody chose, and the check would then stop offering the
+        // conversation on exactly the repositories that have never had it. NULL
+        // means "never asked"; an empty JSON array means "asked, and chose to
+        // require nothing". Those are different answers and this column exists
+        // to keep them apart.
+        //
+        // Nullable for v11's and v13's reason one table over: `openReadOnly`
+        // accepts a database older than the build, an absent column decodes as
+        // nil, and that only holds while `Repo.labelPolicy` stays `Optional` —
+        // the synthesised decoder emits `decode` for a non-optional and would
+        // throw `keyNotFound` on every repository. `OlderDatabaseTests` pins it.
+        migrator.registerMigration("v14_repoLabelPolicy") { db in
+            try db.alter(table: "repo") { t in
+                t.add(column: "labelPolicy", .text)     // JSON array, or NULL
+            }
+        }
+
+        // v15, additive: which method pack this repository's transitions run.
+        //
+        // ⚠️ **Written as `v11_repoMethodID` and moved to v15 at the merge** —
+        // the ninth time this file has recorded that trade, and the fourth
+        // migration in a row to move. Four reached `main` while this branch sat
+        // unmerged: `v11_runResultSource` (#344), `v12_cardAppraisal` (#339),
+        // `v13_runResumedFrom` (#355) and `v14_repoLabelPolicy` (#358). Every
+        // one shipped first, so every one keeps its number and the unshipped
+        // one moves.
+        //
+        // No `RenamedMigration`, and that half is measured rather than assumed,
+        // exactly as v12's and v13's comments describe. A rename entry records a
+        // migration that *actually reached a database* under the old name. This
+        // branch was never merged and never pushed — for a day it existed only
+        // as unreferenced commits in a deleted worktree — so `v11_repoMethodID`
+        // reached no database anywhere and moving it costs nothing.
         //
         // **Nullable, with no default**, and both halves are deliberate.
         //
@@ -247,9 +416,9 @@ enum Migrations {
         // can ask. `Repo.method` folds NULL into `.unset` once, and it can only
         // do that honestly because the fold has a third value beside it: an id
         // the catalogue has lost resolves to `.unknown`, never to the default.
-        // `RepoMethodMigrationTests.v11DoesNotBackfillExistingRows` is what
+        // `RepoMethodMigrationTests.v15DoesNotBackfillExistingRows` is what
         // makes this paragraph enforceable rather than aspirational.
-        migrator.registerMigration("v11_repoMethodID") { db in
+        migrator.registerMigration("v15_repoMethodID") { db in
             try db.alter(table: "repo") { t in
                 t.add(column: "methodID", .text)
             }
@@ -363,6 +532,58 @@ enum Migrations {
             WHERE "p"."acceptedCardID" = "card"."id" LIMIT 1
         )
         WHERE "angle" IS NULL
+        """
+
+    /// The v12 backfill, named for the same reason `backfillCardAnglesSQL` is:
+    /// the migration and the test that proves what it does run the identical
+    /// statement.
+    ///
+    /// Three correlated subqueries rather than one row-value assignment, so it
+    /// reads the way v7's does and depends on nothing beyond what v7 already
+    /// relies on. `LIMIT 1` is belt, for v7's reason: acceptance creates one
+    /// card per proposal, so at most one row can match — but a subquery that
+    /// would return two rows is an error rather than a choice, and a migration
+    /// is a bad place to learn that.
+    ///
+    /// `appraisedAt` takes the proposal's `createdAt` and not the moment of the
+    /// migration: that is when the harvest resolved the citations, and dating
+    /// the reading to the upgrade would make every old board look freshly
+    /// measured.
+    ///
+    /// `WHERE "appraisedAt" IS NULL` is not belt. This statement is also
+    /// reachable through `BoardStore.backfillCardAppraisals()`, which is
+    /// deliberately idempotent, so without the guard a re-run would overwrite an
+    /// appraisal that had since been redone with whatever the original proposal
+    /// said.
+    ///
+    /// The `EXISTS` is not redundant with the subqueries, and it is the one
+    /// place this statement is not v7's shape. `backfillCardAnglesSQL` writes
+    /// the single column it filters on, so a row it visits has NULL there by
+    /// definition and nothing can be destroyed. This one filters on
+    /// `appraisedAt` and assigns **three** columns: a card carrying an effort
+    /// but no `appraisedAt`, with no proposal to read one from, is selected by
+    /// the filter and then has that effort assigned the NULL of a subquery with
+    /// nothing to return. `EXISTS` keeps the row guard and the assignment
+    /// talking about the same thing. It only ever removes rows that could have
+    /// received NULLs, so it changes no outcome that was already right.
+    static let backfillCardAppraisalsSQL = """
+        UPDATE "card" SET
+            "effort" = (
+                SELECT "p"."effort" FROM "storyProposal" "p"
+                WHERE "p"."acceptedCardID" = "card"."id" LIMIT 1
+            ),
+            "evidence" = (
+                SELECT "p"."evidence" FROM "storyProposal" "p"
+                WHERE "p"."acceptedCardID" = "card"."id" LIMIT 1
+            ),
+            "appraisedAt" = (
+                SELECT "p"."createdAt" FROM "storyProposal" "p"
+                WHERE "p"."acceptedCardID" = "card"."id" LIMIT 1
+            )
+        WHERE "appraisedAt" IS NULL
+          AND EXISTS (
+            SELECT 1 FROM "storyProposal" "p" WHERE "p"."acceptedCardID" = "card"."id"
+          )
         """
 
     /// The original schema. Named so a test can build a v1 database and prove

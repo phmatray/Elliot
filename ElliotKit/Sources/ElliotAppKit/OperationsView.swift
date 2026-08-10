@@ -9,29 +9,35 @@ import SwiftUI
 /// to answer, and the review's finding was that the four windows were peers with
 /// no home among them.
 ///
-/// One screen, not four features. Three bands, each the visible half of work
-/// already landed and tested:
+/// One screen, not four features. Bands, each the visible half of work already
+/// landed and tested — listed by what they are, not in the order they are drawn:
 ///
 /// - **Up next** — `rankNextSteps` (#67), the order `board_next` gives an agent.
+///   Since #304 it is `UpNextBand`, the whole list rather than a preview of one,
+///   and **the only band here a gesture acts through**.
 /// - **Workers** — the caps (#56) and the queue with its reasons (#58) and its
 ///   commands (#59).
 /// - **Spending** — the aggregates (#61) against the ceiling (#57).
 ///
 /// It computes nothing. Every number here was decided by the engine or the
 /// store, and a second opinion in this file would be a fifth place for the
-/// board's rules to live.
+/// board's rules to live. ⛔ That held for the *numbers* and did not hold for the
+/// **rows**: this file drew its own Up next list for as long as it existed, and
+/// the copy was inert where the original could act. `UpNextBandSourceTests` is
+/// what stops it coming back.
 ///
-/// `public` only because `ElliotApp` names it in a `Scene`.
+/// `public` only because `ConsoleRegion` renders it as a face — the `Scene` that
+/// used to name it is gone.
 public struct OperationsView: View {
     public init() {}
 
     @Environment(AppModel.self) private var model
-    @Environment(\.openWindow) private var openWindow
 
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 preflightBand
+                runningBand
                 workersBand
                 queueBand
                 spendingBand
@@ -75,7 +81,16 @@ public struct OperationsView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(spoken(entry))
                 }
-                Button("Open Preflight") { openWindow(id: "preflight") }
+                // ⚠️ `showConsoleFace`, not `openWindow(id: "preflight")`. This
+                // and the two below were `openWindow` calls naming a scene the
+                // console deleted, so all three did **nothing at all** — SwiftUI
+                // logs an unknown scene id and returns. Found while folding Up
+                // next into this screen (#304); the same defect one door over,
+                // and the same reason it was invisible: a button that silently
+                // does nothing looks exactly like a button nobody pressed.
+                // `ConsoleReachabilityTests` now refuses an `openWindow` id that
+                // `ElliotApp` does not declare.
+                Button("Open Preflight") { model.showConsoleFace(.preflight) }
                     .controlSize(.small)
             }
         }
@@ -90,7 +105,7 @@ public struct OperationsView: View {
 
     /// A failing check, and which repository it is about.
     ///
-    /// The repository name is not decoration. `repoChecks` is keyed by
+    /// The repository name is not decoration. The readings are keyed by
     /// repository and several can fail the *same* check, so without it the band
     /// draws two identical rows and reads as a rendering bug rather than as two
     /// repositories with the same problem. Seen on screen before this shipped.
@@ -108,8 +123,12 @@ public struct OperationsView: View {
             .filter { $0.status == .fail }
             .map { FailingCheck(key: "global.\($0.id)", repoName: nil, check: $0) }
 
+        // A repository with no reading contributes nothing, and that is the
+        // honest answer here rather than the silence it is elsewhere: this band
+        // lists what *is* failing, and nobody has looked. What that costs is
+        // said on Preflight, which is where the sweep lives.
         let perRepo = model.repos.flatMap { repo in
-            (model.repoChecks[repo.id] ?? [])
+            (model.repoReadings[repo.id]?.results ?? [])
                 .filter { $0.status == .fail }
                 .map {
                     FailingCheck(
@@ -118,6 +137,52 @@ public struct OperationsView: View {
                 }
         }
         return global + perRepo
+    }
+
+    // MARK: - Running now
+
+    /// The runs themselves, above the gauge that counts them.
+    ///
+    /// Above Workers because `2 / 2` is the *summary* of this band, and a screen
+    /// that answers "what is the machine doing" with a summary and no detail is
+    /// the state #303 describes. It is also the only place an **analysis** run
+    /// appears outside the analysis panel: `activeRuns` is keyed by card id, and
+    /// an analysis has none.
+    ///
+    /// It computes nothing, like every other band here. Which runs, in what
+    /// order and how many is `RunningNow`'s, the last line is `AppModel`'s, and
+    /// Cancel goes to `model.cancelRun` — the one funnel every stop travels,
+    /// whether it started here, in a card's menu or over MCP.
+    @ViewBuilder
+    private var runningBand: some View {
+        let running = model.runningNow
+        band("Running now") {
+            if running.isEmpty {
+                // Said plainly rather than by drawing nothing: an empty band and
+                // a band that failed to load look identical.
+                Text("Nothing is running.")
+                    .font(Type.prose)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(running.shown) { run in
+                    RunningStrip(
+                        run: run,
+                        lastLine: model.lastLine(of: run),
+                        context: run.context(repoName: model.repo(id: run.repoID)?.displayName),
+                        cancel: { Task { await model.cancelRun(id: run.id) } }
+                    )
+                    // `.contain`, not `.combine`: this row carries a button, and
+                    // combining it into one element is what makes Cancel
+                    // unreachable to a screen reader.
+                    .accessibilityElement(children: .contain)
+                }
+                if let note = running.note {
+                    Text(note)
+                        .font(Type.prose)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     // MARK: - Workers
@@ -131,7 +196,7 @@ public struct OperationsView: View {
                     "Analyses", used: model.occupancy.analyses,
                     cap: model.limits.maxConcurrentAnalyses)
                 Spacer()
-                Button("Change the limits") { openWindow(id: "preflight") }
+                Button("Change the limits") { model.showConsoleFace(.preflight) }
                     .controlSize(.small)
             }
         }
@@ -208,19 +273,31 @@ public struct OperationsView: View {
                     .foregroundStyle(Palette.attention)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // How long it has waited. Held forty minutes by a merge, a run read
+            // exactly like one queued a moment ago — the field was filled and
+            // drawn nowhere, so the queue had no sense of time at all.
+            Text(Elapsed.age(of: queued.queuedAt))
+                .font(Type.factSmall)
+                .foregroundStyle(.secondary)
             if queued.position > 1 {
                 Button("Move to front") {
                     Task { await model.promoteQueued(runID: queued.runID) }
                 }
                 .controlSize(.small)
             }
+            // Between "move it up" and "throw the queue away" there was nothing,
+            // so one stuck entry cost every other waiting run.
+            Button("Cancel") {
+                Task { await model.cancelQueued(runID: queued.runID) }
+            }
+            .controlSize(.small)
         }
         .padding(8)
         .background(Surface.recess)
         .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "\(queued.position). \(queued.repoName), \(queued.kind.skillName). \(queued.refusal.sentence)"
+            "\(queued.position). \(queued.repoName), \(queued.kind.skillName), waiting \(Elapsed.age(of: queued.queuedAt)). \(queued.refusal.sentence)"
         )
     }
 
@@ -229,7 +306,7 @@ public struct OperationsView: View {
     private var spendingBand: some View {
         band("Spending") {
             HStack(alignment: .top, spacing: 20) {
-                amount("Today", model.spentToday)
+                amount("Today", model.todayFigure)
                 VStack(alignment: .leading, spacing: 2) {
                     ConsoleLabel(text: "Ceiling")
                     Text(ceilingSentence)
@@ -238,27 +315,82 @@ public struct OperationsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                Button("Set a ceiling") { openWindow(id: "preflight") }
+                Button("Set a ceiling") { model.showConsoleFace(.preflight) }
                     .controlSize(.small)
             }
+            byKindRow
         }
     }
 
-    /// Shows the sentence, not only the number: a total with unknown-cost runs
-    /// in it must not present itself as complete (#57).
-    private func amount(_ title: String, _ spend: Spend) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    /// What today's money went on, under the total it adds up to.
+    ///
+    /// `spendByKind` was written, documented and tested and called by nothing
+    /// outside tests (#308), while the analysis panel started up to eight runs
+    /// from one button and no screen said what that costs against filing one
+    /// issue. This is that query, reaching a reader.
+    ///
+    /// Every kind, always, in one order: a column that appears and disappears as
+    /// work moves is one nobody can glance at. Each figure states its own
+    /// caveats through `amount`, which is where the "at least" wording already
+    /// lives — the split must not read as a smaller, complete bill than the
+    /// total above it.
+    private var byKindRow: some View {
+        HStack(alignment: .top, spacing: 20) {
+            ForEach(model.todayByKind, id: \.kind) { entry in
+                amount(entry.kind.skillName, entry.figure, isColumn: true)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// Shows the sentence, not only the number: a total that is a floor must not
+    /// present itself as complete (#57).
+    ///
+    /// Takes the `SpendFigure` rather than the `Spend`, because `Spend` can only
+    /// answer the narrower question. Asking `isComplete` of it kept this caveat
+    /// silent through every analysis — the figure read near zero exactly while
+    /// the spending was happening, and landed on the total afterwards.
+    /// `isColumn` is what one figure in a **row** of them can afford, and it was
+    /// decided by looking rather than by reasoning: rendered, the four skills'
+    /// `sentence()`s wrapped to three amber lines each and were taller than
+    /// every band above them together.
+    ///
+    /// So a column carries `amountMark` — the `+` `AnalysisSpend` already uses
+    /// for the same claim — plus its run count, which is the denominator a
+    /// skill's figure is meaningless without: `$4.10` across two merges and
+    /// across forty analyses are different facts. ⛔ The sentence is not dropped,
+    /// it **moves**: to `help` and to the spoken label, both below. A lone figure
+    /// like the day's total has the room and keeps it on screen.
+    @ViewBuilder
+    private func amount(
+        _ title: String, _ figure: SpendFigure, isColumn: Bool = false
+    ) -> some View {
+        let figureStack = VStack(alignment: .leading, spacing: 2) {
             ConsoleLabel(text: title)
-            Fact(text: MoneyFormat.usd(spend.totalUSD), tint: .primary)
-            if !spend.isComplete {
-                Text(spend.sentence())
+            Fact(text: isColumn ? figure.amountMark() : figure.amount(), tint: .primary)
+            if isColumn {
+                Fact(text: figure.spend.runsSentence, tint: Palette.quiet, small: true)
+            } else if !figure.isComplete {
+                Text(figure.sentence())
                     .font(Type.factSmall)
                     .foregroundStyle(Palette.attention)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title): \(spend.sentence())")
+        .accessibilityLabel(
+            isColumn
+                ? "\(title): \(figure.sentence()), over \(figure.spend.runsSentence)"
+                : "\(title): \(figure.sentence())")
+
+        // Branched rather than `.help(isColumn ? … : "")`: what an empty help
+        // string does is unmeasured here, and a figure that already spells its
+        // caveat out on screen has nothing to add in a tooltip anyway.
+        if isColumn {
+            figureStack.help(figure.sentence())
+        } else {
+            figureStack
+        }
     }
 
     private var ceilingSentence: String {
@@ -280,45 +412,22 @@ public struct OperationsView: View {
 
     // MARK: - Up next
 
-    /// The first three, and a way to the rest. The whole list is `NextStepsView`
-    /// and has its own window; repeating it here in full would make this screen
-    /// a scroll rather than a summary.
+    /// The ranking, drawn once, and able to act.
+    ///
+    /// ⛔ **This band held a second drawing of it until #304**, and the two
+    /// differed in exactly the way that matters: `NextStepsView`'s rows were
+    /// buttons through `model.move(cardID:to:)` and carried
+    /// `.disabled(consequence.isRefused)`; these were inert `HStack`s that read
+    /// `isRefused` for a *colour* and offered nothing. *"See all N"* then opened
+    /// the other drawing purely to hand back the affordance the reader was
+    /// already looking at — and counted `N` off the unfiltered board while
+    /// opening a screen the repository picker had narrowed, so with a filter set
+    /// "See all 12" opened a list of four.
+    ///
+    /// `UpNextBand` is that one drawing. Everything this screen contributes is
+    /// the `ConsoleLabel` below; the band draws no title of its own.
     private var upNextBand: some View {
-        band("Up next") {
-            let steps = model.nextSteps
-            if steps.isEmpty {
-                Text("Nothing Elliot can advance on its own.")
-                    .font(Type.prose)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(steps.prefix(3).enumerated()), id: \.element.card.id) { index, step in
-                    let consequence = Consequence.of(step.outcome)
-                    HStack(alignment: .top, spacing: 8) {
-                        Text("\(index + 1)")
-                            .font(Type.factSmall)
-                            .foregroundStyle(.tertiary)
-                            .frame(width: 18, alignment: .trailing)
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Fact(text: step.repoName, tint: Palette.quiet, small: true)
-                            Text(step.card.displayTitle)
-                                .font(Type.prose)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Text(consequence.summary)
-                                .font(Type.prose)
-                                .foregroundStyle(
-                                    consequence.isRefused ? Palette.refused : consequence.tint
-                                )
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .accessibilityElement(children: .combine)
-                }
-                Button("See all \(steps.count)") { openWindow(id: "nextSteps") }
-                    .controlSize(.small)
-            }
-        }
+        band("Up next") { UpNextBand() }
     }
 
     // MARK: - Chrome

@@ -37,11 +37,13 @@ struct PRStatusBlock: View {
                 facet("Review", reviewText(resolved.review), tint: .secondary)
 
                 if !resolved.isStale, !checks.isEmpty {
-                    // The names, not a verdict about them. Elliot deliberately
-                    // does not decide that `CodeQL` or `renovate/stability-days`
-                    // is not a build — that judgement's data lives in
-                    // `repo-audit`, and a second copy here would drift. Printing
-                    // what ran lets the reader see it for themselves.
+                    // The names, not a verdict about them — still, and on
+                    // purpose. This comment used to say Elliot "deliberately
+                    // does not decide" that `CodeQL` or `renovate/stability-days`
+                    // is not a build; since #322 it does, once, in
+                    // `NonBuildChecks`, read only by the unattended merge gate.
+                    // The panel is unaffected by design: printing every name is
+                    // what lets a human see what that gate is reasoning about.
                     checkList
                 }
 
@@ -108,7 +110,7 @@ struct PRStatusBlock: View {
         switch state {
         case .noChecks: "no check has run"
         case .running: "running"
-        case .passing(let count): count == 1 ? "1 check passed" : "\(count) checks passed"
+        case .passing(let names): names.count == 1 ? "1 check passed" : "\(names.count) checks passed"
         case .failing(let names): names.joined(separator: ", ")
         case .unknown: "not established"
         }

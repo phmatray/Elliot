@@ -40,8 +40,9 @@ protocol BoardTool: Sendable {
     /// so; the others describe what they do in their own descriptions.
     ///
     /// **A row we stored is not an open world, even when its text came from
-    /// one.** board_list_runs returns a run's `resultText` — an agent's prose —
-    /// and its `verifiedOutcome`, which came from `gh`. MCP's own guidance
+    /// one.** board_list_runs returns a run's `resultText` — whose words
+    /// `resultSource` names — and its `verifiedOutcome`, which came from `gh`.
+    /// MCP's own guidance
     /// notes this hint is partly about "what its output might carry back",
     /// which read alone would make every read on this surface open. The
     /// specification's example settles it the other way: *the world of a web
@@ -53,8 +54,11 @@ protocol BoardTool: Sendable {
     /// ⚠️ So `false` here says "this call reached nothing outside", and never
     /// "this content is trustworthy". Provenance is answered on this surface by
     /// something better than a boolean: `verifiedOutcome` is what `gh`
-    /// established and `resultText` is what the agent said it did, and they are
-    /// deliberately two different fields.
+    /// established, `resultText` is what the run had to say for itself, and
+    /// they are deliberately two different fields. ⚠️ The second of those is
+    /// not always the agent's — a run that died before its terminal event
+    /// carries the process's stderr, which is why `resultSource` travels
+    /// beside it (#288).
     var tool: Tool { get }
 
     /// Answers one call. Arguments arrive exactly as the agent sent them:

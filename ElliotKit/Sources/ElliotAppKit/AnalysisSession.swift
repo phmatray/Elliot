@@ -12,8 +12,83 @@ import Foundation
 /// keep agreeing about.
 public struct AnalysisSession: Sendable {
     public let id: UUID
+
+    /// The repository this analysis read.
+    ///
+    /// Identity, beside `id`, and therefore a `let` with **no default** — the
+    /// one deliberate exception to "every member but the id has a default".
+    /// That rule is about *state* arriving cheaply; a default here would be a
+    /// default answer to the question this member exists to settle.
+    ///
+    /// Its absence was #213. The panel had to ask somewhere else which
+    /// repository it was about, and the only thing to hand was
+    /// ``AppModel/selectedRepoID`` — the board's toolbar picker, which the
+    /// reader can move while the panel is open. The header then named one
+    /// repository while the proposals came from another, and each evidence
+    /// chip kept its verified seal while aiming its click at a different
+    /// checkout, revealing an unrelated file or nothing at all. Nothing on
+    /// screen said which.
+    ///
+    /// ⚠️ This is the *second* time the same axis has been repaired here.
+    /// ``AppModel/startFailure`` is computed rather than stored precisely so a
+    /// failure thrown for repository A stops being rendered once the picker
+    /// moves to B. That fix scoped one **sentence** to its repository and left
+    /// the panel's own subject with the picker; this one puts the subject where
+    /// it belongs, so nothing downstream has to re-derive it.
+    public let repoID: UUID
+
     public var runs: [SkillRun] = []
     public var proposals: [StoryProposal] = []
+
+    /// The proposals staged for the footer's Accept / Reject.
+    ///
+    /// The sixth member that did not travel when this type was created, and the
+    /// only one whose absence was a *bug* rather than a tidiness problem. As a
+    /// free-standing `AppModel.analysisSelection` it outlived both Finish —
+    /// whose own tooltip says "Undecided proposals stay in the store" — and
+    /// `openAnalysis`. So: stage five, press Finish, start a fresh analysis, and
+    /// the footer read "5 selected" over an empty new list; pressing Accept 5
+    /// handed the *previous* analysis's ids to `acceptProposals`, `claimProposal`
+    /// found them still `.proposed`, and five cards landed in Backlog from an
+    /// analysis nobody was looking at.
+    ///
+    /// Here it cannot: `openAnalysis` is one assignment of a whole new session
+    /// and `closeAnalysis` is `analysis = nil`, so the staging is created and
+    /// destroyed with the thing it stages. Setup state has no session and
+    /// therefore no selection, which is correct — there are no proposals yet.
+    public var selection: Set<UUID> = []
+
+    /// The open proposal editor, if one is open.
+    ///
+    /// The seventh member, and the last state the panel's "hiding loses
+    /// nothing" promise was still false about. `ProposalEditor` built its draft
+    /// in `init` and held it in `@State`, so hiding the panel tore the subtree
+    /// down and a retyped title plus eight acceptance criteria went with it —
+    /// silently, since nothing distinguishes a lost draft from one never typed.
+    ///
+    /// Here for the same reason `selection` is: created and destroyed with the
+    /// analysis it belongs to. An edit cannot outlive its proposals.
+    public var edit: ProposalEdit?
+
+    /// Which decided group the review list is showing (#331).
+    ///
+    /// The eighth member, and the default is the mechanism rather than a
+    /// convenience: `openAnalysis` is **one assignment of a whole new session**,
+    /// so a member defaulting to `.proposed` re-defaults on every open —
+    /// including from *Earlier analyses*, the path that never goes through
+    /// `startAnalysis`. There is no reset line to forget, and `closeAnalysis()`
+    /// is `analysis = nil`, so there is nothing to clear either.
+    ///
+    /// ⛔ **Not `@State` in `AnalysisPanelView`**, for the reason `selection`
+    /// and `edit` are here: hiding the panel removes `.analysis` from
+    /// `PanelLayout.boardOrder` and tears the view down.
+    ///
+    /// ⛔ **And not on `AppModel` beside `analysisAngles`**, which is the
+    /// *opposite* error and the one #290 was: a free-standing member outlives
+    /// Finish and `openAnalysis`, so you would reopen last week's analysis onto
+    /// the *rejected* tab because that is where you left a different one.
+    public var review: ProposalStatus = .proposed
+
     /// Whatever the window needs to say about the last action.
     public var note: String?
     /// The live proposal observation, held so that letting go of the session
@@ -34,11 +109,11 @@ extension AnalysisSession {
         session?.id == analysisID
     }
 
-    /// Marks one run stalled — the fourth of the four collections
-    /// `AppModel.markStalled` walks. The rule itself stays in `AppModel`, so
-    /// all four ask the same question.
-    mutating func markStalled(_ runID: UUID) {
-        runs = runs.map { AppModel.stalling(runID, $0) }
+    /// Applies a silence notice — the fourth of the four collections
+    /// `AppModel.mark` walks. The rule itself is `SkillRun.applying` in
+    /// `ElliotModel`, so all four ask the same question, in both directions.
+    mutating func mark(_ notice: RunSilence, _ runID: UUID) {
+        runs = runs.map { $0.applying(notice, ifID: runID) }
     }
 }
 

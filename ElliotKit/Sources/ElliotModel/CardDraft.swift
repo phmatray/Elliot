@@ -7,7 +7,13 @@ import Foundation
 /// validation rule nothing can check. Both the new-card sheet and the edit mode
 /// of the detail sheet bind to this, so there is one field set and one rule.
 public struct CardDraft: Codable, Sendable, Hashable {
-    /// The board label.
+    /// What the reader is typing. **Not what gets stored** — that is
+    /// ``trimmedTitle``, and the difference is #202.
+    ///
+    /// Bound straight to a `TextField`, so it holds whatever was typed,
+    /// padding included. Every other field of this draft is already normalised
+    /// on its way out — `criteria` through `story`, `labels` through
+    /// `toggleLabel` — and the title was the one that was not.
     public var title: String
     /// Story mode when true, plain note when false — the segmented picker.
     public var isStory: Bool
@@ -101,7 +107,7 @@ public struct CardDraft: Codable, Sendable, Hashable {
     /// cannot be reached through the editor would be an absurd way to fail.
     public func applied(to proposal: StoryProposal) -> StoryProposal {
         var edited = proposal
-        edited.title = title
+        edited.title = trimmedTitle
         edited.story = story ?? proposal.story
         return edited
     }
@@ -163,11 +169,34 @@ public struct CardDraft: Codable, Sendable, Hashable {
     /// The body this draft produces: the note in note mode, empty in story mode.
     public var body: String { isStory ? "" : note }
 
+    /// The board label this draft produces — the third of the three produced
+    /// values, beside ``story`` and ``body``.
+    ///
+    /// ⛔ **Every write-out reads this, and so does ``isValid``, so the rule that
+    /// decides whether a title is acceptable and the rule that decides what is
+    /// stored are literally one expression** (#202). They were two: the gate
+    /// trimmed before testing emptiness while the writes copied `title`
+    /// verbatim, so `"  Edit a proposal \n"` passed Save and was stored with its
+    /// padding — becoming a board label with a leading space and a trailing
+    /// newline, while a criterion typed with exactly the same padding was
+    /// silently cleaned one field away. A `TextField` renders both identically,
+    /// so nothing on screen showed the difference.
+    ///
+    /// ⚠️ The character set is not the point and is not worth arguing about;
+    /// the *agreement* is. `CardDraftTests` pins that the gate and the write
+    /// answer on the same set rather than pinning `.whitespacesAndNewlines`, so
+    /// changing the set stays a one-line change and splitting them fails.
+    ///
+    /// ⚠️ It is a separate property rather than normalisation inside `title`'s
+    /// setter because `title` is bound to a `TextField`: trimming on every
+    /// keystroke would eat the space a reader types between two words.
+    public var trimmedTitle: String { title.trimmed() }
+
     /// Saveable once the label is non-blank and, in story mode, the story is
     /// complete. A half-written story would be refused at the first drag
     /// anyway; refusing it here says so earlier.
     public var isValid: Bool {
-        guard !title.trimmed().isEmpty else { return false }
+        guard !trimmedTitle.isEmpty else { return false }
         return isStory ? (story?.isComplete ?? false) : true
     }
 }

@@ -138,8 +138,93 @@ struct LoginShellEnvironmentTests {
         // environment is captured, not inherited.
         let env = await LoginShellEnvironment.capture()
         let locator = ToolLocator(environment: env)
-        let git = await locator.locate("git")
+        let git = await locator.locate("git").tool
         #expect(git != nil)
         #expect(git?.version?.contains("git version") == true)
+    }
+
+    // MARK: - Tool overrides (#238)
+
+    /// The variable is derived from the tool name, so a fourth tool needs no
+    /// code — which is the difference between a mechanism and three special
+    /// cases.
+    @Test("An override variable is named after its tool")
+    func variableNameIsDerived() {
+        #expect(ToolOverrides.variableName(for: "gh") == "ELLIOT_GH_PATH")
+        #expect(ToolOverrides.variableName(for: "claude") == "ELLIOT_CLAUDE_PATH")
+        #expect(ToolOverrides.variableName(for: "git") == "ELLIOT_GIT_PATH")
+    }
+
+    /// ⚠️ Parsed from an injected dictionary, never from the process — that is
+    /// what keeps these suites parallel-safe, and it is why `from(environment:)`
+    /// is separate from the one line that reads `ProcessInfo`.
+    @Test("Only ELLIOT_<TOOL>_PATH is read, and an empty value is not an override")
+    func parsingIsPatternMatched() {
+        let overrides = ToolOverrides.from(environment: [
+            "ELLIOT_GH_PATH": "/tmp/shim/gh",
+            "ELLIOT_HOME": "/tmp/elliot-check",   // not a tool path
+            "PATH": "/usr/bin",
+            "ELLIOT_GIT_PATH": "",                // `VAR=` is how a shell clears one
+            "ELLIOT__PATH": "/nope",              // no tool named
+        ])
+        #expect(overrides["gh"] == "/tmp/shim/gh")
+        #expect(overrides["home"] == nil)
+        #expect(overrides["git"] == nil)
+        #expect(overrides[""] == nil)
+    }
+
+    @Test("No variables set means no overrides at all")
+    func absentOverridesAreEmpty() {
+        #expect(ToolOverrides.from(environment: ["PATH": "/usr/bin"]).isEmpty)
+    }
+
+    @Test("An override that names an executable is honoured, and says so")
+    func anOverrideIsHonoured() async {
+        let env = await LoginShellEnvironment.capture()
+        // `/bin/echo` rather than a fixture: it exists on every macOS, it is
+        // executable, and it is definitively *not* what resolving "gh" would
+        // otherwise find — so a pass here cannot be the ordinary path in
+        // disguise.
+        let locator = ToolLocator(
+            environment: env, overrides: ToolOverrides(["gh": "/bin/echo"]))
+
+        let resolution = await locator.locate("gh", versionArgument: nil)
+
+        #expect(resolution.tool?.path == "/bin/echo")
+        #expect(resolution.tool?.foundVia == "user override")
+    }
+
+    /// ⛔ The case the seam existed for and never covered: `find` fell through to
+    /// `PATH` when the override was set but unusable, so "I told it which gh to
+    /// use and it quietly ran a different one" was the design.
+    @Test("An override that cannot be run refuses by name instead of falling back to PATH")
+    func anUnusableOverrideRefuses() async {
+        let env = await LoginShellEnvironment.capture()
+        let locator = ToolLocator(
+            environment: env, overrides: ToolOverrides(["gh": "/tmp/definitely-not-here-9f3a"]))
+
+        let resolution = await locator.locate("gh", versionArgument: nil)
+
+        #expect(
+            resolution == .overrideUnusable(
+                variable: "ELLIOT_GH_PATH", value: "/tmp/definitely-not-here-9f3a"),
+            """
+            resolved to \(resolution) — falling through to PATH here runs a binary the reader did \
+            not name, which is the silent substitution this refusal exists to prevent
+            """
+        )
+        #expect(resolution.tool == nil, "an unusable override must not yield a tool at all")
+    }
+
+    /// AC 5: with nothing set, resolution is byte-for-byte what it was.
+    @Test("With no override, a tool resolves exactly as it did before")
+    func noOverrideChangesNothing() async {
+        let env = await LoginShellEnvironment.capture()
+        let plain = await ToolLocator(environment: env).locate("git", versionArgument: nil)
+        let empty = await ToolLocator(environment: env, overrides: ToolOverrides())
+            .locate("git", versionArgument: nil)
+
+        #expect(plain == empty)
+        #expect(plain.tool?.foundVia != "user override")
     }
 }

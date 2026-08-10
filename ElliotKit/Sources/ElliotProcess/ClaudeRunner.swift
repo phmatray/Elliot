@@ -13,6 +13,13 @@ public struct ClaudeInvocation: Sendable {
     public var includePartialMessages: Bool
     /// `nil` means no ceiling — the behaviour before #57, and the default.
     public var maxBudgetUSD: Double?
+    /// The session to fork from. `nil` is a fresh conversation.
+    ///
+    /// Last in the initialiser rather than beside `cwd`, so every existing call
+    /// site keeps compiling: the two are read together — Claude Code keeps a
+    /// transcript under a slug of the directory the session ran in — but the
+    /// argument order is a compatibility question, not a semantic one.
+    public var resumeFrom: UUID?
 
     public init(
         runID: UUID,
@@ -21,7 +28,8 @@ public struct ClaudeInvocation: Sendable {
         permissionMode: PermissionMode = .bypassPermissions,
         extraAllowedTools: [String] = [],
         includePartialMessages: Bool = false,
-        maxBudgetUSD: Double? = nil
+        maxBudgetUSD: Double? = nil,
+        resumeFrom: UUID? = nil
     ) {
         self.runID = runID
         self.prompt = prompt
@@ -30,6 +38,7 @@ public struct ClaudeInvocation: Sendable {
         self.extraAllowedTools = extraAllowedTools
         self.includePartialMessages = includePartialMessages
         self.maxBudgetUSD = maxBudgetUSD
+        self.resumeFrom = resumeFrom
     }
 
     /// Formatted rather than interpolated. `"\(0.5)"` is `"0.5"`, but
@@ -53,6 +62,19 @@ public struct ClaudeInvocation: Sendable {
             "--session-id", runID.uuidString.lowercased(),
             "--add-dir", cwd,
         ]
+        // One `if let`, and that is the guarantee rather than a test: a bare
+        // `--resume` without `--fork-session` is not expressible here, so the
+        // CLI's refusal — "--session-id can only be used with --continue or
+        // --resume if --fork-session is also specified" — is one we never meet.
+        //
+        // The fork is also what keeps `--session-id` above authoritative:
+        // measured on 2026-08-08 with these flags, the forked run's `result`
+        // reports the id we passed, so `runID == sessionID` survives,
+        // `StoreLocation.runLogURL(runID:)` is unchanged and the run stays one
+        // row.
+        if let resumeFrom {
+            args += ["--resume", resumeFrom.uuidString.lowercased(), "--fork-session"]
+        }
         if !extraAllowedTools.isEmpty {
             args += ["--allowedTools", extraAllowedTools.joined(separator: ",")]
         }
@@ -95,7 +117,36 @@ public enum RunUpdate: Sendable {
     /// No output for longer than the idle window. The run is still alive; the
     /// user decides whether to keep waiting.
     case stalled(since: Date)
+    /// Output again, after a silence that had already been announced.
+    ///
+    /// The mirror of `.stalled`, and it exists because the mark was one-way:
+    /// this is emitted from the same place the announce latch is cleared, which
+    /// used to clear it and tell nobody. Carries no payload — the run's identity
+    /// is the stream it arrives on, and *when* it started talking again is the
+    /// moment the update is read.
+    case resumed
     case finished(ClaudeRunOutcome)
+}
+
+extension RunUpdate {
+    /// The one place a silence notice becomes an update.
+    ///
+    /// Both announcing sites — the output mirror and the idle watchdog — go
+    /// through this, so the two directions cannot be wired up differently. The
+    /// switch is exhaustive with no `default`, so a third direction added to
+    /// `RunSilence` is a compile error here rather than a notice that reaches
+    /// one site and not the other, which is the shape of the defect this whole
+    /// change is about.
+    ///
+    /// `lastOutput` is honest in both cases: for a stall it is when the silence
+    /// began, which is what `.stalled(since:)` has always meant, and for a
+    /// recovery it is simply unused.
+    static func announcing(_ notice: RunSilence, lastOutput: Date) -> RunUpdate {
+        switch notice {
+        case .wentQuiet: .stalled(since: lastOutput)
+        case .startedTalkingAgain: .resumed
+        }
+    }
 }
 
 /// One live `claude -p`, streaming its events and writing its raw log.
@@ -115,11 +166,18 @@ public final class ClaudeRun: Sendable {
         self.arguments = arguments
     }
 
+    /// How long a run may say nothing before the silence is announced.
+    ///
+    /// Named, and named *here*, because `RunScheduler` now takes one too: two
+    /// literals twenty minutes apart in two modules is a value that drifts, and
+    /// this is the one nothing else can be measured against.
+    public static let defaultIdleTimeout: Duration = .seconds(20 * 60)
+
     public static func start(
         invocation: ClaudeInvocation,
         config: ToolConfig,
         logURL: URL,
-        idleTimeout: Duration = .seconds(20 * 60)
+        idleTimeout: Duration = ClaudeRun.defaultIdleTimeout
     ) throws -> ClaudeRun {
         let arguments = invocation.arguments()
 
@@ -129,8 +187,11 @@ public final class ClaudeRun: Sendable {
         let logHandle = try FileHandle(forWritingTo: logURL)
         let handleBox = Locked<FileHandle?>(logHandle)
 
-        let lastOutput = Locked(Date())
-        let announcedStall = Locked(false)
+        // One box, not two. The clock reading and the announce latch are a
+        // single decision — "is this the byte that ends an announced silence?"
+        // cannot be answered by either half alone — and `IdleWatch` is that
+        // decision, pure and in `ElliotModel` so a test can drive it.
+        let idleWatch = Locked(IdleWatch(lastOutput: Date()))
 
         var continuation: AsyncStream<RunUpdate>.Continuation!
         let updates = AsyncStream<RunUpdate>(bufferingPolicy: .bufferingNewest(512)) { continuation = $0 }
@@ -143,8 +204,19 @@ public final class ClaudeRun: Sendable {
             environment: config.environment,
             stdoutMirror: { chunk in
                 handleBox.withLock { $0?.write(chunk) }
-                lastOutput.withLock { $0 = Date() }
-                announcedStall.withLock { $0 = false }
+                // Yielded from inside the drain lock, exactly as `LineSink`
+                // already yields every line it splits out of this same chunk.
+                // It cannot land after the stream is finished: `updates` is
+                // finished by the exit task below, which runs only once
+                // `waitForExit()` has returned, and the termination handler that
+                // publishes that exit holds the drain lock across the final
+                // drain — so by then no mirror call is in flight and none is
+                // still to come.
+                let announcement = idleWatch.withLock { watch -> RunUpdate? in
+                    guard let notice = watch.sawOutput(at: Date()) else { return nil }
+                    return .announcing(notice, lastOutput: watch.lastOutput)
+                }
+                if let announcement { updateContinuation.yield(announcement) }
             }
         )
 
@@ -172,19 +244,20 @@ public final class ClaudeRun: Sendable {
         // Watch for silence. There is deliberately no wall-clock kill: waiting
         // hours on CI is legitimate for merge-pr. Silence is the useful signal.
         let idleTask = Task {
+            // Polls at the window rather than at a flat thirty seconds. `min`
+            // leaves the shipped twenty-minute window polling exactly as it did,
+            // and stops a shorter one — the only way a test reaches this loop at
+            // all — being announced up to thirty seconds after it was crossed.
+            let interval = min(idleTimeout, .seconds(30))
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
+                try? await Task.sleep(for: interval)
                 guard !Task.isCancelled else { break }
-                let since = lastOutput.withLock { $0 }
-                let quietFor = Date().timeIntervalSince(since)
-                if quietFor > Double(idleTimeout.components.seconds) {
-                    let shouldAnnounce = announcedStall.withLock { announced -> Bool in
-                        guard !announced else { return false }
-                        announced = true
-                        return true
-                    }
-                    if shouldAnnounce { updateContinuation.yield(.stalled(since: since)) }
+                let announcement = idleWatch.withLock { watch -> RunUpdate? in
+                    guard let notice = watch.tick(now: Date(), idleTimeout: idleTimeout)
+                    else { return nil }
+                    return .announcing(notice, lastOutput: watch.lastOutput)
                 }
+                if let announcement { updateContinuation.yield(announcement) }
             }
         }
 

@@ -30,7 +30,9 @@ public enum DefaultAction {
 
     /// A control that is allowed to be what Return does.
     public struct Claimant: Sendable, Hashable {
-        /// The file it lives in, relative to `Sources/ElliotAppKit`.
+        /// The file it lives in, by bare name. `DefaultActionTests` walks both
+        /// `Sources/ElliotAppKit` and `Sources/ElliotApp` (#251) and matches on
+        /// this name, which is unique across the two.
         public let file: String
         /// The button's literal label, exactly as written in the source.
         ///
@@ -59,7 +61,7 @@ public enum DefaultAction {
     /// fourth way for Return to mean something the reader did not intend.
     public static let claimants: [Claimant] = [
         Claimant(
-            file: "Sheets.swift",
+            file: "NewStoryView.swift",
             label: "Add to backlog",
             commits: "a new user story"
         ),

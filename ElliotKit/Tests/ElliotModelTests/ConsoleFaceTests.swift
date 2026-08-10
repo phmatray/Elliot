@@ -17,18 +17,33 @@ struct ConsoleFaceTests {
     // MARK: - 1. No screen may vanish
 
     /// The union, not either half — because the two halves are supposed to move.
-    /// `ElliotWindows.all` shrinks as the console grows, and this set does not.
+    /// `ElliotWindows.all` shrinks as the console grows, and this set did not
+    /// through that whole migration.
+    ///
+    /// ⚠️ **`nextSteps` left this set in #304, and this is the comment its own
+    /// failure message asked for.** Up next did not become a seventh way of being
+    /// reached — it stopped being a screen. It is the acting band of Operations,
+    /// a peer of Workers, Waiting and Spending, and `OperationsView` renders it as
+    /// `UpNextBand`. Keeping the name here to hold the literal still would make a
+    /// set called *every screen Elliot has* assert a screen that no longer exists,
+    /// which is the opposite of what it was written to catch.
+    ///
+    /// Nothing observable moved with it: these raw values reach no runtime caller
+    /// — `board_screenshot` resolves through `ElliotWindows.all`, which has said
+    /// `board` alone since the console landed — so `window=nextSteps` answered
+    /// `window_not_found` before this change and answers it after.
     @Test("Every screen Elliot has is either a window or a console face")
     func noScreenVanishesBetweenTheTwoWorlds() {
         #expect(
             ConsoleFace.allScreens == [
-                "board", "repositories", "operations", "nextSteps", "preflight", "archive",
-                "newStory",
+                "board", "repositories", "operations", "preflight", "archive", "newStory",
+                "dismissed",
             ],
             """
             a screen has appeared or disappeared. If a window became a face, it belongs in \
             ConsoleFace; if it went somewhere else entirely, say where in this test rather \
-            than deleting the name
+            than deleting the name — as #304 did for nextSteps, which is now a band of \
+            Operations rather than a screen
             """
         )
     }
@@ -55,13 +70,36 @@ struct ConsoleFaceTests {
     /// deliberately not derived from anything, and a face whose raw value must
     /// change has to change it here too, in front of a comment explaining what
     /// breaks for the caller.
-    @Test("Every face's raw value is the id that screen was published under")
+    ///
+    /// ⚠️ **`nextSteps` is out (#304), and it is worth being precise about why
+    /// that is not the renaming this test forbids.** A rename leaves the screen
+    /// standing under a different id, so a caller that knew the old one is sent
+    /// nowhere; a *retirement* is the screen ceasing to exist, and no id can be
+    /// kept honest for it. Up next is a band of Operations now. What the promise
+    /// costs here is nothing measurable: the only caller is `board_screenshot`,
+    /// which reads `ElliotWindows.all` and has been answering `window_not_found`
+    /// for every face since the console landed.
+    ///
+    /// ⛔ **A subset, not an equality, since #334 — and the direction it lost is
+    /// the direction that was wrong.** The relation is *every id that was ever
+    /// published still names a face*, and equality asserts a second thing this
+    /// list has no standing to say: that no face may exist which was never a
+    /// window. `dismissed` is the first screen **born** in the console. It has
+    /// no published id, because no agent has ever been able to pass one for it;
+    /// adding it to a set literally named `published` would make the list say
+    /// something false about its own subject in order to keep an operator.
+    ///
+    /// Nothing is lost, because the check equality was doing belongs to
+    /// ``noScreenVanishesBetweenTheTwoWorlds`` above: `allScreens` is frozen as
+    /// a literal too, so a face added — or added with a typo'd raw value — still
+    /// fails there. Two tests, two claims, neither guessing at the other's.
+    @Test("Every id a screen was published under still names a face")
     func rawValuesAreThePublishedIDs() {
         let published: Set<String> = [
-            "repositories", "operations", "nextSteps", "preflight", "archive", "newStory",
+            "repositories", "operations", "preflight", "archive", "newStory",
         ]
         #expect(
-            Set(ConsoleFace.allCases.map(\.rawValue)) == published,
+            published.isSubset(of: Set(ConsoleFace.allCases.map(\.rawValue))),
             """
             a face's raw value has moved away from the id agents pass to board_screenshot. \
             Renaming one is a breaking change to the only caller this migration exists to serve
@@ -93,15 +131,26 @@ struct ConsoleFaceTests {
     }
 
     /// Taken from the `Window(_:id:)` titles rather than invented — a reader who
-    /// learned to call the screen "Up next" must still find it under that name
-    /// when it stops being a window.
+    /// learned to call a screen by its window's name must still find it under
+    /// that name when it stops being a window.
+    ///
+    /// "Up next" is no longer among them and has kept its name anyway: it is the
+    /// `ConsoleLabel` on the Operations band that absorbed it (#304), so the
+    /// reader still reads the same two words for the same list.
     @Test("The titles are the window titles, including the one that is not a capitalised pair")
     func titlesMatchTheWindowTitlesTheyReplace() {
-        #expect(ConsoleFace.nextSteps.title == "Up next")
         #expect(ConsoleFace.newStory.title == "New story")
         #expect(ConsoleFace.repositories.title == "Repositories")
         #expect(ConsoleFace.operations.title == "Operations")
         #expect(ConsoleFace.preflight.title == "Preflight")
         #expect(ConsoleFace.archive.title == "Archive")
+    }
+
+    /// The one face with no window title to inherit, because it never had a
+    /// window. Named for what it lists rather than for the act that fills it:
+    /// the reader arrives here from a figure reading "3 dismissed".
+    @Test("The face born in the console is titled from the figure that opens it")
+    func theFaceWithNoWindowTitleIsStillNamed() {
+        #expect(ConsoleFace.dismissed.title == "Dismissed")
     }
 }

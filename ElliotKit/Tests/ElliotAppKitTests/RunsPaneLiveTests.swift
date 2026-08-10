@@ -163,7 +163,7 @@ struct RunsPaneLiveTests {
 
                 outputs.append(update)
                 events.append(event)
-                let rows = RunsPane.rows(of: run, events: events)
+                let rows = RunsPane.rows(of: run, events: events).rows
                 for row in rows {
                     kinds.insert(LogRowAccessibility.kind(of: row))
                     if case .toolUse(_, _, _, let outcome) = row, outcome?.isError == false {
@@ -173,7 +173,7 @@ struct RunsPaneLiveTests {
             }
             return LiveCapture(
                 outputs: outputs, kinds: kinds,
-                finalRows: RunsPane.rows(of: run, events: events),
+                finalRows: RunsPane.rows(of: run, events: events).rows,
                 sawNestedSuccess: nested
             )
         }
@@ -224,7 +224,7 @@ struct RunsPaneLiveTests {
         // but not with the model would be green and blind.
         let model = AppModel()
         for update in capture.outputs { model.apply(update) }
-        #expect(RunsPane.rows(of: run, events: model.liveLog[runID] ?? []) == capture.finalRows)
+        #expect(RunsPane.rows(of: run, events: model.liveLog[runID] ?? []).rows == capture.finalRows)
 
         // Finally, let the run land, so the temporary home is not deleted from
         // under a child that is still writing to it.
@@ -283,7 +283,7 @@ struct RunsPaneLiveTests {
 
     @Test("A run with no events at all yields no rows")
     func noEventsNoRows() {
-        #expect(RunsPane.rows(of: Self.run(), events: []).isEmpty)
+        #expect(RunsPane.rows(of: Self.run(), events: []).rows.isEmpty)
     }
 
     // MARK: - The filter, and what it announces
@@ -368,11 +368,106 @@ struct RunsPaneLiveTests {
     @Test("A claim of \"Filed issue #47\" puts no number on the gh side")
     func theClaimNeverBecomesTheFact() {
         var run = Self.run(outcome: .unverified(reason: "gh did not answer"))
-        run.resultText = "Filed issue #47 — https://github.com/phmatray/Elliot/issues/47"
+        run.setClosing(ClosingRemark(
+            text: "Filed issue #47 — https://github.com/phmatray/Elliot/issues/47",
+            source: .agent
+        ))
 
         let verdict = RunVerdict.of(run)
         #expect(verdict.itSaid?.contains("#47") == true)
         #expect(verdict.ghSays?.contains(where: \.isNumber) == false)
+    }
+
+    /// #288, drawn: a run that died before its terminal event stores the
+    /// process's stderr, and the block set it in `Type.hearsay` under an "IT
+    /// SAID" caption — the app's central rule inverted inside the one block
+    /// built to make that rule visible.
+    ///
+    /// Asserted as *face and colour*, not as "the tuple differs", for the
+    /// reason `notMergedIsNotGreen` above is: the claim is about which tier the
+    /// reader sees, and a tuple comparison would still pass if both tiers went
+    /// italic. Resolved against a fixed appearance, since these are dynamic
+    /// colours.
+    @MainActor
+    @Test("A fact-tier closing text is drawn as a fact, never as demoted prose")
+    func stderrIsNotDrawnInTheHearsayFace() throws {
+        let appearance = try #require(NSAppearance(named: .aqua))
+        let refused = try #require(Self.srgb(Palette.refused, in: appearance))
+
+        let said = VerdictBlock.style(for: ClosingRemark(text: "I filed it.", source: .agent))
+        #expect(said.font == Type.hearsay, "the agent's own prose stopped being demoted")
+        let saidGround = try #require(Self.srgb(said.ground, in: appearance))
+        #expect(try #require(Self.srgb(said.tint, in: appearance)) != refused)
+
+        // Over the set rather than over `.stderr` alone: a fourth fact-tier
+        // source added later must be drawn as one on the day it is added.
+        for source in RunResultSource.allCases where !source.isHearsay {
+            let style = VerdictBlock.style(for: ClosingRemark(text: "boom", source: source))
+            #expect(style.font == Type.fact, "\(source) drew in a face that is not the fact face")
+            #expect(style.font != Type.hearsay, "\(source) is still being demoted to italic")
+            #expect(try #require(Self.srgb(style.tint, in: appearance)) == refused)
+            #expect(
+                try #require(Self.srgb(style.ground, in: appearance)) != saidGround,
+                "\(source) sits on the hearsay row's ground"
+            )
+        }
+    }
+
+    /// ⚠️ The five assertions above are about `style(for:)`, and `style(for:)`
+    /// is a function the body could stop calling — `CaretAnchorTests` records
+    /// what that costs: five green behavioural tests over a decoration that
+    /// never drew. `swift test` cannot see this view, so the shape is pinned
+    /// where the shape lives.
+    @Test("The verdict block reads the caption and the tier, it does not choose them")
+    func theBlockDoesNotDecideTheTierItself() throws {
+        let source = try String(
+            contentsOf: URL(filePath: #filePath)
+                .deletingLastPathComponent()   // ElliotAppKitTests
+                .deletingLastPathComponent()   // Tests
+                .deletingLastPathComponent()   // ElliotKit
+                .appending(path: "Sources/ElliotAppKit/RunsPane.swift"),
+            encoding: .utf8
+        )
+        // The positive witness first: a claim about what a file does not
+        // contain is vacuous if the file was never found or has been renamed.
+        #expect(source.contains("struct VerdictBlock"), "this gate is reading the wrong file")
+
+        // Comments are cut, because this file *explains* the defect by naming
+        // the old caption — the hazard #186 recorded, and a matcher over prose
+        // cannot tell a mention from a claim.
+        let code = source.components(separatedBy: "\n").map { line in
+            line.range(of: "//").map { String(line[..<$0.lowerBound]) } ?? line
+        }
+        func sites(_ needle: String) -> [String] {
+            code.enumerated()
+                .filter { $0.element.contains(needle) }
+                .map { "RunsPane.swift:\($0.offset + 1)" }
+        }
+
+        #expect(
+            sites("caption: \"it said\"").isEmpty,
+            """
+            the verdict block is captioning the top row "it said" again. Which tier a closing text \
+            belongs to is `ClosingRemark`'s answer, and a caption written in a view is a caption \
+            `swift test` cannot see (#288).
+            """
+        )
+
+        // Exactly one, and it is the tuple `style(for:)` returns. Re-derived
+        // rather than asserted absent, because the face has to be named
+        // *somewhere* in this file — what must not happen is a second site
+        // deciding it again.
+        let hearsayFace = sites("Type.hearsay")
+        #expect(
+            hearsayFace.count == 1,
+            "the demoted face is chosen in \(hearsayFace.count) places: \(hearsayFace.joined(separator: " · "))"
+        )
+        #expect(
+            code.first { $0.contains("Type.hearsay") }?.contains("Surface.recessFaint") == true,
+            "the one site naming the demoted face is no longer VerdictBlock.style(for:)'s tuple"
+        )
+        #expect(source.contains("Self.style(for: closing)"), "the body stopped asking for the tier")
+        #expect(source.contains("caption: closing.caption"), "the body stopped asking for the caption")
     }
 
     // MARK: - What a screen reader hears

@@ -105,6 +105,19 @@ keep arriving, and the lenses you ticked, the instructions you typed and the
 proposals you staged are all still there when you show it again. *Finish*, in its
 footer, is the act that ends a session.
 
+The review list reads all three groups — **proposed, accepted, rejected** — and
+opens on the undecided one. Rejecting marks rather than deletes and accepting
+records the card it became, so an analysis you have been through still reads as
+what it found: an accepted row names its card and where that card now sits, and a
+rejected one can be put back. An empty list therefore says *which* silence it is,
+"this analysis proposed nothing" being a different thing from "nothing left to
+decide".
+
+A lens whose harvest kept nothing offers **Harvest again**, which re-reads the
+`stories.json` that run already wrote and starts no process. A harvest lost to a
+crash, or to a first pass that parsed nothing, does not cost another full read of
+the repository.
+
 Starting is refused for a repository Preflight is failing, one that is switched
 off, or none at all — and the panel says which, where the disabled button is.
 
@@ -114,7 +127,7 @@ The same four steps are available over MCP: `board_analyze_repo`,
 ## Build and run
 
 ```bash
-cd ElliotKit && swift test          # 459 tests, no Xcode needed
+cd ElliotKit && swift test          # the whole suite; no Xcode, no tokens, no network
 ./Scripts/build-app.sh              # assembles dist/Elliot.app
 open dist/Elliot.app
 ```
