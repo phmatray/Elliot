@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**2138 tests in 245 suites**, 5 of 5 samples on
-  `feat/231-archive-dayrows-cost` on 2026-08-10 at `d2d4da9`+1, on a wiped `.build`;
+- **Full test:** `cd ElliotKit && swift test` (**2418 tests in 277 suites**, 5 of 5 samples on
+  **`main` at `7e3801e`** on 2026-08-10, on a wiped `.build`;
   ⚠️ **this line was corrected twice in one evening and the second correction is the interesting
   one.** It went in at 2006/230 off `feat/333-repo-run-terms`, honestly measured — and was stale
   within the hour, because four pull requests landed in sequence and `main` measured **2135 in 244**
@@ -65,6 +65,15 @@
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
     your own untouched run and compare against *that*, never against this line.
+  - ⚠️ **Landing #363 the gap was 280 tests and 32 suites — by far the largest this entry has
+    recorded, and it opened in one act rather than over an afternoon.** The line read 2138 in 245 off
+    a branch; `main` measures 2418 in 277. Neither the previous author nor this one let it drift: a
+    21-commit branch sat unmerged while **36 commits** landed, and the merge brought all of it at
+    once. So the usual advice — take your own baseline, the interval is what spoils it — is not
+    wrong here, it is simply not the mechanism. **A long-lived branch does not make this line drift
+    faster; it makes the drift arrive in a single step, where no intermediate reading exists to
+    catch it.** The reading above is off `main` itself rather than off a branch, which is the one
+    stamp that cannot be overtaken by a merge it does not know about.
   - ✅ **Landing #189 both shapes appeared at once and the attribution is exact — the first entry
     here that can say that.** The line read 1418 in 158 off `da876d7`; `main` at `27e370f`, three
     squashes later, **measures 1418 in 158** — so the value was right and the stamp was behind, the
@@ -456,7 +465,18 @@ above within seconds.
 - **Other stock labels present:** `duplicate`, `good first issue`, `help wanted`, `invalid`, `wontfix`
 
 ## Issue templates
-- **Location:** none — there is no `.github/ISSUE_TEMPLATE/`, and no `.github/` directory at all.
+- **Location:** none — there is no `.github/ISSUE_TEMPLATE/`. `.github/` itself **does** exist and
+  holds exactly two files, both workflows: `ci.yml` (#21) and `swift-floor.yml` (#116).
+  - ⚠️ This line read *"and no `.github/` directory at all"* until 2026-08-10, which had been false
+    since #116 created the directory. What makes it worth a note rather than a silent edit is that
+    **the same document already contradicted it**: the *CI gates* table 76 lines above names
+    `.github/workflows/ci.yml` and `.github/workflows/swift-floor.yml` by path. So the profile was
+    not merely stale — it disagreed with itself, and a reader who trusted the wrong half would go
+    looking for a directory the table had just cited.
+  - The half that matters to the lifecycle skills is unchanged and still true: `gh issue create`
+    applies no form here, so `create-issue` must reconstruct the de-facto template below as markdown.
+    ⛔ **Do not read "`.github/` exists" as licence to skip that reconstruction** — the absence of
+    `ISSUE_TEMPLATE/` is the operative fact, and it is the one that was right all along.
 - **Forms:** none. The repo has a **de-facto template** set by #11/#12/#13, and new issues must match it:
   `## User story` → `## Acceptance criteria` (numbered) → `## Problem` → `## Proposed solution` →
   `## Area` → collapsible `🧠 Brainstorm` / `📋 Spec` → visible `## 🛠️ Implementation plan`
