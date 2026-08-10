@@ -165,11 +165,16 @@ struct AppraisalEndToEndTests {
     }
 
     /// `git init`s the fixture checkout, so the sentinel has a real tree to read.
-    private func initGit(at path: String) async {
-        _ = try? await ProcessRunner.run(
-            executable: gitFixturePath, arguments: ["init", "-q"], cwd: path,
-            environment: ["PATH": "/usr/bin:/bin"], timeout: .seconds(20)
-        )
+    ///
+    /// Through `TestSupport`'s `git`, which **throws** on a non-zero exit. The
+    /// `_ = try? await ProcessRunner.run(…)` this replaced discarded exactly
+    /// that, and the discard was not harmless: with no repository to read,
+    /// `GitClient.porcelainStatus` swallows the failing `git` into `""` at both
+    /// ends, so the sentinel below compared two swallowed failures and called
+    /// the coincidence "clean". A set-up that cannot speak makes the assertion
+    /// after it vacuous.
+    private func initGit(at path: String) async throws {
+        try await git(["init", "-q"], in: path)
     }
 
     /// - Note: `.enabled(if: gitFixtureIsAvailable)` rather than a branch inside
@@ -184,7 +189,7 @@ struct AppraisalEndToEndTests {
     func theWholePath() async throws {
         let stack = try await makeStack(gitPath: gitFixturePath)
         defer { stack.cleanUp() }
-        await initGit(at: stack.repo.path)
+        try await initGit(at: stack.repo.path)
 
         let started = try await stack.service.appraise(cardID: stack.card.id)
         let run = try await withTimeout(.seconds(40)) {
@@ -251,7 +256,7 @@ struct AppraisalEndToEndTests {
             extraEnv: ["FAKE_CLAUDE_TOUCH": "meddled.txt"], gitPath: gitFixturePath
         )
         defer { stack.cleanUp() }
-        await initGit(at: stack.repo.path)
+        try await initGit(at: stack.repo.path)
 
         let started = try await stack.service.appraise(cardID: stack.card.id)
         let run = try await withTimeout(.seconds(40)) {

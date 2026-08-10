@@ -137,10 +137,11 @@ struct AnalysisEndToEndTests {
     func theWholePath() async throws {
         let stack = try await makeStack(gitPath: gitFixturePath)
         defer { stack.cleanUp() }
-        _ = try? await ProcessRunner.run(
-            executable: gitFixturePath, arguments: ["init", "-q"], cwd: stack.repo.path,
-            environment: ["PATH": "/usr/bin:/bin"], timeout: .seconds(20)
-        )
+        // Through `TestSupport`'s `git`, which throws on a non-zero exit.
+        // The `_ = try? await …` this replaced swallowed one, and a
+        // `git init` that failed left the sentinel below comparing two
+        // swallowed `""` readings and calling the coincidence "clean".
+        try await git(["init", "-q"], in: stack.repo.path)
 
         // A card already on the board, so the duplicate hint has something to
         // collide with.
@@ -237,10 +238,11 @@ struct AnalysisEndToEndTests {
         )
         defer { stack.cleanUp() }
 
-        _ = try? await ProcessRunner.run(
-            executable: gitFixturePath, arguments: ["init", "-q"], cwd: stack.repo.path,
-            environment: ["PATH": "/usr/bin:/bin"], timeout: .seconds(20)
-        )
+        // Through `TestSupport`'s `git`, which throws on a non-zero exit.
+        // The `_ = try? await …` this replaced swallowed one, and a
+        // `git init` that failed left the sentinel below comparing two
+        // swallowed `""` readings and calling the coincidence "clean".
+        try await git(["init", "-q"], in: stack.repo.path)
 
         let started = try await stack.analysisService.start(
             repoID: stack.repo.id, angles: [.bugs], origin: .manual
