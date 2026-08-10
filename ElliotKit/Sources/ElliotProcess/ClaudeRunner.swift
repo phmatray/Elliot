@@ -10,6 +10,18 @@ public struct ClaudeInvocation: Sendable {
     public var cwd: String
     public var permissionMode: PermissionMode
     public var extraAllowedTools: [String]
+    /// Directories the run may reach besides `cwd`.
+    ///
+    /// Empty for every run that only touches its checkout. An appraisal's
+    /// artifact lives under `ELLIOT_HOME`, outside the checkout, and an
+    /// appraisal is spawned under a mode tighter than `bypassPermissions` — so
+    /// without this the one write it was asked to make is the one it is refused.
+    ///
+    /// ⚠️ Granting a path is not creating it: `--add-dir` on a directory that
+    /// does not exist buys nothing. Whatever fills this list is responsible for
+    /// the directory being there before the child starts —
+    /// `RunScheduler.prepareExtraDirectories(of:)` is where that happens today.
+    public var extraDirectories: [String]
     public var includePartialMessages: Bool
     /// `nil` means no ceiling — the behaviour before #57, and the default.
     public var maxBudgetUSD: Double?
@@ -27,6 +39,7 @@ public struct ClaudeInvocation: Sendable {
         cwd: String,
         permissionMode: PermissionMode = .bypassPermissions,
         extraAllowedTools: [String] = [],
+        extraDirectories: [String] = [],
         includePartialMessages: Bool = false,
         maxBudgetUSD: Double? = nil,
         resumeFrom: UUID? = nil
@@ -36,6 +49,7 @@ public struct ClaudeInvocation: Sendable {
         self.cwd = cwd
         self.permissionMode = permissionMode
         self.extraAllowedTools = extraAllowedTools
+        self.extraDirectories = extraDirectories
         self.includePartialMessages = includePartialMessages
         self.maxBudgetUSD = maxBudgetUSD
         self.resumeFrom = resumeFrom
@@ -62,6 +76,20 @@ public struct ClaudeInvocation: Sendable {
             "--session-id", runID.uuidString.lowercased(),
             "--add-dir", cwd,
         ]
+        // One flag per directory rather than one variadic `--add-dir a b`: each
+        // path then stays a single argv element, and Elliot's own home is
+        // `~/Library/Application Support/Elliot`, which has a space in it.
+        //
+        // ⛔ Above the resume block, not below it. Both emissions were written
+        // for this exact seam by two changes that could not see each other, and
+        // each one's own assertions leave the other's input empty — so the
+        // reversed order is invisible to both while landing an `--add-dir` pair
+        // *between* `--resume` and `--fork-session`.
+        // `extraDirectoriesPrecedeTheResumeTokens` is the one test that sets
+        // both.
+        for directory in extraDirectories {
+            args += ["--add-dir", directory]
+        }
         // One `if let`, and that is the guarantee rather than a test: a bare
         // `--resume` without `--fork-session` is not expressible here, so the
         // CLI's refusal — "--session-id can only be used with --continue or

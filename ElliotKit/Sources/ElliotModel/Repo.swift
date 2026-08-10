@@ -124,3 +124,41 @@ public enum PermissionMode: String, Codable, CaseIterable, Sendable, Hashable {
     case plan
     case bypassPermissions
 }
+
+public extension PermissionMode {
+    /// The mode an appraisal runs under: never `bypassPermissions`, whatever
+    /// the repository is set to.
+    ///
+    /// Deliberately not the repository's own mode. An appraisal inherits the
+    /// operator's MCP configuration, so its agent can see the `elliot` server
+    /// and call `board_move_card` — a run driving the board it is supposed to
+    /// be reporting on. `bypassPermissions` grants tool calls without asking,
+    /// which is the whole of its name and the one mode this project has
+    /// actually run, so under it that call is granted in silence and the run
+    /// can end "success" having moved a card. What the cap is *for* is making
+    /// that measurable instead: a refused tool puts its name in
+    /// `permissionDenials`, and `RunScheduler.state(for:)` then ends the run
+    /// `.completedWithDenials` rather than `.succeeded`.
+    ///
+    /// ⚠️ An allow-list of **names**, and not a measured ranking. Apart from
+    /// `bypassPermissions`, no mode here has ever been run by this project and
+    /// the CLI documents no semantics for any of them — so this cannot claim
+    /// that `.acceptEdits` refuses an MCP call, nor that it is in fact narrower
+    /// than `.auto` or `.dontAsk`. It is a conservative choice over names. The
+    /// one property that is asserted as a guarantee is negative, and it is the
+    /// one the tests pin: the answer is never `bypassPermissions`.
+    ///
+    /// A repository pinned to `.plan` keeps `.plan`, even though such a run may
+    /// not be able to write its artifact at all — the harvester then reports
+    /// "no artifact", which is honest, and beats overriding a mode the operator
+    /// chose deliberately.
+    ///
+    /// A `switch` over every case: a seventh mode is a compile error here
+    /// rather than a silent default into whichever arm someone wrote first.
+    static func appraisal(repo: PermissionMode) -> PermissionMode {
+        switch repo {
+        case .plan, .manual, .acceptEdits: repo
+        case .auto, .dontAsk, .bypassPermissions: .acceptEdits
+        }
+    }
+}

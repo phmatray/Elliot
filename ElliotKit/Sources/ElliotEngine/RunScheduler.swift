@@ -433,6 +433,68 @@ public actor RunScheduler: RunLaunching {
 
     // MARK: - Running
 
+    /// How a run is spawned.
+    ///
+    /// `static` and `internal` so it can be asserted without spawning anything:
+    /// what a run is allowed to do is a rule, and a rule inside a spawn routine
+    /// is a rule nothing can test. The two facts that differ for an appraisal —
+    /// a tighter permission mode and the one directory outside the checkout it
+    /// must be allowed to write — travel together here rather than as two `if`s
+    /// in `start`, where only one of them would be remembered next time.
+    static func invocation(for run: SkillRun, repo: Repo, perRunUSD: Double?) -> ClaudeInvocation {
+        let isAppraisal = run.kind == .appraiseCards
+        return ClaudeInvocation(
+            runID: run.id,
+            prompt: run.prompt,
+            // The **run's** cwd, not the repository's. They are the same value
+            // for every run created today, and that is the point: a resumed run
+            // has to spawn where its first attempt spawned, because Claude Code
+            // keeps the transcript under a slug of that directory. Two sources
+            // for one fact make the fork fail with "No conversation found",
+            // which reads as an expired session rather than a wrong directory.
+            cwd: run.cwd,
+            permissionMode: isAppraisal
+                ? PermissionMode.appraisal(repo: repo.permissionMode)
+                : repo.permissionMode,
+            extraAllowedTools: repo.extraAllowedTools,
+            extraDirectories: isAppraisal
+                ? [StoreLocation.appraisalRunDirectory(runID: run.id).path]
+                : [],
+            maxBudgetUSD: perRunUSD,
+            resumeFrom: run.resumedFrom
+        )
+    }
+
+    /// Creates every directory the invocation grants beyond the checkout.
+    ///
+    /// ⛔ `--add-dir` on a path that is not there grants nothing, and it says
+    /// nothing either: the only symptom is the agent reporting it could not
+    /// write the file it was asked for — a failure that reads as the agent's,
+    /// one layer away from the grant that looks perfectly correct.
+    /// `StoreLocation.ensureDirectories()` creates `home`, `runs`, `analyses`
+    /// and `screenshots`, measured, and not `analyses/appraisals/<runID>`.
+    ///
+    /// Driven off `extraDirectories` rather than off `run.kind`, so what is
+    /// granted and what is created cannot drift apart, and a second kind with
+    /// an artifact of its own gets this by construction. `cwd` is excluded for
+    /// the same reason it is not in that list: the checkout is the operator's,
+    /// and creating a registered path Elliot found missing would hide a
+    /// repository that has moved.
+    ///
+    /// 0o700, matching `ensureDirectories`: these sit under `ELLIOT_HOME`,
+    /// beside the socket and the token. `try?`, matching `AnalysisService`: a
+    /// directory that could not be made costs the run its artifact and the
+    /// harvester says so, which is a better outcome than refusing to spawn.
+    static func prepareExtraDirectories(of invocation: ClaudeInvocation) {
+        for path in invocation.extraDirectories {
+            try? FileManager.default.createDirectory(
+                at: URL(fileURLWithPath: path, isDirectory: true),
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+        }
+    }
+
     private func start(_ run: SkillRun) async {
         // ⛔ This guard and the assignment four lines down must stay adjacent
         // and await-free. That adjacency is the mutual exclusion: the actor
@@ -488,21 +550,7 @@ public actor RunScheduler: RunLaunching {
             return
         }
 
-        let invocation = ClaudeInvocation(
-            runID: run.id,
-            prompt: run.prompt,
-            // The **run's** cwd, not the repository's. They are the same value
-            // for every run created today, and that is the point: a resumed run
-            // has to spawn where its first attempt spawned, because Claude Code
-            // keeps the transcript under a slug of that directory. Two sources
-            // for one fact make the fork fail with "No conversation found",
-            // which reads as an expired session rather than a wrong directory.
-            cwd: run.cwd,
-            permissionMode: repo.permissionMode,
-            extraAllowedTools: repo.extraAllowedTools,
-            maxBudgetUSD: ceiling.perRunUSD,
-            resumeFrom: run.resumedFrom
-        )
+        let invocation = Self.invocation(for: run, repo: repo, perRunUSD: ceiling.perRunUSD)
         updated.argv = [toolConfig.claudePath] + invocation.arguments()
 
         let logURL = URL(fileURLWithPath: run.logPath)
@@ -527,6 +575,9 @@ public actor RunScheduler: RunLaunching {
                 at: logURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
+            // Before the child, not after: the grant in `--add-dir` above is
+            // inert until the directory it names exists.
+            Self.prepareExtraDirectories(of: invocation)
             claudeRun = try ClaudeRun.start(
                 invocation: invocation, config: toolConfig, logURL: logURL, idleTimeout: idleTimeout
             )
