@@ -223,6 +223,127 @@ struct MigrationsTests {
         #expect(loaded?.closing?.isHearsay == false)
     }
 
+    /// Every run already on a board must read back naming no predecessor.
+    ///
+    /// Deliberately the same two-claims-in-one-window shape as
+    /// `runsPredatingTheSourceColumnAreNotAttributed` above, and against the
+    /// same table — v11 and v13 both add a column to `skillRun` for the same
+    /// `openReadOnly` reason, so a second set of scaffolding to say it would be
+    /// a second thing to keep true. First the *absent column* case, which is
+    /// what `openReadOnly` serves between a new bundle landing and the app next
+    /// launching: the row is fetched with a record type that knows a column the
+    /// file does not have. `resumedFrom` is an `Optional`, so the synthesised
+    /// decoder calls `decodeIfPresent` and it reads as nil; a non-optional
+    /// `UUID` would throw `keyNotFound` on **every run ever recorded**, and
+    /// nothing in the compiler says so. Then the migrated case, where the
+    /// column exists and is NULL.
+    ///
+    /// ⛔ NULL must stay NULL — there is no backfill and there can be no
+    /// honest one. Nothing before this build ever forked a session, so nil is
+    /// the truth about these rows rather than a default standing in for an
+    /// unknown.
+    @Test("A run written before the resume column names no predecessor")
+    func runsPredatingResumedFromHaveNoPredecessor() throws {
+        let queue = try DatabaseQueue()
+        try Migrations.migrator.migrate(queue, upTo: Self.migrationBeforeResumedFrom)
+
+        let repoID = UUID().uuidString.uppercased()
+        let cardID = UUID().uuidString.uppercased()
+        let runID = UUID().uuidString.uppercased()
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO "repo"
+                    ("id", "path", "nameWithOwner", "defaultBranch", "displayName",
+                     "permissionMode", "extraAllowedTools", "isEnabled")
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    repoID, "/R/phmatray/private/Koine", "phmatray/Koine", "main", "Koine",
+                    "bypassPermissions", "[]", true,
+                ])
+            try db.execute(
+                sql: """
+                    INSERT INTO "card"
+                    ("id", "repoID", "title", "body", "column", "orderIndex",
+                     "columnEnteredAt", "createdAt", "updatedAt")
+                    VALUES (?, ?, 'Written before the resume column', '', 'todo', 1024, ?, ?, ?)
+                    """,
+                arguments: [cardID, repoID, then, then, then])
+            try db.execute(
+                sql: """
+                    INSERT INTO "skillRun"
+                    ("id", "cardID", "repoID", "kind", "prompt", "argv", "cwd", "state",
+                     "logPath", "stderrPath", "permissionDenials", "createdAt")
+                    VALUES (?, ?, ?, 'createIssue', '/x', '[]', '/tmp', 'succeeded',
+                            '/tmp/a.ndjson', '/tmp/a.stderr', '[]', ?)
+                    """,
+                arguments: [runID, cardID, repoID, then])
+        }
+
+        // The fixture is genuinely a pre-v13 database, or everything below
+        // upgrades a schema that was already current and measures nothing.
+        let columns = try queue.read { db in try db.columns(in: "skillRun").map(\.name) }
+        #expect(!columns.contains("resumedFrom"), "the fixture is not actually a pre-v13 database")
+
+        // The window `openReadOnly` exists to keep working: the record type
+        // knows a column this file does not have.
+        let missing = try queue.read { try SkillRun.fetchOne($0, key: runID) }
+        let beforeMigrating = try #require(missing, "a pre-v13 run failed to decode at all")
+        #expect(beforeMigrating.resumedFrom == nil)
+
+        try Migrations.migrator.migrate(queue)
+
+        let loaded = try #require(try queue.read { try SkillRun.fetchOne($0, key: runID) })
+        #expect(loaded.cwd == "/tmp", "the pre-v13 row is still there, unchanged")
+        #expect(
+            loaded.resumedFrom == nil,
+            "the added column reads as absent, not as a predecessor the migration invented")
+    }
+
+    /// A predecessor recorded today survives the round trip, so the test above
+    /// is not passing because the column is never populated at all.
+    ///
+    /// It also says the column is *live* rather than merely created: an
+    /// `ALTER TABLE` that added it under another name, or a record type that
+    /// never encoded it, would leave the test above green and this one red.
+    @Test("A predecessor recorded today round-trips through the column")
+    func resumedFromRoundTrips() throws {
+        let queue = try DatabaseQueue()
+        try Migrations.migrator.migrate(queue)
+
+        let repository = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot"
+        )
+        let card = Card(
+            repoID: repository.id, title: "Anything",
+            columnEnteredAt: then, createdAt: then, updatedAt: then
+        )
+        let first = SkillRun.card(
+            cardID: card.id, repoID: repository.id, kind: .createIssue, prompt: "/x",
+            cwd: "/tmp", logPath: "/tmp/a.ndjson", stderrPath: "/tmp/a.stderr", createdAt: then
+        )
+        let forked = SkillRun.card(
+            cardID: card.id, repoID: repository.id, kind: .createIssue, prompt: "/x",
+            cwd: "/tmp", resumedFrom: first.id,
+            logPath: "/tmp/b.ndjson", stderrPath: "/tmp/b.stderr", createdAt: then
+        )
+        try queue.write { db in
+            try repository.insert(db)
+            try card.insert(db)
+            try first.insert(db)
+            try forked.insert(db)
+        }
+
+        let loaded = try queue.read { try SkillRun.fetchOne($0, key: forked.id.uuidString.uppercased()) }
+        #expect(loaded?.resumedFrom == first.id)
+        // The first attempt of a chain has no predecessor of its own, and that
+        // is a different fact from "this build cannot store one".
+        let origin = try queue.read { try SkillRun.fetchOne($0, key: first.id.uuidString.uppercased()) }
+        #expect(origin?.resumedFrom == nil)
+    }
+
     /// Named once. When the next migration lands on top of this one, the two
     /// tests above must keep asking about the schema *before* labels rather than
     /// silently starting to test the newest thing instead.
@@ -231,6 +352,10 @@ struct MigrationsTests {
     /// The same, for the run-source column. Named for the same reason: the
     /// point is the schema one step behind it, not whatever is newest.
     private static let migrationBeforeResultSource = "v10_repoPreflight"
+
+    /// And for the resume column. Third of the same shape, which is what says
+    /// this is the file's convention rather than three coincidences.
+    private static let migrationBeforeResumedFrom = "v12_cardAppraisal"
 }
 
 private let then = Date(timeIntervalSince1970: 1_700_000_000)

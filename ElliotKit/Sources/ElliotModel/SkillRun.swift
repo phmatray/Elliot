@@ -103,6 +103,25 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     /// The full argv, kept so a run can be reproduced by hand.
     public var argv: [String]
     public var cwd: String
+    /// The last attempt that actually created a session.
+    ///
+    /// Unchanged when the predecessor was refused, advanced when it ran.
+    /// Anything vaguer makes the chain unreadable after two failures: if a
+    /// refused fork moved this pointer, the second failure would name a session
+    /// that never existed and the window a resumed run is verified over would
+    /// have no first attempt to anchor on.
+    ///
+    /// Next to `cwd` because the two are read together — Claude Code keeps a
+    /// session's transcript under a slug of the directory it ran in, so a fork
+    /// launched from anywhere else finds nothing.
+    ///
+    /// ⚠️ `Optional`, and not because a predecessor is rare. A non-optional
+    /// `UUID` here would be decoded with `decode(_:forKey:)` rather than
+    /// `decodeIfPresent` — a default value does not change that — and would
+    /// throw `keyNotFound` on every run recorded before v13, in exactly the
+    /// window `BoardStore.openReadOnly` exists to serve. `MigrationsTests`
+    /// pins it.
+    public var resumedFrom: UUID?
     public var state: RunState
     public var startedAt: Date?
     public var endedAt: Date?
@@ -143,6 +162,7 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         prompt: String,
         argv: [String] = [],
         cwd: String,
+        resumedFrom: UUID? = nil,
         state: RunState = .queued,
         startedAt: Date? = nil,
         endedAt: Date? = nil,
@@ -166,6 +186,7 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         self.prompt = prompt
         self.argv = argv
         self.cwd = cwd
+        self.resumedFrom = resumedFrom
         self.state = state
         self.startedAt = startedAt
         self.endedAt = endedAt
@@ -246,6 +267,7 @@ public extension SkillRun {
         prompt: String,
         argv: [String] = [],
         cwd: String,
+        resumedFrom: UUID? = nil,
         state: RunState = .queued,
         startedAt: Date? = nil,
         endedAt: Date? = nil,
@@ -261,7 +283,8 @@ public extension SkillRun {
     ) -> SkillRun {
         SkillRun(
             id: id, cardID: cardID, repoID: repoID, analysisID: nil, analysisAngle: nil,
-            kind: kind, prompt: prompt, argv: argv, cwd: cwd, state: state,
+            kind: kind, prompt: prompt, argv: argv, cwd: cwd, resumedFrom: resumedFrom,
+            state: state,
             startedAt: startedAt, endedAt: endedAt, exitCode: exitCode,
             logPath: logPath, stderrPath: stderrPath, closing: closing,
             totalCostUSD: totalCostUSD, numTurns: numTurns, permissionDenials: permissionDenials,

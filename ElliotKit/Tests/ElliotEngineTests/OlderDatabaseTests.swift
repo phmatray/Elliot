@@ -90,8 +90,8 @@ struct OlderDatabaseTests {
     ///
     /// The test above migrates to v7 and reads a `card`; `Repo` has its own
     /// decoder and its own list of columns, so it is a separate claim. `Repo`
-    /// gained `labelPolicy` in v13, and a helper carrying that knowledge meets a
-    /// v12 file every time a bundle is upgraded before the app next launches.
+    /// gained `labelPolicy` in v14, and a helper carrying that knowledge meets a
+    /// v13 file every time a bundle is upgraded before the app next launches.
     /// Declared non-optional, the synthesised decoder emits `decode(_:forKey:)`
     /// rather than `decodeIfPresent` and throws `keyNotFound` on **every**
     /// repository — the `@DefaultsToEmpty` defect CLAUDE.md records, one type
@@ -100,11 +100,11 @@ struct OlderDatabaseTests {
     @Test("It still answers a repository whose policy column does not exist yet")
     func olderDatabaseStillAnswersARepository() async throws {
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("elliot-v12-\(UUID().uuidString).sqlite")
+            .appendingPathComponent("elliot-v13-\(UUID().uuidString).sqlite")
         defer { try? FileManager.default.removeItem(at: url) }
 
         let queue = try DatabaseQueue(path: url.path)
-        try Migrations.migrator.migrate(queue, upTo: "v12_cardAppraisal")
+        try Migrations.migrator.migrate(queue, upTo: "v13_runResumedFrom")
         try await queue.write { db in
             try db.execute(
                 sql: """
@@ -121,12 +121,12 @@ struct OlderDatabaseTests {
         let exists = try await check.read { db in
             try db.columns(in: "repo").contains { $0.name == "labelPolicy" }
         }
-        #expect(!exists, "the fixture is not actually a pre-v13 database")
+        #expect(!exists, "the fixture is not actually a pre-v14 database")
         try check.close()
 
         let older = try BoardStore.openReadOnly(at: url)
         let repos = try await older.repos()
-        #expect(repos.count == 1, "the helper refused every repository on a pre-v13 database")
+        #expect(repos.count == 1, "the helper refused every repository on a pre-v14 database")
         // Absent reads as "nobody has chosen", which is the truth: nothing could
         // have written a value into a column that does not exist.
         #expect(repos.first?.labelPolicy == nil)
