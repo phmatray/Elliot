@@ -2232,6 +2232,16 @@ public final class AppModel {
     public var nextStepsRepoFilter: UUID?
     public var nextStepsShowsBlocked = true
 
+    /// Whether the Up next band is showing the whole ranking or its first few.
+    ///
+    /// Here for the reason the two above are, and it is the same reason
+    /// literally: since #304 Up next *is* a band inside the board window, and
+    /// folding the console destroys `OperationsView` and everything under it.
+    /// `@State` in the band would collapse the list every time the reader shut
+    /// the console — the defect the analysis panel's own state already records,
+    /// at one third the scale and therefore easier to miss.
+    public var nextStepsExpanded = false
+
     /// `nextSteps` as the reader asked to see it.
     ///
     /// ⛔ The repository choice filters the **candidates**, so the board is
@@ -3087,7 +3097,7 @@ public final class AppModel {
             ),
             config: toolConfig
         )
-        let outcome = await preflight.apply(fix, repo: repo, board: board)
+        let outcome = await preflight.apply(fix, repo: repo, board: board, store: store)
         lastCheckFix = (fix.id, FixOutcome(detail: outcome.detail, succeeded: outcome.succeeded))
         // A seeded card needs no reload here: the board observes the store, so
         // it arrives the way every other card does. Only the checks have to be

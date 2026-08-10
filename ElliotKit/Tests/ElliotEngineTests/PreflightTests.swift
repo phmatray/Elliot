@@ -99,20 +99,29 @@ struct PreflightTests {
     func allPresentIsAPass() async {
         // The fixture carries bug and enhancement; the policy passed here asks
         // for exactly those, so there is nothing missing and nothing to offer.
-        let check = await service(["FAKE_GH_LABELS": Paths.fixture("labels.json")])
-            .labelsCheck(repo, required: [
+        let declared = LabelPolicy.Resolved(
+            required: [
                 RequiredLabel(name: "bug", color: "d73a4a", description: "x"),
                 RequiredLabel(name: "enhancement", color: "a2eeef", description: "y"),
-            ])
+            ],
+            source: .repository
+        )
+        let check = await service(["FAKE_GH_LABELS": Paths.fixture("labels.json")])
+            .labelsCheck(repo, policy: declared)
 
         #expect(check.status == .pass)
+        // Nothing to offer, because this repository has *answered* the taxonomy
+        // question. Until #200 the same assertion held for a repository that
+        // had never been asked, which is how the `seedCard` fix came to be
+        // unreachable on exactly the repositories that needed it.
         #expect(check.fixes.isEmpty)
+        #expect(check.detail == "All 2 labels this repository requires are present.")
     }
 
     @Test("A missing label is named, and two fixes are offered")
     func missingAreNamedAndFixable() async {
         let check = await service(["FAKE_GH_LABELS": Paths.fixture("labels.json")])
-            .labelsCheck(repo, required: LabelPolicy.default)
+            .labelsCheck(repo, policy: LabelPolicy.Resolved(required: LabelPolicy.default, source: .elliotFloor))
 
         // `warn`, never `fail`: `PreflightReading.verdict` calls any `.fail`
         // "cards cannot be dragged", and a missing `documentation` label must
@@ -145,7 +154,7 @@ struct PreflightTests {
         let check = await service([
             "FAKE_GH_MODE": "fail",
             "FAKE_GH_LABELS": Paths.fixture("labels.json"),
-        ]).labelsCheck(repo, required: LabelPolicy.default)
+        ]).labelsCheck(repo, policy: LabelPolicy.Resolved(required: LabelPolicy.default, source: .elliotFloor))
 
         #expect(check.status == .warn)
         #expect(check.fixes.isEmpty)
@@ -159,7 +168,7 @@ struct PreflightTests {
         // No fixture: the fake prints `[]`, which is what `gh` returns for a
         // repository with none. That is a *finding*, and must not be confused
         // with the unreachable case above.
-        let check = await service().labelsCheck(repo, required: LabelPolicy.default)
+        let check = await service().labelsCheck(repo, policy: LabelPolicy.Resolved(required: LabelPolicy.default, source: .elliotFloor))
 
         #expect(check.status == .warn)
         #expect(check.fixes.count == 2)
@@ -172,7 +181,7 @@ struct PreflightTests {
 
     @Test("A missing label never blocks a board")
     func missingLabelsAreNotBlocking() async {
-        let check = await service().labelsCheck(repo, required: LabelPolicy.default)
+        let check = await service().labelsCheck(repo, policy: LabelPolicy.Resolved(required: LabelPolicy.default, source: .elliotFloor))
         let reading = PreflightReading(results: [check], checkedAt: .now)
         #expect(reading.verdict == .passing)
         #expect(reading.blocking == nil)
@@ -299,7 +308,7 @@ struct PreflightTests {
         stale.nameWithOwner = "Elliot"
 
         let check = await service().labelsCheck(
-            stale, nameWithOwner: "phmatray/Elliot", required: LabelPolicy.default
+            stale, nameWithOwner: "phmatray/Elliot", policy: LabelPolicy.Resolved(required: LabelPolicy.default, source: .elliotFloor)
         )
 
         guard case .createLabels(_, let nameWithOwner, _) = check.fixes[0] else {

@@ -60,6 +60,59 @@ struct ClaudeInvocationTests {
         ])
     }
 
+    @Test("A resumed run carries --resume, its session and --fork-session, in that order")
+    func resumedArgumentList() {
+        let runID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let previous = UUID(uuidString: "DDDDDDDD-CCCC-BBBB-AAAA-999999999999")!
+        var invocation = ClaudeInvocation(
+            runID: runID,
+            prompt: "/ai-migration-kit:implement-issue 47",
+            cwd: "/Users/philippe/repo/gh-phmatray/Elliot"
+        )
+        invocation.resumeFrom = previous
+
+        // The whole list, not a `contains`: where the block sits is part of the
+        // contract. `--session-id` above stays authoritative because the fork
+        // makes the CLI report back the id we passed, so `runID == sessionID`
+        // survives and the run stays one row with one log.
+        #expect(invocation.arguments() == [
+            "-p", "/ai-migration-kit:implement-issue 47",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--permission-mode", "bypassPermissions",
+            "--session-id", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "--add-dir", "/Users/philippe/repo/gh-phmatray/Elliot",
+            "--resume", "dddddddd-cccc-bbbb-aaaa-999999999999",
+            "--fork-session",
+        ])
+    }
+
+    /// The pairing is a property of the shape rather than of a caller
+    /// remembering it. The CLI refuses `--session-id` alongside `--resume`
+    /// unless `--fork-session` is there too — *"--session-id can only be used
+    /// with --continue or --resume if --fork-session is also specified"* — and
+    /// one `if let` makes that refusal one we can never meet.
+    @Test("--resume is never expressible without --fork-session")
+    func resumeTokensAreInseparable() throws {
+        var invocation = ClaudeInvocation(runID: UUID(), prompt: "x", cwd: "/tmp")
+        #expect(!invocation.arguments().contains("--resume"))
+        #expect(!invocation.arguments().contains("--fork-session"))
+
+        let previous = UUID()
+        invocation.resumeFrom = previous
+        let args = invocation.arguments()
+        let index = try #require(args.firstIndex(of: "--resume"))
+        // A bounded slice rather than two indexed reads: an implementation that
+        // emitted `--resume` *without* `--fork-session` — the one thing this
+        // test exists to forbid — would make `args[index + 2]` trap with
+        // `Fatal error: Index out of range` and take the whole test process down
+        // instead of failing here. `prefix(3)` returns what is actually there.
+        #expect(Array(args.dropFirst(index).prefix(3)) == [
+            "--resume", previous.uuidString.lowercased(), "--fork-session",
+        ])
+        #expect(args.filter { $0 == "--fork-session" }.count == 1)
+    }
+
     @Test("The session id is lowercase, as the CLI's UUID validation expects")
     func sessionIDIsLowercased() {
         let invocation = ClaudeInvocation(runID: UUID(), prompt: "x", cwd: "/tmp")
