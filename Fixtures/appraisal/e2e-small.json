@@ -1,0 +1,7 @@
+{
+  "effort": "small",
+  "evidence": [
+    "Sources/ElliotProcess/ClaudeRunner.swift:159",
+    "Sources/ElliotProcess/Nowhere.swift"
+  ]
+}
