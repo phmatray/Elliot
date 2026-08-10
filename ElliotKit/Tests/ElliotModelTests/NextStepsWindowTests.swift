@@ -115,4 +115,84 @@ struct NextStepsWindowTests {
         let window = nextStepsWindow(ranked, showsBlocked: showsBlocked, blockedLimit: limit)
         #expect(window.steps.count + window.hiddenBlocked == ranked.count)
     }
+
+    // MARK: - The band's disclosure (#304)
+
+    /// The property the whole disclosure rests on, and the one its predecessor
+    /// did not have.
+    ///
+    /// *"See all N"* counted `AppModel.nextSteps` — the unfiltered board — and
+    /// opened a screen rendering `nextStepsView`, which the repository picker and
+    /// the blocked toggle had already narrowed. The number offered and the rows
+    /// delivered came from two lists, so with a filter set "See all 12" opened a
+    /// list of four. Deriving both from one window is what makes that
+    /// unrepresentable rather than merely fixed.
+    @Test(
+        "The rows drawn plus the rows folded away are the whole window",
+        arguments: [0, 1, 3, 4, 13]
+    )
+    func theBandAccountsForEveryRow(count: Int) {
+        let window = nextStepsWindow(Self.board(ready: count, blocked: 0), showsBlocked: true)
+        for expanded in [true, false] {
+            let band = window.band(expanded: expanded)
+            #expect(band.shown.count + band.folded == window.steps.count)
+        }
+    }
+
+    @Test("A folded band draws the first few and says how many it is holding back")
+    func aFoldedBandHoldsTheTailBack() {
+        let window = nextStepsWindow(Self.board(ready: 9, blocked: 0), showsBlocked: true)
+        let band = window.band(expanded: false)
+        #expect(band.shown.count == NextStepsWindow.bandLimit)
+        #expect(band.folded == 9 - NextStepsWindow.bandLimit)
+        #expect(band.isFolded)
+        #expect(band.canFold)
+    }
+
+    /// ⛔ `canFold` and `isFolded` are different questions, and the case that
+    /// tells them apart is this one: an expanded band holds nothing back and the
+    /// disclosure must still be drawn, or the reader has no way back to a glance.
+    @Test("An expanded band draws everything, holds nothing back, and can still fold")
+    func anExpandedBandDrawsTheWholeRanking() {
+        let window = nextStepsWindow(Self.board(ready: 9, blocked: 0), showsBlocked: true)
+        let band = window.band(expanded: true)
+        #expect(band.shown.count == window.steps.count)
+        #expect(band.folded == 0)
+        #expect(!band.isFolded)
+        #expect(band.canFold)
+        #expect(band.total == 9)
+    }
+
+    /// A ranking that already fits has no disclosure at all — in either
+    /// direction, and whatever the reader last pressed. This is the case that
+    /// makes `canFold` derived from the limit rather than read off `isFolded`: a
+    /// reader who expands a long list and then filters it short leaves `expanded`
+    /// true, and *"Show fewer"* on a two-row band would change nothing.
+    @Test("A ranking that fits offers no disclosure, expanded or not")
+    func aShortRankingIsNotFolded() {
+        let window = nextStepsWindow(
+            Self.board(ready: NextStepsWindow.bandLimit, blocked: 0), showsBlocked: true)
+        for expanded in [true, false] {
+            let band = window.band(expanded: expanded)
+            #expect(band.shown.count == NextStepsWindow.bandLimit)
+            #expect(!band.isFolded)
+            #expect(!band.canFold)
+        }
+    }
+
+    /// ⛔ The band takes a prefix. It does not partition, sort, or prefer the
+    /// ready rows — `rankNextSteps` already put them first, and re-deciding that
+    /// here would be the second ranking `NextStepsWindow` exists not to be.
+    @Test("The band is a prefix of the window, in the window's own order")
+    func theBandIsAPrefixNotASelection() {
+        let interleaved = [
+            Self.step("a", ready: false),
+            Self.step("b", ready: true),
+            Self.step("c", ready: false),
+            Self.step("d", ready: true),
+        ]
+        let window = nextStepsWindow(interleaved, showsBlocked: true)
+        #expect(window.band(expanded: false, limit: 2).shown.map(\.card.title) == ["a", "b"])
+        #expect(window.band(expanded: true).shown.map(\.card.title) == ["a", "b", "c", "d"])
+    }
 }

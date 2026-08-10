@@ -119,6 +119,34 @@ struct BoardStoreTests {
         #expect(try await store.repo(path: repo.path) == repo)
     }
 
+    /// `nil` and `[]` must survive the database as different values, because the
+    /// whole of #199/#200 is that they are different answers: nobody asked, and
+    /// asked-and-chose-nothing. A column that collapsed them would put the
+    /// distinction back where it started.
+    @Test("A label policy round-trips, and an empty one is not a missing one")
+    func labelPolicyRoundTrip() async throws {
+        let store = try BoardStore.inMemory()
+
+        let unasked = makeRepo()
+        try await store.saveRepo(unasked)
+        #expect(try await store.repo(id: unasked.id)?.labelPolicy == nil)
+
+        var chose = makeRepo()
+        chose.labelPolicy = [
+            RequiredLabel(name: "area: engine", color: "111111", description: "the engine")
+        ]
+        try await store.saveRepo(chose)
+        #expect(try await store.repo(id: chose.id)?.labelPolicy?.count == 1)
+        #expect(try await store.repo(id: chose.id)?.labelPolicy?.first?.name == "area: engine")
+
+        var choseNothing = makeRepo()
+        choseNothing.labelPolicy = []
+        try await store.saveRepo(choseNothing)
+        let loaded = try #require(try await store.repo(id: choseNothing.id))
+        #expect(loaded.labelPolicy == [], "an empty policy came back as 'nobody asked'")
+        #expect(loaded.labelPolicy != nil)
+    }
+
     @Test("A card carrying a user story round-trips, story and all")
     func cardWithStoryRoundTrip() async throws {
         let store = try BoardStore.inMemory()

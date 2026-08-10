@@ -403,8 +403,13 @@ refactor made them **faces of the board window**, so there is nothing to be "not
 it**: `AppModel.console` is deliberately *not persisted* ("a board that reopened onto Operations
 would be reporting on a machine state from a previous session"), so which face is showing cannot be
 arranged in the database the way a card or a repository can. Every face — Repositories, Operations,
-Up next, Preflight, Archive, New story — needs a human to click it into view, and a change to one is
+Preflight, Archive, New story — needs a human to click it into view, and a change to one is
 **unverifiable on screen from here**. Say so in the pull request rather than implying otherwise.
+
+⚠️ **Five, not six: Up next stopped being a face in #304** and is now the acting band of Operations.
+The two lists further down that still name it are *records of measurements taken in #162*, when it
+was a scene, and stay as they were — correcting a dated reading would turn evidence into a claim.
+This paragraph is the live one, which is why it is the one that moves.
 
 The `elliot` helper registered with Claude Code points at whichever `ELLIOT_HOME` it was registered
 under, so to reach a scratch instance, spawn one yourself and speak JSON-RPC at its stdin — and

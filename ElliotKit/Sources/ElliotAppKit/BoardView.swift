@@ -351,7 +351,11 @@ public struct BoardView: View {
     /// panel's own footer say the same sentence and the Start button is disabled
     /// by the same value that explains why.
     private var analyseHelp: String {
-        model.analysisRefusal ?? "Read this repository through several lenses and propose stories."
+        // The sentence only. A tooltip cannot be pressed, so the refusal's fixes
+        // belong to the footer, which can draw them — and the toolbar button
+        // opens onto exactly that footer.
+        model.analysisRefusal?.text
+            ?? "Read this repository through several lenses and propose stories."
     }
 
     /// The five columns and, when a card is selected, its detail panel between

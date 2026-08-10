@@ -113,7 +113,8 @@ struct ConsoleRegion: View {
         // title**, because in a window the `Window("…", id:)` label already
         // supplies one — the two views migrated here were setting it twice —
         // and in the console the title is the header's job. `OperationsView`
-        // and `NextStepsView` have had theirs removed.
+        // had its removed, and so had the Up next face before #304 folded it
+        // into `OperationsView` as a band.
         //
         // ⛔ **The four faces below still carry one**, and each will rename the
         // board window the moment it becomes reachable. They are unreachable
@@ -126,7 +127,6 @@ struct ConsoleRegion: View {
     private var faceBody: some View {
         switch face {
         case .operations: OperationsView()
-        case .nextSteps: NextStepsView()
         case .preflight: PreflightView()
         case .repositories: RepositoriesView()
         case .archive: ArchiveView()
