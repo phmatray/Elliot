@@ -276,9 +276,17 @@ struct DismissedListTests {
         // Bounded, per this package's testing discipline: a wiring that was
         // never subscribed fails the suite in seconds rather than hanging
         // `swift test` and the SwiftPM build lock with it.
+        //
+        // ⚠️ `Task.sleep`, **never** `Task.yield()`. `withTimeout` throws from
+        // its second child and then tears the group down, which waits for this
+        // one — so a poll that does not observe cancellation spins for ever and
+        // the timeout is decoration. Written with `yield()` first, and the
+        // break-test for the observation wiring is what found it: the run did
+        // not fail in ten seconds, it hung until the harness killed it.
+        // `Task.sleep` throws `CancellationError`, so the loop actually ends.
         try await withTimeout(.seconds(10)) {
             while await MainActor.run(body: { model.dismissedItems.isEmpty }) {
-                await Task.yield()
+                try await Task.sleep(for: .milliseconds(5))
             }
         }
         #expect(model.dismissedItems.first?.ref.number == 9)
