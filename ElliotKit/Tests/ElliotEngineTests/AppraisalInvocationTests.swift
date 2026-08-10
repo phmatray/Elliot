@@ -69,11 +69,14 @@ struct AppraisalInvocationTests {
 
         // Two `--add-dir` pairs, each a single argv element — the artifact lives
         // under `ELLIOT_HOME`, whose real shape carries spaces.
-        let args = invocation.arguments()
-        let directories = args.enumerated()
-            .filter { $0.element == "--add-dir" }
-            .map { args[$0.offset + 1] }
-        #expect(directories == [subject.cwd, expected])
+        //
+        // Through `argumentValues`, not `args[index + 1]`: a trailing `--add-dir`
+        // traps, and a trapped test binary prints no summary line at all, so the
+        // one shape this assertion is least equipped to survive would have been
+        // reported to CI as a bare exit code.
+        #expect(argumentValues(after: "--add-dir", in: invocation.arguments()) == [
+            subject.cwd, expected,
+        ])
     }
 
     @Test("An analysis is not tightened by this change")

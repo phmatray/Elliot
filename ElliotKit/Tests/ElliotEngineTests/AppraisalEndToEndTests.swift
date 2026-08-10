@@ -318,17 +318,20 @@ struct AppraisalEndToEndTests {
         // Asserted against what the process was actually given, not against
         // `ClaudeInvocation` — the unit test already pins that, and this is the
         // only thing that proves the scheduler passes it through.
-        let modeIndex = try #require(argv.firstIndex(of: "--permission-mode"))
-        #expect(argv[modeIndex + 1] == "acceptEdits")
+        //
+        // Through `argumentValues`, not `argv[index + 1]`: a `--permission-mode`
+        // or `--add-dir` that ever arrived last would have trapped here, and a
+        // trapped binary prints no `Test run with N tests` line at all. The
+        // comparison is also stronger than the indexing it replaces — it pins
+        // the number of occurrences as well as their values.
+        #expect(argumentValues(after: "--permission-mode", in: argv) == ["acceptEdits"])
         #expect(!argv.contains("bypassPermissions"))
 
-        let directories = argv.enumerated()
-            .filter { $0.element == "--add-dir" }
-            .map { argv[$0.offset + 1] }
-        #expect(directories == [
-            stack.repo.path,
-            StoreLocation.appraisalRunDirectory(runID: started.id).path,
-        ])
+        #expect(
+            argumentValues(after: "--add-dir", in: argv) == [
+                stack.repo.path,
+                StoreLocation.appraisalRunDirectory(runID: started.id).path,
+            ])
     }
 
     @Test("A run that writes no artifact leaves the card unappraised, and says so")
