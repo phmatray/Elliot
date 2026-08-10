@@ -146,9 +146,14 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     public var numTurns: Int?
     public var permissionDenials: [String]
     public var verifiedOutcome: VerifiedOutcome?
-    /// What an analysis run had to say about itself: where the stories were
+    /// What a **read-only** run had to say about itself: where its answer was
     /// harvested from, what was dropped, and whether the working tree moved.
-    /// `nil` for a card run.
+    /// `nil` for a run that writes.
+    ///
+    /// Named `analysisReport` because renaming it renames a column, and an
+    /// appraisal is not worth a migration. An analysis fills it through
+    /// `ProposalHarvester`, an appraisal through `AppraisalHarvester`; the
+    /// fields mean the same thing in both.
     public var analysisReport: AnalysisRunReport?
     public var createdAt: Date
 
