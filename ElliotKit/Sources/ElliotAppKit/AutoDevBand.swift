@@ -242,7 +242,16 @@ struct AutoDevBand: Equatable {
     /// It bounds rather than reports, deliberately: an impossible pair is a
     /// transient the reader can do nothing about, so it reads as *finished* for
     /// the moment it lasts rather than as arithmetic nobody can parse.
-    private static func settledCards(_ session: AutoDevSession, _ tally: AutoDevTally) -> Int {
+    ///
+    /// ⚠️ **Three readers now, which is why it is no longer `private`.**
+    /// `BoardAccessibility.autoDevFigure` is the sentence VoiceOver hears in
+    /// place of ``figureText``, so it has to state the same pair of numbers;
+    /// deriving them from the tally instead — which is what this task's plan
+    /// asked for — reads *"0 of 0 cards settled"* beside a figure showing `0/3`,
+    /// in the window between a session starting and its first engagement row,
+    /// i.e. on every single run. It is exposed rather than copied for the reason
+    /// the doc above gives: a second clamp is a second answer waiting to drift.
+    static func settledCards(_ session: AutoDevSession, _ tally: AutoDevTally) -> Int {
         min(tally.settled, session.engagedCardIDs.count)
     }
 }

@@ -65,11 +65,14 @@ struct OperationsBandOrderTests {
     /// trailing a line of code.** A whole-line comment is dropped by this reading
     /// and cut by the other, so an explanation stays free — which is Override 1's
     /// whole point and is proved by the reviewer's break L.
+    /// ⚠️ **The parse moved to `HiddenFaceState` when a second gate needed it.**
+    /// `BoardAccessibilityTests` reads the status bar's figure the same way, over
+    /// the same file, and would have had to copy the two paragraphs above — which
+    /// is exactly #146's tell that the invariant is being copied with them. The
+    /// judgement stays here, as this suite's header requires; only the reading is
+    /// shared.
     private static func codeLines(of file: String) throws -> String {
-        try HiddenFaceState.source(of: file)
-            .components(separatedBy: "\n")
-            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
-            .joined(separator: "\n")
+        try HiddenFaceState.codeLines(of: file)
     }
 
     /// The modifiers attached to one control, and to no other.

@@ -141,6 +141,227 @@ struct BoardAccessibilityTests {
                 == "Analysis of Elliot, 0 proposals to decide.")
     }
 
+    // MARK: - 2b. The auto-dev figure
+
+    /// "3/5 auto-dev" is a screen reader's nightmare for the reason `figure`'s
+    /// own comment gives: a number with no sentence around it says nothing to
+    /// anyone who cannot see where it sits. And the state matters as much as the
+    /// count — a running session and a finished one showing the same numbers are
+    /// two different things to be told.
+    ///
+    /// ⛔ **It takes the session, not only the tally, and that is a correction to
+    /// the plan rather than a preference.** The brief's signature was
+    /// `autoDevFigure(state:tally:)`, reading `tally.settled` of `tally.total`.
+    /// The *visible* figure beside it is `AutoDevBand.figureText`, which counts
+    /// `session.engagedCardIDs`, and `AutoDevBand.swift:102` records that the two
+    /// disagree *"in a window that happens on every single run — between the
+    /// driver's `start` returning and its first engagements landing"*. So a
+    /// session that engaged three cards would draw `0/3 auto-dev` and say *"0 of
+    /// 0 cards settled"* on every run it ever makes. A tally cannot know the
+    /// session's set, so the signature had to change: this is the one number the
+    /// feature exists to state, and ``spokenFigureStatesTheVisibleNumbers``
+    /// holds the two together.
+    @Test("The auto-dev figure says the state and the count, in a sentence")
+    func autoDevFigureIsASentence() {
+        let five = AutoDevTally(engaged: 2, merged: 2, blocked: 1)
+        #expect(
+            BoardAccessibility.autoDevFigure(session: Self.session(cards: 5, state: .running), tally: five)
+                == "Auto-dev running, 3 of 5 cards settled")
+        #expect(
+            BoardAccessibility.autoDevFigure(session: Self.session(cards: 5, state: .paused), tally: five)
+                == "Auto-dev paused, 3 of 5 cards settled")
+        #expect(
+            BoardAccessibility.autoDevFigure(session: Self.session(cards: 5, state: .finished), tally: five)
+                == "Auto-dev finished, 3 of 5 cards settled")
+    }
+
+    /// Singular written out by hand, as this file's header requires of every
+    /// caption in it. "1 cards settled" is read aloud.
+    @Test("One card is a card, in the auto-dev figure too")
+    func autoDevFigureSingular() {
+        #expect(
+            BoardAccessibility.autoDevFigure(
+                session: Self.session(cards: 1, state: .finished),
+                tally: AutoDevTally(engaged: 0, merged: 1, blocked: 0))
+                == "Auto-dev finished, 1 of 1 card settled")
+    }
+
+    /// Over every case rather than a sample: a fourth state added without a
+    /// phrase would be spoken as whatever the third one says.
+    @Test("Every session state is spoken, and no two the same")
+    func everyAutoDevStateIsSpoken() {
+        let tally = AutoDevTally(engaged: 1, merged: 1, blocked: 0)
+        let spoken = AutoDevSession.State.allCases.map {
+            BoardAccessibility.autoDevFigure(session: Self.session(cards: 2, state: $0), tally: tally)
+        }
+        #expect(spoken.allSatisfy { !$0.isEmpty })
+        #expect(Set(spoken).count == AutoDevSession.State.allCases.count)
+    }
+
+    /// ⛔ **The two halves of one figure must state one pair of numbers**, and
+    /// nothing held that until now.
+    ///
+    /// The sighted reader gets `AutoDevBand.figureText`; the listening reader
+    /// gets this sentence. Derived from *different* sources they drift silently
+    /// and in the direction nobody checks — which is what the plan shipped, and
+    /// what `AutoDevBand.settledCards` already exists to stop happening between
+    /// the figure and the band's headline.
+    ///
+    /// The numbers are read back **out of** `figureText` rather than recomputed
+    /// here, so this test cannot agree with a wrong answer by making the same
+    /// mistake twice. The three inputs are the three ways the session and the
+    /// rows can disagree: no rows yet (every run passes through it), more rows
+    /// than the session engaged (a refresh returning stale rows — the `3/2`
+    /// that shipped once), and the ordinary case where they match.
+    @Test("The figure and its spoken sentence state the same two numbers")
+    func spokenFigureStatesTheVisibleNumbers() throws {
+        let cases: [(cards: Int, tally: AutoDevTally)] = [
+            // The window between `start` returning and the first engagement row.
+            (3, AutoDevTally(engaged: 0, merged: 0, blocked: 0)),
+            // More settled rows than the session ever engaged.
+            (2, AutoDevTally(engaged: 0, merged: 2, blocked: 1)),
+            // The ordinary case.
+            (4, AutoDevTally(engaged: 2, merged: 1, blocked: 1)),
+        ]
+        for (cards, tally) in cases {
+            let session = Self.session(cards: cards, state: .running)
+            let figure = try #require(AutoDevBand.figureText(session: session, tally: tally))
+            let counts = figure.replacingOccurrences(of: " auto-dev", with: "")
+                .components(separatedBy: "/")
+            #expect(counts.count == 2, "figureText is no longer `settled/total auto-dev`: \(figure)")
+            let spoken = BoardAccessibility.autoDevFigure(session: session, tally: tally)
+            #expect(
+                spoken.contains("\(counts[0]) of \(counts[1]) "),
+                """
+                The figure reads "\(figure)" and is spoken as "\(spoken)". Those are two answers to \
+                the one number this feature exists to state. `AutoDevBand.settledCards` is the \
+                numerator and `session.engagedCardIDs.count` is the denominator, for both.
+                """)
+        }
+    }
+
+    /// The figure is a door to the **report**, so its guard is "a session
+    /// exists", never "a session is running". A session that failed everywhere
+    /// is the one this feature has to leave visible: its cards stay in Done,
+    /// where `Column.naturalNext` is `nil` and `rankNextSteps` drops them.
+    ///
+    /// It also pins **where the figure's text comes from**. `AutoDevBand.figureText`
+    /// is that sentence and `AutoDevBandTests` holds it — including that it is
+    /// present for a `finished` session. A second `"…/… auto-dev"` spelled out
+    /// inline in the status bar would be two authors for one number, and the
+    /// shipped one would be the untested one.
+    ///
+    /// ⚠️ **Scoped to `StatusBar`'s body, and read twice**, which is a correction
+    /// to the brief. The brief asserted `!source.contains("model.autoDev?.state
+    /// == .running")` over all ~1650 lines of `BoardView.swift`, so any future
+    /// comment *explaining* why the figure is not gated on `.running` — the
+    /// comment style this file uses everywhere — would redden it, and the
+    /// cheapest way to green it would be to delete the explanation. That is
+    /// `OperationsBandOrderTests`' subject one screen over, and CLAUDE.md's #186:
+    /// a string gate over prose *"can tell neither a claim from a mention nor a
+    /// live claim from a quoted one"*. The converse failure is held too — the
+    /// comment cut hides a `//` inside a string literal, so the **negatives** are
+    /// checked against both readings and the gate holds only where both agree.
+    /// The **positives** are checked against the stripped reading alone: prose
+    /// trailing a line of code must not be able to satisfy a claim about code.
+    @Test("The figure is gated on a session existing, not on it running")
+    func autoDevFigureSurvivesTheReport() throws {
+        let readings = [
+            try HiddenFaceState.code(of: "BoardView.swift"),
+            try HiddenFaceState.codeLines(of: "BoardView.swift"),
+        ]
+        let bodies = try readings.map { reading -> String in
+            let bar = try HiddenFaceState.body(of: "struct StatusBar: View", in: reading)
+            return try HiddenFaceState.body(of: "var body: some View", in: bar)
+        }
+
+        // Positive witness, once per reading: a renamed or restructured strip
+        // would make every claim below vacuously true and this gate would go
+        // green having read nothing at all. Both readings need it, because the
+        // negatives are checked against both — and the second one keeps trailing
+        // comments, so a `{` written in one would throw its brace match off and
+        // hand this test a slice of something else to find nothing in.
+        for body in bodies {
+            #expect(
+                body.contains("model.occupancy.writers"),
+                "this is not StatusBar's body any more — the gate is reading the wrong thing")
+        }
+
+        #expect(bodies[0].contains("if let autoDevSession = model.autoDev,"))
+        #expect(
+            bodies[0].contains("AutoDevBand.figureText("),
+            "the status bar must render AutoDevBand's sentence, not build its own")
+        #expect(
+            bodies[0].contains("BoardAccessibility.autoDevFigure("),
+            "the figure's spoken sentence must be the one a test can hold, not one written here")
+        #expect(
+            bodies[0].contains("AutoDevBand.repoName("),
+            """
+            The figure works the session's repository out for itself. `AutoDevBand.repoName` is \
+            that lookup and the Operations band asks it too — a second copy here is how the band \
+            and the figure that is its door come to name two different repositories.
+            """)
+        #expect(
+            bodies[0].contains("autoDevBand.tone.tint"),
+            """
+            The figure does not draw the band's tone. The band decides the tone and \
+            `Consequence.swift` maps it to a colour, in that order and in those two files — a \
+            tint picked here leaves `AutoDevBand.Tone.tint` correct, tested and bypassed, and \
+            the door a different colour from the band it opens.
+            """)
+
+        for body in bodies {
+            for comparison in ["model.autoDev ==", "model.autoDev !="] {
+                #expect(
+                    !body.contains(comparison),
+                    Comment(
+                        rawValue: """
+                            The status bar carries `\(comparison)`. `if let` is the whole test \
+                            this figure needs — a session exists or it does not — and a \
+                            comparison is how a second condition, a ternary tint or a hiding \
+                            opacity gets in beside it.
+                            """))
+            }
+            for phase in [".running", ".paused", ".finished"] {
+                #expect(
+                    !body.contains(phase),
+                    Comment(
+                        rawValue: """
+                            The status bar reads a session's phase (\(phase)). The figure is a \
+                            door to the **report**, so its only guard is that a session exists: \
+                            gated on the phase it disappears when the session ends, taking with \
+                            it the one outcome nothing else on the board shows — a card whose \
+                            merge failed stays in Done, where `Column.naturalNext` is nil and \
+                            `rankNextSteps` drops it. What the phase means is `AutoDevBand`'s \
+                            answer, not this strip's.
+                            """))
+            }
+            for shape in [".hidden()", ".opacity("] {
+                #expect(
+                    !body.contains(shape),
+                    Comment(
+                        rawValue: """
+                            The status bar carries `\(shape)`. A branch is not the only way for \
+                            the figure to disappear, and a hiding modifier makes it vanish for \
+                            exactly the session it exists to report.
+                            """))
+            }
+        }
+    }
+
+    /// One session with `cards` engaged cards. The ids are the only thing the
+    /// figure reads off it, so they are the only thing that has to be plausible.
+    private static func session(cards: Int, state: AutoDevSession.State) -> AutoDevSession {
+        AutoDevSession(
+            repoID: UUID(),
+            engagedCardIDs: (0..<cards).map { _ in UUID() },
+            maxAttemptsPerCard: 3,
+            patience: 600,
+            startedAt: Date(timeIntervalSince1970: 0),
+            state: state
+        )
+    }
+
     // MARK: - 3. Reduce motion, as a property of the source
 
     /// #79's acceptance criterion 20, mechanised.

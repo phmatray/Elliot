@@ -82,6 +82,43 @@ enum HiddenFaceState {
             .joined(separator: "\n")
     }
 
+    /// The same file with **whole comment lines dropped** and every other line
+    /// left intact — the second opinion ``code(of:)`` needs.
+    ///
+    /// ⚠️ **It exists because the cut above can hide code, which was measured
+    /// rather than reasoned about.** ``stripped(_:)`` cuts at the first `//` on a
+    /// line, including one inside a string literal, and licenses that with *"none
+    /// of the needles these gates use can occur after one"*. Two callers' needles
+    /// can: a real `.toolbar { Button("Start auto-dev") … }` written after
+    /// `"https://ops"` on one line is invisible to the cut, compiles, and leaves
+    /// the whole suite green. So a whole-file negative is checked against **both**
+    /// readings and holds only where they agree — `DefaultActionTests.isCode`'s
+    /// rule (a line is code unless it *starts* with `//`) used as a second
+    /// opinion rather than as a replacement.
+    ///
+    /// ⛔ The trade, stated so it is a rule rather than a surprise: **prose about
+    /// a needle any gate uses must live on its own comment line, not trailing a
+    /// line of code.** A whole-line comment is dropped by this reading and cut by
+    /// the other, so an explanation stays free either way.
+    ///
+    /// ⚠️ **Negatives only.** This reading keeps a trailing comment's text, so a
+    /// *positive* needle checked against it can be satisfied by prose beside
+    /// code, which is the mention-for-a-claim error pointed the other way.
+    /// Callers assert positives against ``code(of:)``.
+    ///
+    /// Written here rather than in a suite for the reason the header gives, and
+    /// because it now has two callers: `OperationsBandOrderTests` introduced it
+    /// and `BoardAccessibilityTests` needs exactly the same second opinion over
+    /// the same file. #146 charges three defects to one mechanism written twice,
+    /// and its sharper form applies squarely — the ⚠️ above would have been the
+    /// paragraph copied.
+    static func codeLines(of file: String) throws -> String {
+        try source(of: file)
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+    }
+
     /// One function's body, by brace matching from its signature.
     ///
     /// ⚠️ **The fourth copy of this walk is the reason it is here, and three of
