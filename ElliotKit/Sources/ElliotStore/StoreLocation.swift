@@ -70,6 +70,30 @@ public enum StoreLocation {
             .appendingPathComponent("stories.json")
     }
 
+    /// One directory per appraisal run, holding the `appraisal.json` the run was
+    /// told to write.
+    ///
+    /// Keyed on the run alone, where an analysis is keyed on `(analysisID,
+    /// runID)`: an appraisal belongs to a **card**, not to an analysis, which is
+    /// what lets it satisfy `skillRun`'s XOR check without a migration. There is
+    /// therefore no analysis id to nest under — and the card's id is deliberately
+    /// not used either, since an artifact keyed on the card would be overwritten
+    /// by the next appraisal of that card, leaving an older run's report pointing
+    /// at somebody else's file.
+    ///
+    /// Under `analysesDirectory` all the same, so `ensureDirectories` already
+    /// creates the parent 0o700 and one owner-only tree holds everything a
+    /// read-only run writes.
+    public static func appraisalRunDirectory(runID: UUID) -> URL {
+        analysesDirectory
+            .appendingPathComponent("appraisals", isDirectory: true)
+            .appendingPathComponent(runID.uuidString, isDirectory: true)
+    }
+
+    public static func appraisalArtifactURL(runID: UUID) -> URL {
+        appraisalRunDirectory(runID: runID).appendingPathComponent("appraisal.json")
+    }
+
     /// One PNG per `board_screenshot` call, at full resolution.
     ///
     /// The same bargain the runs directory strikes: what travels back to an
