@@ -399,12 +399,23 @@ refactor made them **faces of the board window**, so there is nothing to be "not
 | `board_screenshot window=preflight` | `window_not_found` · *"No Elliot window is called "preflight"."* · hint: **"Known windows: board."** |
 | `board_screenshot window=board` | `is_visible: true`, `source: live`, 1510×995 |
 
-⛔ **So a console face cannot be photographed by an agent at all, and no seeding trick gets around
-it**: `AppModel.console` is deliberately *not persisted* ("a board that reopened onto Operations
-would be reporting on a machine state from a previous session"), so which face is showing cannot be
-arranged in the database the way a card or a repository can. Every face — Repositories, Operations,
-Preflight, Archive, New story — needs a human to click it into view, and a change to one is
-**unverifiable on screen from here**. Say so in the pull request rather than implying otherwise.
+⛔ **I wrote here that "a console face cannot be photographed by an agent at all", and that is
+wrong.** It is a fact about `window=`, not about photographing a face. The console unfolds **inside
+the board window**, so `window=board` *contains* whichever face is open — a face is photographable
+the moment it **is** open. What is actually missing is a way to open one: `AppModel.console` is
+deliberately not persisted ("a board that reopened onto Operations would be reporting on a machine
+state from a previous session"), so which face is showing cannot be arranged in the database the way
+a card or a repository can, and every face needs a **press**.
+
+The honest rule: **a console face is unverifiable from a session holding no Accessibility grant, and
+verifiable from one that does** — press the door or the View-menu item, then `board_screenshot
+window=board`. Two sessions on 2026-08-10 measured `AXIsProcessTrusted()` and
+`CGPreflightScreenCaptureAccess()` both **`true`** against the table above, and one used exactly that
+route to verify a whole feature (#334) including a figure decrementing live.
+
+⛔ **Do not read either table as durable, and do not read the sentence I got wrong as a reason to
+skip looking.** Measure the two preflights in the session you are in — which is what this section
+already said, and what I failed to do before writing a ⛔ over it.
 
 ⚠️ **Five, not six: Up next stopped being a face in #304** and is now the acting band of Operations.
 The two lists further down that still name it are *records of measurements taken in #162*, when it
