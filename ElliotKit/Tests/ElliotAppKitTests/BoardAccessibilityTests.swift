@@ -368,10 +368,31 @@ struct BoardAccessibilityTests {
 
         for body in bodies {
             // And the call is a **direct child** of that guard, at brace depth 0
-            // inside it. This is the half that is a guarantee rather than a list:
-            // a `ViewBuilder` cannot return early, so every nested branch is a
-            // brace, whatever it is spelled — `controls.isEmpty`, a tally
-            // threshold, or a condition nobody has thought of yet.
+            // inside it. This catches an `if` written around the call whatever it
+            // tests — `controls.isEmpty`, a tally threshold, a condition nobody
+            // has thought of yet — because it reads the shape rather than the
+            // words. Break 1c dies here.
+            //
+            // ⛔ **It is a guarantee against a brace-shaped branch inside this
+            // block, and not against the figure being unconditionally present.**
+            // An earlier version of this comment said "a `ViewBuilder` cannot
+            // return early, so every way of not drawing a child is a brace,
+            // whatever it is spelled". That was false, and two evasions were
+            // measured green against it on the shipped gate:
+            //
+            // 1. a **braceless ternary** —
+            //    `(cond ? AnyView(EmptyView()) : AnyView(figure(…)))` — no brace
+            //    between the `if let` and the call, so the depth is 0 and the
+            //    figure vanishes for exactly `.finished`;
+            // 2. a **sibling-function guard** — an overloaded
+            //    `figure(…, onlyIf:)` whose own body holds the `if`. Every needle
+            //    below is satisfied at a call site that is byte-identical bar one
+            //    argument, and the branch is outside the slice entirely.
+            //
+            // Neither is caught, and neither is exotic. What this pair of checks
+            // does hold is the shape the plan's own defect took, and the report
+            // says so in the register the rest of this file uses: a comment
+            // asserting a guard is not a measurement that the guard exists.
             let block = try HiddenFaceState.body(
                 of: "if let autoDevSession = model.autoDev,", in: body)
             let depth = try #require(
@@ -448,9 +469,17 @@ struct BoardAccessibilityTests {
     /// How many braces deep the first occurrence of `needle` sits, or `nil` if
     /// it does not occur.
     ///
-    /// The structural half of the presence gate. A `ViewBuilder` cannot return
-    /// early, so *every* way of not drawing something is a brace — which makes
-    /// depth an answer about shape rather than about vocabulary.
+    /// The structural half of the presence gate: it answers about the **shape**
+    /// of the code rather than about its vocabulary, so an `if` written around
+    /// the call reddens whatever that `if` tests.
+    ///
+    /// ⛔ **What it is not.** This doc claimed *"a `ViewBuilder` cannot return
+    /// early, so every way of not drawing something is a brace"*. Measured false
+    /// on the shipped gate, twice: `(cond ? AnyView(EmptyView()) : AnyView(figure(…)))`
+    /// has no brace at all, and an overloaded `figure(…, onlyIf:)` moves the `if`
+    /// into a sibling function outside the slice. Both hide the figure for a
+    /// finished session with all 12 tests green. It is a guarantee against a
+    /// **brace-shaped branch inside the sliced block**, and nothing wider.
     private static func braceDepth(of needle: String, in block: String) -> Int? {
         var depth = 0
         var index = block.startIndex
