@@ -66,6 +66,47 @@ struct MergeOriginSourceTests {
         return String(line[line.startIndex..<comment.lowerBound])
     }
 
+    /// Every `.swift` file under a directory, **recursively**, sorted.
+    ///
+    /// ⛔ **Recursive is the whole point, and it shipped non-recursive.** This
+    /// used `contentsOfDirectory`, which reads one level, so a caller in a
+    /// subdirectory was invisible to the gate. Measured in review: a
+    /// `Sources/ElliotAppKit/Console/BreakProbeView.swift` calling
+    /// `confirmMerge(… origin: .userDrag)` compiled into the target and the gate
+    /// still passed. `Sources/ElliotMCPKit/Tools` shows the layout is already
+    /// used in this package, so the subdirectory is not hypothetical.
+    ///
+    /// The escaped caller does not merely go unchecked for its origin: it also
+    /// inherits `confirmMerge`'s hardcoded `requiresVerifiedGreen: false`, which
+    /// is the merge-by-omission `BoardService.proposeMove`'s ⛔ exists to
+    /// prevent — reached through a door the compiler does not guard.
+    ///
+    /// A missing directory is reported by name rather than read as an empty
+    /// walk: `enumerator(at:)` skips what it cannot read, so without this the
+    /// renamed-target case would come back as "no files" instead of "no folder".
+    private static func swiftFiles(under directory: URL) -> [URL] {
+        let path = directory.path(percentEncoded: false)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else {
+            Issue.record(Comment(rawValue: "\(path) is not a directory this gate can walk"))
+            return []
+        }
+        guard
+            let walk = FileManager.default.enumerator(
+                at: directory, includingPropertiesForKeys: [.isRegularFileKey])
+        else {
+            Issue.record(Comment(rawValue: "could not enumerate \(path)"))
+            return []
+        }
+        var files: [URL] = []
+        for case let url as URL in walk where url.pathExtension == "swift" {
+            files.append(url)
+        }
+        return files.sorted { $0.path(percentEncoded: false) < $1.path(percentEncoded: false) }
+    }
+
     /// Every Swift file of every covered target, comments already stripped.
     ///
     /// ⚠️ A target that contributes **no** files is a failure, not an empty
@@ -76,23 +117,26 @@ struct MergeOriginSourceTests {
     private static func sources() throws -> [(path: String, code: String)] {
         var found: [(path: String, code: String)] = []
         for target in targets {
-            let names = try FileManager.default
-                .contentsOfDirectory(atPath: target.url.path(percentEncoded: false))
-                .filter { $0.hasSuffix(".swift") }
-                .sorted()
+            let files = swiftFiles(under: target.url)
             #expect(
-                !names.isEmpty,
+                !files.isEmpty,
                 Comment(
                     rawValue:
                         "\(target.name) contributed no files to the merge-origin gate. Its "
                         + "directory is \(target.url.path(percentEncoded: false)) — has the target "
                         + "moved or been renamed?"))
-            for name in names {
-                let text = try String(
-                    contentsOf: target.url.appending(path: name), encoding: .utf8)
+            let root = target.url.path(percentEncoded: false)
+            for file in files {
+                let text = try String(contentsOf: file, encoding: .utf8)
+                // Relative to the target root, so a subdirectory shows in the
+                // failure message as `ElliotAppKit/Console/Foo.swift` rather
+                // than as a bare file name that says nothing about where it is.
+                let full = file.path(percentEncoded: false)
+                let relative = full.hasPrefix(root + "/")
+                    ? String(full.dropFirst(root.count + 1)) : full
                 found.append(
                     (
-                        path: "\(target.name)/\(name)",
+                        path: "\(target.name)/\(relative)",
                         code: text.components(separatedBy: "\n").map(code).joined(separator: "\n")
                     ))
             }
@@ -151,6 +195,72 @@ struct MergeOriginSourceTests {
     /// failure, whose obvious "fix" is to delete the assertion.
     private static func flat(_ arguments: String) -> String {
         arguments.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// A new UI target must fail here rather than start out unguarded.
+    ///
+    /// The sibling of `DefaultActionTests.coverageIsComplete`, and it is here for
+    /// the reason that one records: `ElliotApp` was outside that gate for its
+    /// whole life, and nothing said so. The criterion is mechanical rather than a
+    /// second hand-written list — a target that imports SwiftUI can host a
+    /// `confirmMerge` call, so every such target must be walked.
+    ///
+    /// ⚠️ Detection is recursive too. Written against one level it would miss a
+    /// target whose SwiftUI files all sit in subdirectories, which is the same
+    /// defect this fix is about, one layer up — a gate that under-reads and
+    /// reports a clean result.
+    @Test("Every target that can draw a control is walked")
+    func coverageIsComplete() throws {
+        let root = Self.targets[0].url.deletingLastPathComponent()
+        let names = try FileManager.default
+            .contentsOfDirectory(atPath: root.path(percentEncoded: false))
+            .sorted()
+
+        var drawing: [String] = []
+        for name in names {
+            let directory = root.appending(path: name)
+            var isDirectory: ObjCBool = false
+            guard
+                FileManager.default.fileExists(
+                    atPath: directory.path(percentEncoded: false), isDirectory: &isDirectory),
+                isDirectory.boolValue
+            else { continue }
+            let importsSwiftUI = Self.swiftFiles(under: directory).contains { file in
+                (try? String(contentsOf: file, encoding: .utf8))?.contains("import SwiftUI") ?? false
+            }
+            if importsSwiftUI { drawing.append(name) }
+        }
+
+        // A negative needs its positive witness: were the scan to find nothing
+        // at all, `uncovered` would be empty and this test would pass having
+        // established nothing.
+        #expect(
+            drawing.contains("ElliotAppKit"),
+            Comment(
+                rawValue:
+                    "the SwiftUI scan did not even find ElliotAppKit — it is reading the wrong "
+                    + "place. Found: \(drawing.sorted().joined(separator: ", "))"))
+
+        let covered = Set(Self.targets.map(\.name))
+        let uncovered = Set(drawing).subtracting(covered)
+        #expect(
+            uncovered.isEmpty,
+            Comment(
+                rawValue:
+                    "\(uncovered.sorted().joined(separator: ", ")) import SwiftUI and are not "
+                    + "walked by this gate, so a confirmMerge call added there would take its "
+                    + "origin — and confirmMerge's hardcoded requiresVerifiedGreen: false — with "
+                    + "nothing checking either. Add them to `targets`."))
+
+        // And the list must not name a target that no longer draws anything: a
+        // stale entry is a claim of coverage that buys nothing.
+        #expect(
+            covered.subtracting(Set(drawing)).isEmpty,
+            Comment(
+                rawValue:
+                    "\(covered.subtracting(Set(drawing)).sorted().joined(separator: ", ")) is "
+                    + "walked by this gate but imports no SwiftUI — it has been renamed or no "
+                    + "longer draws anything, and the entry is claiming coverage it does not buy."))
     }
 
     @Test("Every caller of confirmMerge passes the armed origin, not a literal")
