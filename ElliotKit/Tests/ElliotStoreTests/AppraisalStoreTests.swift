@@ -1,6 +1,7 @@
 import ElliotModel
 import ElliotStore
 import Foundation
+import TestSupport
 import Testing
 
 /// The two narrow writes an appraisal needs, and the reason neither is
@@ -84,34 +85,22 @@ struct AppraisalStoreTests {
         #expect(after.appraisedAt != nil)
     }
 
-    /// `applyAppraisal` reads and writes inside one transaction, so a value it
-    /// read before the write cannot be the value it writes back.
-    ///
-    /// This is deliberately not a `commitMove`-interleaving test: a stale
-    /// `Card` handed to `commitMove` after an appraisal lands is a real gap
-    /// (see the store's own doc comment on `applyAppraisal`), but it is a gap
-    /// in `commitMove`'s "write a whole card" contract, not in this method.
-    /// Pinning it here, against this method, would pass regardless of whether
-    /// `applyAppraisal` is transactional at all — and it would start failing
-    /// the day `commitMove` is narrowed, which is the actual fix, punishing
-    /// the repair this test exists to protect against. What this task adds is
-    /// the read-modify-write on the three appraisal columns; that is what
-    /// gets pinned.
-    @Test("Two appraisals racing the same card do not clobber each other's other fields")
-    func applyAppraisalReadsAndWritesInOneTransaction() async throws {
+    /// Two sequential calls can never observe a race — the second one only
+    /// starts after the first has fully returned — so asserting on them says
+    /// nothing about whether the read and the write inside `applyAppraisal`
+    /// share one transaction. Kept anyway because it pins a real, separate
+    /// fact the race test below does not: a later call's fields fully replace
+    /// an earlier call's, rather than merging with them field-by-field.
+    @Test("A second appraisal replaces the first's fields rather than merging with them")
+    func aLaterAppraisalReplacesTheEarlierOnesFields() async throws {
         let seeded = try await seed()
 
-        // First appraisal lands.
         try await seeded.store.applyAppraisal(
             cardID: seeded.card.id, effort: .medium,
             evidence: [Evidence(path: "a.swift", line: 1, exists: true)],
             at: Date(timeIntervalSince1970: 1_770_000_100)
         )
 
-        // A second appraisal — a re-run of the same lens, say — reads and
-        // writes afresh rather than carrying the first call's in-memory
-        // snapshot forward. Because the method itself does the reading, there
-        // is no caller-held `Card` to go stale in between.
         let second = try #require(
             try await seeded.store.applyAppraisal(
                 cardID: seeded.card.id, effort: .large,
@@ -127,6 +116,80 @@ struct AppraisalStoreTests {
         #expect(after.effort == .large)
         #expect(after.evidence?.map(\.path) == ["b.swift"])
         #expect(after.appraisedAt == Date(timeIntervalSince1970: 1_770_000_200))
+    }
+
+    /// Fires many `applyAppraisal` calls at the same card concurrently, each
+    /// carrying a triple only it could have produced, and checks that
+    /// whichever one survives is internally whole rather than a mix of two
+    /// calls' fields.
+    ///
+    /// ⚠️ **This does not prove `applyAppraisal` is transactional, and it is
+    /// not capable of proving it.** Measured directly: split `applyAppraisal`
+    /// into a `reader.read`, a real suspension, and a separate
+    /// `requireWriter().write` — including a variant with an explicit 20ms
+    /// sleep after the read to force every task's read to land before any
+    /// task's write — and this exact test still passed, across eight runs.
+    /// The reason is structural rather than a scheduling accident a slower
+    /// machine might still expose: every call, split or not, assembles its
+    /// own effort/evidence/appraisedAt into one local `Card` value before it
+    /// ever reaches `.update(db)`, and that single call persists the whole
+    /// value in one `UPDATE` statement. Two concurrent calls can therefore
+    /// only ever race to be the *last commit* — never interleave field by
+    /// field — so whichever one lands is always whole, transactional or not.
+    /// A race that can't produce the failure it's named for isn't proving the
+    /// property; it's exercising a scenario the property was never at risk
+    /// in.
+    ///
+    /// It is kept anyway for what it *does* show: concurrent appraisal
+    /// traffic against one card cannot corrupt it into an inconsistent row,
+    /// whichever call happens to win. That's real, just narrower than
+    /// "transactional" — the actual one-transaction claim is pinned in
+    /// `AppraisalTransactionShapeTests`, which reads the source the way
+    /// `RunSchedulerShapeTests` already does in this codebase for exactly
+    /// this situation: a property a race test cannot observe.
+    ///
+    /// Deliberately not asserting *which* call wins — that depends on
+    /// scheduling and asserting it would make the test flaky.
+    @Test("Concurrent appraisals of one card never settle on a mixed triple")
+    func concurrentAppraisalsNeverSettleOnAMixedTriple() async throws {
+        let seeded = try await seed()
+        let base = Date(timeIntervalSince1970: 1_770_000_000)
+        let efforts = Effort.allCases
+        let concurrency = 20
+
+        @Sendable func triple(for index: Int) -> (Effort, [Evidence], Date) {
+            (
+                efforts[index % efforts.count],
+                [Evidence(path: "call-\(index).swift", line: index, exists: index.isMultiple(of: 2))],
+                base.addingTimeInterval(Double(index))
+            )
+        }
+
+        try await withTimeout {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for index in 0..<concurrency {
+                    group.addTask {
+                        let (effort, evidence, at) = triple(for: index)
+                        try await seeded.store.applyAppraisal(
+                            cardID: seeded.card.id, effort: effort, evidence: evidence, at: at
+                        )
+                    }
+                }
+                for try await _ in group {}
+            }
+        }
+
+        let settled = try #require(try await seeded.store.card(id: seeded.card.id))
+        let winner = try #require(settled.evidence?.first)
+        let index = winner.line!
+        let (expectedEffort, expectedEvidence, expectedAt) = triple(for: index)
+
+        #expect(settled.effort == expectedEffort, "effort did not come from the same call as evidence")
+        #expect(settled.evidence == expectedEvidence)
+        #expect(
+            settled.appraisedAt == expectedAt,
+            "appraisedAt did not come from the same call as evidence"
+        )
     }
 
     @Test("Appraising a card that has been deleted answers nil rather than throwing")
