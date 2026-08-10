@@ -76,8 +76,16 @@ struct AutoDevBand: Equatable {
     /// remedy printed under a screen that cannot perform it, which is
     /// `AnalysisFooterMessage`'s own defect one band over, and the reason its
     /// `fixes` travel with its `text` rather than being read separately.
-    /// `AutoDevBandTests.runNoteNamesOnlyOfferedControls` derives the words from
-    /// ``title(_:)`` and fails naming the state.
+    ///
+    /// ⛔ **And the obligation runs both ways: a note must name every control
+    /// its band *does* offer.** A screen whose buttons the note does not explain
+    /// is the same defect pointed the other way — this value exists because a
+    /// control's title has no room to say what pressing it does to the run
+    /// already going, so a note that skips a button leaves the reader to press
+    /// it and find out. `AutoDevBandTests.runNoteNamesExactlyTheControlsOffered`
+    /// checks both directions, over all four bands, deriving each word from
+    /// ``title(_:)`` and failing named. It is stated here as a claim about a
+    /// test that was measured red both ways, not as a claim about the strings.
     let runNote: String
     let tone: Tone
     let controls: [Control]
@@ -109,16 +117,17 @@ struct AutoDevBand: Equatable {
         guard let session else { return .idle }
         let count = session.engagedCardIDs.count
         let cards = "\(count) \(count == 1 ? "card" : "cards")"
-        // Clamped because the two sources can disagree, and a negative count of
-        // work left is a sentence no reader can act on. It cannot go negative
-        // from a consistent pair — a row exists only for an engaged card — so
-        // this is the inconsistent pair failing legibly rather than loudly.
-        let toGo = max(0, count - tally.settled)
+        let settled = settledCards(session, tally)
+        // No `max(0, …)` needed: ``settledCards(_:_:)`` is already bounded by
+        // `count`, so the two halves of the sentence account for the set by
+        // construction rather than by a second clamp that could drift from the
+        // first.
+        let toGo = count - settled
         switch session.state {
         case .running:
             return AutoDevBand(
                 headline:
-                    "Driving \(cards) in \(repoName) — \(tally.settled) settled, "
+                    "Driving \(cards) in \(repoName) — \(settled) settled, "
                     + "\(toGo) to go.",
                 runNote:
                     "Pause engages no further move and lets the run already going finish. "
@@ -128,7 +137,7 @@ struct AutoDevBand: Equatable {
             )
         case .paused:
             return AutoDevBand(
-                headline: "Paused — \(cards) engaged in \(repoName), \(tally.settled) settled.",
+                headline: "Paused — \(cards) engaged in \(repoName), \(settled) settled.",
                 // Its own, because Pause is not on this screen: Resume has taken
                 // its place, and a note telling the reader to press a button
                 // that is not there is worse than no note.
@@ -160,13 +169,17 @@ struct AutoDevBand: Equatable {
     /// still shows: the report is a record, and the figure is how a reader
     /// reaches it from the board.
     ///
-    /// The denominator is the session's engaged set for the same reason the
-    /// headline's is — see ``of(session:tally:repoName:)``. A figure reading
-    /// `0/0` beside a band reading *"Driving 3 cards"* would be the one number
-    /// this feature exists to state, stated twice and differently.
+    /// Both halves come from the same two places the headline's do — the
+    /// denominator from the session, the numerator through
+    /// ``settledCards(_:_:)`` — because this figure and that headline are the
+    /// one number this feature exists to state. A denominator left on
+    /// `tally.total` reads `0/0` beside a band reading *"Driving 3 cards"*; a
+    /// numerator left unclamped read **`3/2`** beside a headline the clamp had
+    /// already made coherent, which is how this shipped and what fix round 1
+    /// caught.
     static func figureText(session: AutoDevSession?, tally: AutoDevTally) -> String? {
         guard let session else { return nil }
-        return "\(tally.settled)/\(session.engagedCardIDs.count) auto-dev"
+        return "\(settledCards(session, tally))/\(session.engagedCardIDs.count) auto-dev"
     }
 
     static func title(_ control: Control) -> String {
@@ -183,5 +196,23 @@ struct AutoDevBand: Equatable {
         case .resume: "Starts engaging moves again."
         case .stop: "Ends the session and cancels the run already going."
         }
+    }
+
+    /// How many of the session's cards are done with, never more than it has.
+    ///
+    /// ⛔ **One clamp, read by both surfaces.** The session and the rows can
+    /// disagree — see ``of(session:tally:repoName:)`` — and an unclamped
+    /// numerator prints **`3/2 auto-dev`** in the status bar while the headline
+    /// beside it reads *"2 settled, 0 to go"*. That was the shipped state: the
+    /// clamp lived inline in ``of(session:tally:repoName:)`` and guarded the
+    /// less visible of the two surfaces only. A second clamp beside the first
+    /// would be a second answer waiting to drift, which is the whole subject of
+    /// this type.
+    ///
+    /// It bounds rather than reports, deliberately: an impossible pair is a
+    /// transient the reader can do nothing about, so it reads as *finished* for
+    /// the moment it lasts rather than as arithmetic nobody can parse.
+    private static func settledCards(_ session: AutoDevSession, _ tally: AutoDevTally) -> Int {
+        min(tally.settled, session.engagedCardIDs.count)
     }
 }

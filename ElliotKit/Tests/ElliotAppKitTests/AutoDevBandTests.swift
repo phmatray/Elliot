@@ -51,12 +51,46 @@ struct AutoDevBandTests {
         }
     }
 
+    /// ⚠️ `band == AutoDevBand.idle` alone is a tautology — `of` returns that
+    /// very value — so the idle **sentence** was pinned by nothing. The
+    /// literals are what a reader sees, and what nothing else may say.
     @Test("With no session the band says so and offers no control")
     func idleBand() {
         let band = AutoDevBand.of(session: nil, tally: noRows, repoName: "Elliot")
         #expect(band == AutoDevBand.idle)
+        #expect(band.headline == "Elliot is not driving anything by itself.")
+        #expect(band.runNote == "Nothing is running.")
         #expect(band.controls.isEmpty)
         #expect(band.tone == .quiet)
+    }
+
+    /// ⛔ *Never let two different facts produce the same sentence.* Four bands,
+    /// four states of the world, and both sentences distinct across all of them
+    /// — the idle band's especially, since a state that drifted onto its
+    /// wording would read as *"Elliot is not driving anything by itself"* while
+    /// it drove.
+    @Test("No two bands say the same thing")
+    func bandsAreDistinct() {
+        let bands = labelledBands(tally: AutoDevTally(engaged: 3, merged: 1, blocked: 1))
+        #expect(Set(bands.map(\.band.headline)).count == bands.count)
+        #expect(Set(bands.map(\.band.runNote)).count == bands.count)
+    }
+
+    /// Every band this type can produce, named — the three states plus idle,
+    /// which is a band no `AutoDevSession.State` reaches.
+    private func labelledBands(
+        tally: AutoDevTally, cards: Int = 5
+    ) -> [(name: String, band: AutoDevBand)] {
+        var bands: [(name: String, band: AutoDevBand)] = [("idle", .idle)]
+        for state in AutoDevSession.State.allCases {
+            bands.append(
+                (
+                    "\(state)",
+                    AutoDevBand.of(
+                        session: session(state, cards: cards), tally: tally, repoName: "Elliot")
+                ))
+        }
+        return bands
     }
 
     // MARK: - The three states
@@ -110,6 +144,31 @@ struct AutoDevBandTests {
         #expect(clean.tone == .quiet)
     }
 
+    /// ⚠️ **What the band says today about a state nobody has written a sentence
+    /// for**: a session that finished with fewer rows than it engaged.
+    ///
+    /// It reports the rows as rows — three merged, none blocked — names nothing
+    /// about the two cards they do not account for, and is `quiet`. That is a
+    /// deliberate boundary rather than a decision: `merged` and `blocked` are
+    /// counts of things that happened, and clamping *them* would falsify a
+    /// record, where clamping ``AutoDevTally/settled`` only bounds a derived
+    /// figure. This pins the wording so that deciding a quiet success on
+    /// incomplete data is wrong becomes a change to a named assertion instead of
+    /// a discovery on screen.
+    @Test("A finished session with fewer rows than cards reports only what the rows say")
+    func finishedWithFewerRowsThanCards() {
+        let partial = AutoDevTally(engaged: 0, merged: 3, blocked: 0)
+        let band = AutoDevBand.of(
+            session: session(.finished, cards: 5), tally: partial, repoName: "Elliot")
+        #expect(band.headline == "Finished — 5 cards in Elliot, 3 merged, 0 blocked.")
+        #expect(band.tone == .quiet)
+        #expect(band.controls.isEmpty)
+        // The figure is the one place the shortfall is visible at all.
+        #expect(
+            AutoDevBand.figureText(session: session(.finished, cards: 5), tally: partial)
+                == "3/5 auto-dev")
+    }
+
     @Test("One card is a card")
     func singularIsWrittenOut() {
         let band = AutoDevBand.of(
@@ -156,23 +215,38 @@ struct AutoDevBandTests {
 
     /// The disagreement's third shape, and the only one that produces nonsense
     /// rather than an understatement: more rows settled than the session ever
-    /// engaged — a session row read beside engagements fresher than it is. A
-    /// headline reading *"−1 to go"* is not a number anyone can act on, so the
-    /// count of work left bottoms out at none.
+    /// engaged — a session row read beside engagements fresher than it is.
     ///
-    /// ⚠️ Written because break-testing found it missing: deleting the clamp
-    /// left all sixteen other tests green, which is a finding rather than a
-    /// pass — the guard was asserted in a comment and nowhere else.
-    @Test("More settled rows than engaged cards reads as none left, never a negative")
-    func toGoNeverGoesNegative() {
+    /// ⛔ **Both surfaces, because the clamp shipped on one.** The headline read
+    /// *"2 settled, 0 to go"* while the figure beside it read **`3/2 auto-dev`**
+    /// — the loud failure the clamp exists to avoid, on the more visible of the
+    /// two, and the one number this whole type exists to state once.
+    ///
+    /// ⚠️ The clamp itself was written because break-testing found it pinned by
+    /// nothing: deleting it left every other test green, which is a finding
+    /// rather than a pass. It was then asserted on the headline alone, which is
+    /// the same lesson one surface over.
+    @Test("More settled rows than engaged cards is clamped on the band and on the figure")
+    func settledNeverExceedsTheEngagedSet() {
+        // A repository name carrying a hyphen on purpose: the assertion below
+        // must be about a negative number, not about this fixture happening to
+        // be spelled without one.
+        let impossible = AutoDevTally(engaged: 0, merged: 2, blocked: 1)
         let band = AutoDevBand.of(
-            session: session(.running, cards: 2),
-            tally: AutoDevTally(engaged: 0, merged: 2, blocked: 1),
-            repoName: "Elliot")
-        #expect(band.headline == "Driving 2 cards in Elliot — 3 settled, 0 to go.")
-        // The em dash above is U+2014; a hyphen-minus in this sentence could
-        // only be a negative count.
-        #expect(!band.headline.contains("-"))
+            session: session(.running, cards: 2), tally: impossible, repoName: "repo-audit")
+        #expect(band.headline == "Driving 2 cards in repo-audit — 2 settled, 0 to go.")
+        // The separator above is an em dash, U+2014. A hyphen-minus *following a
+        // space* could only be introducing a negative count.
+        #expect(!band.headline.contains(" -"))
+        #expect(band.headline.contains("repo-audit"))
+
+        #expect(
+            AutoDevBand.figureText(session: session(.running, cards: 2), tally: impossible)
+                == "2/2 auto-dev")
+
+        let held = AutoDevBand.of(
+            session: session(.paused, cards: 2), tally: impossible, repoName: "repo-audit")
+        #expect(held.headline == "Paused — 2 cards engaged in repo-audit, 2 settled.")
     }
 
     // MARK: - The controls say what they do to the run already going
@@ -205,25 +279,37 @@ struct AutoDevBandTests {
         #expect(explains.allSatisfy { $0.hasSuffix(".") })
     }
 
-    /// ⛔ A run note that names a control the band does not offer is a remedy
-    /// printed under a screen that cannot perform it — `AnalysisFooterMessage`'s
-    /// defect, one band over. The paused band is the one this catches: it drops
-    /// Pause for Resume, so a note written once for both states tells the reader
+    /// ⛔ **Both directions, over all four bands.**
+    ///
+    /// A note that names a control the band does *not* offer is a remedy printed
+    /// under a screen that cannot perform it — `AnalysisFooterMessage`'s defect,
+    /// one band over. The paused band is the one that catches: it drops Pause
+    /// for Resume, so a note written once for both live states tells the reader
     /// to press something that is not there.
+    ///
+    /// ⚠️ The other direction is the half that was **missing until fix round 1**,
+    /// and its absence let a note naming *neither* paused control pass. It is
+    /// the same defect pointed the other way: this value exists precisely
+    /// because a control's title has no room to say what pressing it does to the
+    /// run already going, so a button the note skips is a button the reader has
+    /// to press to find out about.
     ///
     /// The word is derived from ``AutoDevBand/title(_:)`` rather than written
     /// out, so renaming a control cannot leave this checking a word nothing says.
-    @Test("A band's run note names only the controls that band offers")
-    func runNoteNamesOnlyOfferedControls() {
-        for state in AutoDevSession.State.allCases {
-            let band = AutoDevBand.of(
-                session: session(state), tally: AutoDevTally(engaged: 3, merged: 1, blocked: 1),
-                repoName: "Elliot")
-            for control in AutoDevBand.Control.allCases where !band.controls.contains(control) {
+    @Test("A band's run note names exactly the controls that band offers")
+    func runNoteNamesExactlyTheControlsOffered() {
+        for (name, band) in labelledBands(tally: AutoDevTally(engaged: 3, merged: 1, blocked: 1)) {
+            for control in AutoDevBand.Control.allCases {
                 let word = String(AutoDevBand.title(control).split(separator: " ")[0])
-                #expect(
-                    !band.runNote.contains(word),
-                    "\(state)'s run note names \(word), which that band does not offer")
+                if band.controls.contains(control) {
+                    #expect(
+                        band.runNote.contains(word),
+                        "\(name)'s run note offers \(word) and never says what it does")
+                } else {
+                    #expect(
+                        !band.runNote.contains(word),
+                        "\(name)'s run note names \(word), which that band does not offer")
+                }
             }
         }
     }
@@ -281,6 +367,10 @@ struct AutoDevBandTests {
 
     @Test("The engaged mark is named, because a card is one accessibility element")
     func engagedMarkIsNamed() {
+        // The glyph itself, not merely that there is one: an SF Symbol name
+        // that does not resolve renders as nothing at all, and a card silently
+        // missing its bolt is the state this whole band exists to contradict.
+        #expect(AutoDevBand.engagedSymbol == "bolt.circle.fill")
         #expect(!AutoDevBand.engagedSymbol.isEmpty)
         #expect(AutoDevBand.engagedLabel.hasSuffix("."))
         #expect(AutoDevBand.engagedLabel.lowercased().contains("auto-dev"))
