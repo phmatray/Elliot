@@ -1,5 +1,4 @@
 import ElliotModel
-import ElliotProcess
 import ElliotStore
 import Foundation
 
@@ -121,6 +120,13 @@ public actor AppraisalService {
         // existence separately and reports *"No artifact was written at
         // \<path>"*, naming the path, which is the honest account of this
         // failure and one no card field is written from.
+        //
+        // ⚠️ **Before the claim, so a refused appraisal leaves an empty
+        // directory behind.** Deliberate, and the cheaper of the two orderings:
+        // claiming first would mean holding the card across a filesystem call,
+        // and the residue is an empty directory under `analyses/appraisals/`,
+        // which `ArtifactRetention` sweeps like everything else there.
+        // `AnalysisService.start` has the same ordering for the same reason.
         try? FileManager.default.createDirectory(
             at: artifact.deletingLastPathComponent(),
             withIntermediateDirectories: true,
@@ -150,6 +156,16 @@ public actor AppraisalService {
         // The compare-and-set, not a check followed by an insert. This actor is
         // reentrant, so a check that spanned the `await`s above could be passed
         // by two calls before either wrote.
+        //
+        // ⚠️ **That atomicity is witnessed one layer down, not here.**
+        // `AppraisalStoreTests.secondClaimIsRefused` drives the primitive
+        // directly and asserts it *inserts nothing*; no test at this layer can
+        // tell a compare-and-set from a check-then-insert, because reaching the
+        // difference needs two calls interleaved at a chosen point and a
+        // scheduler-dependent race is the flake this repository's testing
+        // discipline forbids. Said out loud so the next reader does not take
+        // this comment for a test — an argument in a comment is exactly what
+        // three documents asserting `isBlocking` turned out to be.
         //
         // ⛔ **Losing the claim is a named refusal, never `nil` and never a
         // second run.** `claimCardForRun` answers `false` for exactly one

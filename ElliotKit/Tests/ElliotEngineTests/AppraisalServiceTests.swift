@@ -1,5 +1,4 @@
 import ElliotModel
-import ElliotProcess
 import ElliotStore
 import Foundation
 import TestSupport
@@ -34,6 +33,20 @@ struct AppraisalServiceTests {
     /// same way as *asked and clear*.
     private struct ClosedGate: RepoGating {
         func verdict(for repo: Repo) async -> PreflightState { .failing }
+    }
+
+    /// A repository that was swept and came back clean.
+    ///
+    /// ⛔ **The only verdict production ever produces**, and until it was
+    /// written the one verdict nothing tested. `PreflightGate` never answers
+    /// `notChecked` — that is a property of `PreflightReading`, spelled out at
+    /// `RepoGate.swift:35-38` — so a healthy repository always reaches this
+    /// service as `.passing`, while the suite exercised only `ClosedGate`
+    /// (`.failing`) and the default `OpenGate` (`.notChecked`). Measured: a
+    /// service that refused on `.passing` — i.e. refused *every healthy
+    /// repository* — passed all 2443 tests.
+    private struct PassingGate: RepoGating {
+        func verdict(for repo: Repo) async -> PreflightState { .passing }
     }
 
     private struct Stack {
@@ -107,6 +120,25 @@ struct AppraisalServiceTests {
         #expect(run.prompt.contains("Cache the login shell environment"))
     }
 
+    /// The gate passing, witnessed — the arm that carries every real start.
+    ///
+    /// Its absence was not a gap in coverage but a hole in the guarantee: with
+    /// `.passing` untested, a service that refused it would have been green,
+    /// and so would a hand-written second answerer that happened to agree with
+    /// `UnattendedStartRefusal` today. Composed, those two are the exact defect
+    /// Tasks 12–14 exist to prevent.
+    @Test("A repository Preflight passed starts the appraisal")
+    func gatePasses() async throws {
+        let stack = try await makeStack(gate: PassingGate())
+        let run = try await stack.service.appraise(cardID: stack.card.id)
+
+        // Not merely "it did not throw": the run is in the store and something
+        // was really launched. A start that wrote a row and spawned nothing
+        // would be a queued row waiting for the launch sweep, not an appraisal.
+        #expect(try await stack.store.run(id: run.id)?.kind == .appraiseCards)
+        #expect(stack.launcher.launched == [run.id])
+    }
+
     @Test("A repository Preflight is failing refuses the appraisal, and launches nothing")
     func gateRefuses() async throws {
         let stack = try await makeStack(gate: ClosedGate())
@@ -123,6 +155,10 @@ struct AppraisalServiceTests {
         await #expect(throws: AppraisalError.repoRefused(.repoDisabled)) {
             try await stack.service.appraise(cardID: stack.card.id)
         }
+        // The same two assertions `gateRefuses` makes: a refusal that still
+        // wrote a row or still spawned is not a refusal.
+        #expect(stack.launcher.launched.isEmpty)
+        #expect(try await stack.store.runs(cardID: stack.card.id).isEmpty)
     }
 
     /// The order `evaluateMove` uses, and the one `UnattendedStartRefusal` is
@@ -135,6 +171,8 @@ struct AppraisalServiceTests {
         await #expect(throws: AppraisalError.repoRefused(.repoDisabled)) {
             try await stack.service.appraise(cardID: stack.card.id)
         }
+        #expect(stack.launcher.launched.isEmpty)
+        #expect(try await stack.store.runs(cardID: stack.card.id).isEmpty)
     }
 
     @Test("An unknown card is named, not silently ignored")
