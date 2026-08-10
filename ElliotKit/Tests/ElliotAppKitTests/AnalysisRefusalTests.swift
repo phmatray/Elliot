@@ -276,6 +276,77 @@ struct AnalysisRefusalTests {
         #expect(try await store.repo(id: off.id)?.isEnabled == true)
     }
 
+    /// ⛔ **The claim above is about the *route*, and asserting the store cannot
+    /// see one.**
+    ///
+    /// Found by break-testing `enablingGoesThroughTheStore`: replacing
+    /// `setRepoEnabled(repo, enabled: true)` with `repo.isEnabled = true;
+    /// try? await store?.saveRepo(repo)` — a second writer, three lines, right
+    /// here in the analysis section — left all 63 tests in these suites **green**.
+    /// The row ends up switched on either way, so no assertion about the row can
+    /// tell the two apart. That is the same gap `CaretAnchorTests` records: the
+    /// values either side were pinned and the step between them was not.
+    ///
+    /// So the claim is checked where it lives, the way `CardOutcome`'s is —
+    /// CLAUDE.md: *"Enforced by grep: none of `issueNumber|…| lastError =`
+    /// appears in those three files."* One assignment, in `setRepoEnabled`, which
+    /// is the writer Preflight's own toggle reaches.
+    ///
+    /// ⚠️ It is scoped to `AppModel.swift` and to the needle `isEnabled =`, so an
+    /// unrelated `isEnabled` arriving on this model will trip it. That is the
+    /// intended failure: whoever lands it either routes through the one writer or
+    /// widens this gate on purpose, rather than growing a second one unnoticed.
+    @Test("`isEnabled` is assigned in exactly one place, and that place is setRepoEnabled")
+    func theSwitchHasOneWriter() throws {
+        let code = try HiddenFaceState.code(of: "AppModel.swift")
+
+        // A positive witness: a renamed writer would make the count below
+        // meaningless rather than false.
+        #expect(
+            code.contains("func setRepoEnabled("),
+            "AppModel no longer declares setRepoEnabled — this gate is reading the wrong file")
+
+        let writes = code.components(separatedBy: "isEnabled =").count - 1
+        #expect(
+            writes == 1,
+            """
+            AppModel.swift assigns isEnabled \(writes) time(s); it may do so exactly once, inside \
+            setRepoEnabled. The analysis footer's "Switch … on" is a screen that had only ever \
+            read a Repo, and a second writer for one column is how two screens come to disagree \
+            about it (#294).
+            """)
+
+        let body = try Self.body(of: "func setRepoEnabled(", in: code)
+        #expect(
+            body.contains("isEnabled ="),
+            """
+            the one assignment of isEnabled is not inside setRepoEnabled. The count above is then \
+            satisfied by whichever writer happens to be the survivor (#294).
+            """)
+    }
+
+    /// One function's body, by brace matching from its signature — the idiom
+    /// `AnalysisPanelViewSourceTests` uses, and honest for the same reason: the
+    /// function it is pointed at holds no braces inside a string literal.
+    private static func body(of signature: String, in source: String) throws -> String {
+        let start = try #require(source.range(of: signature))
+        var depth = 0
+        var open: String.Index?
+        var index = start.upperBound
+        while index < source.endIndex {
+            if source[index] == "{" {
+                if depth == 0 { open = source.index(after: index) }
+                depth += 1
+            } else if source[index] == "}" {
+                depth -= 1
+                if depth == 0, let open { return String(source[open..<index]) }
+            }
+            index = source.index(after: index)
+        }
+        Issue.record("no matching brace for \(signature)")
+        return ""
+    }
+
     @Test("Switching on a repository that has since been forgotten writes nothing")
     func enablingAForgottenRepositoryIsRefused() async throws {
         let store = try BoardStore.inMemory()
