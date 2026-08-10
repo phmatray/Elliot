@@ -489,6 +489,74 @@ struct AppModelTests {
         #expect(audits.first?.origin == .autoDev(sessionID: session))
     }
 
+    /// A repository and a card in one seeded store, for the two drag tests below.
+    private func draggableBoard(column: ElliotModel.Column, pr: Int? = nil) async throws
+        -> (store: BoardStore, model: AppModel, card: Card)
+    {
+        let store = try BoardStore.inMemory()
+        let board = BoardService(store: store, launcher: FakeLauncher())
+        var repo = Repo(
+            path: "/tmp/drag-origin-\(UUID().uuidString)",
+            nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        repo.isEnabled = true
+        try await store.saveRepo(repo)
+        var card = Card(
+            repoID: repo.id, title: "story", column: column, orderIndex: 1,
+            issueNumber: pr == nil ? nil : 4, prNumber: pr,
+            columnEnteredAt: epoch, createdAt: epoch, updatedAt: epoch)
+        try await store.saveCard(card)
+        card = try #require(try await store.card(id: card.id))
+
+        let model = AppModel()
+        model.testOnlySeedStore(store)
+        model.testOnlyAttachBoard(board)
+        return (store, model, card)
+    }
+
+    /// ⛔ **`AppModel.move` names its origin in one local that now feeds two
+    /// consumers, and nothing witnessed either of them.**
+    ///
+    /// Measured: changing `let origin = MoveOrigin.userDrag` to
+    /// `.autoDev(sessionID: UUID())` left all 2561 tests green. That is this
+    /// task's own defect with the actors swapped — a person's drag recording
+    /// itself as an unattended session — and it is the *shared local* that is
+    /// new here, so the risk is concentrated by the change even though the
+    /// argument passed is byte-identical to what it was before.
+    ///
+    /// This test covers the first consumer, `board.move`. The one below covers
+    /// the second, `armPendingMerge`; one test cannot see both, because the two
+    /// are reached by different move outcomes.
+    @Test("A drag records itself as a drag, in the audit the history renders")
+    func aDragRecordsUserDrag() async throws {
+        let seeded = try await draggableBoard(column: .backlog)
+
+        await seeded.model.move(cardID: seeded.card.id, to: .todo)
+
+        #expect(try await seeded.store.card(id: seeded.card.id)?.column == .todo)
+        let audits = try await seeded.store.audits(cardID: seeded.card.id)
+        #expect(audits.first?.to == .todo)
+        #expect(audits.first?.origin == .userDrag)
+    }
+
+    /// The second consumer of that same local.
+    ///
+    /// A drag onto Done does not move the card — it comes back `.needsInput` and
+    /// arms the confirmation — so the origin reaches `moveAudit` only later,
+    /// through `PendingMerge`. A wrong literal here would put the lie into the
+    /// merge the drag armed, which is the one act the product calls
+    /// irreversible, and the test above cannot see it.
+    @Test("A drag that arms a merge arms it as a drag")
+    func aDragArmsTheMergeAsADrag() async throws {
+        let seeded = try await draggableBoard(column: .inReview, pr: 9)
+
+        await seeded.model.move(cardID: seeded.card.id, to: .done)
+
+        #expect(seeded.model.pendingFollowUps?.origin == .userDrag)
+        // The card has not moved: this is the confirmation being armed, not a
+        // merge. If it had, the assertion above would be about the wrong path.
+        #expect(try await seeded.store.card(id: seeded.card.id)?.column == .inReview)
+    }
+
     // MARK: - What to do next
 
     @Test("nextSteps is rankNextSteps' answer, not a second opinion")
