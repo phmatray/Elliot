@@ -342,6 +342,12 @@ private struct OpenWindowButtons: View {
         Button("Repositories") { model.showConsoleFace(.repositories) }
         Button("Preflight") { model.showConsoleFace(.preflight) }
         Button("Archive") { model.showConsoleFace(.archive) }
+        // Load-bearing rather than decorative, unlike its four neighbours: the
+        // Dismissed door in the status bar is absent whenever nothing is
+        // dismissed, so without this item the face is unreachable at exactly the
+        // moment a reader would go looking to find out that it is empty.
+        // `ConsoleReachabilityTests` fails by name if it goes.
+        Button("Dismissed") { model.showConsoleFace(.dismissed) }
     }
 }
 

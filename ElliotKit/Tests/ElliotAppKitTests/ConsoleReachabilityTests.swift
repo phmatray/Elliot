@@ -122,6 +122,42 @@ struct ConsoleReachabilityTests {
         )
     }
 
+    /// ⚠️ `reachableFaces` merges the two ways in, so it cannot tell a face with
+    /// a door from a face with a menu item — and for `dismissed` the difference
+    /// is the whole point. Its door is **conditional**: `DismissalDigest.figure`
+    /// is nil at zero, following the queue and the sweep, because a permanent
+    /// "0 dismissed" is furniture. A face whose only way in vanishes with its
+    /// own contents is a face nobody can open to find out that it is empty — and
+    /// the merged helper would call it reachable on the strength of a door that
+    /// is not on screen.
+    ///
+    /// So `dismissed` needs **both**, and this asserts them one each. The door
+    /// half is #334's criterion 3 — *the import summary's dismissed count leads
+    /// to that list rather than only stating a number* — which is otherwise
+    /// unpinned: a status-bar figure is layout, `swift test` cannot see one, and
+    /// deleting it leaves every behavioural test in this package green while the
+    /// feature reverts to the dead end it was written to close.
+    @Test("The Dismissed face has both ways in, and each answers a different moment")
+    func aConditionalDoorIsBackedByAMenuItem() throws {
+        let app = try Self.source("ElliotApp", "ElliotApp.swift")
+        let board = try Self.source("ElliotAppKit", "BoardView.swift")
+
+        #expect(
+            app.contains("showConsoleFace(.dismissed)"),
+            """
+            the Dismissed face has no menu item, and its status-bar figure is absent \
+            whenever there is nothing dismissed — so at zero there is no way in at all
+            """
+        )
+        #expect(
+            board.contains("face: .dismissed"),
+            """
+            the status bar has no Dismissed door. The count of suppressed items is back to \
+            being a number with nothing to press, which is #334's whole subject
+            """
+        )
+    }
+
     // MARK: - 3. The funnel
 
     @Test("The model's console methods are the transitions, not a second copy of them")

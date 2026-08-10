@@ -23,7 +23,7 @@ struct ConsoleFaceTests {
         #expect(
             ConsoleFace.allScreens == [
                 "board", "repositories", "operations", "nextSteps", "preflight", "archive",
-                "newStory",
+                "newStory", "dismissed",
             ],
             """
             a screen has appeared or disappeared. If a window became a face, it belongs in \
@@ -55,13 +55,27 @@ struct ConsoleFaceTests {
     /// deliberately not derived from anything, and a face whose raw value must
     /// change has to change it here too, in front of a comment explaining what
     /// breaks for the caller.
-    @Test("Every face's raw value is the id that screen was published under")
+    ///
+    /// ⛔ **A subset, not an equality, since #334 — and the direction it lost is
+    /// the direction that was wrong.** The relation is *every id that was ever
+    /// published still names a face*, and equality asserts a second thing this
+    /// list has no standing to say: that no face may exist which was never a
+    /// window. `dismissed` is the first screen **born** in the console. It has
+    /// no published id, because no agent has ever been able to pass one for it;
+    /// adding it to a set literally named `published` would make the list say
+    /// something false about its own subject in order to keep an operator.
+    ///
+    /// Nothing is lost, because the check equality was doing belongs to
+    /// ``noScreenVanishesBetweenTheTwoWorlds`` above: `allScreens` is frozen as
+    /// a literal too, so a face added — or added with a typo'd raw value — still
+    /// fails there. Two tests, two claims, neither guessing at the other's.
+    @Test("Every id a screen was published under still names a face")
     func rawValuesAreThePublishedIDs() {
         let published: Set<String> = [
             "repositories", "operations", "nextSteps", "preflight", "archive", "newStory",
         ]
         #expect(
-            Set(ConsoleFace.allCases.map(\.rawValue)) == published,
+            published.isSubset(of: Set(ConsoleFace.allCases.map(\.rawValue))),
             """
             a face's raw value has moved away from the id agents pass to board_screenshot. \
             Renaming one is a breaking change to the only caller this migration exists to serve
@@ -103,5 +117,13 @@ struct ConsoleFaceTests {
         #expect(ConsoleFace.operations.title == "Operations")
         #expect(ConsoleFace.preflight.title == "Preflight")
         #expect(ConsoleFace.archive.title == "Archive")
+    }
+
+    /// The one face with no window title to inherit, because it never had a
+    /// window. Named for what it lists rather than for the act that fills it:
+    /// the reader arrives here from a figure reading "3 dismissed".
+    @Test("The face born in the console is titled from the figure that opens it")
+    func theFaceWithNoWindowTitleIsStillNamed() {
+        #expect(ConsoleFace.dismissed.title == "Dismissed")
     }
 }

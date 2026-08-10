@@ -942,6 +942,32 @@ struct StatusBar: View {
                 )
             }
 
+            // Criterion 3 of #334: the number that reported the suppressions
+            // becomes the way into them. It was a fragment of `model.status` —
+            // `ImportSummary.sentence` appending "3 dismissed" — inside one
+            // truncated, `lineLimit(1)` string, naming none of them, with
+            // nothing to press.
+            //
+            // Same rule as the queue above: only when there is one. That is why
+            // the face also has a View-menu item — at zero this door is absent,
+            // and a screen whose only way in vanishes with its own contents is
+            // one nobody can open to learn it is empty.
+            //
+            // Driven by `dismissedFigure`, a reading of the **table**, not by
+            // the last import summary: a summary is a record of one pass, so it
+            // cannot decrement when a row is restored, and the next thing to
+            // speak into `status` erases it.
+            if let dismissed = model.dismissedFigure {
+                figure(
+                    text: dismissed,
+                    tint: Palette.quiet,
+                    help: "Issues and pull requests this board is not importing. "
+                        + "Click to see them and restore one.",
+                    spoken: "\(dismissed) items are being skipped on refresh",
+                    face: .dismissed
+                )
+            }
+
             // Same rule as the queue above — only when there is one. With the
             // shipped retention constants a launch prunes nothing, so this is
             // absent on an ordinary day rather than reading "0 pruned"; and

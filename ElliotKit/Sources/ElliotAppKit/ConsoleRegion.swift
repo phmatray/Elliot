@@ -131,6 +131,7 @@ struct ConsoleRegion: View {
         case .repositories: RepositoriesView()
         case .archive: ArchiveView()
         case .newStory: NewStoryView()
+        case .dismissed: DismissedView()
         }
     }
 }

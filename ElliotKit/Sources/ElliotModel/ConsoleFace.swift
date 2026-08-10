@@ -28,6 +28,12 @@ public enum ConsoleFace: String, CaseIterable, Sendable, Hashable, Identifiable,
     case preflight
     case archive
     case newStory
+    /// The first face **born** in the console rather than migrated into it, so
+    /// it is the first raw value that is not also a retired scene id. Nothing
+    /// downstream cares — an id is an id — but `ConsoleFaceTests` does: the
+    /// promise it keeps is about the ids screens were *published* under, and
+    /// this screen was never published under any.
+    case dismissed
 
     public var id: String { rawValue }
 
@@ -47,6 +53,11 @@ public enum ConsoleFace: String, CaseIterable, Sendable, Hashable, Identifiable,
         case .preflight: "Preflight"
         case .archive: "Archive"
         case .newStory: "New story"
+        // The one title with no window to inherit from. Named for what the
+        // screen lists rather than for the act that fills it, because the reader
+        // arrives from a figure reading "3 dismissed" and must meet the same
+        // word at the other end of the press.
+        case .dismissed: "Dismissed"
         }
     }
 
