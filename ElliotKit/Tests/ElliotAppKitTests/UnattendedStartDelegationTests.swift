@@ -15,11 +15,12 @@ import Testing
 /// arithmetic was pure, extracted and tested, and the decoration still never
 /// appeared.
 ///
-/// It matters here because the whole point of the rule is that three callers —
-/// this screen, `AnalysisService` and the appraisal, the last of which passes
-/// through no board transition at all — consult one answer. A second copy in the
-/// screen is not a cosmetic regression: it is the shape that let `isBlocking` be
-/// asserted in three documents and implemented in none.
+/// It matters here because the whole point of the rule is that four callers —
+/// this screen, `AnalysisService`, the appraisal, which passes through no board
+/// transition at all, and `AppModel.autoDevRefusal`, whose session merges —
+/// consult one answer. A second copy in the screen is not a cosmetic regression:
+/// it is the shape that let `isBlocking` be asserted in three documents and
+/// implemented in none.
 ///
 /// The same break, one layer over: pasting the sentence back into
 /// `Consequence.reason` also leaves everything green, because the two strings are
@@ -115,9 +116,10 @@ struct UnattendedStartDelegationTests {
             body.contains("UnattendedStartRefusal.refusal("),
             """
             AnalysisRefusal.decide does not consult UnattendedStartRefusal. Whether an unattended \
-            agent may start against a repository is one rule with three askers — this screen, \
-            AnalysisService, and the appraisal, which passes through no transition and so has no \
-            evaluateMove to be asked in. A second copy here is how the two come to disagree.
+            agent may start against a repository is one rule with four askers — this screen, \
+            AnalysisService, the appraisal, which passes through no transition and so has no \
+            evaluateMove to be asked in, and auto-dev's start. A second copy here is how the two \
+            come to disagree.
             """)
 
         // The guards themselves, which belong to the rule and not to the screen.
@@ -175,10 +177,10 @@ struct UnattendedStartDelegationTests {
             body.contains("UnattendedStartRefusal.refusal("),
             """
             AnalysisService.start does not consult UnattendedStartRefusal. Whether an unattended \
-            agent may start against a repository is one rule with three askers — the analysis \
-            panel, this service, and the appraisal — and this is the asker that spawns up to eight \
-            agents at bypassPermissions inside a real checkout. A second copy here is how the \
-            board's answer and the service's come to disagree.
+            agent may start against a repository is one rule with four askers — the analysis \
+            panel, this service, the appraisal and auto-dev's start — and this is the asker that \
+            spawns up to eight agents at bypassPermissions inside a real checkout. A second copy \
+            here is how the board's answer and the service's come to disagree.
             """)
 
         // The guards themselves. `gate.verdict(for:)` is deliberately not a
@@ -204,7 +206,7 @@ struct UnattendedStartDelegationTests {
     /// behind a panel somebody pressed. An appraisal is started by neither: it
     /// passes through no board transition, so `evaluateMove`,
     /// `MoveOrigin.allowsSideEffects` and the move's own preflight never see it,
-    /// and this rule is the entirety of its guard. Of the three callers it is the
+    /// and this rule is the entirety of its guard. Of the four callers it is the
     /// one where a second copy could disagree with the board and nothing on the
     /// board would ever say so.
     ///
@@ -236,10 +238,11 @@ struct UnattendedStartDelegationTests {
             body.contains("UnattendedStartRefusal.refusal("),
             """
             AppraisalService.appraise does not consult UnattendedStartRefusal. Whether an \
-            unattended agent may start against a repository is one rule with three askers — the \
-            analysis panel, AnalysisService, and this one, which spawns a claude -p at \
-            bypassPermissions inside a real checkout without passing through a transition or a \
-            gesture. A second copy here is the one no board behaviour can contradict.
+            unattended agent may start against a repository is one rule with four askers — the \
+            analysis panel, AnalysisService, auto-dev's start, and this one, which spawns a \
+            claude -p at bypassPermissions inside a real checkout without passing through a \
+            transition or a gesture. A second copy here is the one no board behaviour can \
+            contradict.
             """)
 
         // The guards themselves. `gate.verdict(for:)` is deliberately not a
@@ -254,6 +257,66 @@ struct UnattendedStartDelegationTests {
                         answers it, in evaluateMove's order, with the reasons written beside it. \
                         Skipping the sweep for a repository already switched off needs exactly \
                         this knowledge, and that is a second copy of an ordering.
+                        """))
+        }
+    }
+
+    /// ⛔ **The fourth caller, and the first one that *merges*.**
+    ///
+    /// `AppModel.autoDevRefusal` gates a session that drives cards across the
+    /// whole board by itself — including In Review → Done, which is a merge to a
+    /// default branch on github.com. The three askers above spawn agents that
+    /// write; this one spawns a chain that lands.
+    ///
+    /// The plan it was implemented from wrote the guard out by hand:
+    ///
+    /// ```swift
+    /// if isBlocked(repo) {
+    ///     return "A Preflight check is failing for this repository — fix it there first."
+    /// }
+    /// ```
+    ///
+    /// — a sentence identical to ``UnattendedStartRefusal/preflightBlocked``'s,
+    /// byte for byte, against a member of `AppModel` that has never existed.
+    /// ``eachSentenceHasOneHome()`` would have caught the *string*; nothing would
+    /// have caught the same guard rewritten as `repo.preflightVerdict ==
+    /// .failing` reading its sentence off the enum, which is the form a careful
+    /// implementer arrives at and which is still a second copy of an **ordering**.
+    ///
+    /// ⚠️ `preflightVerdict` is deliberately not a needle here, exactly as
+    /// `subject.preflightVerdict` is not one for the screen and `gate.verdict(for:)`
+    /// is not one for the two services: handing the rule a verdict *is* the
+    /// delegation.
+    @Test("The auto-dev refusal asks the rule rather than re-implementing its guards")
+    func theAutoDevScreenAsksTheRule() throws {
+        let code = try HiddenFaceState.code(of: "AppModel.swift")
+
+        // Positive witness: a renamed property would make every claim below
+        // vacuously true and this gate would go green having read nothing.
+        #expect(
+            code.contains("public var autoDevRefusal: String?"),
+            "AppModel no longer declares autoDevRefusal — this gate is reading the wrong thing")
+
+        let body = try Self.body(of: "public var autoDevRefusal: String?", in: code)
+        #expect(
+            body.contains("UnattendedStartRefusal.refusal("),
+            """
+            AppModel.autoDevRefusal does not consult UnattendedStartRefusal. Whether an unattended \
+            agent may start against a repository is one rule, and this is its fourth asker — the \
+            one whose session merges pull requests. A second copy on a SwiftUI model is the exact \
+            shape the rule was extracted out of.
+            """)
+
+        for needle in ["isEnabled", ".failing", ".passing", ".notChecked"] {
+            #expect(
+                !body.contains(needle),
+                Comment(
+                    rawValue: """
+                        AppModel.autoDevRefusal reads \(needle). That is the rule's own guard \
+                        re-derived on a view model — UnattendedStartRefusal.refusal(repo:preflight:) \
+                        answers it, in evaluateMove's order, with the reasons written beside it. \
+                        Auto-dev's own two clauses — no loop attached, one session at a time — are \
+                        not facts about a repository and belong here; these four are not.
                         """))
         }
     }

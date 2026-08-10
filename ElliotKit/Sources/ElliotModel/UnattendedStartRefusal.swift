@@ -2,10 +2,16 @@ import Foundation
 
 /// Why an unattended agent may not be started against a repository right now.
 ///
-/// **One rule, three callers**: `AnalysisService.start`, the appraisal — neither
-/// of which passes through a board transition — and `AnalysisRefusal`, which
-/// renders it for the toolbar's tooltip and the analysis panel's footer and adds
-/// the remedy each sentence names.
+/// **One rule, four callers**: `AnalysisService.start`, the appraisal — neither
+/// of which passes through a board transition — `AnalysisRefusal`, which renders
+/// it for the toolbar's tooltip and the analysis panel's footer and adds the
+/// remedy each sentence names, and `AppModel.autoDevRefusal`, which gates a
+/// session that drives cards by itself and so **merges**.
+///
+/// ⚠️ **The count is load-bearing prose, so it moves with the code.** Each new
+/// asker adds a gate to `UnattendedStartDelegationTests`, which is the only
+/// thing that can see a caller quietly re-deriving these guards — every value
+/// either side of the delegation is identical, so no behavioural test can.
 ///
 /// It is here, pure, because the only gate that had ever existed on the analysis
 /// path was a computed property on a SwiftUI model, and #151 removed the

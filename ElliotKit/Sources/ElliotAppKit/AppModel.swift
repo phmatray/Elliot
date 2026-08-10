@@ -3797,6 +3797,232 @@ public final class AppModel {
         analysis?.runs.filter { !$0.state.isTerminal }.compactMap(\.analysisAngle) ?? []
     }
 
+    // MARK: - Auto-dev
+
+    /// The auto-dev session this launch has run, and what happened to each card.
+    ///
+    /// ⚠️ **Held through `finished` on purpose.** `Column.naturalNext` returns
+    /// `nil` for `.done`, so `rankNextSteps` drops every card in Done — and a
+    /// card whose *merge* failed stays in Done carrying a `lastError`. It is
+    /// therefore structurally absent from `NextStepsView` and from the Up next
+    /// band, and this is the only surface that shows it. Cleared when the next
+    /// session starts, which is exactly what ``lastSyncSummary`` does.
+    ///
+    /// ⛔ **Assigned only by ``adopt(_:engagements:)``**, together with
+    /// ``autoDevEngagements`` and ``autoDevEngagedCardIDs``. The argument is
+    /// written out there.
+    public private(set) var autoDev: AutoDevSession?
+
+    /// One row per engaged card: how many attempts, where it got to, and why.
+    public private(set) var autoDevEngagements: [AutoDevEngagement] = []
+
+    /// The engaged cards as a set, so `CardView` asks once per card rather than
+    /// rebuilding the set per card.
+    ///
+    /// Derived from the **session** and not from the rows: the mark has to
+    /// appear the instant the session exists, and the rows arrive on their own
+    /// clock.
+    public private(set) var autoDevEngagedCardIDs: Set<UUID> = []
+
+    public var autoDevTally: AutoDevTally { AutoDevTally.of(autoDevEngagements) }
+
+    /// How many Backlog cards the next session engages.
+    ///
+    /// ⚠️ On the model, never as `@State` in the band, for the reason the four
+    /// analysis fields carry: hiding a view destroys it and every `@State` in
+    /// it, and the band lives in a console face the reader folds away.
+    public var autoDevCardLimit = 3
+
+    /// Why auto-dev cannot start right now, or `nil` when it can.
+    ///
+    /// One answer, read by the band's footer and by the Start button — the shape
+    /// ``analysisRefusal`` has, and for the same reason: the gate belongs on the
+    /// **act**, not on a control's visibility. An unattended session that starts
+    /// in a checkout Preflight has already refused is the failure #151 nearly
+    /// shipped one panel over, and this one *merges*.
+    ///
+    /// ⛔ **The repository half is not decided here.** Whether an unattended
+    /// agent may start against a repository is one rule —
+    /// ``ElliotModel/UnattendedStartRefusal`` — and this is its fourth asker,
+    /// after `AnalysisRefusal`, `AnalysisService.start` and the appraisal. That
+    /// rule exists precisely because the analysis path's only gate had once been
+    /// a computed property on a SwiftUI model; writing `!repo.isEnabled` or
+    /// `== .failing` out again here would restore the shape that let
+    /// `isBlocking` be asserted in three documents and implemented in none.
+    /// `UnattendedStartDelegationTests.theAutoDevScreenAsksTheRule` is what says
+    /// so — no behavioural test can, because every value either side of the
+    /// delegation is identical.
+    ///
+    /// What *is* auto-dev's own, and belongs here, is the pair above the rule: a
+    /// build with no loop attached, and one session at a time. Neither is a fact
+    /// about a repository, so neither could be a case the other three askers
+    /// would have to switch over and could never reach — the reason
+    /// `.noRepositoryChosen` stayed out of the rule too.
+    ///
+    /// ⚠️ **The verdict is `repo.preflightVerdict`, the persisted column**,
+    /// deliberately the value ``blockedBadge(for:)`` and ``analysisRefusal``
+    /// decide on, so the three cannot disagree about one repository. It is *not*
+    /// ``repoReadings``: `PreflightReading.verdict(of: nil)` is `.notChecked`,
+    /// which admits — so a launch whose persisted verdict is `.failing` and
+    /// whose reading has not arrived yet would be **permitted** by the
+    /// fresher-looking value. That is the two-valued answer #302 removed from
+    /// the screens. A caller that has just swept hands the rule its own reading;
+    /// this model has no sweep of its own to be fresher than.
+    public var autoDevRefusal: String? {
+        if autoDevDriver == nil { return "Auto-dev is not wired into this build yet." }
+        if let session = autoDev, session.state != .finished {
+            return "A session is already going. Stop it before starting another."
+        }
+        guard let id = selectedRepoID, let repo = repos.first(where: { $0.id == id }) else {
+            return "Pick a single repository to drive."
+        }
+        return UnattendedStartRefusal.refusal(repo: repo, preflight: repo.preflightVerdict)?
+            .sentence
+    }
+
+    public func startAutoDev() async {
+        // ⛔ **Every arm of this guard is a sentence ``autoDevRefusal`` is
+        // already showing beside the control**, recomputed on every render —
+        // which is why this one may return in silence where the three commands
+        // below may not. `driver` and `repoID` are non-`nil` by construction
+        // once the refusal is `nil`: they are the same two values it guards on.
+        // An arm that property does not name would be a refused act with
+        // nothing on the screen, which is exactly the silence being removed one
+        // method down.
+        guard autoDevRefusal == nil, let driver = autoDevDriver, let repoID = selectedRepoID
+        else { return }
+        do {
+            // `.automatic`: the band's stepper asks for a count, and the rule
+            // that turns a count into a set of cards lives behind the protocol,
+            // never here. A view dispatches; it does not judge.
+            let session = try await driver.start(
+                repoID: repoID, selection: .automatic(limit: autoDevCardLimit))
+            adopt(session, engagements: await driver.engagements(sessionID: session.id))
+        } catch {
+            noteAutoDev(error.localizedDescription)
+        }
+    }
+
+    /// Engages no further move. The run already going finishes.
+    public func pauseAutoDev() async {
+        await autoDevCommand("pause") { await $0.pause(sessionID: $1) }
+    }
+
+    public func resumeAutoDev() async {
+        await autoDevCommand("resume") { await $0.resume(sessionID: $1) }
+    }
+
+    /// Ends the session and cancels the run already going.
+    ///
+    /// The report is **not** cleared: ``adopt(_:engagements:)`` is handed the
+    /// finished session, so the band, the figure and the marks all stay exactly
+    /// where they are.
+    public func stopAutoDev() async {
+        await autoDevCommand("stop") { await $0.stop(sessionID: $1) }
+    }
+
+    /// Runs one of the three session commands, and **says so when it does not
+    /// land**.
+    ///
+    /// ⛔ **A silent `return` is not available to these three.** Written as
+    /// `guard let driver, let id, let updated = await driver.pause(…) else {
+    /// return }`, a driver answering `nil` — a session it does not know, one
+    /// already over, an actor that refused — produced no status line, no log
+    /// entry and no visible change, *on the controls that stop an unattended
+    /// agent*. That is this repository's own catalogue entry: a mechanism that
+    /// substitutes a different answer instead of erroring, and never says no.
+    ///
+    /// **Three failures, three sentences, deliberately not one.** "There is no
+    /// loop in this build", "nothing has been started" and "the loop did not
+    /// answer" are three different things to do about it; collapsing them is the
+    /// two-valued answer to a three-valued question that `PreflightState` and
+    /// `MethodResolution` both exist to refuse.
+    ///
+    /// ⚠️ The third sentence claims only what is observable: the **board** is
+    /// unchanged. Whether the loop acted and failed to confirm is not knowable
+    /// from here, and a sentence that guessed would be a cause invented at the
+    /// one place a reader would trust it.
+    ///
+    /// `verb` is the act in the reader's own sentence, so one helper serves all
+    /// three rather than three copies of the same three guards — the reason
+    /// ``adopt(_:engagements:)`` is one method rather than three assignments at
+    /// each site.
+    private func autoDevCommand(
+        _ verb: String, _ act: (any AutoDevDriving, UUID) async -> AutoDevSession?
+    ) async {
+        guard let driver = autoDevDriver else {
+            noteAutoDev("Cannot \(verb) auto-dev: it is not wired into this build yet.")
+            return
+        }
+        guard let id = autoDev?.id else {
+            noteAutoDev("Cannot \(verb) auto-dev: no session has been started.")
+            return
+        }
+        guard let updated = await act(driver, id) else {
+            noteAutoDev(
+                "Auto-dev did not \(verb): the loop gave no session back, "
+                    + "so the board is unchanged.")
+            return
+        }
+        adopt(updated, engagements: await driver.engagements(sessionID: id))
+    }
+
+    /// Re-reads the session's rows.
+    ///
+    /// ⚠️ **Silence here is deliberate, and it is the one place it is.** This is
+    /// a poll — the band's `.task` drives it, not a button — so a build with no
+    /// loop attached would otherwise repaint the status bar with a refusal
+    /// nobody asked for, on every tick. ``refreshBusyLenses()`` makes the same
+    /// trade one section up and for the same reason: losing a refresh costs a
+    /// hint, losing a `stop` costs a cancelled agent.
+    public func refreshAutoDev() async {
+        guard let driver = autoDevDriver, let session = autoDev else { return }
+        adopt(session, engagements: await driver.engagements(sessionID: session.id))
+    }
+
+    /// Said out loud *and* logged.
+    ///
+    /// A visible message and a logged one are not alternatives — the log is what
+    /// a bug report is rebuilt from, which is why ``startAnalysis(repoID:angles:instructions:maxStories:)``
+    /// keeps both.
+    ///
+    /// ⚠️ `status` is a single narration owned by whoever spoke last, and a fact
+    /// that has to survive needs a field of its own — the artefact sweep's
+    /// report has one for exactly that reason. These four sentences are answers
+    /// to a press: the reader is looking at the control they just used, so the
+    /// status bar is where they are.
+    private func noteAutoDev(_ sentence: String) {
+        status = sentence
+        Self.log.error("Auto-dev: \(sentence, privacy: .public)")
+    }
+
+    /// The one place the session, its rows and the engaged set are assigned.
+    ///
+    /// ⛔ **One assignment site for all three, and it must stay one.** Not a
+    /// style rule: `AutoDevBand` takes its noun from the **session** and its
+    /// settled count from the **rows**, because the two genuinely disagree in
+    /// the window between a start returning and its first rows landing. The
+    /// design's answer is that the disagreement is *transient*, bounded by one
+    /// assignment at one moment. A second writer makes it permanent — and does
+    /// so invisibly, because the band still renders and the figure still
+    /// renders, and they simply describe two different moments.
+    /// `AutoDevStateTests.adoptIsTheOnlyWriter` reads this file and fails naming
+    /// the property that grew a second writer, because no behavioural test can
+    /// see the difference.
+    private func adopt(_ session: AutoDevSession?, engagements: [AutoDevEngagement]) {
+        autoDev = session
+        autoDevEngagements = engagements
+        autoDevEngagedCardIDs = Set(session?.engagedCardIDs ?? [])
+    }
+
+    /// The loop, in every build that has one.
+    ///
+    /// `nil` until PR4 lands a conformer, which is the arbitrated delivery order
+    /// rather than an omission: with none attached ``autoDevRefusal`` says so,
+    /// the Start control is disabled with that sentence beside it, and the band
+    /// renders idle.
+    private var autoDevDriver: (any AutoDevDriving)?
+
     /// The command that registers the bundled helper with Claude Code.
     public static var mcpRegistrationCommand: String {
         let helper = Bundle.main.bundleURL
@@ -3964,5 +4190,32 @@ public final class AppModel {
     /// failure that happened not to occur.
     func testOnlyAttachAnalysisService(_ service: AnalysisService?) {
         analysisService = service
+    }
+
+    /// Puts a driver behind the model without `start()`.
+    ///
+    /// Optional because *detaching* is a seam of its own: with none attached
+    /// ``startAutoDev()`` returns at its guard and the three commands return
+    /// having said why, which is the state this build ships in until the loop
+    /// lands — and the state most of this suite is about.
+    func testOnlyAttachAutoDev(_ driver: (any AutoDevDriving)?) {
+        autoDevDriver = driver
+    }
+
+    /// Puts a session and its rows in front of the model with no driver at all.
+    ///
+    /// The band and the figure are the things under test in most of this
+    /// feature, and both read only what ``adopt(_:engagements:)`` assigns. A
+    /// test that stood a driver up to assert a sentence would be testing the
+    /// fake.
+    ///
+    /// ⛔ Through `adopt`, never by assigning the three properties here: a seam
+    /// that wrote them itself would be the second assignment site the whole
+    /// design forbids, and it would be one no gate could distinguish from
+    /// production code.
+    func testOnlySeedAutoDev(
+        _ session: AutoDevSession?, engagements: [AutoDevEngagement] = []
+    ) {
+        adopt(session, engagements: engagements)
     }
 }
