@@ -118,16 +118,16 @@ struct UnattendedStartDelegationTests {
             let holders = sources
                 .filter { HiddenFaceState.stripped($0.source).contains(sentence) }
                 .map(\.name)
+            let where_ = holders.isEmpty ? "no source at all" : holders.joined(separator: " · ")
 
             #expect(
                 holders == ["UnattendedStartRefusal.swift"],
                 Comment(
                     rawValue: """
-                        "\(sentence)" is written in \(holders.isEmpty ? "no source" : holders.joined(separator: " · ")). \
-                        It belongs to UnattendedStartRefusal, once: four surfaces read it — the \
-                        toolbar tooltip, the analysis footer, a refused move's caption, and any \
-                        service that refuses a start — and a second copy is a reword that lands on \
-                        some of them.
+                        "\(sentence)" is written in \(where_). It belongs to \
+                        UnattendedStartRefusal, once: four surfaces read it — the toolbar tooltip, \
+                        the analysis footer, a refused move's caption, and any service that refuses \
+                        a start — and a second copy is a reword that lands on some of them.
                         """))
         }
     }

@@ -135,10 +135,18 @@ enum AnalysisFix: Equatable, Identifiable {
 /// — rewording them at the same time would make an unrelated regression look
 /// like part of it.
 ///
+/// ⚠️ **Two of the three no longer *live* here.** *Switched off* and *a check is
+/// failing* are ``ElliotModel/UnattendedStartRefusal``'s, because the rule that
+/// produces them is, and this type reads them off the case it was handed —
+/// `UnattendedStartDelegationTests` fails if either string is written in a second
+/// source. Only *"Pick a single repository to analyse."* is this screen's own,
+/// for the reason ``decide(subject:registered:blocked:)`` gives at the end.
+///
 /// It lives in `ElliotAppKit` beside ``AnalysisFooterMessage`` on the #72 rule:
-/// put a rule in `ElliotModel` because it is pure **and shared with the MCP
-/// helper**. This one is not shared — the helper has no footer, and it names
-/// `BlockedBadge`, which is this module's.
+/// put a rule in `ElliotModel` because it is pure **and shared**. What moved
+/// there is exactly the shared half — may an unattended agent start here — and
+/// what stays is the half that is not: the remedy, which names `BlockedBadge`,
+/// and the picker's sentence, which no service has a use for.
 ///
 /// The file is called `Analysis…` deliberately: that is what puts it inside
 /// `AnalysisPanelViewSourceTests`'s sweep, so the rule that no analysis screen
