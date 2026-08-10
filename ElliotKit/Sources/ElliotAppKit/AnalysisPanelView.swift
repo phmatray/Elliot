@@ -697,6 +697,37 @@ struct AnalysisPanelView: View {
                     // foot of this footer, which is keyed on the failure as well
                     // as the note. Reduce motion switches it off there, once.
                     .transition(.opacity)
+
+                // The remedy the sentence names, as a control rather than as
+                // prose — #170's rule for Preflight and #12's for Repositories,
+                // reaching the last diagnostic in the app that was prose only.
+                //
+                // ⛔ Read off `message`, never off `model.analysisRefusal`.
+                // `setup` is what decides which of four sentences is on screen;
+                // a button sourced from the refusal would go on offering its
+                // remedy underneath a failure sentence the refusal did not
+                // cause. `AnalysisFooterMessage.fixes` says so at length.
+                //
+                // The count is not read here either: whether several fixes are a
+                // menu or a row of buttons is a decision, and `swift test`
+                // cannot enter a body — so it is `AnalysisFix.chooser`'s, which
+                // asks what the fixes are rather than merely how many.
+                if let chooser = AnalysisFix.chooser(for: message.fixes) {
+                    Menu(chooser) {
+                        ForEach(message.fixes) { fix in
+                            Button(fix.label) { Task { await model.apply(fix) } }
+                        }
+                    }
+                    // Sized to its own title. This strip is one line beside a
+                    // sentence clamped at two, and a control squeezed to an
+                    // ellipsis is a fix nobody can read the name of.
+                    .fixedSize()
+                } else {
+                    ForEach(message.fixes) { fix in
+                        Button(fix.label) { Task { await model.apply(fix) } }
+                            .fixedSize()
+                    }
+                }
             } else if !model.analysisSelection.isEmpty {
                 // A count of your own clicks is not a consequence, so it
                 // carries no accent.

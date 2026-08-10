@@ -336,6 +336,58 @@ struct AnalysisPanelViewSourceTests {
         }
     }
 
+    // MARK: - The refusal's fix is drawn, and drawn from the message
+
+    /// ⛔ **The half of #294 no behavioural test can reach.**
+    ///
+    /// Everything in `AnalysisRefusalTests` is about `AnalysisRefusal`,
+    /// `AnalysisFix` and `AppModel`. The footer could stop rendering any of it —
+    /// go back to a sentence with nothing beside it — with every one of those
+    /// tests still green, which is `CaretAnchorTests`' finding restated: the
+    /// arithmetic was pure, extracted and tested, and the decoration still never
+    /// appeared, because nothing pinned the step between the two.
+    ///
+    /// The second claim is the sharper one. `message.fixes`, never
+    /// `model.analysisRefusal`: `setup` decides which of four sentences is on
+    /// screen, and a button sourced from the model would go on offering its
+    /// remedy underneath a *failure* sentence the refusal did not cause. Both
+    /// spellings compile, both look right, and only one of them is.
+    @Test("The setup footer draws the refusal's fix, from the message that chose the sentence")
+    func theFooterDrawsTheFixTheMessageCarries() throws {
+        let footer = try Self.body(of: "private var footer: some View", in: try Self.panelCode())
+
+        // Positive witnesses: a renamed or restructured footer would make every
+        // claim below vacuously true.
+        #expect(
+            footer.contains("AnalysisFooterMessage.setup("),
+            "the footer no longer builds the value this gate is about")
+        #expect(
+            footer.contains("model.apply(fix)"),
+            """
+            the footer does not dispatch a fix to AppModel.apply(_:). A refusal that names \
+            something to go and do, with no control beside it, is exactly the state #294 removed \
+            — and #170 and #12 settled the same principle for Preflight and Repositories.
+            """)
+        #expect(
+            footer.contains("message.fixes"),
+            """
+            the footer is not reading its fixes off the AnalysisFooterMessage. Sourced anywhere \
+            else, the remedy is drawn beside whichever sentence happens to be on screen rather \
+            than the one it answers — a failure sentence with a "Switch … on" button under it \
+            (#294, and #134's defect with a control attached).
+            """)
+
+        for wrong in ["model.analysisRefusal?.fixes", "model.analysisRefusal!.fixes"] {
+            #expect(
+                !footer.contains(wrong),
+                Comment(
+                    rawValue:
+                        "the footer reads \(wrong). The refusal does not know which of the four "
+                        + "sentences won; `AnalysisFooterMessage` does, which is why it carries "
+                        + "the fixes (#294)."))
+        }
+    }
+
     /// ⛔ **The lens summary counts the harvest; the group header counts the
     /// group.**
     ///

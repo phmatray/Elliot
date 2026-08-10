@@ -1,4 +1,5 @@
 import ElliotModel
+import Foundation
 import Testing
 
 @testable import ElliotAppKit
@@ -59,7 +60,7 @@ struct AnalysisFooterMessageTests {
         // is `.disabled`, so the failure is about an attempt that can no longer
         // be repeated. The refusal is the one that names something to go and do.
         let message = AnalysisFooterMessage.setup(
-            angleCount: 3, failure: "boom", refusal: "A Preflight check is failing.")
+            angleCount: 3, failure: "boom", refusal: AnalysisRefusal(text: "A Preflight check is failing."))
         #expect(message.text == "A Preflight check is failing.")
         #expect(message.tone == .refused)
         #expect(message.symbol == "exclamationmark.octagon.fill")
@@ -69,7 +70,8 @@ struct AnalysisFooterMessageTests {
     func refusalOutranksTheConsequence() {
         for angles in [0, 1, 8] {
             let message = AnalysisFooterMessage.setup(
-                angleCount: angles, failure: nil, refusal: "Pick a single repository to analyse.")
+                angleCount: angles, failure: nil,
+                refusal: AnalysisRefusal(text: "Pick a single repository to analyse."))
             #expect(message.text == "Pick a single repository to analyse.")
             #expect(message.tone == .refused)
         }
@@ -154,7 +156,7 @@ struct AnalysisFooterMessageTests {
 
         let overRefusal = AnalysisFooterMessage.setup(
             angleCount: 3, clashing: [.bugs], failure: "boom",
-            refusal: "A Preflight check is failing.")
+            refusal: AnalysisRefusal(text: "A Preflight check is failing."))
         #expect(overRefusal.text == "A Preflight check is failing.")
     }
 
@@ -182,7 +184,7 @@ struct AnalysisFooterMessageTests {
             AnalysisFooterMessage.setup(angleCount: 1, failure: nil, refusal: nil),
             AnalysisFooterMessage.setup(angleCount: 9, failure: nil, refusal: nil),
             AnalysisFooterMessage.setup(angleCount: 2, failure: "boom", refusal: nil),
-            AnalysisFooterMessage.setup(angleCount: 2, failure: nil, refusal: "no"),
+            AnalysisFooterMessage.setup(angleCount: 2, failure: nil, refusal: AnalysisRefusal(text: "no")),
             AnalysisFooterMessage.setup(
                 angleCount: 2, clashing: [.bugs], failure: nil, refusal: nil),
             AnalysisFooterMessage.setup(
@@ -192,5 +194,68 @@ struct AnalysisFooterMessageTests {
         // And none of them is ever blank: an empty slot is what the reader read
         // as "nothing happened" in the first place.
         #expect(every.allSatisfy { !$0.text.isEmpty && !$0.symbol.isEmpty })
+    }
+
+    // MARK: - The fix travels with the sentence it answers
+
+    @Test("A refusal's fixes reach the message that renders its sentence")
+    func theRefusalsFixesAreCarried() {
+        let repoID = UUID()
+        let refusal = AnalysisRefusal(
+            text: "This repository is switched off in Preflight.",
+            fixes: [.enable(repoID: repoID, name: "off")])
+
+        let message = AnalysisFooterMessage.setup(angleCount: 3, failure: nil, refusal: refusal)
+
+        #expect(message.text == refusal.text)
+        #expect(message.fixes == [.enable(repoID: repoID, name: "off")])
+    }
+
+    /// ⛔ **The whole reason the fix rides on this value rather than being read
+    /// off `AppModel.analysisRefusal` in the view.**
+    ///
+    /// A refusal outranks a failure, so with both standing the sentence on
+    /// screen is the refusal's and its button belongs there. The case that bites
+    /// is the other three: a footer sourcing its button from the model would keep
+    /// offering *Switch … on* underneath a **failure** sentence about a start
+    /// that threw — a remedy rendered under a diagnosis it does not answer, which
+    /// is #134's defect with a control attached.
+    @Test("No other branch may carry a fix — not a failure, not a clash, not a spend")
+    func onlyARefusalCarriesAFix() {
+        let every = [
+            AnalysisFooterMessage.setup(angleCount: 0, failure: nil, refusal: nil),
+            AnalysisFooterMessage.setup(angleCount: 1, failure: nil, refusal: nil),
+            AnalysisFooterMessage.setup(angleCount: 9, failure: nil, refusal: nil),
+            AnalysisFooterMessage.setup(angleCount: 2, failure: "boom", refusal: nil),
+            AnalysisFooterMessage.setup(
+                angleCount: 2, clashing: [.bugs], failure: nil, refusal: nil),
+            AnalysisFooterMessage.setup(
+                angleCount: 8, clashing: AnalysisAngle.allCases, failure: "boom", refusal: nil),
+        ]
+        #expect(every.allSatisfy { $0.fixes.isEmpty })
+
+        // And the positive witness, so the claim above is about precedence
+        // rather than about a value that never carries anything: the same
+        // failure and the same clash, with a refusal over them, hand the
+        // refusal's fix on.
+        let refused = AnalysisFooterMessage.setup(
+            angleCount: 8, clashing: AnalysisAngle.allCases, failure: "boom",
+            refusal: AnalysisRefusal(
+                text: "Pick a single repository to analyse.",
+                fixes: [.analyse(repoID: UUID(), name: "a")]))
+        #expect(refused.fixes.count == 1)
+    }
+
+    /// A refusal that names nothing to press is still a refusal — *"Pick at
+    /// least one lens."* is one the reader lifts from the lens grid two inches
+    /// above, and a button repeating it would be a second control for one act.
+    @Test("A refusal with no fix renders exactly as it did")
+    func aRefusalNeedNotCarryOne() {
+        let message = AnalysisFooterMessage.setup(
+            angleCount: 3, failure: nil,
+            refusal: AnalysisRefusal(text: "A Preflight check is failing."))
+        #expect(message.text == "A Preflight check is failing.")
+        #expect(message.fixes.isEmpty)
+        #expect(message.tone == .refused)
     }
 }
