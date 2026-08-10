@@ -41,9 +41,10 @@ public enum AppraisalError: Error, LocalizedError, Equatable {
 /// `UnattendedStartRefusal` the analysis path and the board's own tooltip read.
 ///
 /// Shaped on `AnalysisService` deliberately, down to the order of its steps:
-/// resolve, refuse, create the artifact directory, build the prompt, claim,
-/// launch. Two services that start unattended agents should not do it two
-/// different ways.
+/// resolve, refuse, name the artifact, build the prompt, claim, launch. Two
+/// services that start unattended agents should not do it two different ways.
+/// Creating the artifact's directory is not among them — that belongs to the
+/// spawn, and the reason is written at the call site.
 public actor AppraisalService {
     private let store: BoardStore
     private let launcher: any RunLaunching
@@ -118,30 +119,21 @@ public actor AppraisalService {
         }
 
         let runID = UUID()
+        // ⛔ **Named here, created elsewhere, and that is one creator on
+        // purpose.** `RunScheduler.prepareExtraDirectories` makes this directory
+        // immediately before the spawn, driven off the invocation's
+        // `extraDirectories` so that what `--add-dir` grants and what exists on
+        // disk cannot drift apart — pinned through a real spawn by
+        // `AppraisalInvocationTests.theArtifactDirectoryIsCreatedBeforeTheSpawn`.
+        //
+        // This service created it too until the whole branch was read at once,
+        // and the second copy cost something rather than nothing: it ran
+        // *before* the claim, so every refused or deduplicated appraisal left an
+        // empty directory that nothing ever removes. `StoreLocation.inventory`
+        // keeps only `values.isRegularFile == true`, and `ArtifactRetention`
+        // prunes the `[ArtifactFile]` it returns — so no directory is ever
+        // listed, let alone swept. The comment here used to say the opposite.
         let artifact = StoreLocation.appraisalArtifactURL(runID: runID)
-        // Created up front so the agent has somewhere to write, and so
-        // `--add-dir` points at a directory that exists — the same reason
-        // `AnalysisService.start` creates its own.
-        //
-        // `try?` and not a `throw`: `withIntermediateDirectories: true` already
-        // succeeds when the directory is there, so the only failures left are a
-        // read-only or full disk — and those do not become an indistinguishable
-        // answer downstream. `AppraisalHarvester` checks the artifact's
-        // existence separately and reports *"No artifact was written at
-        // \<path>"*, naming the path, which is the honest account of this
-        // failure and one no card field is written from.
-        //
-        // ⚠️ **Before the claim, so a refused appraisal leaves an empty
-        // directory behind.** Deliberate, and the cheaper of the two orderings:
-        // claiming first would mean holding the card across a filesystem call,
-        // and the residue is an empty directory under `analyses/appraisals/`,
-        // which `ArtifactRetention` sweeps like everything else there.
-        // `AnalysisService.start` has the same ordering for the same reason.
-        try? FileManager.default.createDirectory(
-            at: artifact.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
 
         let run = SkillRun.card(
             id: runID,

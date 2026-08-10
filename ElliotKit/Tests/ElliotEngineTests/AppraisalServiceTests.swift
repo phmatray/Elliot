@@ -62,7 +62,9 @@ struct AppraisalServiceTests {
         gate: any RepoGating = OpenGate(), enabled: Bool = true
     ) async throws -> Stack {
         // `appraise` resolves an artifact path through `StoreLocation` and
-        // creates the directory for it, so the home has to be final first.
+        // announces it in the prompt, so the home has to be final first — a
+        // path resolved against one home and compared against another differs
+        // for a reason that has nothing to do with the service.
         _ = TestHome.root
         let store = try BoardStore.inMemory()
         var repo = Repo(path: "/tmp/r", nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
@@ -107,14 +109,29 @@ struct AppraisalServiceTests {
         #expect(try await stack.store.run(id: run.id)?.kind == .appraiseCards)
     }
 
-    @Test("The prompt announces the run's own artifact path")
+    /// ⛔ **The service names the artifact; it does not create anything.**
+    ///
+    /// This asserted the opposite until the branch was read whole — *"the
+    /// directory exists, so `--add-dir` points somewhere real"*. `--add-dir` is
+    /// the **scheduler's** mechanism, and it has its own creator
+    /// (`RunScheduler.prepareExtraDirectories`, driven off `extraDirectories` so
+    /// the grant and the creation cannot drift), pinned through a real spawn by
+    /// `AppraisalInvocationTests.theArtifactDirectoryIsCreatedBeforeTheSpawn`.
+    /// A claim about one layer asserted against another is what kept a second
+    /// creator alive here — one that ran *before* the claim, so every refusal
+    /// left an empty directory nothing sweeps.
+    ///
+    /// So the assertion is inverted, and it now says something this service
+    /// owns: it touched no filesystem. Nothing has spawned — `LaunchRecorder`
+    /// records the id and returns — so a directory here could only be the
+    /// service's own.
+    @Test("The prompt announces the run's own artifact path, and nothing is created")
     func promptAnnouncesTheArtifact() async throws {
         let stack = try await makeStack()
         let run = try await stack.service.appraise(cardID: stack.card.id)
         let announced = AnalysisPromptBuilder.outputPath(in: run.prompt)
         #expect(announced == StoreLocation.appraisalArtifactURL(runID: run.id).path)
-        // And the directory exists, so `--add-dir` points somewhere real.
-        #expect(FileManager.default.fileExists(
+        #expect(!FileManager.default.fileExists(
             atPath: StoreLocation.appraisalRunDirectory(runID: run.id).path))
         // The card's own words reached it.
         #expect(run.prompt.contains("Cache the login shell environment"))
