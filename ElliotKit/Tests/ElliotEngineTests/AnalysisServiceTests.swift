@@ -138,12 +138,16 @@ struct AnalysisServiceTests {
         #expect(runs[0].analysisAngle == .bugs)
     }
 
-    @Test("A disabled repository is refused, and no angles at all is refused")
+    /// ⚠️ **The disabled-repository clause moved out of here**, to
+    /// ``disabledIsRefusedByTheRule``, which names the case rather than
+    /// accepting any `AnalysisError`. Two tests over one guard is not belt and
+    /// braces when the weaker one would go green on the wrong refusal — and this
+    /// one would, now that a second guard throws the same error type.
+    ///
+    /// What is left is genuinely uncovered elsewhere: an empty angle set, and a
+    /// repository id that names nothing.
+    @Test("No angles at all is refused, and so is an unknown repository")
     func refusals() async throws {
-        let disabled = try await makeFixture(enabled: false)
-        await #expect(throws: AnalysisError.self) {
-            try await disabled.service.start(repoID: disabled.repo.id, angles: [.bugs], origin: .manual)
-        }
         let fixture = try await makeFixture()
         await #expect(throws: AnalysisError.self) {
             try await fixture.service.start(repoID: fixture.repo.id, angles: [], origin: .manual)

@@ -15,6 +15,13 @@
 #                      correct stand-in; there is no such thing as an empty
 #                      object, so inventing one here would be a decode error
 #                      dressed up as a missing fixture
+#   FAKE_GH_REPO_VIEW  path to a JSON file printed for `repo view` (NO default,
+#                      for the same reason as FAKE_GH_PR_VIEW: it is a single
+#                      object, so an absent fixture has no correct stand-in and
+#                      exits 65). Without it `PreflightService.repoChecks` can
+#                      never reach a passing verdict — `repo.nameWithOwner` is
+#                      the only *failing* check in that sweep an unconfigured
+#                      fake produces once a real checkout is supplied
 #   FAKE_GH_STDERR     text written to stderr by `fail`, so a test can drive the
 #                      one failure `GHClient.createLabel` tolerates (a label that
 #                      already exists) apart from every other one, which it must
@@ -40,9 +47,9 @@
 #                      change what the page says about a healthy one
 #
 # Anything other than `issue list`, `pr list`, `pr view`, `repo list`,
-# `label list` or `label create` exits non-zero on purpose: an unexpected call
-# has to fail loudly rather than return an empty list, which would look exactly
-# like a repository with no open work.
+# `repo view`, `label list` or `label create` exits non-zero on purpose: an
+# unexpected call has to fail loudly rather than return an empty list, which
+# would look exactly like a repository with no open work.
 #
 # There is no ready-file and no delay here, and that is not an oversight —
 # nothing about this fake is asynchronous, so a test has nothing to wait for.
@@ -104,14 +111,19 @@ emit() {
   fi
 }
 
-# `pr view` answers a single object, so it has no empty stand-in — a missing
-# fixture is a wiring mistake and says so, with its own exit code so a test can
-# tell "you forgot the fixture" from "you called something I do not know" (64).
+# `pr view` and `repo view` answer a single object, so they have no empty
+# stand-in — a missing fixture is a wiring mistake and says so, with its own exit
+# code so a test can tell "you forgot the fixture" from "you called something I
+# do not know" (64).
+#
+# The subcommand and the variable are arguments rather than baked in: two
+# callers share this now, and a message naming `FAKE_GH_PR_VIEW` at a `repo
+# view` site would send the reader to configure the wrong thing.
 emit_object() {
   if [ -n "${1:-}" ] && [ -f "$1" ]; then
     cat "$1"
   else
-    echo "fake-gh: pr view needs FAKE_GH_PR_VIEW to name a readable file" >&2
+    echo "fake-gh: $2 needs $3 to name a readable file" >&2
     exit 65
   fi
 }
@@ -119,8 +131,9 @@ emit_object() {
 case "${1:-} ${2:-}" in
   "issue list") emit "${FAKE_GH_ISSUES:-}" ;;
   "pr list")    emit "${FAKE_GH_PRS:-}" ;;
-  "pr view")    emit_object "${FAKE_GH_PR_VIEW:-}" ;;
+  "pr view")    emit_object "${FAKE_GH_PR_VIEW:-}" "pr view" FAKE_GH_PR_VIEW ;;
   "repo list")  emit "${FAKE_GH_REPOS:-}" ;;
+  "repo view")  emit_object "${FAKE_GH_REPO_VIEW:-}" "repo view" FAKE_GH_REPO_VIEW ;;
   "label list") emit "${FAKE_GH_LABELS:-}" ;;
   # Prints nothing, like the real one: the caller checks the exit status, and a
   # JSON body here would be a decode nobody asked for.

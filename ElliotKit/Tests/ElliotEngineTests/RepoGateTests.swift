@@ -1,9 +1,23 @@
 import ElliotModel
 import ElliotProcess
 import Foundation
+import TestSupport
 import Testing
 
 @testable import ElliotEngine
+
+private enum Paths {
+    static let repoRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()   // ElliotEngineTests
+        .deletingLastPathComponent()   // Tests
+        .deletingLastPathComponent()   // ElliotKit
+        .deletingLastPathComponent()   // repo root
+
+    static let fakeGH = repoRoot.appendingPathComponent("Scripts/fake-gh.sh").path
+    static func fixture(_ name: String) -> String {
+        repoRoot.appendingPathComponent("Fixtures/gh/\(name)").path
+    }
+}
 
 /// The seam between "what Preflight says" and "may an unattended agent start".
 ///
@@ -23,13 +37,62 @@ struct RepoGateTests {
     )
 
     private var preflight: PreflightService {
+        service()
+    }
+
+    /// A `PreflightService` whose `git` and `gh` are both stated.
+    ///
+    /// ⚠️ **`git` defaults to a real one rather than `/usr/bin/false`, and that
+    /// is the point.** A failing `git` makes *every* path answer "not a git
+    /// repository", so a test built on it passes whatever the check under it
+    /// does — including nothing at all.
+    private func service(
+        git: String = "/usr/bin/git", environment: [String: String] = [:]
+    ) -> PreflightService {
         PreflightService(
             environment: LoginShellEnvironment(variables: [:], capturedVia: "test"),
             config: ToolConfig(
-                claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
-                gitPath: "/usr/bin/false", environment: [:]
+                claudePath: "/usr/bin/false", ghPath: Paths.fakeGH,
+                gitPath: git, environment: environment
             )
         )
+    }
+
+    /// A real checkout that Preflight has no finding against.
+    ///
+    /// `git init`, a committed `.claude/skills/repo-profile.md`, and a working
+    /// tree left clean. Everything else in `repoChecks` that can *fail* is
+    /// covered by those three: `repo.exists`, `repo.isMainCheckout`,
+    /// `repo.profile` and — through `FAKE_GH_REPO_VIEW` — `repo.nameWithOwner`.
+    /// The remaining rows can only reach `.warn`, which is not a refusal.
+    private func healthyCheckout() async throws -> URL {
+        // ⛔ **A refusal, not a skip.** `AnalysisEndToEndTests` falls back to
+        // `/usr/bin/false` when git is absent; here that would turn the one
+        // witness that the gate can say *yes* back into no witness at all, which
+        // is precisely the hole this test was added to close. `/usr/bin/git`
+        // ships with the Xcode command-line tools this package needs to build,
+        // so a machine that fails here cannot build the package either.
+        try #require(
+            FileManager.default.isExecutableFile(atPath: "/usr/bin/git"),
+            "no /usr/bin/git — the passing-verdict witness cannot be built without a real checkout")
+
+        let root = TestHome.scratch("repo-gate")
+        let skills = root.appendingPathComponent(".claude/skills", isDirectory: true)
+        try FileManager.default.createDirectory(at: skills, withIntermediateDirectories: true)
+        try "# profile\n".write(
+            to: skills.appendingPathComponent("repo-profile.md"), atomically: true, encoding: .utf8)
+
+        let env = ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null"]
+        for arguments in [
+            ["init", "-q"],
+            ["-c", "user.email=t@e.st", "-c", "user.name=T", "add", "."],
+            ["-c", "user.email=t@e.st", "-c", "user.name=T", "commit", "-q", "-m", "seed"],
+        ] {
+            _ = try await ProcessRunner.run(
+                executable: "/usr/bin/git", arguments: arguments, cwd: root.path,
+                environment: env, timeout: .seconds(30))
+        }
+        return root
     }
 
     /// ⚠️ **`OpenGate` answers `notChecked`, not `passing`, and the difference is
@@ -66,32 +129,88 @@ struct RepoGateTests {
                 repo: repo, preflight: await OpenGate().verdict(for: repo)) == nil)
     }
 
-    /// The real gate, over a path that is not a git repository at all.
-    ///
-    /// ⚠️ **The honest limit of this test: it cannot show a `passing` verdict.**
-    /// Reaching one needs a real checkout *and* a `gh` that answers `repo view`,
-    /// and `Scripts/fake-gh.sh` deliberately exits 64 on anything but `issue
-    /// list` / `pr list` — an unexpected call must fail loudly. So the positive
-    /// witness here is the other half: the verdict is tied to a named failing
-    /// check the service actually produced, rather than being a constant this
-    /// suite would agree with either way.
-    @Test("The real gate refuses a path that is not a checkout, naming the check")
-    func preflightGateRefusesANonRepository() async {
-        let service = preflight
-        let results = await service.repoChecks(repo)
+    // MARK: - The real gate
 
-        #expect(results.contains { $0.id == "repo.exists" && $0.status == .fail })
-        #expect(await PreflightGate(preflight: service).verdict(for: repo) == .failing)
+    /// ⛔ **The witness that the real gate can say yes, and the one this suite
+    /// shipped without.**
+    ///
+    /// Measured: with `PreflightGate.verdict` forced to a constant `.failing`,
+    /// the whole package stayed green at 2432/2432 — and `AppModel` installs
+    /// this gate for the running app, so that constant means *no analysis ever
+    /// starts anywhere*, silently. A gate that always refuses and a gate that
+    /// refuses correctly were the same thing to every test that existed.
+    ///
+    /// ⚠️ **I claimed this test could not be built, and the claim was false.**
+    /// `Scripts/fake-gh.sh` already answered six subcommands rather than two,
+    /// and `AnalysisEndToEndTests` already supplied a real checkout. The only
+    /// genuine gap was `gh repo view`, which is the one *failing* check an
+    /// unconfigured fake leaves behind once a real `git` is in play — 6 lines of
+    /// harness, in the shape `pr view` already had. CLAUDE.md names this exact
+    /// error from #40/#41: do not conclude a `gh`-backed path is untestable.
+    /// Re-measure the harness before believing that.
+    @Test("The real gate passes a checkout with no finding against it")
+    func preflightGatePassesAHealthyRepository() async throws {
+        let root = try await healthyCheckout()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let healthy = Repo(
+            path: root.path, nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        let service = service(
+            environment: ["FAKE_GH_REPO_VIEW": Paths.fixture("repo-view.json")])
+
+        // Named, so a future check that starts failing says which rather than
+        // turning this into an unexplained red.
+        let failing = await service.repoChecks(healthy).filter { $0.status == .fail }
+        #expect(
+            failing.isEmpty,
+            Comment(rawValue: "failing checks: \(failing.map(\.id).joined(separator: ", "))"))
+
+        #expect(await PreflightGate(preflight: service).verdict(for: healthy) == .passing)
     }
 
-    /// A reading *is* somebody having looked, so the real gate has two answers.
+    /// The refusing direction, over a real `git` that really says no.
     ///
-    /// `PreflightReading.verdict` can never be `notChecked`, and `PreflightGate`
-    /// takes a reading every time it is asked rather than consulting a cache —
-    /// which is why the third state belongs to a caller that did not ask, and not
-    /// to this one.
-    @Test("The real gate never answers notChecked")
-    func preflightGateNeverSaysNobodyLooked() async {
-        #expect(await PreflightGate(preflight: preflight).verdict(for: repo) != .notChecked)
+    /// ⚠️ **`gitPath` is a working `git` here, deliberately.** This test used
+    /// `/usr/bin/false`, which makes *every* path fail to be a repository — so
+    /// it passed for the wrong cause and would have passed with the
+    /// `repo.exists` check deleted. The scratch directory is real and empty, and
+    /// a real `git rev-parse` really refuses it.
+    @Test("The real gate refuses a directory that is not a checkout, naming the check")
+    func preflightGateRefusesANonRepository() async throws {
+        let root = TestHome.scratch("repo-gate-bare")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let notARepo = Repo(
+            path: root.path, nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        // The same `gh` fixture the passing case uses: the only difference
+        // between the two is `git init`, so the verdict cannot be coming from
+        // an unconfigured fake.
+        let service = service(
+            environment: ["FAKE_GH_REPO_VIEW": Paths.fixture("repo-view.json")])
+
+        let results = await service.repoChecks(notARepo)
+        #expect(results.contains { $0.id == "repo.exists" && $0.status == .fail })
+        #expect(await PreflightGate(preflight: service).verdict(for: notARepo) == .failing)
+    }
+
+    /// A reading *is* somebody having looked, so the real gate has two answers
+    /// and neither is the third.
+    ///
+    /// Both directions are asserted, because the claim is about the *type* of
+    /// answer rather than about either repository: `PreflightReading.verdict` is
+    /// `passing`/`failing` by construction, and `repoChecks` always appends at
+    /// least `repo.exists`, so there is no input that produces `notChecked`
+    /// here. That state belongs to a caller that did not ask.
+    @Test("The real gate never answers notChecked, whichever way it goes")
+    func preflightGateNeverSaysNobodyLooked() async throws {
+        let root = try await healthyCheckout()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let healthy = Repo(
+            path: root.path, nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        let gate = PreflightGate(
+            preflight: service(
+                environment: ["FAKE_GH_REPO_VIEW": Paths.fixture("repo-view.json")]))
+
+        #expect(await gate.verdict(for: healthy) != .notChecked)
+        #expect(await gate.verdict(for: repo) != .notChecked)
     }
 }
