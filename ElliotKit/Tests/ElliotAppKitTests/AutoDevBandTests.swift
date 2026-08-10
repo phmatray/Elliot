@@ -432,9 +432,18 @@ struct AutoDevBandTests {
 
     /// The band holds no `Color`; `Consequence.swift` is the one file where this
     /// project's values meet SwiftUI, so the decision is what a test can hold.
+    /// That the band holds none is gated by
+    /// `OperationsBandOrderTests.theColourIsDecidedInConsequence`, which reads
+    /// the file — a comment saying so was all that held it until fix round 1.
     ///
-    /// Driven off `allCases` where there is one, so a fourth disposition is
-    /// checked the moment it exists.
+    /// ⚠️ These two restate the mapping one for one, and what earns their place
+    /// is the two *decisions* in it: `merged → verified` rather than
+    /// `irreversible` (the merge has happened and `gh` confirmed it), and
+    /// `quiet → Palette.quiet`, greyscale, spending none of the accent budget. A
+    /// regression of either reddens. `Tone` is not `CaseIterable`, so the four
+    /// cases are written out; only ``dispositionMarksAreDistinct`` below is
+    /// driven off `allCases`, and an earlier version of this comment claimed
+    /// otherwise.
     @Test("Every tone has its consequence colour, and quiet spends no accent")
     func tonesAreTinted() {
         #expect(AutoDevBand.Tone.armed.tint == Palette.armed)
