@@ -153,6 +153,39 @@ enum HiddenFaceState {
         return ""
     }
 
+    /// How many braces deep the first occurrence of `needle` sits inside
+    /// `block`, or `nil` if it does not occur there at all.
+    ///
+    /// The structural half of a presence gate, and the reason it is worth having
+    /// beside a needle: a `ViewBuilder` cannot return early, so *every* way of
+    /// not drawing something is a brace — which makes depth an answer about
+    /// shape rather than about vocabulary. A gate that bans `.finished` says
+    /// nothing about `if !controls.isEmpty`; a gate that pins depth says
+    /// something about a condition nobody has thought of yet.
+    ///
+    /// ⚠️ **The second copy of this walk, and the first is `BoardAccessibility
+    /// Tests.braceDepth`.** Written here rather than a third time, on the
+    /// precedent ``body(of:in:)`` sets four doc comments up: new gates reach for
+    /// the shared one, the count stops growing, and folding the existing private
+    /// copy in is named as its own change — that copy is live evidence for the
+    /// commit that introduced it, so editing it inside an unrelated task is
+    /// exactly the half-way consolidation that comment warns against.
+    ///
+    /// Honest only where the block holds no brace inside a string literal, and
+    /// comments are expected to be cut already — the same bound ``body(of:in:)``
+    /// carries, for the same reason.
+    static func braceDepth(of needle: String, in block: String) -> Int? {
+        var depth = 0
+        var index = block.startIndex
+        while index < block.endIndex {
+            if block[index...].hasPrefix(needle) { return depth }
+            if block[index] == "{" { depth += 1 }
+            if block[index] == "}" { depth -= 1 }
+            index = block.index(after: index)
+        }
+        return nil
+    }
+
     /// Every `@State private var` declared anywhere in a file, by name.
     ///
     /// ⚠️ **The whole file, not one `struct`.** The first version of this scan
