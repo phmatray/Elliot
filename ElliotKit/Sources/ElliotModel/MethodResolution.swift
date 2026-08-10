@@ -12,11 +12,19 @@ import Foundation
 /// three-valued question is how the gap hid for as long as it did.* "Never
 /// chosen" and "chose something I do not know" are different facts.
 ///
-/// ⚠️ **This type carries no verdict of its own.** `.unknown` is *intended* to
-/// become a Preflight `.fail` that blocks moves and a `BoardService` refusal;
-/// **Task 6 and Task 7 are what implement that**, and until they land nothing
-/// acts on this case. Saying otherwise here would be the shape `PreflightState`'s
-/// own header warns about: three documents asserting a gate nobody had written.
+/// ⚠️ **This type carries no verdict of its own** — but two things now act on
+/// `.unknown`, and this paragraph used to say nothing did. `PreflightService`
+/// makes it a `.fail`, which becomes `Repo.preflightVerdict == .failing`; and
+/// `evaluateMove` refuses it as `MoveBlock.unknownMethod`. Preflight's guard
+/// sits *ahead* of the method guard, so in a swept app the sentence a reader
+/// sees for an unknown method is `repoBlocked`'s; `unknownMethod` surfaces in
+/// the window between launch and the first sweep, and to `board_move_card` on a
+/// `.notChecked` row.
+///
+/// The retired sentence said "**Task 6 and Task 7 are what implement that**, and
+/// until they land nothing acts on this case". Both landed. Leaving it would
+/// have been the shape `PreflightState`'s own header warns about with the sign
+/// flipped — a document telling a reader a live block is inert.
 ///
 /// There is deliberately no `pack` convenience accessor. Callers switch
 /// exhaustively, which is what makes `.unknown` impossible to skip past.

@@ -71,8 +71,8 @@ public enum MethodCatalog {
     /// **issue** number at To Do and a **pull request** number at Done. Passing
     /// one as the other would plan or ship the wrong phase, so neither is wired
     /// — a step this pack does not carry is refused by
-    /// `BoardError.methodHasNoStep` (Task 7) rather than run against the wrong
-    /// object.
+    /// `MoveBlock.methodHasNoStep`, inside `evaluateMove`, rather than run
+    /// against the wrong object.
     static let gsd = MethodPack(
         id: "gsd",
         displayName: "GSD",
@@ -262,7 +262,8 @@ public enum MethodCatalog {
         // discovered at the first drag. `Verifier` reads `gh`; a method that
         // creates no issue, no branch and no pull request gives it nothing to
         // confirm, so a step here would spawn an agent whose outcome Elliot could
-        // not judge. `BoardService.makeRun` (Task 7) refuses the move by name.
+        // not judge. `evaluateMove` refuses the move by name, so the board says
+        // so before the drop rather than after it.
         steps: [:]
     )
 

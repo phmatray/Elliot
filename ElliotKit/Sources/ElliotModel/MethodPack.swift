@@ -45,8 +45,9 @@ public struct MethodPack: Identifiable, Codable, Sendable, Hashable {
     /// A kind may be **absent**, and absent means *this method has no step
     /// there* — never "run the default". `MethodCatalogTests` writes every
     /// absence out by hand, so a step that disappears fails a test instead of a
-    /// drag, and `BoardService.makeRun` (Task 7) refuses the move rather than
-    /// borrowing another method's command.
+    /// drag, and `evaluateMove` refuses the move rather than borrowing another
+    /// method's command — as `MoveBlock.methodHasNoStep`, so `board_next` and
+    /// the drop caption say the same thing the commit will.
     public var steps: [SkillKind: StepSpec]
 
     public init(

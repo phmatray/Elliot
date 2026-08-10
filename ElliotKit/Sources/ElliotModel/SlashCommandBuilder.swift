@@ -78,8 +78,15 @@ public enum SlashCommandBuilder {
     /// `ArgumentForm` is a closed enum rather than a template string.
     ///
     /// Total by construction: a pack that declares no step for this kind gets
-    /// `undeclaredStep` below. The **refusal** lives in `BoardService.makeRun`,
-    /// which can decline to move a card; a `String` return cannot.
+    /// `undeclaredStep` below. The **refusal** lives in `evaluateMove`, which can
+    /// decline to move a card; a `String` return cannot.
+    ///
+    /// ⚠️ It said `BoardService.makeRun` until I2, and the correction is the
+    /// point rather than the name: `makeRun` refusing was a refusal *downstream*
+    /// of the rule engine, so `board_next` and the drop caption offered moves
+    /// commit then declined. `makeRun` still throws as a floor, but nothing
+    /// should reason from it as the gate — and `undeclaredStep`'s bare fallback
+    /// below is defence-in-depth behind a lock that now holds one layer up.
     public static func prompt(
         for action: TriggerAction,
         method: MethodPack,

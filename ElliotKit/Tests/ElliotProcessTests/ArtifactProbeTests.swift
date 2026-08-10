@@ -135,8 +135,16 @@ struct ArtifactProbeTests {
         let (short, _, remove) = try checkout()
         defer { remove() }
 
-        #expect(throws: ArtifactProbeError.self) {
+        // The **case**, not merely `ArtifactProbeError.self`. Four cases carry
+        // four different sentences and one of them names the repository root;
+        // a probe that answered `.malformed` here would tell a reader their
+        // evidence was misspelt when what it did was reach outside the
+        // checkout — and the loose assertion could not tell the two apart.
+        #expect {
             _ = try ArtifactProbe(repoRoot: short).evaluate([.file("/etc/hosts")])
+        } throws: { error in
+            guard case ArtifactProbeError.escapesRepository = error else { return false }
+            return true
         }
     }
 
@@ -148,8 +156,11 @@ struct ArtifactProbeTests {
         // `.file("")` would otherwise test the checkout directory itself and
         // answer `true` — a requirement reported satisfied by a path that names
         // no artefact at all.
-        #expect(throws: ArtifactProbeError.self) {
+        #expect {
             _ = try ArtifactProbe(repoRoot: short).evaluate([.file("")])
+        } throws: { error in
+            guard case ArtifactProbeError.malformed = error else { return false }
+            return true
         }
     }
 
@@ -216,8 +227,46 @@ struct ArtifactProbeTests {
         defer { remove() }
         try write("notADirectory", under: long)
 
-        #expect(throws: ArtifactProbeError.self) {
+        #expect {
             _ = try ArtifactProbe(repoRoot: short + "/notADirectory").evaluate([.file("a.md")])
+        } throws: { error in
+            guard case ArtifactProbeError.unreadable(_, let reason) = error else { return false }
+            // The reason too: `evaluate`'s first three guards all throw
+            // `.unreadable` and differ only in this string, so the case alone
+            // would not tell "it is a file" from "there is nothing there".
+            return reason == "it is a file, not a directory"
+        }
+    }
+
+    /// The third of `evaluate`'s three root guards, and the one no test drove.
+    ///
+    /// A checkout that exists, is a directory, and cannot be read: the case a
+    /// reader meets when a repository lives behind permissions their account
+    /// does not hold. Without this the guard could be deleted and the suite
+    /// would stay green — the probe would then fall through to the walk and
+    /// report every requirement *unsatisfied*, which reads as "this project is
+    /// missing its artefacts" rather than "Elliot could not look".
+    ///
+    /// ⚠️ Skipped for `root`, who bypasses the permission bits: the assertion
+    /// would be false there, and a test that quietly means nothing under one
+    /// account is worse than one that says why it stood down.
+    @Test("A checkout that cannot be read is a refusal, not a project with nothing in it")
+    func anUnreadableCheckoutIsARefusal() throws {
+        try #require(getuid() != 0, "run as root, the permission bits do not apply")
+        let (short, long, remove) = try checkout()
+        defer {
+            // Before `remove()`, or the directory cannot be walked to delete it.
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: long)
+            remove()
+        }
+        try write("a.md", under: long)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: long)
+
+        #expect {
+            _ = try ArtifactProbe(repoRoot: short).evaluate([.file("a.md")])
+        } throws: { error in
+            guard case ArtifactProbeError.unreadable(_, let reason) = error else { return false }
+            return reason == "it is not readable"
         }
     }
 

@@ -135,28 +135,39 @@ public struct MCPRequestHandler: Sendable {
                     hint: "Edit the pull request instead: gh pr edit \(number). The card follows "
                         + "the pull request, never the other way round."
                 )
-            // Both reachable since Task 7 wired `repo.method` into `makeRun`:
-            // one for a `methodID` this build's catalogue does not carry, one
-            // for a pack that declares no step for this transition — which the
-            // shipped BMAD pack does by design, and GSD does for every
-            // transition but the first.
+            // ⚠️ **A floor, not the gate.** These two arms read as the method
+            // refusal and are not: since I2 the refusal is `evaluateMove`'s, and
+            // `moveCard`'s `.blocked` case below answers every method block a
+            // caller can actually provoke. `makeRun` still throws these, so they
+            // stay — but only the narrow window in which the row changes between
+            // `proposeMove`'s read and `makeRun`'s re-read reaches them. The
+            // comment here used to say "both reachable since Task 7 wired
+            // `repo.method` into `makeRun`", which was true when `makeRun` was
+            // the only thing that looked.
             //
             // Both are `.moveBlocked` — the code `moveCard`'s own `.blocked`
             // case uses below for exactly this shape of fact: a permanent,
             // by-design refusal, not a malfunction. Reusing it needs no new
             // `ElliotErrorCode` and so no `elliotProtocolVersion` bump.
             // `.internalError` would tell an agent Elliot is broken; it is not.
-            case .unknownMethod:
-                // `errorDescription` already ends with "Choose one on the
-                // Repositories page." — a `hint` repeating it would only
-                // duplicate the message.
-                return .failure(code: .moveBlocked, message: error.localizedDescription, hint: nil)
-            case .methodHasNoStep:
+            //
+            // ⛔ The hints come from `MoveBlockText`, never written here. They
+            // were written here, and the two sentences had already diverged from
+            // the ones `board_next` gives for the same block — so an agent could
+            // be told to "choose another method … in wave 1" by a refused drop
+            // and something else entirely by the ranking, about one fact. One
+            // definition, in the layer that owns the wording.
+            case .unknownMethod(let id):
                 return .failure(
                     code: .moveBlocked,
                     message: error.localizedDescription,
-                    hint: "This transition is not wired for this method in wave 1. Choose another "
-                        + "method on the Repositories page, or move the card back."
+                    hint: MoveBlockText.hint(.unknownMethod(id))
+                )
+            case .methodHasNoStep(let method, let kind):
+                return .failure(
+                    code: .moveBlocked,
+                    message: error.localizedDescription,
+                    hint: MoveBlockText.hint(.methodHasNoStep(method: method, kind: kind))
                 )
             }
         } catch let error as AnalysisError {

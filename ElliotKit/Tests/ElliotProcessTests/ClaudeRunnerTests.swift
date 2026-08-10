@@ -630,7 +630,12 @@ struct ClaudeRunnerTests {
         let outcome = evaluateMove(
             from: .backlog, to: .todo, card: card,
             context: MoveContext(
-                repoIsEnabled: true, activeRunID: nil, allowSideEffects: true,
+                repoIsEnabled: true,
+                // This suite is about the prompt the default method builds, so
+                // the resolution is stated rather than defaulted — `method` has
+                // no default, for the reason `MoveContext.init` gives.
+                method: MethodCatalog.resolve(nil),
+                activeRunID: nil, allowSideEffects: true,
                 // A human's move, and backlog → todo besides: the green guard has
                 // nothing to say about filing an issue, and there is no pull
                 // request for it to have read.
