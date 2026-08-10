@@ -700,7 +700,8 @@ struct AnalysisPanelView: View {
 
                 // The remedy the sentence names, as a control rather than as
                 // prose — #170's rule for Preflight and #12's for Repositories,
-                // reaching the last diagnostic in the app that was prose only.
+                // reaching the screen whose own precedence order ranks a refusal
+                // first *for* naming something to go and do (#294).
                 //
                 // ⛔ Read off `message`, never off `model.analysisRefusal`.
                 // `setup` is what decides which of four sentences is on screen;

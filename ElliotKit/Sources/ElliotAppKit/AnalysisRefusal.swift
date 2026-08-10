@@ -3,13 +3,23 @@ import Foundation
 
 /// One thing the reader can do about a refused analysis.
 ///
-/// The third of three, and the last. `RepoFix` has been the Repositories page's
-/// since #12 and `CheckFix` Preflight's since #170; the analysis footer was the
-/// one diagnostic left in the app that could only *describe* a remedy — while
+/// The third screen to carry one: `RepoFix` has been the Repositories page's
+/// since #12 and `CheckFix` Preflight's since #170, and the analysis footer
+/// could only ever *describe* a remedy — while
 /// `AnalysisFooterMessage.setup`'s own precedence order ranks the refusal above
 /// the failure, the clash and the consequence **because it is the only one of
 /// the four that names something to go and do**, and then handed the reader a
 /// sentence.
+///
+/// ⚠️ **#294 called this "the last diagnostic in the app that is prose only",
+/// and that is not true — do not repeat it.** Measured while implementing it:
+/// `AppModel.refusal` (a refused move, on the card), `AppModel.newStoryRefusal`
+/// (under *Add to backlog*) and `ConsoleLayout.refusal` (a window too short to
+/// unfold a screen) are all sentences with nothing beside them, and each of the
+/// three is right to be — the first two name a gap in what the reader typed and
+/// the third names the window. What *is* verifiable here is narrower and
+/// enough: this footer ranked its refusal top for naming something to go and do,
+/// and then offered no way to do it.
 ///
 /// ⛔ **Every case is deterministic, and that is a rule rather than how the
 /// three happened to turn out.** `CheckFix` records the choice at length:

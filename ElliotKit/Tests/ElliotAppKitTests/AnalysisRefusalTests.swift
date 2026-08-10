@@ -12,8 +12,11 @@ import Testing
 /// and the consequence *because it is the only one of the four that names
 /// something to go and do* — and then the footer handed the reader a sentence.
 /// #170 settled the principle for Preflight (`CheckResult.fixes`) and #12 for
-/// Repositories (`RepoRow.fixes`); this was the last diagnostic in the app that
-/// was prose only.
+/// Repositories (`RepoRow.fixes`); this is the third screen to carry it.
+///
+/// ⚠️ The issue called this *"the last diagnostic in the app that is prose
+/// only"* and it is not — `AnalysisRefusal`'s own header names the three that
+/// remain and why each is right to.
 @Suite("Analysis refusal")
 @MainActor
 struct AnalysisRefusalTests {

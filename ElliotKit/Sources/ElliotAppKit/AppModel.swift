@@ -3153,7 +3153,8 @@ public final class AppModel {
     /// ⚠️ **An ``AnalysisRefusal`` rather than a `String` since #294**, so the
     /// footer can offer the remedy the sentence names instead of describing it —
     /// the shape `CheckResult.fixes` (#170) and `RepoRow.fixes` (#12) already
-    /// have. The three sentences are unchanged, and the ordering below moved into
+    /// have. The three sentences are unchanged, and the ordering that used to
+    /// live here moved into
     /// ``AnalysisRefusal/decide(subject:registered:blocked:)`` so a test can reach
     /// it without an `AppModel`. Internal rather than `public` for the same reason
     /// ``blockedBadge(for:)`` and ``openPreflight(_:)`` are: it now names types no
