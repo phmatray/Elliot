@@ -232,7 +232,7 @@ public actor RunScheduler: RunLaunching {
     /// What the caps are actually holding right now, for the UI to show beside
     /// them: a stepper reading "4" means nothing without "2 in flight".
     public var occupancy: (writers: Int, analyses: Int) {
-        let analyses = inFlight.values.filter { $0.kind == .analyzeRepo }.count
+        let analyses = inFlight.values.filter(\.kind.isReadOnly).count
         return (inFlight.count - analyses, analyses)
     }
 
@@ -245,11 +245,12 @@ public actor RunScheduler: RunLaunching {
     /// worktree and deletes a branch. Two `create-issue` runs would each do
     /// duplicate detection against a repo the other is about to change.
     ///
-    /// An analysis only reads, but it reads the working tree, so it must not
-    /// overlap a merge in the same repo: it would see a moving target, and the
-    /// git sentinel would fire on someone else's work. It gets its own lane
-    /// because the cap below exists to keep two *builds* out of one `.build/`,
-    /// and an analysis builds nothing.
+    /// A read-only run — an analysis, or an appraisal of one card — only reads,
+    /// but it reads the working tree, so it must not overlap a merge in the same
+    /// repo: it would see a moving target, and the git sentinel would fire on
+    /// someone else's work. Read-only runs get their own lane because the cap
+    /// below exists to keep two *builds* out of one `.build/`, and neither of
+    /// them builds anything.
     func canStart(_ run: SkillRun) -> Bool {
         refusal(for: run, overBudget: false) == nil
     }
@@ -271,14 +272,17 @@ public actor RunScheduler: RunLaunching {
         let sameRepo = inFlight.values.filter { $0.repoID == run.repoID }
         if sameRepo.contains(where: { $0.kind == .mergePR }) { return .mergeInFlightInRepo }
 
-        if run.kind == .analyzeRepo {
-            let analysesInFlight = inFlight.values.filter { $0.kind == .analyzeRepo }.count
-            guard analysesInFlight >= limits.maxConcurrentAnalyses else { return nil }
+        if run.kind.isReadOnly {
+            let readersInFlight = inFlight.values.filter(\.kind.isReadOnly).count
+            guard readersInFlight >= limits.maxConcurrentAnalyses else { return nil }
             return .analysisCapReached(
-                inFlight: analysesInFlight, cap: limits.maxConcurrentAnalyses)
+                inFlight: readersInFlight, cap: limits.maxConcurrentAnalyses)
         }
 
-        let writersInFlight = inFlight.values.filter { $0.kind != .analyzeRepo }.count
+        // ⚠ A negation, and the compiler does not check it. Inverted, every
+        // appraisal consumes the writer cap and every writer skips it.
+        // `SchedulerReadOnlyLaneTests` is the witness.
+        let writersInFlight = inFlight.values.filter { !$0.kind.isReadOnly }.count
         guard writersInFlight < limits.maxConcurrent else {
             return .writerCapReached(inFlight: writersInFlight, cap: limits.maxConcurrent)
         }
