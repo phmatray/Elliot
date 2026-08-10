@@ -43,12 +43,33 @@ public enum AutoDevSelection: Sendable, Hashable {
 ///
 /// ⚠️ **`nil` from `pause`/`resume`/`stop` is an answer the caller must render,
 /// not one it may drop.** It is a *refusal to confirm* — a session the loop does
-/// not know, one already over, an actor that would not act — and it deliberately
-/// does not say which, because a conformer that guessed would be inventing a
-/// cause. `AppModel` therefore reports it rather than returning in silence: a
-/// control that cancels an unattended agent and answers nothing at all is this
+/// not know, an actor that would not act — and it deliberately does not say
+/// which, because a conformer that guessed would be inventing a cause.
+/// `AppModel` therefore reports it rather than returning in silence: a control
+/// that cancels an unattended agent and answers nothing at all is this
 /// repository's own catalogued failure, *a mechanism that substitutes a
 /// different answer instead of erroring*.
+///
+/// ⛔ **Two obligations on a conformer that this protocol's shape cannot
+/// enforce, and each is a dead end for the reader if it is missed.** There is no
+/// read for the *session* — only for its rows — so the board holds whatever a
+/// call last handed it and cannot discover a change by itself.
+/// `AppModel.refreshAutoDev` re-adopts the session it already has, and
+/// `AppModel.autoDevRefusal` answers *"A session is already going. Stop it
+/// before starting another."* for any state that is not `.finished`. Therefore:
+///
+/// 1. **A loop that reaches its own end must make that observable.** Left to
+///    itself the board shows `.running` for ever and refuses every new session
+///    for the rest of the launch. Either the conformer pushes the finished
+///    session, or this protocol grows a `session(sessionID:)` read — nothing
+///    here forbids either, and one of them is required.
+/// 2. **`stop` must return the finished session, including when the session was
+///    already finished.** Answering `nil` there is a reasonable-*looking*
+///    implementation and it is the trap: the reader is told *"Auto-dev did not
+///    stop: the loop gave no session back"*, the board keeps a `.running`
+///    session that is over, and **no further session can be started this
+///    launch**. `nil` means "I can confirm nothing about this id", never "there
+///    was nothing left to do".
 public protocol AutoDevDriving: Sendable {
     /// Engages the Backlog cards `selection` names and starts driving them.
     /// The engaged list is closed here and never grows.

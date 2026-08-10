@@ -237,13 +237,27 @@ struct AutoDevStateTests {
         #expect(model.autoDevTally == AutoDevTally(engaged: 2, merged: 0, blocked: 0))
     }
 
+    /// ⛔ **The sentence and the act, because pinning the sentence alone left
+    /// this green through the thing it is named after.** Measured in this task's
+    /// review: with `autoDevRefusal == nil` dropped from `startAutoDev`'s guard,
+    /// the refusal still *read* correctly and a second start still **replaced
+    /// the live session**, silently abandoning the first loop's cards — and this
+    /// test passed. A clause that only ever reaches a string is a clause nothing
+    /// says flows into the act.
     @Test("A second session is refused while one is going")
-    func oneSessionAtATime() async {
+    func oneSessionAtATime() async throws {
         let (model, _, cards) = seeded()
         model.testOnlyAttachAutoDev(FakeAutoDev(cards: cards.map(\.id)))
         await model.startAutoDev()
+        let first = try #require(model.autoDev?.id)
 
         #expect(model.autoDevRefusal?.contains("already going") == true)
+
+        await model.startAutoDev()
+
+        #expect(
+            model.autoDev?.id == first,
+            "a second start replaced the session that was going, abandoning its cards")
     }
 
     @Test("A start that throws lands in the status line rather than vanishing")
@@ -473,8 +487,38 @@ struct AutoDevStateTests {
 
     // MARK: - One assignment site
 
-    /// ⛔ **`adopt` is the only writer of the three, and it must stay the only
-    /// one.**
+    /// The three the design holds together. `autoDevTally` is computed from the
+    /// second, so it cannot be written at all and is deliberately absent.
+    private static let guarded = ["autoDev", "autoDevEngagements", "autoDevEngagedCardIDs"]
+
+    /// Members that may be **called** on one of the three without changing it.
+    ///
+    /// ⛔ **An allow-list of reads, not a deny-list of mutators, and that is the
+    /// whole point.** A deny-list passes anything nobody thought of —
+    /// `formUnion`, `popLast`, `swapAt`, whatever the standard library grows
+    /// next. This fails closed: an unrecognised call is a failure that names the
+    /// member, and widening it is one deliberate line under this comment.
+    private static let nonMutatingReads: Set<String> = [
+        "allSatisfy", "compactMap", "contains", "count", "dropFirst", "dropLast",
+        "elementsEqual", "enumerated", "filter", "first", "firstIndex", "flatMap",
+        "intersection", "isDisjoint", "isSubset", "isSuperset", "joined", "last",
+        "lastIndex", "map", "max", "min", "prefix", "reduce", "reversed", "sorted",
+        "subtracting", "suffix", "symmetricDifference", "union",
+    ]
+
+    /// How one mention of a guarded property is used.
+    private enum Mention: Equatable {
+        /// Nothing this can do changes the property.
+        case read
+        /// An assignment, a compound assignment, or an `inout` pass. The payload
+        /// is the source snippet, so a failure can point at it.
+        case write(String)
+        /// A method call, with the member's name.
+        case call(String)
+    }
+
+    /// ⛔ **`adopt` is the only thing that changes the three, and it must stay
+    /// the only one.**
     ///
     /// Not a style rule. `AutoDevBand` takes its noun from the **session** and
     /// its settled count from the **rows** precisely because the two can
@@ -485,16 +529,38 @@ struct AutoDevStateTests {
     /// simply describe two moments.
     ///
     /// ⚠️ **No behavioural test can reach this**, which is why it is a source
-    /// gate rather than an assertion: a `stopAutoDev` that also wrote
-    /// `autoDev = nil` after `adopt` would leave every test above green except
-    /// the ones about stopping, and a `refreshAutoDev` that assigned
-    /// `autoDevEngagements` directly would leave *all* of them green. Measured by
-    /// break-testing, not assumed.
+    /// gate: a `refreshAutoDev` that assigned `autoDevEngagements` directly
+    /// leaves the *whole package* green. Measured, not assumed.
     ///
-    /// Reading `AppModel.swift` alone is enough, and that is a fact rather than a
-    /// convenience: all three setters are `private(set)`, so no other file in the
-    /// package *can* assign them.
-    @Test("adopt is the only place the session, the rows and the marks are assigned")
+    /// ⛔ **What it catches, exactly — written out because the first version of
+    /// it over-promised and this doc comment was part of the defect.** That
+    /// version counted `"<name> = "`, so it saw assignment and nothing else:
+    /// adding `autoDevEngagements.removeAll()`, `autoDevEngagedCardIDs
+    /// .removeAll()` and `autoDev?.state = .finished` to `startAutoDev`'s
+    /// `catch` produced **27 of 27 passing** — three second writers of all three
+    /// properties — under this comment and the one on `adopt`, both claiming the
+    /// gate would name them. *A comment asserting a guard is not a measurement
+    /// that the guard exists.* And the mutating form is not the contrived one,
+    /// it is the ergonomic one: `insert(_:)` and `append(_:)` are what a
+    /// push-updates path reaches for first.
+    ///
+    /// So every mention outside `adopt` is now classified, and anything that is
+    /// not a plain read fails:
+    ///
+    /// - **write shapes, structurally**: `x = …`, `x?.member = …`,
+    ///   `x[0].member = …`, `x += …`, and `&x` passed `inout`. No member names
+    ///   are involved, so a write down a path nobody anticipated is still a
+    ///   write.
+    /// - **calls**: the member must be in ``nonMutatingReads``, which fails
+    ///   closed.
+    ///
+    /// ⚠️ **A floor, not a proof, and the residue is named rather than implied.**
+    /// A write through a `ReferenceWritableKeyPath` (`self[keyPath: \.autoDev]`)
+    /// is not matched. What is closed by construction is the whole rest of the
+    /// package: all three setters are `private(set)`, whose setter is `private`
+    /// — reachable from this type's extensions **in this file only** — so no
+    /// other source file can change them however it is written.
+    @Test("adopt is the only place the session, the rows and the marks are changed")
     func adoptIsTheOnlyWriter() throws {
         let code = try HiddenFaceState.code(of: "AppModel.swift")
 
@@ -506,29 +572,115 @@ struct AutoDevStateTests {
             "AppModel no longer declares adopt( — this gate is reading the wrong thing")
         let body = try HiddenFaceState.body(of: "private func adopt(", in: code)
 
-        for property in ["autoDev", "autoDevEngagements", "autoDevEngagedCardIDs"] {
-            let needle = "\(property) = "
-            let everywhere = code.components(separatedBy: needle).count - 1
-            let inAdopt = body.components(separatedBy: needle).count - 1
+        for property in Self.guarded {
+            let all = try Self.mentions(of: property, in: code)
+            let inAdopt = try Self.mentions(of: property, in: body)
 
             #expect(
-                inAdopt == 1,
+                !all.isEmpty,
                 Comment(
                     rawValue: """
-                        adopt assigns \(property) \(inAdopt) times, not once. This gate reads the \
-                        wrong function, or the one assignment site has been split.
+                        \(property) is not mentioned anywhere in AppModel.swift. This gate is \
+                        reading the wrong file, or the property has been renamed — either way it \
+                        is about to pass having measured nothing.
+                        """))
+
+            let inside = Self.writes(in: inAdopt)
+            // A multiset difference rather than a count: `adopt`'s own writes are
+            // *expected* and are removed one for one, so what is left is the
+            // sites that are not it — which is what the failure has to name.
+            var outside = Self.writes(in: all)
+            for snippet in inside {
+                if let index = outside.firstIndex(of: snippet) { outside.remove(at: index) }
+            }
+
+            #expect(
+                inside.count == 1,
+                Comment(
+                    rawValue: """
+                        adopt changes \(property) \(inside.count) times, not once. This gate reads \
+                        the wrong function, or the one assignment site has been split.
                         """))
             #expect(
-                everywhere == inAdopt,
+                outside.isEmpty,
                 Comment(
                     rawValue: """
-                        \(property) is assigned \(everywhere) times in AppModel.swift and \
-                        \(inAdopt) of them are inside adopt. The session, its rows and the engaged \
-                        set are written together or they describe two moments: the band counts the \
-                        session and the tally counts the rows, and the whole design of that split \
-                        is that their disagreement lasts exactly one assignment. A second writer \
-                        makes it permanent, and nothing on screen says so.
+                        \(property) is changed outside adopt, at: \
+                        \(outside.map { "\(property)\($0)" }.joined(separator: " · ")). \
+                        The session, its rows and the engaged set are written together or they \
+                        describe two moments: the band counts the session and the tally counts the \
+                        rows, and the whole design of that split is that their disagreement lasts \
+                        exactly one assignment. A second writer makes it permanent, and nothing on \
+                        screen says so.
                         """))
+
+            let unsanctioned = all.compactMap { mention -> String? in
+                guard case .call(let member) = mention else { return nil }
+                return Self.nonMutatingReads.contains(member) ? nil : member
+            }
+            #expect(
+                unsanctioned.isEmpty,
+                Comment(
+                    rawValue: """
+                        \(property) has \(unsanctioned.map { "\($0)(…)" }.joined(separator: " · ")) \
+                        called on it in AppModel.swift. Calls on the three are allow-listed in \
+                        nonMutatingReads rather than deny-listed, because a mutating member nobody \
+                        anticipated is exactly how the first version of this gate let \
+                        removeAll() through under a comment promising it would not. If this call \
+                        genuinely cannot change the property, add it there — deliberately.
+                        """))
+        }
+    }
+
+    private static func writes(in mentions: [Mention]) -> [String] {
+        mentions.compactMap { if case .write(let snippet) = $0 { snippet } else { nil } }
+    }
+
+    /// Every mention of `property` in `code`, classified.
+    ///
+    /// The identifier is matched on word boundaries, so `autoDev` does not match
+    /// inside `autoDevDriver`, `autoDevTally` or `autoDevRefusal` — which is not
+    /// a nicety: three of the six names in this file share that prefix, and a
+    /// substring match would classify `autoDevDriver = driver` as a write of the
+    /// session.
+    ///
+    /// `code` is expected to have had its comments cut (``HiddenFaceState/code(of:)``),
+    /// for the reason that file gives at length: these sources *document* the
+    /// rules the gates enforce, so a scan over raw text trips on the explanation
+    /// of the very invariant it holds.
+    private static func mentions(of property: String, in code: String) throws -> [Mention] {
+        // ⚠️ The left boundary is a **consumed** character rather than a
+        // lookbehind: Swift's `Regex` answers `lookbehind is not currently
+        // supported` at run time, not compile time, so the obvious spelling
+        // fails as a thrown error inside the test rather than as a build
+        // failure. Consuming it is also what gives the `&` check below its
+        // character for free.
+        let name = try Regex("(^|[^A-Za-z0-9_])\(property)(?![A-Za-z0-9_])")
+        // A member/subscript path through an optional chain: `?.state`, `[0]`,
+        // `!.rows[2].reason`. Written once and used by both shapes below.
+        let path = "[?!]*((\\.[A-Za-z_][A-Za-z0-9_]*)|(\\[[^\\]]*\\]))*"
+        // `= x` but not `== x`, or a compound assignment. Anything at the end of
+        // such a path is a write of the property, whatever the path is.
+        let write = try Regex("\(path)\\s*(=[^=]|[-+*/]=)")
+        let call = try Regex("\(path)\\.[A-Za-z_][A-Za-z0-9_]*\\s*\\(")
+
+        return try code.matches(of: name).map { match in
+            // `&x` is a write, and the only one that shows up *before* the name.
+            if String(code[match.range]).hasPrefix("&") { return .write(" passed inout") }
+            // The lookahead is zero-width, so the match ends exactly at the end
+            // of the identifier however much was consumed in front of it.
+            let window = String(code[match.range.upperBound...].prefix(80))
+            if let matched = try write.prefixMatch(in: window) {
+                return .write(String(window[matched.range]))
+            }
+            if let matched = try call.prefixMatch(in: window) {
+                let member = String(window[matched.range])
+                    .split(separator: "(").first?
+                    .split(separator: ".").last?
+                    .trimmingCharacters(in: .whitespaces)
+                return .call(member ?? "")
+            }
+            return .read
         }
     }
 }

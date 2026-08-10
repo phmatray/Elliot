@@ -4006,9 +4006,16 @@ public final class AppModel {
     /// assignment at one moment. A second writer makes it permanent — and does
     /// so invisibly, because the band still renders and the figure still
     /// renders, and they simply describe two different moments.
+    ///
     /// `AutoDevStateTests.adoptIsTheOnlyWriter` reads this file and fails naming
-    /// the property that grew a second writer, because no behavioural test can
-    /// see the difference.
+    /// the site, because no behavioural test can see the difference.
+    /// ⚠️ **What it can and cannot see is written on the test, and this sentence
+    /// used to overstate it.** Its first version counted assignments only, so
+    /// `autoDevEngagedCardIDs.removeAll()` and `autoDev?.state = .finished` in
+    /// this file passed a suite that was green — under this very comment
+    /// promising they would not. It now classifies every mention and fails on
+    /// any write shape or unsanctioned call; a write through a key path is still
+    /// invisible to it. Read the test before trusting a claim made here.
     private func adopt(_ session: AutoDevSession?, engagements: [AutoDevEngagement]) {
         autoDev = session
         autoDevEngagements = engagements
