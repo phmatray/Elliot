@@ -363,6 +363,109 @@ struct AutoDevBandTests {
         )
     }
 
+    // MARK: - Which repository the session is about
+
+    /// One repository named by one function, because two surfaces ask.
+    ///
+    /// The band's headline says it and the status bar's figure is that band's
+    /// door; a private copy on each is two answers to one question, in one
+    /// module, waiting to drift. The plan had exactly that, and its audit caught
+    /// it before either copy existed.
+    @Test("The session's repository is the one named, whatever the picker is on")
+    func repoNameFollowsTheSession() {
+        let driven = Repo(path: "/tmp/driven", nameWithOwner: "o/driven", displayName: "Driven")
+        let picked = Repo(path: "/tmp/picked", nameWithOwner: "o/picked", displayName: "Picked")
+        var live = session(.running)
+        live.repoID = driven.id
+
+        #expect(
+            AutoDevBand.repoName(
+                session: live, selectedRepoID: picked.id, repos: [driven, picked]) == "Driven")
+    }
+
+    /// Before a session exists the band still has a sentence to write, and the
+    /// picker is what it is about — this is the state the Start control speaks
+    /// from.
+    @Test("With no session the picker's repository is named")
+    func repoNameFallsBackToThePicker() {
+        let picked = Repo(path: "/tmp/picked", nameWithOwner: "o/picked", displayName: "Picked")
+        #expect(
+            AutoDevBand.repoName(session: nil, selectedRepoID: picked.id, repos: [picked])
+                == "Picked")
+    }
+
+    /// ⛔ A session naming a repository the board no longer holds does **not**
+    /// fall through to the picker: that would print a different repository's
+    /// name into a sentence about this session, which is a wrong fact the reader
+    /// has no way to catch.
+    @Test("A session whose repository is gone is not renamed after the picker's")
+    func repoNameDoesNotBorrowThePickersRepository() {
+        let picked = Repo(path: "/tmp/picked", nameWithOwner: "o/picked", displayName: "Picked")
+        var orphan = session(.finished)
+        orphan.repoID = UUID()
+
+        let named = AutoDevBand.repoName(
+            session: orphan, selectedRepoID: picked.id, repos: [picked])
+        #expect(named != "Picked")
+        #expect(named == "no repository")
+    }
+
+    /// Never blank, in any of the four ways it can fail to resolve: the headline
+    /// interpolates this, and *"Driving 3 cards in  — 1 settled"* reads as a
+    /// rendering fault rather than as a missing registration.
+    @Test("There is always a name")
+    func repoNameIsNeverBlank() {
+        let cases: [(AutoDevSession?, UUID?, [Repo])] = [
+            (nil, nil, []),
+            (nil, UUID(), []),
+            (session(.running), nil, []),
+            (session(.paused), UUID(), []),
+        ]
+        for (live, picked, repos) in cases {
+            let named = AutoDevBand.repoName(session: live, selectedRepoID: picked, repos: repos)
+            #expect(!named.isEmpty)
+            #expect(!named.hasPrefix(" "))
+        }
+    }
+
+    // MARK: - Where the tone meets SwiftUI
+
+    /// The band holds no `Color`; `Consequence.swift` is the one file where this
+    /// project's values meet SwiftUI, so the decision is what a test can hold.
+    ///
+    /// Driven off `allCases` where there is one, so a fourth disposition is
+    /// checked the moment it exists.
+    @Test("Every tone has its consequence colour, and quiet spends no accent")
+    func tonesAreTinted() {
+        #expect(AutoDevBand.Tone.armed.tint == Palette.armed)
+        #expect(AutoDevBand.Tone.attention.tint == Palette.attention)
+        #expect(AutoDevBand.Tone.refused.tint == Palette.refused)
+        #expect(AutoDevBand.Tone.quiet.tint == Palette.quiet)
+    }
+
+    /// `merged` is `verified` rather than `irreversible`: the merge has already
+    /// happened and `gh` confirmed it, which is exactly what `verified` means.
+    @Test("A merged card is verified, a blocked one refused, an engaged one armed")
+    func dispositionsAreTinted() {
+        #expect(AutoDevDisposition.engaged.tint == Palette.armed)
+        #expect(AutoDevDisposition.merged.tint == Palette.verified)
+        #expect(AutoDevDisposition.blocked.tint == Palette.refused)
+    }
+
+    /// The distinctness rather than the choices: a report where a merged card
+    /// and a blocked one carry the same mark has to be read twice to say what it
+    /// already said, and an empty symbol name renders as nothing at all — the
+    /// silent-absence failure this band exists to contradict.
+    @Test("No two dispositions wear the same mark, and none wears none")
+    func dispositionMarksAreDistinct() {
+        let icons = AutoDevDisposition.allCases.map(\.icon)
+        #expect(icons.allSatisfy { !$0.isEmpty })
+        #expect(Set(icons).count == AutoDevDisposition.allCases.count)
+        // The engaged mark is the board's own bolt: a card wearing it and its
+        // row in the report must not disagree about what it means.
+        #expect(AutoDevDisposition.engaged.icon == AutoDevBand.engagedSymbol)
+    }
+
     // MARK: - The mark on an engaged card
 
     @Test("The engaged mark is named, because a card is one accessibility element")

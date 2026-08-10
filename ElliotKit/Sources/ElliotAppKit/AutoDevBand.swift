@@ -1,4 +1,5 @@
 import ElliotModel
+import Foundation
 
 /// What the auto-dev band says, decided once.
 ///
@@ -180,6 +181,35 @@ struct AutoDevBand: Equatable {
     static func figureText(session: AutoDevSession?, tally: AutoDevTally) -> String? {
         guard let session else { return nil }
         return "\(settledCards(session, tally))/\(session.engagedCardIDs.count) auto-dev"
+    }
+
+    /// Which repository a session is about, in the reader's words.
+    ///
+    /// ⛔ **One answer, because two surfaces ask.** The band's headline names the
+    /// repository and the status bar's figure is the door to that band, so a
+    /// second lookup written beside the first is two answers to *"which
+    /// repository is this session about"* — the shape this whole type exists to
+    /// refuse, and the one the plan's own audit caught before either copy was
+    /// written. It takes what it needs rather than an `AppModel`, so a test can
+    /// reach it and so it stays as pure as the sentences around it.
+    ///
+    /// ⚠️ **The session wins, and when it names a repository the board no longer
+    /// holds, the answer is "no repository" rather than the picker's.** Falling
+    /// through would print a *different* repository's name into a sentence about
+    /// this session — a wrong fact where the reader has no way to tell. The
+    /// picker is consulted only **before** a session exists, which is the state
+    /// the Start control speaks from.
+    ///
+    /// Never blank: a headline reading *"Driving 3 cards in  — 1 settled"* reads
+    /// as a rendering fault, and a rendering fault is what a reader stops
+    /// trusting the whole band for.
+    static func repoName(
+        session: AutoDevSession?, selectedRepoID: UUID?, repos: [Repo]
+    ) -> String {
+        guard let id = session?.repoID ?? selectedRepoID,
+            let repo = repos.first(where: { $0.id == id })
+        else { return "no repository" }
+        return repo.displayName
     }
 
     static func title(_ control: Control) -> String {
