@@ -85,6 +85,40 @@ public struct Repo: Identifiable, Codable, Sendable, Hashable {
     /// mattered; four hand-written coalescings would be that shape returning.
     public var preflightVerdict: PreflightState { preflight ?? .notChecked }
 
+    /// Which method pack this repository's transitions run.
+    ///
+    /// ⚠️ **Optional, for `preflight`'s reason plus one of its own.**
+    /// `BoardStore.openReadOnly` deliberately accepts a database *older* than
+    /// the helper (`applied.isSubset(of: known)`), and that tolerance is
+    /// precisely "an added column reads as absent" — which only holds for an
+    /// optional. On top of that, Swift's synthesised decoder **ignores a
+    /// property's default value**: it emits `decode(_:forKey:)`, never
+    /// `decodeIfPresent`, so `methodID: String = "ai-migration-kit"` would
+    /// compile, read correctly everywhere the app looks, and throw
+    /// `keyNotFound` on every database predating the column — refusing every
+    /// repository in exactly the window `openReadOnly` exists to serve.
+    /// `RepoMethodMigrationTests` is what says so.
+    ///
+    /// Read it through ``method``, never directly: `nil` is a state — *never
+    /// chosen* — not a missing value, and it is emphatically not the same state
+    /// as an id the catalogue does not know.
+    public var methodID: String?
+
+    /// The three-valued answer, modelled on ``preflightVerdict``.
+    ///
+    /// Not `?? aiMigrationKit`: folding an unknown id into a working pack would
+    /// run another method's commands in this checkout, at `bypassPermissions`,
+    /// with nothing reporting it. The fold this accessor *does* perform — NULL
+    /// to `.unset` — is a resolution rather than a substitution, and it stays
+    /// distinguishable because `.unknown` is a third value rather than the same
+    /// one.
+    ///
+    /// ⚠️ Nothing in this task acts on `.unknown`. Turning it into a Preflight
+    /// `.fail` is **Task 6**; refusing the move is **Task 7**. Saying otherwise
+    /// here would be the shape `PreflightState`'s header warns about — three
+    /// documents asserting a gate nobody had written.
+    public var method: MethodResolution { MethodCatalog.resolve(methodID) }
+
     public init(
         id: UUID = UUID(),
         path: String,
@@ -96,7 +130,8 @@ public struct Repo: Identifiable, Codable, Sendable, Hashable {
         isEnabled: Bool = true,
         visibility: RepoVisibility? = nil,
         preflight: PreflightState? = nil,
-        labelPolicy: [RequiredLabel]? = nil
+        labelPolicy: [RequiredLabel]? = nil,
+        methodID: String? = nil
     ) {
         self.labelPolicy = labelPolicy
         self.id = id
@@ -109,6 +144,7 @@ public struct Repo: Identifiable, Codable, Sendable, Hashable {
         self.isEnabled = isEnabled
         self.visibility = visibility
         self.preflight = preflight
+        self.methodID = methodID
     }
 }
 

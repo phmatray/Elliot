@@ -381,6 +381,49 @@ enum Migrations {
             }
         }
 
+        // v15, additive: which method pack this repository's transitions run.
+        //
+        // ⚠️ **Written as `v11_repoMethodID` and moved to v15 at the merge** —
+        // the ninth time this file has recorded that trade, and the fourth
+        // migration in a row to move. Four reached `main` while this branch sat
+        // unmerged: `v11_runResultSource` (#344), `v12_cardAppraisal` (#339),
+        // `v13_runResumedFrom` (#355) and `v14_repoLabelPolicy` (#358). Every
+        // one shipped first, so every one keeps its number and the unshipped
+        // one moves.
+        //
+        // No `RenamedMigration`, and that half is measured rather than assumed,
+        // exactly as v12's and v13's comments describe. A rename entry records a
+        // migration that *actually reached a database* under the old name. This
+        // branch was never merged and never pushed — for a day it existed only
+        // as unreferenced commits in a deleted worktree — so `v11_repoMethodID`
+        // reached no database anywhere and moving it costs nothing.
+        //
+        // **Nullable, with no default**, and both halves are deliberate.
+        //
+        // Nullable because `Repo.methodID` is an `Optional` and has to be. The
+        // synthesised decoder emits `decode(_:forKey:)` and ignores a property's
+        // default, so a non-optional field throws `keyNotFound` on every
+        // database predating this column when read through `openReadOnly` — the
+        // window that keeps the MCP helper answering between a new bundle
+        // landing and the app next launching. A `NOT NULL` column under an
+        // optional property is the mirror mistake, and would fail on the first
+        // repository registered without a method.
+        //
+        // No `DEFAULT 'ai-migration-kit'` either, even though that *is* what a
+        // row written before this column runs. A default spells one state two
+        // ways — NULL, from `openReadOnly` on an older file, and the literal,
+        // from this build — and "never chosen" then becomes a question nothing
+        // can ask. `Repo.method` folds NULL into `.unset` once, and it can only
+        // do that honestly because the fold has a third value beside it: an id
+        // the catalogue has lost resolves to `.unknown`, never to the default.
+        // `RepoMethodMigrationTests.v15DoesNotBackfillExistingRows` is what
+        // makes this paragraph enforceable rather than aspirational.
+        migrator.registerMigration("v15_repoMethodID") { db in
+            try db.alter(table: "repo") { t in
+                t.add(column: "methodID", .text)
+            }
+        }
+
         return migrator
     }
 

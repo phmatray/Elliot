@@ -48,6 +48,7 @@ private func watched(
 ) -> MoveContext {
     MoveContext(
         repoIsEnabled: repoIsEnabled,
+        method: MethodCatalog.resolve(nil),
         activeRunID: activeRunID,
         allowSideEffects: allowSideEffects,
         providedFollowUps: providedFollowUps,
@@ -75,6 +76,7 @@ private func verdict(
 private func unattended(_ prVerdict: ResolvedPRStatus?) -> MoveContext {
     MoveContext(
         repoIsEnabled: true,
+        method: MethodCatalog.resolve(nil),
         activeRunID: nil,
         allowSideEffects: true,
         providedFollowUps: [],

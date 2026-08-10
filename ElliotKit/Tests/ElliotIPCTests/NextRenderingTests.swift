@@ -234,6 +234,8 @@ private enum WireBlockCase: CaseIterable {
     case runAlreadyInFlight
     case notVerifiedGreen
     case systemOwnedTransition
+    case unknownMethod
+    case methodHasNoStep
 
     var sample: MoveBlock {
         switch self {
@@ -247,6 +249,8 @@ private enum WireBlockCase: CaseIterable {
         case .runAlreadyInFlight: .runAlreadyInFlight(runID: UUID())
         case .notVerifiedGreen: .notVerifiedGreen(reason: .sign(.checksFailing(count: 1)))
         case .systemOwnedTransition: .systemOwnedTransition
+        case .unknownMethod: .unknownMethod("gsd-v2")
+        case .methodHasNoStep: .methodHasNoStep(method: "BMAD Method", kind: "create-issue")
         }
     }
 
@@ -262,6 +266,8 @@ private enum WireBlockCase: CaseIterable {
         case .runAlreadyInFlight: .runAlreadyInFlight
         case .notVerifiedGreen: .notVerifiedGreen
         case .systemOwnedTransition: .systemOwnedTransition
+        case .unknownMethod: .unknownMethod
+        case .methodHasNoStep: .methodHasNoStep
         }
     }
 

@@ -963,7 +963,13 @@ public final class AppModel {
 
             status = "Checking your setup…"
             let preflight = PreflightService(environment: environment, config: config)
-            globalChecks = await preflight.globalChecks(layout: layout)
+            // The packs the registered repositories actually run, read from the
+            // store rather than from `repos`: this runs inside `start()`, before
+            // the repo observation has published anything, so `repos` is still
+            // empty here. `packsInUse` folds the default in either way.
+            let registered = (try? await store.repos()) ?? []
+            globalChecks = await preflight.globalChecks(
+                layout: layout, packs: PreflightService.packsInUse(registered))
 
             let presenter = NotificationPresenter(
                 delivery: makeNotificationDelivery(),
@@ -1667,10 +1673,24 @@ public final class AppModel {
     /// What moving this card to that column *would* do, decided now, without
     /// touching the database.
     ///
-    /// This is the same `evaluateMove` `BoardService` commits with, so the
-    /// caption a column shows and the thing that actually happens cannot come
-    /// apart. Pure by design — the rule engine takes no clock and no I/O
-    /// precisely so a view can ask it during layout.
+    /// This is the same `evaluateMove` `BoardService` commits with, so every
+    /// `MoveBlock` this function can report — a disabled repo, a repository
+    /// Preflight refused, an active run, the same column, a method with no step
+    /// for this transition — matches what `commitMove` actually does with it.
+    /// Pure by design: the rule engine takes no clock and no I/O precisely so a
+    /// view can ask it during layout.
+    ///
+    /// ⚠️ **That claim was false for one day, and the repair is why `method` is
+    /// in `MoveContext`.** Wave 1 first refused an unknown method and a stepless
+    /// pack by throwing in `BoardService.makeRun`, *downstream* of
+    /// `evaluateMove`. `MoveContext` carried no method, so this function had
+    /// nothing to check them against: a BMAD card — BMAD ships no steps by
+    /// design — previewed as ready and was refused at commit. It failed closed,
+    /// and the board still lied about itself. Both refusals are `MoveBlock`s
+    /// now, so drag, `board_move_card` and `board_next` cannot disagree again.
+    ///
+    /// `makeRun` keeps its two `throw`s as an unreachable floor rather than the
+    /// gate — see the comment there.
     public func preview(_ card: Card, to column: ElliotModel.Column) -> MoveOutcome {
         evaluateMove(
             from: card.column,
@@ -1684,6 +1704,14 @@ public final class AppModel {
                 // opinion about the drop, which is the one thing `preview`
                 // exists not to be.
                 repoPreflight: repo(for: card)?.preflightVerdict ?? .notChecked,
+                // Same rule, and it was briefly broken: wave 1 first refused an
+                // unknown method and a stepless pack by *throwing* in
+                // `BoardService.makeRun`, downstream of `evaluateMove`. The
+                // caption could not see either, so a BMAD card — BMAD declares
+                // no steps at all — previewed as ready and then refused at
+                // commit. Carrying the resolution here is what made that
+                // sentence above true again.
+                method: repo(for: card)?.method ?? MethodCatalog.resolve(nil),
                 activeRunID: activeRuns[card.id]?.id,
                 allowSideEffects: true,
                 // Left uncollected on purpose: the merge really does stop to
@@ -2809,6 +2837,82 @@ public final class AppModel {
         var repo = repo
         repo.isEnabled = enabled
         try? await store?.saveRepo(repo)
+    }
+
+    /// Chooses the method a repository runs — the one setting on that page that
+    /// changes what a drag *executes*.
+    ///
+    /// It re-runs this repository's checks rather than only saving, and that is
+    /// the point rather than tidiness: the project-requirement warnings, the
+    /// plugin the profile hint names and — for an id no pack answers — the
+    /// `.fail` that blocks the board are all functions of the value just
+    /// written. Leaving them until the next sweep would show the previous
+    /// method's verdict beside the new method's name, which is a screen lying
+    /// about what will happen on the next drag.
+    ///
+    /// Only **this** repository's, through `record`, exactly as `apply(_ fix:)`
+    /// does: pressing one menu item must not start a full-board sweep at ~6
+    /// subprocesses per repository with no progress and no re-entrancy guard.
+    ///
+    /// ⛔ The save is not `try?`, unlike `setRepoEnabled` directly above. If it
+    /// is lost the menu shows a method the store does not hold, and the next
+    /// drag runs the old one — a screen disagreeing with the board about which
+    /// commands a card will spawn, silently. A dropped `isEnabled` is visible
+    /// on the next sweep; a dropped `methodID` is not.
+    ///
+    /// ⛔ The method is set on the row **re-read here**, not on the `repo` the
+    /// view was rendering — the rule `setRunTerms` below states and `record`
+    /// states one way further down. This shipped as `var updated = repo`, a
+    /// whole-row write built from a view snapshot, and the merge is what made it
+    /// dangerous rather than untidy: `Repo` has since gained `permissionMode`,
+    /// `extraAllowedTools` (#333) and `labelPolicy` (#199). Tighten a
+    /// repository's run terms, then pick a method from the picker still holding
+    /// the pre-tightening snapshot, and the picker puts `bypassPermissions`
+    /// back — a control that silently re-arms an unattended agent. A failed read
+    /// refuses rather than writing the stale copy anyway: "I could not find out"
+    /// is not "nothing has changed".
+    public func setRepoMethod(_ repo: Repo, methodID: String?) async {
+        guard let store else {
+            status = "Elliot is still starting; try again in a moment."
+            return
+        }
+        let updated: Repo
+        do {
+            guard try await store.saveRepoMethod(id: repo.id, methodID: methodID) else {
+                // Reachable rather than theoretical, for `setRunTerms`' reason:
+                // Preflight carries a Forget button, and the row can go while
+                // the menu holding this picker is open. The store answers this
+                // from the `UPDATE`'s own row count, so there is no second call
+                // that could disagree with the first.
+                status = "\(repo.displayName) is no longer registered."
+                return
+            }
+            // Read **back**, never `repo` with the field poked into it. The
+            // checks below are computed from a whole row — the path, the
+            // taxonomy, the run terms — and the copy this menu was rendering may
+            // have aged. Missing now means the row went between the write and
+            // this read, which costs nothing: there is no repository left to
+            // check.
+            guard let current = try await store.repo(id: repo.id) else { return }
+            updated = current
+        } catch {
+            status = "Could not set the method for \(repo.displayName): "
+                + error.localizedDescription
+            return
+        }
+
+        guard let toolConfig else { return }
+        let preflight = PreflightService(
+            environment: LoginShellEnvironment(
+                variables: toolConfig.environment, capturedVia: "session"
+            ),
+            config: toolConfig
+        )
+        // `updated`, never `repo`: the checks must be read against the method
+        // just written, and `record` compares the fresh verdict to the one on
+        // the row it is handed — the stale copy would compare against a verdict
+        // computed for the *previous* method and could skip the write.
+        await record(await preflight.repoChecks(updated), for: updated)
     }
 
     /// Change one repository's run terms — the only writer either field has.

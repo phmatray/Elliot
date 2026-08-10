@@ -178,12 +178,14 @@ struct AnalysisModelTests {
         ])
     }
 
-    @Test("Only the three plugin skills have a slash name")
-    func onlySkillsHaveSlashNames() {
-        #expect(SkillKind.createIssue.slashName == "/ai-migration-kit:create-issue")
-        #expect(SkillKind.implementIssue.slashName == "/ai-migration-kit:implement-issue")
-        #expect(SkillKind.mergePR.slashName == "/ai-migration-kit:merge-pr")
-        // There is no analyze-repo skill; that prompt is Elliot's own.
-        #expect(SkillKind.analyzeRepo.slashName == nil)
+    @Test("The default method declares the three plugin skills and no analyze-repo step")
+    func onlySkillsHaveCommands() throws {
+        let kit = try #require(aiMigrationKitPack())
+        #expect(kit.steps[.createIssue]?.command == "/ai-migration-kit:create-issue")
+        #expect(kit.steps[.implementIssue]?.command == "/ai-migration-kit:implement-issue")
+        #expect(kit.steps[.mergePR]?.command == "/ai-migration-kit:merge-pr")
+        // There is no analyze-repo skill; that prompt is Elliot's own and is
+        // built by `AnalysisPromptBuilder`, which never reaches a pack.
+        #expect(kit.steps[.analyzeRepo] == nil)
     }
 }
