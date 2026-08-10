@@ -55,7 +55,13 @@ struct DismissedView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
-                ConsoleLabel(text: "Dismissed")
+                // Names what the list holds, not the face — `RepositoriesView`'s
+                // lead ("Repository tree" under a face titled *Repositories*)
+                // rather than `NextStepsView`'s, which repeats its own title.
+                // Found by looking: the console header sits directly above this
+                // one, so with the title restated the screen opened onto
+                // "Dismissed" over "DISMISSED".
+                ConsoleLabel(text: "Held back on refresh")
                 Spacer(minLength: 8)
                 Button("Forget all", systemImage: "trash") {
                     Task { await model.clearDismissals() }
