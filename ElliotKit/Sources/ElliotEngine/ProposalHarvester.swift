@@ -53,7 +53,7 @@ public struct ProposalHarvester: Sendable {
                 title: story.title.trimmingCharacters(in: .whitespacesAndNewlines),
                 story: story.story,
                 rationale: story.rationale.trimmingCharacters(in: .whitespacesAndNewlines),
-                evidence: resolve(story.evidence, repoPath: repo.path),
+                evidence: EvidenceResolver.resolve(story.evidence, repoPath: repo.path),
                 effort: Effort.parse(story.effort),
                 duplicateOf: hint(for: story.title, among: existing),
                 createdAt: now
@@ -109,32 +109,6 @@ public struct ProposalHarvester: Sendable {
             return (ProposalDecoder.Harvest(dropped: dropped), .none)
         }
         return (ProposalDecoder.Harvest(stories: fallback.stories, dropped: dropped), .resultText)
-    }
-
-    // MARK: - Evidence
-
-    /// Resolves each citation against the repository root.
-    ///
-    /// A missing file does not disqualify a proposal — it marks it, and the
-    /// window strikes it through. It is the fastest signal that a story was
-    /// invented rather than found.
-    private func resolve(_ raw: [String], repoPath: String) -> [Evidence] {
-        let root = URL(fileURLWithPath: repoPath).standardizedFileURL
-        return raw.compactMap { citation in
-            guard let parsed = Evidence.parse(citation) else { return nil }
-            let resolved = root.appendingPathComponent(parsed.path).standardizedFileURL
-            // A citation must stay inside the repository: "../../etc/passwd"
-            // is not evidence about this codebase. The boundary check must
-            // land on a path component, not a bare string prefix — otherwise
-            // a sibling directory like "/repo-evil" would be accepted for a
-            // root of "/repo".
-            let inside = resolved.path == root.path || resolved.path.hasPrefix(root.path + "/")
-            return Evidence(
-                path: parsed.path,
-                line: parsed.line,
-                exists: inside && FileManager.default.fileExists(atPath: resolved.path)
-            )
-        }
     }
 
     // MARK: - Duplicates
