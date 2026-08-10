@@ -117,6 +117,12 @@ public actor BoardService: SystemMoving {
             // collaborator, so a drag, `board_move_card` and `board_next`
             // cannot answer differently.
             repoPreflight: repo.preflightVerdict,
+            // Off the same row, for the same reason: the method decides which
+            // command a transition runs, so the engine that predicts the move
+            // and the code that commits it must read one value. It used to be
+            // read in `makeRun` instead — downstream of `evaluateMove` — which
+            // is how `board_next` came to offer moves the commit then refused.
+            method: repo.method,
             activeRunID: activeRun?.id,
             allowSideEffects: origin.allowsSideEffects,
             providedFollowUps: followUps
@@ -193,13 +199,16 @@ public actor BoardService: SystemMoving {
         // no new collaborator, so a drag and `board_move_card` cannot answer
         // differently.
         //
-        // ⛔ Both refusals fail closed, and they run *before* the transaction at
-        // the call site (`commitMove`), so a refused move leaves the card where
-        // it was. A repository whose method the catalogue does not know has no
-        // commands, and a pack that declares no step for this kind has none
-        // either — running another method's would be the silent substitution
-        // `MethodResolution` was made three-valued to refuse, at
-        // `bypassPermissions` inside a real checkout.
+        // ⛔ **An unreachable floor, not the gate.** `evaluateMove` refuses both
+        // of these as `MoveBlock`s before a proposal ever reaches `commitMove`,
+        // which is what lets `board_next` and the drop caption predict them —
+        // they were refusals *here* for one day, and a BMAD card previewed as
+        // ready and threw at commit (finding I2).
+        //
+        // Kept anyway, and deliberately: a future caller that reaches `makeRun`
+        // by some other path must still fail closed rather than spawn
+        // `claude -p` at `bypassPermissions` inside a checkout whose owner asked
+        // for a different method. Cheap, and the failure it guards is expensive.
         let method: MethodPack
         switch repo.method {
         case .unset(let pack), .chosen(let pack): method = pack

@@ -135,24 +135,21 @@ struct MethodPromptTests {
     /// not know has no commands, and running another method's inside it — at
     /// `bypassPermissions`, in a real checkout — is the silent substitution the
     /// three-valued `MethodResolution` exists to refuse. The card must not move
-    /// either: `makeRun` runs before the move's transaction, so a throw leaves
-    /// the board exactly as it was.
+    /// either — and it is a `MoveBlock`, not a throw, so `board_next` and the
+    /// drop caption see it too.
+    ///
+    /// ⚠️ **This test asserted a `BoardError` throw until finding I2.** That was
+    /// the defect, not a detail of the test: the refusal lived in
+    /// `BoardService.makeRun`, downstream of `evaluateMove`, so the board
+    /// predicted a move it would then refuse. The expectation changed because
+    /// the mechanism did.
     @Test("An unknown method refuses the move and names the id")
     func unknownMethodRefuses() async throws {
         let f = try await Fixture.make(methodID: "no-such-method")
         let card = try await f.filedCard()
 
-        do {
-            let result = try await f.board.move(cardID: card.id, to: .inProgress, origin: .userDrag)
-            Issue.record("the move was allowed with an unknown method: \(result)")
-        } catch let error as BoardError {
-            #expect(
-                error.errorDescription?.contains("no-such-method") == true,
-                "the refusal did not name the method: \(error.errorDescription ?? "nil")"
-            )
-        } catch {
-            Issue.record("expected a BoardError, got \(error)")
-        }
+        let result = try await f.board.move(cardID: card.id, to: .inProgress, origin: .userDrag)
+        #expect(result == .blocked(.unknownMethod("no-such-method")))
 
         #expect(try await f.store.card(id: card.id)?.column == .todo)
         #expect(await f.launcher.launchedRuns().isEmpty)
@@ -172,7 +169,7 @@ struct MethodPromptTests {
             // exactly that, leaving `BoardError.methodHasNoStep` shipped with
             // zero coverage.
             let gap = "no built-in pack is stepless at .implementIssue; "
-                + "BoardError.methodHasNoStep is unreachable and untested"
+                + "MoveBlock.methodHasNoStep is unreachable and untested"
             Issue.record(Comment(rawValue: gap))
             return
         }
@@ -180,14 +177,12 @@ struct MethodPromptTests {
         let f = try await Fixture.make(methodID: stepless.id)
         let card = try await f.filedCard()
 
-        do {
-            let result = try await f.board.move(cardID: card.id, to: .inProgress, origin: .userDrag)
-            Issue.record("the move was allowed with no step to run: \(result)")
-        } catch let error as BoardError {
-            #expect(error.errorDescription?.contains(stepless.displayName) == true)
-        } catch {
-            Issue.record("expected a BoardError, got \(error)")
-        }
+        // ⚠️ A `MoveBlock` since finding I2, not a `BoardError` throw — the same
+        // change, and for the same reason, as `unknownMethodRefuses` above:
+        // whatever refuses a move has to be visible to whatever predicts it.
+        let result = try await f.board.move(cardID: card.id, to: .inProgress, origin: .userDrag)
+        #expect(result == .blocked(.methodHasNoStep(
+            method: stepless.displayName, kind: SkillKind.implementIssue.skillName)))
 
         #expect(try await f.store.card(id: card.id)?.column == .todo)
         #expect(await f.launcher.launchedRuns().isEmpty)

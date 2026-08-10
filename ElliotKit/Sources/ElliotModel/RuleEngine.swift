@@ -31,6 +31,20 @@ public enum MoveBlock: Equatable, Sendable, Hashable {
     /// one is a diagnosis Elliot made. They want different sentences and
     /// different remedies — one is turned back on, the other is repaired.
     case repoBlocked
+    /// The repository names a method this build's catalogue does not carry.
+    ///
+    /// Blocks every transition rather than only the ones that run something: we
+    /// do not know what *any* of them would run, and running another method's
+    /// commands unannounced — at `bypassPermissions`, in a real checkout — is
+    /// the silent substitution `MethodResolution` was made three-valued to
+    /// refuse.
+    case unknownMethod(String)
+    /// The repository's method declares no step for this transition.
+    ///
+    /// Not a defect: the shipped BMAD pack carries project requirements and no
+    /// steps at all, and GSD declares only its first. Borrowing another method's
+    /// command here would be the same substitution one case up.
+    case methodHasNoStep(method: String, kind: String)
     case runAlreadyInFlight(runID: UUID)
 
     /// Stable identifier surfaced to MCP callers.
@@ -43,6 +57,8 @@ public enum MoveBlock: Equatable, Sendable, Hashable {
         case .missingPRNumber: "missing_pr_number"
         case .repoDisabled: "repo_disabled"
         case .repoBlocked: "repo_blocked"
+        case .unknownMethod: "unknown_method"
+        case .methodHasNoStep: "method_has_no_step"
         case .runAlreadyInFlight: "run_already_in_flight"
         }
     }
@@ -81,6 +97,24 @@ public struct MoveContext: Equatable, Sendable, Hashable {
     /// a reader can render it as one.
     public var repoPreflight: PreflightState
 
+    /// Which method this repository runs, resolved.
+    ///
+    /// ⚠️ **Defaulted, unlike `repoPreflight`, and the difference is not an
+    /// oversight.** `.notChecked` is that field's default precisely so a caller
+    /// who has not measured cannot assert a pass by leaving an argument out.
+    /// Omitting *this* one asserts "this repository never chose a method", which
+    /// is a real state, the commonest one, and exactly what every board did
+    /// before method packs existed — so the default preserves the meaning every
+    /// caller written before it was added already had, rather than quietly
+    /// changing it.
+    ///
+    /// It lives here because the alternative was measured and shipped for a day:
+    /// `BoardService.makeRun` refused by throwing, *downstream* of
+    /// `evaluateMove`, so a BMAD repository — which declares no steps — read
+    /// **ready** in `board_next` and on the drop caption and then threw at
+    /// commit. Nothing spawned, and the board still lied about itself.
+    public var method: MethodResolution = MethodCatalog.resolve(nil)
+
     public var activeRunID: UUID?
 
     /// `false` for moves the app makes on its own behalf — reconciliation, or
@@ -95,12 +129,14 @@ public struct MoveContext: Equatable, Sendable, Hashable {
     public init(
         repoIsEnabled: Bool = true,
         repoPreflight: PreflightState = .notChecked,
+        method: MethodResolution = MethodCatalog.resolve(nil),
         activeRunID: UUID? = nil,
         allowSideEffects: Bool = true,
         providedFollowUps: [String]? = nil
     ) {
         self.repoIsEnabled = repoIsEnabled
         self.repoPreflight = repoPreflight
+        self.method = method
         self.activeRunID = activeRunID
         self.allowSideEffects = allowSideEffects
         self.providedFollowUps = providedFollowUps
@@ -143,6 +179,13 @@ public func evaluateMove(
     // the way one switched off does.
     guard context.repoPreflight.allowsMoves else { return .blocked(.repoBlocked) }
 
+    // Beside `repoBlocked`, and after it: a repository Preflight refused is
+    // refused for *that* reason whatever its method, so the sentence on screen
+    // names the remedy that actually applies. An id no pack answers blocks every
+    // transition, including the ones that run nothing — we do not know what any
+    // of them would do.
+    if case .unknown(let id) = context.method { return .blocked(.unknownMethod(id)) }
+
     if let runID = context.activeRunID { return .blocked(.runAlreadyInFlight(runID: runID)) }
 
     switch (from, to) {
@@ -159,22 +202,47 @@ public func evaluateMove(
         // only thing that could answer — so the card's request travels intact
         // and the skill drops what it cannot apply. Quietly stripping one on
         // the way past would lose the request without telling anyone.
-        return .action(.createIssue(idea: idea, labels: card.labels))
+        return offer(.createIssue(idea: idea, labels: card.labels), from: context.method)
 
     case (.todo, .inProgress):
         guard let issue = card.issueNumber else { return .blocked(.missingIssueNumber) }
-        return .action(.implementIssue(issueNumber: issue))
+        return offer(.implementIssue(issueNumber: issue), from: context.method)
 
     case (.inReview, .done):
         guard let pr = card.prNumber else { return .blocked(.missingPRNumber) }
         guard let followUps = context.providedFollowUps else {
             return .needsInput(.followUps(prNumber: pr))
         }
-        return .action(.mergePR(prNumber: pr, followUps: followUps))
+        return offer(.mergePR(prNumber: pr, followUps: followUps), from: context.method)
 
     default:
         return .noAction
     }
+}
+
+/// The action a transition produces — or the refusal that this repository's
+/// method has no step to run for it.
+///
+/// Called at the action sites rather than beside the other guards because it is
+/// the one refusal that depends on *which* skill the transition produces: GSD
+/// declares `create-issue` and nothing else, so it is offered Backlog → To Do
+/// and refused the other two. A per-repository check could not express that.
+///
+/// `.unknown` is unreachable here — `evaluateMove` refuses it before the
+/// transition switch — and is answered rather than force-unwrapped so this stays
+/// total, with no `default:` for a fourth `MethodResolution` case to hide in.
+private func offer(_ action: TriggerAction, from method: MethodResolution) -> MoveOutcome {
+    let pack: MethodPack
+    switch method {
+    case .unset(let resolved), .chosen(let resolved): pack = resolved
+    case .unknown(let id): return .blocked(.unknownMethod(id))
+    }
+    guard pack.steps[action.kind] != nil else {
+        return .blocked(
+            .methodHasNoStep(method: pack.displayName, kind: action.kind.skillName)
+        )
+    }
+    return .action(action)
 }
 
 // MARK: - What to do next
@@ -267,6 +335,10 @@ public func nextCandidates(
             context: MoveContext(
                 repoIsEnabled: repo.isEnabled,
                 repoPreflight: repo.preflightVerdict,
+                // Without this the ranking answered from the default pack for
+                // every repository, so `board_next` offered a card whose only
+                // forward move `commitMove` would refuse — finding I2.
+                method: repo.method,
                 activeRunID: activeRunIDs[card.id],
                 allowSideEffects: true,
                 // `[]` and not nil. Nil means "not collected yet" and would

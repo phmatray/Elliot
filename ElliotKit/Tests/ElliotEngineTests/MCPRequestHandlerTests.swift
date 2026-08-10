@@ -345,9 +345,12 @@ struct MCPRequestHandlerTests {
         )))
         #expect(refusal.code == .moveBlocked)
         #expect(refusal.message.contains("no-such-method"))
-        // `errorDescription` already ends with "Choose one on the Repositories
-        // page." — a hint repeating it would only duplicate the message.
-        #expect(refusal.hint == nil)
+        // ⚠️ Was `nil` until finding I2 moved the refusal into `evaluateMove`.
+        // The message now comes from `MoveBlockText` — shared with `board_next`,
+        // which is the point — and it does *not* end by naming the Repositories
+        // page, so a hint that does is additive rather than the duplication the
+        // old `BoardError` arm rightly refused to emit.
+        #expect(refusal.hint == "Choose a method Elliot knows on its Repositories page.")
     }
 
     @Test("A pack with no step for the transition reports move_blocked with a matching hint")
@@ -372,10 +375,12 @@ struct MCPRequestHandlerTests {
         )))
         #expect(refusal.code == .moveBlocked)
         #expect(refusal.message.contains(stepless.displayName))
-        #expect(
-            refusal.hint == "This transition is not wired for this method in wave 1. Choose another "
-                + "method on the Repositories page, or move the card back."
-        )
+        // ⚠️ Reworded by finding I2: the hint is `MoveBlockText.hint`'s now, one
+        // implementation shared with `board_next`, rather than a second sentence
+        // written on the `BoardError` arm. It keeps the part that mattered —
+        // offering the way *back*, since unlike every other block this one may
+        // never clear for this method — and drops the wave-1 framing.
+        #expect(refusal.hint == "Choose a method that declares this step, or move the card back.")
     }
 
     @Test("moveCard on an unknown card refuses")

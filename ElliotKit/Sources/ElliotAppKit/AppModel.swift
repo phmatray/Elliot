@@ -1296,20 +1296,23 @@ public final class AppModel {
     /// touching the database.
     ///
     /// This is the same `evaluateMove` `BoardService` commits with, so every
-    /// `MoveBlock` this function can report — a disabled repo, an active run,
-    /// the same column, a merge waiting on `providedFollowUps` — matches what
-    /// `commitMove` actually does with it. Pure by design — the rule engine
-    /// takes no clock and no I/O precisely so a view can ask it during layout.
+    /// `MoveBlock` this function can report — a disabled repo, a repository
+    /// Preflight refused, an active run, the same column, a method with no step
+    /// for this transition — matches what `commitMove` actually does with it.
+    /// Pure by design: the rule engine takes no clock and no I/O precisely so a
+    /// view can ask it during layout.
     ///
-    /// ⚠️ It does **not** predict every refusal. `BoardService.makeRun`
-    /// resolves the repository's method and throws `BoardError.unknownMethod`
-    /// or `.methodHasNoStep` *after* `evaluateMove` has already answered
-    /// `.action` — `MoveContext` carries no `MethodPack`, so this function has
-    /// nothing to check those two against. For a repo on an unknown method, or
-    /// a pack with no step for the transition, `preview` reads ready and
-    /// `commitMove` refuses anyway. It fails closed — nothing spawns, no card
-    /// moves — but the caption is a wrong second opinion until the resolved
-    /// pack joins `MoveContext`, which is a wave-2 change, not this one.
+    /// ⚠️ **That claim was false for one day, and the repair is why `method` is
+    /// in `MoveContext`.** Wave 1 first refused an unknown method and a stepless
+    /// pack by throwing in `BoardService.makeRun`, *downstream* of
+    /// `evaluateMove`. `MoveContext` carried no method, so this function had
+    /// nothing to check them against: a BMAD card — BMAD ships no steps by
+    /// design — previewed as ready and was refused at commit. It failed closed,
+    /// and the board still lied about itself. Both refusals are `MoveBlock`s
+    /// now, so drag, `board_move_card` and `board_next` cannot disagree again.
+    ///
+    /// `makeRun` keeps its two `throw`s as an unreachable floor rather than the
+    /// gate — see the comment there.
     public func preview(_ card: Card, to column: ElliotModel.Column) -> MoveOutcome {
         evaluateMove(
             from: card.column,
@@ -1319,10 +1322,18 @@ public final class AppModel {
                 repoIsEnabled: repo(for: card)?.isEnabled ?? false,
                 // The persisted verdict, not `repoChecks` — the same value
                 // `BoardService` will read when the drop is committed. Reading
-                // the in-memory dictionary here would make this field its own
-                // second opinion about the drop; see the doc comment above for
-                // the one place `preview` already is one, for a different reason.
+                // the in-memory dictionary here would make the caption a second
+                // opinion about the drop, which is the one thing `preview`
+                // exists not to be.
                 repoPreflight: repo(for: card)?.preflightVerdict ?? .notChecked,
+                // Same rule, and it was briefly broken: wave 1 first refused an
+                // unknown method and a stepless pack by *throwing* in
+                // `BoardService.makeRun`, downstream of `evaluateMove`. The
+                // caption could not see either, so a BMAD card — BMAD declares
+                // no steps at all — previewed as ready and then refused at
+                // commit. Carrying the resolution here is what made that
+                // sentence above true again.
+                method: repo(for: card)?.method ?? MethodCatalog.resolve(nil),
                 activeRunID: activeRuns[card.id]?.id,
                 allowSideEffects: true,
                 // Left uncollected on purpose: the merge really does stop to

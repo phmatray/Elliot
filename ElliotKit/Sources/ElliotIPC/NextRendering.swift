@@ -22,6 +22,14 @@ public enum MoveBlockText {
             "Elliot's Preflight checks are failing for that repository, so no card in it "
                 + "can be moved. Moving one would start an unattended run inside a checkout "
                 + "Elliot has already diagnosed as broken."
+        case .unknownMethod(let id):
+            "That repository is set to the method \"\(id)\", which this build has no pack for. "
+                + "Nothing can move there until it names a method Elliot knows — running some "
+                + "other method's commands instead is exactly what this refusal prevents."
+        case .methodHasNoStep(let method, let kind):
+            "The \(method) method declares no \(kind) step, so this move has nothing to run. "
+                + "That is by design for some methods rather than a fault: this transition is "
+                + "simply not wired for it in wave 1."
         case .runAlreadyInFlight(let runID): "A run (\(runID)) is already working on this card."
         }
     }
@@ -47,6 +55,17 @@ public enum MoveBlockText {
             // suggests the reading is stale when the usual case is that it is
             // correct.
             "Open Elliot's Preflight screen to see which check is failing, and repair it there."
+        case .unknownMethod:
+            // A screen again rather than a tool: the id came from a human choice
+            // (or, in wave 3, a committed settings file), and the menu that can
+            // change it is the only thing that can clear this.
+            "Choose a method Elliot knows on its Repositories page."
+        case .methodHasNoStep:
+            // Deliberately offers the *other* way out too. Unlike every block
+            // above, this one may never clear for this method — waiting is not a
+            // remedy, and an agent told only "choose another method" would keep
+            // retrying a card the reader may simply want moved back.
+            "Choose a method that declares this step, or move the card back."
         case .sameColumn, .emptyIdea:
             nil
         }
