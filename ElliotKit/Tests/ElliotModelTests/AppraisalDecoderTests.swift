@@ -98,6 +98,42 @@ struct AppraisalDecoderTests {
         #expect(reading.dropped.contains { $0.contains("was not a list") })
     }
 
+    @Test("Effort of the wrong type is dropped, and the evidence survives")
+    func effortOfTheWrongTypeDoesNotCostTheEvidence() {
+        let reading = decode("{\"effort\":3,\"evidence\":[\"a.swift\"]}")
+        #expect(reading.appraisal?.effort == .unstated)
+        #expect(reading.appraisal?.evidence == ["a.swift"])
+        #expect(reading.dropped.contains { $0.contains("was not a string") })
+    }
+
+    @Test("JSON null for effort is malformed, not absent")
+    func nullEffortIsMalformedNotAbsent() {
+        // `JSONSerialization` decodes JSON `null` to `NSNull`, which matches
+        // neither `nil` nor `String` — it must not read the same as the key
+        // being missing.
+        let reading = decode("{\"effort\":null,\"evidence\":[\"a.swift\"]}")
+        #expect(reading.appraisal?.effort == .unstated)
+        #expect(reading.dropped.contains { $0.contains("was not a string") })
+    }
+
+    @Test("JSON null for evidence is malformed too, and the effort survives")
+    func nullEvidenceIsMalformedNotAbsent() {
+        let reading = decode("{\"effort\":\"large\",\"evidence\":null}")
+        #expect(reading.appraisal?.effort == .large)
+        #expect(reading.appraisal?.evidence.isEmpty == true)
+        #expect(reading.dropped.contains { $0.contains("was not a list") })
+    }
+
+    @Test("Effort genuinely absent is silent, unlike the malformed case")
+    func absentEffortDropsNothing() {
+        // The witness that makes the distinction observable: absent and
+        // malformed both end at `.unstated`, but only the malformed one
+        // leaves a trace in `dropped`.
+        let reading = decode("{\"evidence\":[\"a.swift\"]}")
+        #expect(reading.appraisal?.effort == .unstated)
+        #expect(reading.dropped.isEmpty)
+    }
+
     @Test("There is no closing-message fallback, by construction")
     func thereIsNoResultTextEntryPoint() {
         // `ProposalDecoder` has `decode(resultText:)`. This one deliberately

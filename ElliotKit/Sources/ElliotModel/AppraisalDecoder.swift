@@ -66,15 +66,37 @@ public enum AppraisalDecoder {
 
         var dropped: [String] = []
 
-        // `Effort.parse`, with no `?? .medium` anywhere near it. Folding silence
-        // onto a size is a kindness for a display badge and an invention for an
-        // input to an unattended ranking — the joint constraint this file
-        // carries, pinned by `AppraisalDecoderTests.unstatedIsNotMedium`.
-        let effort = Effort.parse((rawEffort as? String) ?? "")
+        // Branches on presence *and* type, not just string-ness: the key
+        // being absent and the key holding something that is not a string
+        // are different facts, and folding them together is exactly the
+        // "malformed reads as absent" mistake this file exists to avoid —
+        // the sibling `evidence` switch below already kept the two apart.
+        // `JSONSerialization` decodes JSON `null` to `NSNull`, which matches
+        // neither `nil` nor `String`, so `"effort": null` takes the
+        // malformed path here too, not the absent one.
+        let effort: Effort
+        switch rawEffort {
+        case nil:
+            effort = .unstated
+        case let raw as String:
+            // `Effort.parse`, with no `?? .medium` anywhere near it. Folding
+            // silence onto a size is a kindness for a display badge and an
+            // invention for an input to an unattended ranking — the joint
+            // constraint this file carries, pinned by
+            // `AppraisalDecoderTests.unstatedIsNotMedium`.
+            effort = Effort.parse(raw)
+        default:
+            dropped.append("The effort was not a string, so it was discarded.")
+            effort = .unstated
+        }
 
         var evidence: [String] = []
         switch rawEvidence {
         case nil:
+            // Absent, deliberately silent — matches the `effort` switch
+            // above. `"evidence": null` does **not** land here (`NSNull`
+            // matches neither `nil` nor `[Any]`); it falls to `default`
+            // below, same as any other malformed shape.
             break
         case let list as [Any]:
             for (index, element) in list.enumerated() {
