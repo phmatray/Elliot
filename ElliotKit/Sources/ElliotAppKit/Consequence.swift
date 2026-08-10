@@ -114,6 +114,14 @@ struct Consequence {
     /// Short enough for a column caption, and always names the gap rather than
     /// the rule. "No issue yet" tells you what to go get; "invalid transition"
     /// does not.
+    ///
+    /// ⚠️ **`.repoDisabled` reads its sentence from `UnattendedStartRefusal`
+    /// rather than holding a second copy of it.** The two enums answer different
+    /// questions — one a refused *move*, the other a refused unattended *start* —
+    /// but on this case they are the same fact about the same switch, and
+    /// `AnalysisRefusalTests` and `AnalysisSessionTests` have asserted the two
+    /// strings equal since before either could diverge. Every other case here is
+    /// about a move and stays here.
     static func reason(_ block: MoveBlock) -> String {
         switch block {
         case .sameColumn: "Already here."
@@ -121,7 +129,7 @@ struct Consequence {
         case .incompleteStory: "Story needs a role, a want and a benefit."
         case .missingIssueNumber: "No issue yet — file it in To Do first."
         case .missingPRNumber: "No pull request yet — implement it first."
-        case .repoDisabled: "This repository is switched off in Preflight."
+        case .repoDisabled: UnattendedStartRefusal.repoDisabled.sentence
         // Deliberately not the same sentence as `.repoDisabled`. One is a switch
         // the reader threw and un-throws; this is a diagnosis Elliot made and
         // the repair is elsewhere. Collapsing them would send someone to look

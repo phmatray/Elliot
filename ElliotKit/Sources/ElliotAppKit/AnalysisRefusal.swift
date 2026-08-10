@@ -172,23 +172,54 @@ struct AnalysisRefusal: Equatable {
     /// half. They are one case for the reader too: in both, the answer is to
     /// name a repository that exists.
     ///
-    /// ⛔ **The disabled check comes before the blocked one, and the order is
-    /// load-bearing.** A repository can be both, and switching a repository on
-    /// is a switch the reader threw — `Consequence.reason` keeps `.repoDisabled`
-    /// and `.repoBlocked` apart in as many words for this reason. Offering
-    /// *Show … in Preflight* first would send someone to look for a diagnosis
-    /// when the answer is a toggle they turned off themselves.
+    /// ⛔ **The rule itself is ``UnattendedStartRefusal``, in `ElliotModel`, and
+    /// this function no longer holds a copy of it.** Whether an unattended agent
+    /// may start against a repository is one question with three askers — the
+    /// analysis service, the appraisal, and this screen — and the appraisal
+    /// passes through no transition at all, so `evaluateMove` is not a place it
+    /// could have been asked. What is left here is this screen's own job: the
+    /// sentence a reader sees, and the ``AnalysisFix`` beside it.
     ///
-    /// `blocked` is passed in rather than computed here so this stays a function
-    /// of values: `AppModel.blockedBadge(for:)` reads the persisted verdict *and*
-    /// the in-memory sweep, and re-deriving either would be the second opinion
-    /// that method's own doc comment refuses to be.
+    /// ⛔ **The order — switched off before failing — is load-bearing, and it now
+    /// lives in the rule** (`UnattendedStartRefusal.refusal(repo:preflight:)`,
+    /// whose doc comment carries the argument in full, and which applies it in
+    /// `evaluateMove`'s own order). In one sentence: a repository can be both, and
+    /// switching one on is a switch the reader threw, so offering *Show … in
+    /// Preflight* first sends someone to look for a diagnosis when the answer is a
+    /// toggle they turned off themselves. This `switch` is exhaustive over the
+    /// rule's cases, so a third refusal cannot arrive here without a remedy being
+    /// chosen for it.
+    ///
+    /// ⚠️ **The verdict is `subject.preflightVerdict`, the persisted column** —
+    /// deliberately the same value `AppModel.blockedBadge(for:)` decides on, so
+    /// the sentence and the badge cannot disagree about one repository. A service
+    /// that has just swept passes its own fresher reading to the rule instead;
+    /// this screen has no sweep of its own to be fresher than.
+    ///
+    /// `blocked` still arrives as a parameter, but only as the **remedy**: it
+    /// names *which* check, which `ElliotModel` cannot see and this screen needs
+    /// for `.showPreflight`. ⚠️ It is no longer what decides the case — keying the
+    /// gate on the badge's presence meant a repository whose persisted verdict is
+    /// failing was refused nothing at all if no badge came with it. That
+    /// combination is unreachable from `AppModel` today, because `blockedBadge`
+    /// returns non-`nil` on exactly `!allowsMoves`; it was still a gate that
+    /// opened on an absent value, which is the shape this whole change is about.
+    /// A refusal with no fix is a sentence standing alone, which ``fixes``
+    /// already documents as a real answer.
     ///
     /// The offer for an unpicked board is **every** registered repository, in the
     /// board's own order — including ones that are switched off or failing
     /// Preflight. Filtering them would hide from this menu repositories the
     /// toolbar's picker shows; picking one simply moves the reader to the next
     /// refusal, which names the next thing to press.
+    ///
+    /// ⚠️ **`.noRepositoryChosen` deliberately stayed out of the rule.** "Which
+    /// repository" is a question a picker has and a service does not: an
+    /// appraisal is handed a card, and `AnalysisService.start` is handed a
+    /// `repoID` or has nothing to run against. Put in the rule it would be a case
+    /// `refusal(repo:preflight:)` can never return — an unreachable member of the
+    /// rule everyone else switches over — and its sentence names *analysing*,
+    /// which is this screen's word rather than shared vocabulary.
     static func decide(
         subject: Repo?, registered: [Repo], blocked: BlockedBadge?
     ) -> AnalysisRefusal? {
@@ -197,16 +228,20 @@ struct AnalysisRefusal: Equatable {
                 text: "Pick a single repository to analyse.",
                 fixes: registered.map { .analyse(repoID: $0.id, name: $0.displayName) })
         }
-        if !subject.isEnabled {
+        guard
+            let refusal = UnattendedStartRefusal.refusal(
+                repo: subject, preflight: subject.preflightVerdict)
+        else { return nil }
+
+        switch refusal {
+        case .repoDisabled:
             return AnalysisRefusal(
-                text: Consequence.reason(.repoDisabled),
+                text: refusal.sentence,
                 fixes: [.enable(repoID: subject.id, name: subject.displayName)])
-        }
-        if let blocked {
+        case .preflightBlocked:
             return AnalysisRefusal(
-                text: "A Preflight check is failing for this repository — fix it there first.",
-                fixes: [.showPreflight(blocked)])
+                text: refusal.sentence,
+                fixes: blocked.map { [.showPreflight($0)] } ?? [])
         }
-        return nil
     }
 }

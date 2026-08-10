@@ -3244,16 +3244,24 @@ public final class AppModel {
     /// it without an `AppModel`. Internal rather than `public` for the same reason
     /// ``blockedBadge(for:)`` and ``openPreflight(_:)`` are: it now names types no
     /// other module has any use for.
+    /// ⚠️ **The rule underneath is ``ElliotModel/UnattendedStartRefusal``**, which
+    /// `AnalysisService` and the appraisal consult too — an appraisal passes
+    /// through no transition, so `evaluateMove` was never a place it could be
+    /// asked. This property renders that answer and adds the remedy; it does not
+    /// decide it, and it must not grow a second opinion about it.
     var analysisRefusal: AnalysisRefusal? {
         let subject = selectedRepoID.flatMap { id in repos.first { $0.id == id } }
         return AnalysisRefusal.decide(
             subject: subject,
             registered: repos,
-            // The persisted verdict, through `blockedBadge`, for the reason that
-            // method gives: reading the in-memory checks made this gate answer
-            // "fine" for the whole of every launch in a repository whose every
-            // drag was being refused. An analysis is eight unattended runs; it
-            // should be gated on the same value the board is.
+            // ⚠️ The **remedy**, not the gate: `decide` reads the persisted
+            // verdict off the row it was handed, which is the value `blockedBadge`
+            // decides on too, so the sentence and the card's badge cannot
+            // disagree about one repository. What the badge adds is *which* check
+            // to send the reader to. Reading the in-memory checks to gate on
+            // would answer "fine" for the whole of every launch in a repository
+            // whose every drag was being refused — and an analysis is eight
+            // unattended runs.
             blocked: subject.flatMap { blockedBadge(for: $0) })
     }
 
