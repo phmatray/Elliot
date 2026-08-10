@@ -68,7 +68,28 @@ public struct Reconciler: Sendable {
                 } else if let cardID = run.cardID,
                           let card = try? await store.card(id: cardID),
                           let repo = try? await store.repo(id: run.repoID) {
-                    let outcome = await verifier.verify(run: orphan, card: card, repo: repo)
+                    // The same rule as `RunScheduler.completeCardRun`, through
+                    // the same code. The shape differs only in what happens on
+                    // a refusal: this method returns nothing, so the refusal is
+                    // recorded on the orphan and on the card and then falls
+                    // into the same `apply`.
+                    let outcome: VerifiedOutcome
+                    if let cardRuns = await ResumeWindow.page(
+                        resumedFrom: orphan.resumedFrom,
+                        reading: { try await store.runs(cardID: cardID) }
+                    ) {
+                        outcome = await verifier.verify(
+                            run: orphan, card: card, repo: repo, cardRuns: cardRuns,
+                            // An orphan has no terminal result at all — the app
+                            // died before one arrived — so nothing establishes
+                            // that its session was gone. Asked rather than
+                            // asserted, so this stays right if the verdict ever
+                            // gains a case.
+                            resume: ResumeVerdict.of(resumedFrom: orphan.resumedFrom, result: nil)
+                        )
+                    } else {
+                        outcome = .unverified(reason: ResumeWindow.unknownWindowReason)
+                    }
                     orphan.verifiedOutcome = outcome
                     if await apply(outcome, to: card) { summary.cardsCorrected += 1 }
                 }

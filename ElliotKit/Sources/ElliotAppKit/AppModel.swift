@@ -3097,7 +3097,7 @@ public final class AppModel {
             ),
             config: toolConfig
         )
-        let outcome = await preflight.apply(fix, repo: repo, board: board)
+        let outcome = await preflight.apply(fix, repo: repo, board: board, store: store)
         lastCheckFix = (fix.id, FixOutcome(detail: outcome.detail, succeeded: outcome.succeeded))
         // A seeded card needs no reload here: the board observes the store, so
         // it arrives the way every other card does. Only the checks have to be

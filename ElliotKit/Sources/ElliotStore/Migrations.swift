@@ -311,6 +311,76 @@ enum Migrations {
             try db.execute(sql: Migrations.backfillCardAppraisalsSQL)
         }
 
+        // v13, additive: which attempt this run forked its session from.
+        //
+        // A column and not a table, so a helper one version behind still reads
+        // the row — `openReadOnly` accepts a database older than the build, and
+        // an absent column decodes as nil where an absent table throws. That
+        // only holds while `SkillRun.resumedFrom` stays `Optional`: the
+        // synthesised decoder emits `decode` for a non-optional and would throw
+        // `keyNotFound` on every run ever recorded. `MigrationsTests` pins both
+        // halves against this same table, next to v11's.
+        //
+        // ⚠️ **This was planned as `v9_runResumedFrom` and is v13**, which is
+        // the third time this file has recorded that sentence in this exact
+        // form — v10 and v12 above — and the seventh time it has recorded the
+        // trade at all, counting v3, v4, v6 and v7. It is the rule rather than
+        // an exception. Four migrations landed between the plan
+        // being written and this branch: v9_cardLabels, v10_repoPreflight,
+        // v11_runResultSource (#344) and v12_cardAppraisal (#339). Every one of
+        // them reached `main` first, so every one of them keeps its number and
+        // the unshipped one moves.
+        //
+        // No `RenamedMigration`, and that half is measured rather than assumed,
+        // exactly as v12's comment above describes. A rename entry records a
+        // migration that *actually reached a database* under the old name;
+        // `git log --all -S'runResumedFrom' -- Migrations.swift` finds it on no
+        // ref at all, and the developer's own store (`~/Library/Application
+        // Support/Elliot`) holds `v1_initial … v12_cardAppraisal` with zero rows
+        // matching `%runResumedFrom%` under any number. Nothing was in the field
+        // under the old name, so moving it costs nothing.
+        //
+        // No backfill: nothing before this build ever forked a session, so nil
+        // is the truth about these rows rather than a default standing in for
+        // an unknown. Inferring one — from the argv, from two runs sharing a
+        // card — would write a guess where nothing afterwards could tell it
+        // from a measurement, which is v11's stated reason one column over.
+        migrator.registerMigration("v13_runResumedFrom") { db in
+            try db.alter(table: "skillRun") { t in
+                t.add(column: "resumedFrom", .text)
+            }
+        }
+
+        // v14, additive: the labels *this* repository requires (#199, #200).
+        //
+        // ⚠️ **Written as `v13_repoLabelPolicy` and moved**, which is the eighth
+        // time this file has recorded that trade — and the first where the two
+        // claimants were written the same evening: `v13_runResumedFrom` (#355)
+        // reached `main` while this sat unpushed, so it keeps the number and
+        // this one moves. No `RenamedMigration` entry: the old name reached no
+        // database, because the branch was never merged and the column has never
+        // existed under it.
+        //
+        // ⛔ **No default and no backfill.** Defaulting existing rows to
+        // `LabelPolicy.default` is the tempting one and it destroys the whole
+        // distinction: it would make every repository in the field *assert* a
+        // taxonomy nobody chose, and the check would then stop offering the
+        // conversation on exactly the repositories that have never had it. NULL
+        // means "never asked"; an empty JSON array means "asked, and chose to
+        // require nothing". Those are different answers and this column exists
+        // to keep them apart.
+        //
+        // Nullable for v11's and v13's reason one table over: `openReadOnly`
+        // accepts a database older than the build, an absent column decodes as
+        // nil, and that only holds while `Repo.labelPolicy` stays `Optional` —
+        // the synthesised decoder emits `decode` for a non-optional and would
+        // throw `keyNotFound` on every repository. `OlderDatabaseTests` pins it.
+        migrator.registerMigration("v14_repoLabelPolicy") { db in
+            try db.alter(table: "repo") { t in
+                t.add(column: "labelPolicy", .text)     // JSON array, or NULL
+            }
+        }
+
         return migrator
     }
 
