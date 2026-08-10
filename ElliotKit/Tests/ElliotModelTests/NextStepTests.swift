@@ -62,6 +62,7 @@ struct NextStepTests {
         #expect(SkillKind.createIssue.skillName == "create-issue")
         #expect(SkillKind.implementIssue.skillName == "implement-issue")
         #expect(SkillKind.mergePR.skillName == "merge-pr")
+        #expect(SkillKind.appraiseCards.skillName == "appraise-cards")
     }
 
     @Test("A Done card is not a candidate — it has nowhere to go")

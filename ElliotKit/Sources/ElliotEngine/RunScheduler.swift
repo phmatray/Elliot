@@ -290,7 +290,7 @@ public actor RunScheduler: RunLaunching {
         case .createIssue:
             return sameRepo.contains { $0.kind == .createIssue }
                 ? .duplicateCreateIssueInRepo : nil
-        case .implementIssue, .analyzeRepo:
+        case .implementIssue, .analyzeRepo, .appraiseCards:
             return nil
         }
     }
