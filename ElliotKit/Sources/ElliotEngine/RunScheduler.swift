@@ -70,9 +70,19 @@ public actor RunScheduler: RunLaunching {
     /// mark stayed one-way. Nothing in the app passes anything but the default.
     private let idleTimeout: Duration
     private let harvester: ProposalHarvester
-    /// `git status --porcelain` taken just before each analysis spawned, keyed
-    /// by run. In memory only: if the app dies mid-run the baseline is gone and
-    /// the sweep reports the sentinel as unchecked rather than guessing.
+    /// The appraisal's harvester, beside the analysis's rather than inside it.
+    ///
+    /// Two read-only kinds, two harvesters, because they read two different
+    /// artifacts and write two different things: `ProposalHarvester` reads an
+    /// analysis's stories and files proposals; this one reads one card's
+    /// appraisal and writes three fields onto that card. Sharing a type would
+    /// mean a `kind` switch inside it, which is the split this task moved *out*
+    /// of a boolean and into `finish`.
+    private let appraiser: AppraisalHarvester
+    /// `git status --porcelain` taken just before each read-only run spawned,
+    /// keyed by run. In memory only: if the app dies mid-run the baseline is
+    /// gone and the sweep reports the sentinel as unchecked rather than
+    /// guessing.
     private var treeBaselines: [UUID: String] = [:]
     private let git: GitClient
 
@@ -90,6 +100,7 @@ public actor RunScheduler: RunLaunching {
         toolConfig: ToolConfig,
         verifier: Verifier,
         harvester: ProposalHarvester? = nil,
+        appraiser: AppraisalHarvester? = nil,
         limits: SchedulerLimits = .default,
         ceiling: SpendCeiling = .off,
         idleTimeout: Duration = ClaudeRun.defaultIdleTimeout
@@ -99,6 +110,10 @@ public actor RunScheduler: RunLaunching {
         self.verifier = verifier
         self.idleTimeout = idleTimeout
         self.harvester = harvester ?? ProposalHarvester(store: store, gh: GHClient(config: toolConfig))
+        // Defaulted from `store` exactly as `harvester` is, and injectable for
+        // the same reason: a test that wants to watch the harvest happen should
+        // not have to spawn a `claude` to reach it.
+        self.appraiser = appraiser ?? AppraisalHarvester(store: store)
         self.limits = limits
         self.ceiling = ceiling
         self.git = GitClient(config: toolConfig)
@@ -492,10 +507,17 @@ public actor RunScheduler: RunLaunching {
 
         let logURL = URL(fileURLWithPath: run.logPath)
 
-        if updated.isAnalysis {
+        if updated.kind.isReadOnly {
             // The prompt forbids modifying the repository and no CLI flag can
             // enforce it, so record the tree now and compare after. Do not
             // trust the instruction; check the outcome.
+            //
+            // `kind.isReadOnly` and not `isAnalysis`: an appraisal reads the
+            // working tree under exactly the same unenforceable promise, and
+            // the boolean answers "is this an analysis", which is false for it.
+            // Armed on the boolean, an appraisal's report would say the tree
+            // was never looked at — the tri-state's `nil`, which is the one
+            // answer that must mean "nobody checked".
             treeBaselines[run.id] = await git.porcelainStatus(cwd: repo.path)
         }
 
@@ -624,17 +646,27 @@ public actor RunScheduler: RunLaunching {
         // behind on an earlier attempt, and the only thing that knows is `gh`.
         let resume = ResumeVerdict.of(resumedFrom: updated.resumedFrom, result: outcome?.result)
 
-        // One split, in one place: a card run is verified against gh and writes
-        // back to its card; an analysis run is harvested and writes proposals.
-        // Letting `finish` acquire two personalities is how this method would
-        // become unreadable.
+        // The baseline is erased for **every** run, above the routing rather
+        // than inside a branch of it. The dictionary has exactly three sites —
+        // the two in `start` and this one — and a fourth path returning without
+        // an erasure leaks one entry per run for the lifetime of the process.
+        let treeBaseline = treeBaselines.removeValue(forKey: run.id)
+
+        // One split, in one place. A `switch` and not the `if updated.isAnalysis`
+        // this was: the boolean routed an appraisal — which carries a `cardID` —
+        // into `completeCardRun`, where `gh` is asked about an issue and a pull
+        // request the card does not have. A sixth kind is now a compile error
+        // here instead of a silent third meaning for an existing branch.
         //
-        // if/else rather than a ternary: `inout` arguments are not allowed in
-        // one.
+        // `var verified` outside, because `inout` arguments are not allowed in a
+        // ternary and the three branches do not all produce one.
         var verified: VerifiedOutcome?
-        if updated.isAnalysis {
-            await completeAnalysisRun(&updated)
-        } else {
+        switch updated.kind {
+        case .analyzeRepo:
+            await completeAnalysisRun(&updated, baseline: treeBaseline)
+        case .appraiseCards:
+            await completeAppraisalRun(&updated, baseline: treeBaseline)
+        case .createIssue, .implementIssue, .mergePR:
             verified = await completeCardRun(&updated, resume: resume)
         }
 
@@ -687,9 +719,11 @@ public actor RunScheduler: RunLaunching {
     }
 
     /// Harvest the artifact, then answer the sentinel's question.
-    private func completeAnalysisRun(_ run: inout SkillRun) async {
-        let baseline = treeBaselines.removeValue(forKey: run.id)
-
+    ///
+    /// The baseline arrives as a parameter rather than being taken from
+    /// `treeBaselines` here: `finish` erases it for every run, above the
+    /// routing, so no branch of that `switch` can be the one that forgets.
+    private func completeAnalysisRun(_ run: inout SkillRun, baseline: String?) async {
         guard let analysisID = run.analysisID,
               let analysis = try? await store.analysis(id: analysisID),
               let repo = try? await store.repo(id: run.repoID)
@@ -707,21 +741,53 @@ public actor RunScheduler: RunLaunching {
             repo: repo,
             artifactURL: StoreLocation.analysisArtifactURL(analysisID: analysisID, runID: run.id)
         )
+        await sealSentinel(&report, baseline: baseline, repoPath: repo.path)
+        run.analysisReport = report
+    }
 
-        if let baseline {
-            let after = await git.porcelainStatus(cwd: repo.path)
-            let changed = after != baseline
-            // Explicit even when unchanged: a checked-and-clean tree (`false`)
-            // must not read the same as a tree the sentinel never got to look
-            // at (`nil`) — that collapse is exactly what let an orphaned run
-            // masquerade as verified-clean.
-            report.workingTreeChanged = changed
-            if changed {
-                report.workingTreeDiff = after
-            }
+    /// The same two steps for an appraisal: harvest the artifact, then answer
+    /// the sentinel.
+    ///
+    /// It has no analysis to look up — that is the whole of the `cardID`
+    /// decision — so the artifact is keyed on the run alone.
+    private func completeAppraisalRun(_ run: inout SkillRun, baseline: String?) async {
+        guard let repo = try? await store.repo(id: run.repoID) else {
+            run.analysisReport = AnalysisRunReport(
+                harvestSource: .none,
+                dropped: ["The repository this appraisal ran in could not be found."]
+            )
+            return
         }
 
+        var report = await appraiser.harvest(
+            run: run,
+            repo: repo,
+            artifactURL: StoreLocation.appraisalArtifactURL(runID: run.id)
+        )
+        await sealSentinel(&report, baseline: baseline, repoPath: repo.path)
         run.analysisReport = report
+    }
+
+    /// Folds the git sentinel's answer onto a read-only run's report.
+    ///
+    /// One implementation for both read-only kinds. Two copies of these lines
+    /// would be two copies of the argument in them, which is the shape #146
+    /// caught in `ChildProcess`: when the *explanation* of an invariant has been
+    /// copied word for word, the invariant has been copied too.
+    ///
+    /// Explicit even when unchanged: a checked-and-clean tree (`false`) must not
+    /// read the same as a tree the sentinel never got to look at (`nil`) — that
+    /// collapse is exactly what let an orphaned run masquerade as verified-clean.
+    private func sealSentinel(
+        _ report: inout AnalysisRunReport, baseline: String?, repoPath: String
+    ) async {
+        guard let baseline else { return }
+        let after = await git.porcelainStatus(cwd: repoPath)
+        let changed = after != baseline
+        report.workingTreeChanged = changed
+        if changed {
+            report.workingTreeDiff = after
+        }
     }
 
     static func state(for outcome: ClaudeRunOutcome?) -> RunState {
