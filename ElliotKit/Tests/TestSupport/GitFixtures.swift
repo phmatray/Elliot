@@ -13,6 +13,40 @@ import Foundation
 /// It reaches `/usr/bin/git` through `Process` directly rather than through
 /// `ProcessRunner`, so `TestSupport` keeps depending on nothing.
 
+/// The binary every fixture here spawns, and whether this machine has one.
+///
+/// Asked in the same place the fixtures spawn from, so "which binary" and "may I
+/// assert what it produced" cannot become two answers. The distinction is the
+/// whole point: a test that skips itself with `guard … else { return }` reports
+/// **green having asserted nothing**, which is indistinguishable in the output
+/// from a test that ran. `.enabled(if: gitFixtureIsAvailable)` on the `@Test`
+/// reports a *skip*, by name.
+///
+/// It is close to unreachable — SwiftPM cannot resolve this package without
+/// `git` — and that is a reason for the cheap remedy, not for no remedy: the
+/// assertions behind these skips are the sentinel ones, which pass vacuously
+/// against a `git` that is not there, because `GitClient.porcelainStatus`
+/// swallows a failing binary into `""` and two swallowed failures compare equal.
+public let gitFixturePath = "/usr/bin/git"
+
+/// Whether `gitFixturePath` is **present and executable** here.
+///
+/// ⚠️ Presence, not runnability, and the difference is real: on a macOS with no
+/// command-line tools installed `/usr/bin/git` exists as an `xcode-select` shim
+/// that answers `xcrun: error: invalid active developer path`. This probe says
+/// `true` there, so the tests run and `git()` throws — a **named error**, which
+/// is the outcome this file wants anyway. Probing by running `git --version`
+/// would convert that loud error into a quiet skip, and would have to spawn a
+/// child from a global initialiser through `waitUntilExit()`, which this package
+/// forbids for a measured reason. `swift test` cannot run without the tools in
+/// the first place, so the case is unreachable in both directions.
+///
+/// A global `let`, so it is evaluated once, lazily — which is exactly right: a
+/// `git` cannot appear part-way through a run, and a per-test probe is how the
+/// answer starts differing between the trait and the body that trusts it.
+public let gitFixtureIsAvailable = FileManager.default.isExecutableFile(
+    atPath: gitFixturePath)
+
 /// A fixture's `git` refused.
 public struct GitFixtureFailed: Error, CustomStringConvertible {
     public let command: String
@@ -23,12 +57,28 @@ public struct GitFixtureFailed: Error, CustomStringConvertible {
 
 /// Runs one `git` command and throws unless it exited zero.
 ///
+/// **Throwing is the contract, and callers depend on it.** `_ = try? await …`
+/// around a set-up `git` is not a smaller version of this — it is a different
+/// thing: a `git init` that failed leaves `GitClient.porcelainStatus` swallowing
+/// the missing repository into `""` at both ends, so the sentinel that follows
+/// compares two swallowed failures and calls the coincidence "clean". A set-up
+/// that cannot speak makes every assertion after it vacuous. This is written
+/// here, once, rather than beside each caller.
+///
 /// The exit arrives through `terminationHandler`, never `waitUntilExit()`: these
 /// fixtures are spawned concurrently by the probe's tests, and a run loop waiting
 /// on a notification a sibling can consume first is precisely how a test wedges.
-public func git(_ arguments: [String], in cwd: String) async throws {
+///
+/// **Bounded**, because `swift test` here must always terminate: an unbounded
+/// wait on a child is how one wedged process held the SwiftPM build lock for a
+/// quarter of an hour and presented as a broken toolchain. A `git` that outlives
+/// `timeout` is terminated and reported as a failure with its deadline named —
+/// never left to hang the suite.
+public func git(
+    _ arguments: [String], in cwd: String, timeout: Duration = .seconds(30)
+) async throws {
     let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.executableURL = URL(fileURLWithPath: gitFixturePath)
     process.arguments = arguments
     process.currentDirectoryURL = URL(fileURLWithPath: cwd)
     process.environment = [
@@ -56,6 +106,16 @@ public func git(_ arguments: [String], in cwd: String) async throws {
         try? FileManager.default.removeItem(atPath: errorPath)
     }
 
+    // The watchdog and the waiter are two tasks touching one `Process`, which is
+    // not `Sendable`; the box's lock is what makes that safe, and `terminate()`
+    // is the only call it lets across.
+    let watched = WatchedProcess(process)
+    let watchdog = Task {
+        try? await Task.sleep(for: timeout)
+        watched.terminate()
+    }
+    defer { watchdog.cancel() }
+
     let status: Int32 = try await withCheckedThrowingContinuation { continuation in
         process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
         do {
@@ -67,9 +127,41 @@ public func git(_ arguments: [String], in cwd: String) async throws {
     }
     guard status == 0 else {
         let stderr = (try? String(contentsOfFile: errorPath, encoding: .utf8)) ?? ""
+        // A terminated child reports a signal, not a message, so the deadline is
+        // named here — otherwise a timeout arrives as a bare non-zero exit and
+        // reads like a `git` that refused.
+        let detail =
+            watched.didTimeOut
+            ? "timed out after \(timeout)"
+            : stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         throw GitFixtureFailed(
-            command: arguments.joined(separator: " "), exitCode: status,
-            stderr: stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+            command: arguments.joined(separator: " "), exitCode: status, stderr: detail)
+    }
+}
+
+/// A `Process` the watchdog may terminate while the waiter is suspended on it.
+///
+/// `@unchecked Sendable` because `Process` is not `Sendable`: the lock is the
+/// reason it is safe, and `terminate()` is the only thing crossing tasks.
+private final class WatchedProcess: @unchecked Sendable {
+    private let lock = NSLock()
+    private let process: Process
+    private var timedOut = false
+
+    init(_ process: Process) { self.process = process }
+
+    var didTimeOut: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return timedOut
+    }
+
+    func terminate() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard process.isRunning else { return }
+        timedOut = true
+        process.terminate()
     }
 }
 

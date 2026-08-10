@@ -197,10 +197,15 @@ struct ArtifactProbeTests {
     /// **non-nil** and yields **zero** entries, so a walk alone answers `false`
     /// — "there is nothing there" for a directory nobody could read, which is
     /// exactly the lie this type exists to refuse.
-    @Test("A directory that cannot be listed throws rather than answering false")
+    ///
+    /// - Note: gated rather than `guard getuid() != 0 else { return }`. As root
+    ///   every directory is readable and the check would be vacuous — but an
+    ///   early return reports green having asserted nothing, which reads in the
+    ///   output exactly like a test that ran. A trait says "skipped", by name.
+    @Test(
+        "A directory that cannot be listed throws rather than answering false",
+        .enabled(if: getuid() != 0))
     func unlistableDirectoryThrows() throws {
-        // As root every directory is readable, and the check would be vacuous.
-        guard getuid() != 0 else { return }
         let (short, long, remove) = try checkout()
         defer { remove() }
         try write("specs/003/spec.md", under: long)

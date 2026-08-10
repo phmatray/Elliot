@@ -123,23 +123,25 @@ struct AnalysisEndToEndTests {
         )
     }
 
-    @Test("An analysis produces proposals, and accepting one puts a real card in Backlog")
+    /// - Note: a real `git` is *required* rather than used when available, so
+    ///   the "clean" assertion below checks an actual `git status` rather than
+    ///   two calls to a failing binary that happen to agree with each other.
+    ///   Required as a trait, not as an `if`: the branch this replaced reported
+    ///   green having asserted nothing, which is the one outcome a sentinel must
+    ///   never produce. `/usr/bin/git` ships with the Xcode command-line tools
+    ///   this package itself needs to build, so the skip is not expected to be
+    ///   reached — and a skip that is *named* costs nothing to keep honest.
+    @Test(
+        "An analysis produces proposals, and accepting one puts a real card in Backlog",
+        .enabled(if: gitFixtureIsAvailable))
     func theWholePath() async throws {
-        // Real git, when available, so the "clean" assertion below checks an
-        // actual `git status` rather than two calls to a failing binary that
-        // happen to agree with each other. `/usr/bin/git` ships with the
-        // Xcode command-line tools this package itself needs to build, so
-        // the fallback is not expected to be exercised in practice.
-        let git = "/usr/bin/git"
-        let gitAvailable = FileManager.default.isExecutableFile(atPath: git)
-        let stack = try await makeStack(gitPath: gitAvailable ? git : "/usr/bin/false")
+        let stack = try await makeStack(gitPath: gitFixturePath)
         defer { stack.cleanUp() }
-        if gitAvailable {
-            _ = try? await ProcessRunner.run(
-                executable: git, arguments: ["init", "-q"], cwd: stack.repo.path,
-                environment: ["PATH": "/usr/bin:/bin"], timeout: .seconds(20)
-            )
-        }
+        // Through `TestSupport`'s `git`, which throws on a non-zero exit.
+        // The `_ = try? await …` this replaced swallowed one, and a
+        // `git init` that failed left the sentinel below comparing two
+        // swallowed `""` readings and calling the coincidence "clean".
+        try await git(["init", "-q"], in: stack.repo.path)
 
         // A card already on the board, so the duplicate hint has something to
         // collide with.
@@ -165,15 +167,13 @@ struct AnalysisEndToEndTests {
             #expect(report.kept == 2)
             // The third story in the fixture is unusable, and says why.
             #expect(report.dropped.contains { $0.contains("benefit") })
-            if gitAvailable {
-                // Checked-and-clean, not "never checked": a real `git status`
-                // was taken before and after, over an actually-initialised
-                // repo, and found nothing — `false`, not `nil`. Neither run
-                // writes inside the repo (the artifact lands under the
-                // shared `TestHome.root`, not `stack.repo.path`), so a
-                // regression that made a run touch the repo would flip this.
-                #expect(report.workingTreeChanged == false)
-            }
+            // Checked-and-clean, not "never checked": a real `git status` was
+            // taken before and after, over an actually-initialised repo, and
+            // found nothing — `false`, not `nil`. Neither run writes inside the
+            // repo (the artifact lands under the shared `TestHome.root`, not
+            // `stack.repo.path`), so a regression that made a run touch the repo
+            // would flip this.
+            #expect(report.workingTreeChanged == false)
         }
 
         // Two angles × two usable stories.
@@ -225,21 +225,24 @@ struct AnalysisEndToEndTests {
         #expect(issueRun.prompt.contains("the idle task cancelled on every exit path"))
     }
 
-    @Test("An analysis that edits the repository is reported, not hidden")
+    /// - Note: a real `git` is needed for the sentinel to say anything, and it
+    ///   is required as a trait rather than checked as a `guard … else
+    ///   { return }`. Without one, the early return reported this test green
+    ///   having asserted nothing at all.
+    @Test(
+        "An analysis that edits the repository is reported, not hidden",
+        .enabled(if: gitFixtureIsAvailable))
     func theSentinelFires() async throws {
-        // A real git binary is needed for the sentinel to say anything.
-        let git = "/usr/bin/git"
-        guard FileManager.default.isExecutableFile(atPath: git) else { return }
-
         let stack = try await makeStack(
-            extraEnv: ["FAKE_CLAUDE_TOUCH": "meddled.txt"], gitPath: git
+            extraEnv: ["FAKE_CLAUDE_TOUCH": "meddled.txt"], gitPath: gitFixturePath
         )
         defer { stack.cleanUp() }
 
-        _ = try? await ProcessRunner.run(
-            executable: git, arguments: ["init", "-q"], cwd: stack.repo.path,
-            environment: ["PATH": "/usr/bin:/bin"], timeout: .seconds(20)
-        )
+        // Through `TestSupport`'s `git`, which throws on a non-zero exit.
+        // The `_ = try? await …` this replaced swallowed one, and a
+        // `git init` that failed left the sentinel below comparing two
+        // swallowed `""` readings and calling the coincidence "clean".
+        try await git(["init", "-q"], in: stack.repo.path)
 
         let started = try await stack.analysisService.start(
             repoID: stack.repo.id, angles: [.bugs], origin: .manual
