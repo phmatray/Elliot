@@ -49,7 +49,19 @@ enum HiddenFaceState {
     /// Cutting at `//` would also cut one inside a string literal; none of the
     /// needles these gates use can occur after one.
     static func code(of file: String) throws -> String {
-        try source(of: file)
+        stripped(try source(of: file))
+    }
+
+    /// The cut itself, for a gate reading a file this enum does not resolve.
+    ///
+    /// ``UnattendedStartDelegationTests`` sweeps the whole of `Sources/` rather
+    /// than one module's directory, and needs exactly this cut — measured, not
+    /// assumed: `RunsPane.swift` documents *"a card whose repository is switched
+    /// off in Preflight"*, which is one of the two sentences that gate claims has
+    /// a single home. Written once here for the reason the header gives: a
+    /// mechanism written twice has already cost this repository three defects.
+    static func stripped(_ source: String) -> String {
+        source
             .components(separatedBy: "\n")
             .map { line -> String in
                 guard let comment = line.range(of: "//") else { return line }
