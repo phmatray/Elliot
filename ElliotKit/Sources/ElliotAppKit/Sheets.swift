@@ -55,7 +55,10 @@ struct MergeConfirmation: View {
                 Button("Cancel", role: .cancel) { model.cancelPendingMerge() }
                 Spacer()
                 Button("Merge PR \(pr)") {
-                    Task { await model.confirmMerge(cardID: pending.cardID, followUps: cleaned) }
+                    Task {
+                        await model.confirmMerge(
+                            cardID: pending.cardID, followUps: cleaned, origin: pending.origin)
+                    }
                 }
                 // ⛔ No `.keyboardShortcut(.defaultAction)`, and its absence is
                 // load-bearing — see `DefaultAction`, which lists this control

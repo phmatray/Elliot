@@ -773,7 +773,7 @@ extension Binding where Value == [ElliotModel.Column: Set<UUID>] {
 /// 2. a **resize** — the drag handle, or View ▸ Narrow/Widen — changing
 ///    `panelSpans`, which changes how far the row extends and therefore where a
 ///    scroll offset clamps;
-/// 3. `AppModel.armPendingMerge(cardID:prNumber:)`, which selects a card *and*
+/// 3. `AppModel.armPendingMerge(cardID:prNumber:origin:)`, which selects a card *and*
 ///    opens the panel together. It re-framed only when the card it arms was not
 ///    the one already selected — and that is the path to the one act in the
 ///    product that cannot be taken back, so a confirmation opening off-screen
