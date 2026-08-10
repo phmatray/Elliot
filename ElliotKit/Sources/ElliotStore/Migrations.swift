@@ -311,6 +311,46 @@ enum Migrations {
             try db.execute(sql: Migrations.backfillCardAppraisalsSQL)
         }
 
+        // v13, additive: which attempt this run forked its session from.
+        //
+        // A column and not a table, so a helper one version behind still reads
+        // the row — `openReadOnly` accepts a database older than the build, and
+        // an absent column decodes as nil where an absent table throws. That
+        // only holds while `SkillRun.resumedFrom` stays `Optional`: the
+        // synthesised decoder emits `decode` for a non-optional and would throw
+        // `keyNotFound` on every run ever recorded. `MigrationsTests` pins both
+        // halves against this same table, next to v11's.
+        //
+        // ⚠️ **This was planned as `v9_runResumedFrom` and is v13**, which is
+        // the third time this file has recorded that sentence in this exact
+        // form — v10 and v12 above — and the seventh time it has recorded the
+        // trade at all, counting v3, v4, v6 and v7. It is the rule rather than
+        // an exception. Four migrations landed between the plan
+        // being written and this branch: v9_cardLabels, v10_repoPreflight,
+        // v11_runResultSource (#344) and v12_cardAppraisal (#339). Every one of
+        // them reached `main` first, so every one of them keeps its number and
+        // the unshipped one moves.
+        //
+        // No `RenamedMigration`, and that half is measured rather than assumed,
+        // exactly as v12's comment above describes. A rename entry records a
+        // migration that *actually reached a database* under the old name;
+        // `git log --all -S'runResumedFrom' -- Migrations.swift` finds it on no
+        // ref at all, and the developer's own store (`~/Library/Application
+        // Support/Elliot`) holds `v1_initial … v12_cardAppraisal` with zero rows
+        // matching `%runResumedFrom%` under any number. Nothing was in the field
+        // under the old name, so moving it costs nothing.
+        //
+        // No backfill: nothing before this build ever forked a session, so nil
+        // is the truth about these rows rather than a default standing in for
+        // an unknown. Inferring one — from the argv, from two runs sharing a
+        // card — would write a guess where nothing afterwards could tell it
+        // from a measurement, which is v11's stated reason one column over.
+        migrator.registerMigration("v13_runResumedFrom") { db in
+            try db.alter(table: "skillRun") { t in
+                t.add(column: "resumedFrom", .text)
+            }
+        }
+
         return migrator
     }
 

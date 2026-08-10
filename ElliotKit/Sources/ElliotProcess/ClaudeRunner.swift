@@ -13,6 +13,13 @@ public struct ClaudeInvocation: Sendable {
     public var includePartialMessages: Bool
     /// `nil` means no ceiling — the behaviour before #57, and the default.
     public var maxBudgetUSD: Double?
+    /// The session to fork from. `nil` is a fresh conversation.
+    ///
+    /// Last in the initialiser rather than beside `cwd`, so every existing call
+    /// site keeps compiling: the two are read together — Claude Code keeps a
+    /// transcript under a slug of the directory the session ran in — but the
+    /// argument order is a compatibility question, not a semantic one.
+    public var resumeFrom: UUID?
 
     public init(
         runID: UUID,
@@ -21,7 +28,8 @@ public struct ClaudeInvocation: Sendable {
         permissionMode: PermissionMode = .bypassPermissions,
         extraAllowedTools: [String] = [],
         includePartialMessages: Bool = false,
-        maxBudgetUSD: Double? = nil
+        maxBudgetUSD: Double? = nil,
+        resumeFrom: UUID? = nil
     ) {
         self.runID = runID
         self.prompt = prompt
@@ -30,6 +38,7 @@ public struct ClaudeInvocation: Sendable {
         self.extraAllowedTools = extraAllowedTools
         self.includePartialMessages = includePartialMessages
         self.maxBudgetUSD = maxBudgetUSD
+        self.resumeFrom = resumeFrom
     }
 
     /// Formatted rather than interpolated. `"\(0.5)"` is `"0.5"`, but
@@ -53,6 +62,19 @@ public struct ClaudeInvocation: Sendable {
             "--session-id", runID.uuidString.lowercased(),
             "--add-dir", cwd,
         ]
+        // One `if let`, and that is the guarantee rather than a test: a bare
+        // `--resume` without `--fork-session` is not expressible here, so the
+        // CLI's refusal — "--session-id can only be used with --continue or
+        // --resume if --fork-session is also specified" — is one we never meet.
+        //
+        // The fork is also what keeps `--session-id` above authoritative:
+        // measured on 2026-08-08 with these flags, the forked run's `result`
+        // reports the id we passed, so `runID == sessionID` survives,
+        // `StoreLocation.runLogURL(runID:)` is unchanged and the run stays one
+        // row.
+        if let resumeFrom {
+            args += ["--resume", resumeFrom.uuidString.lowercased(), "--fork-session"]
+        }
         if !extraAllowedTools.isEmpty {
             args += ["--allowedTools", extraAllowedTools.joined(separator: ",")]
         }
