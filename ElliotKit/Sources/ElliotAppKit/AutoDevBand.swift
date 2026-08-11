@@ -112,8 +112,20 @@ struct AutoDevBand: Equatable {
     /// are genuinely about rows — settled, merged, blocked — come from the
     /// tally. "To go" is then the difference rather than `tally.engaged`, so the
     /// two halves of the sentence always account for the whole set.
+    ///
+    /// - Parameter hasLiveRun: whether a run this session started is still
+    ///   active, checked only for `.finished` — `AutoDevPolicy`'s
+    ///   `.runAlreadyInFlight` branch never consults `RunState`, so patience
+    ///   expiry can settle every engaged card and reach `finish()` while a
+    ///   `.mergePR` run is genuinely still `.running`, and `finish()`
+    ///   correctly leaves a running run alone rather than cancel it. So a
+    ///   live `claude -p` child can outlive a session this band reports as
+    ///   fully stopped. Defaulted to `false` rather than made non-optional:
+    ///   deciding it needs `AppModel.activeRuns`, which every existing caller
+    ///   and every existing test here has no reason to thread through for the
+    ///   two states where it cannot change anything.
     static func of(
-        session: AutoDevSession?, tally: AutoDevTally, repoName: String
+        session: AutoDevSession?, tally: AutoDevTally, repoName: String, hasLiveRun: Bool = false
     ) -> AutoDevBand {
         guard let session else { return .idle }
         let count = session.engagedCardIDs.count
@@ -154,10 +166,22 @@ struct AutoDevBand: Equatable {
                 headline:
                     "Finished — \(cards) in \(repoName), \(tally.merged) merged, "
                     + "\(tally.blocked) blocked.",
-                runNote: "Nothing is running. This report stays until the next session starts.",
+                // ⛔ **Must stay conditional on `hasLiveRun`.** "Nothing is
+                // running" is false in a state the previous task proved
+                // reachable — see this method's own doc on the parameter —
+                // and shipping it unconditionally is the defect this branch
+                // has already corrected five times elsewhere: prose the same
+                // pull request makes untrue.
+                runNote: hasLiveRun
+                    ? "A run this session started is still going, and will finish on its own. "
+                        + "This report stays until the next session starts."
+                    : "Nothing is running. This report stays until the next session starts.",
                 // A session that blocked everything must not read like a quiet
                 // success — it is the outcome nothing else on the board shows.
-                tone: tally.blocked > 0 ? .refused : .quiet,
+                // A live run outranks quiet but not refused: a session that
+                // both blocked cards *and* left a run going is still, first
+                // and foremost, a session that failed somewhere.
+                tone: tally.blocked > 0 ? .refused : (hasLiveRun ? .attention : .quiet),
                 controls: []
             )
         }

@@ -57,7 +57,13 @@ struct MergeConfirmation: View {
                 Button("Merge PR \(pr)") {
                     Task {
                         await model.confirmMerge(
-                            cardID: pending.cardID, followUps: cleaned, origin: pending.origin)
+                            cardID: pending.cardID, followUps: cleaned, origin: pending.origin,
+                            // A person is looking at this sheet and pressed
+                            // the button — the same reason `AppModel.move`'s
+                            // drag passes `false` for the same rule. See
+                            // `AppModel.confirmMerge`'s own doc for why this
+                            // is a parameter rather than a default.
+                            requiresVerifiedGreen: false)
                     }
                 }
                 // ⛔ No `.keyboardShortcut(.defaultAction)`, and its absence is

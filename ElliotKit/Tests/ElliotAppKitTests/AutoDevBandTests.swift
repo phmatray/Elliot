@@ -144,6 +144,88 @@ struct AutoDevBandTests {
         #expect(clean.tone == .quiet)
     }
 
+    // MARK: - A finished session that still has a live run
+
+    /// ⛔ **The sentence this task's own brief exists to fix.** `AutoDevPolicy`'s
+    /// `.runAlreadyInFlight` branch never consults `RunState`, so patience expiry
+    /// can settle every engaged card — and so the whole session — while a
+    /// `.mergePR` run behind one of them is genuinely still `.running`;
+    /// `AutoDevService.finish()` correctly leaves that run alone rather than
+    /// cancel it. A live `claude -p` child can therefore outlive a session the
+    /// band reports as fully stopped, and "Nothing is running." would be a
+    /// straightforward lie in that state.
+    @Test("A finished session with a live run says so, truthfully, instead of 'Nothing is running'")
+    func finishedWithLiveRunTellsTheTruth() {
+        let band = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 3, blocked: 0),
+            repoName: "Elliot", hasLiveRun: true)
+        #expect(!band.runNote.contains("Nothing is running"))
+        #expect(band.runNote.contains("still going"))
+        // The report's permanence is still stated — a live run does not make
+        // the record disappear any sooner than a quiet one does.
+        #expect(band.runNote.contains("This report stays until the next session starts."))
+        #expect(band.controls.isEmpty, "a live run belongs to the run scheduler now, not to a control here")
+    }
+
+    /// The default matters as much as the new branch: every existing caller and
+    /// every other test in this file calls `AutoDevBand.of` without naming
+    /// `hasLiveRun` at all, and all of them must keep reading the old sentence.
+    @Test("Omitting hasLiveRun reads exactly as it always did")
+    func hasLiveRunDefaultsToTheOldSentence() {
+        let band = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 3, blocked: 0),
+            repoName: "Elliot")
+        #expect(band.runNote == "Nothing is running. This report stays until the next session starts.")
+    }
+
+    /// A blocked card is still the more urgent fact: a session that both left a
+    /// run going *and* blocked a card reads as refused, not merely attention —
+    /// it failed somewhere, and that outranks "something is still moving."
+    @Test("A live run alone is attention; a blocked card is refused regardless")
+    func liveRunToneRanksBelowBlocked() {
+        let quietlyLive = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 3, blocked: 0),
+            repoName: "Elliot", hasLiveRun: true)
+        #expect(quietlyLive.tone == .attention)
+
+        let blockedAndLive = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 1, blocked: 2),
+            repoName: "Elliot", hasLiveRun: true)
+        #expect(blockedAndLive.tone == .refused)
+    }
+
+    /// `hasLiveRun` is read only for `.finished` — a running or paused session
+    /// already has its own truthful account of what is going on, and the
+    /// parameter must not perturb either.
+    @Test("hasLiveRun changes nothing about a running or a paused band")
+    func hasLiveRunIsIgnoredOutsideFinished() {
+        let tally = AutoDevTally(engaged: 3, merged: 1, blocked: 1)
+        let runningIgnored = AutoDevBand.of(
+            session: session(.running), tally: tally, repoName: "Elliot", hasLiveRun: true)
+        let runningDefault = AutoDevBand.of(session: session(.running), tally: tally, repoName: "Elliot")
+        #expect(runningIgnored == runningDefault)
+
+        let pausedIgnored = AutoDevBand.of(
+            session: session(.paused), tally: tally, repoName: "Elliot", hasLiveRun: true)
+        let pausedDefault = AutoDevBand.of(session: session(.paused), tally: tally, repoName: "Elliot")
+        #expect(pausedIgnored == pausedDefault)
+    }
+
+    /// ⛔ **Both directions, the same discipline `runNoteNamesExactlyTheControlsOffered`
+    /// already holds this file to.** A finished band with a live run still offers
+    /// no controls, so its note must not accidentally start naming one just
+    /// because the sentence changed.
+    @Test("The live-run sentence names no control the finished band does not offer")
+    func liveRunSentenceNamesNoControl() {
+        let band = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 3, blocked: 0),
+            repoName: "Elliot", hasLiveRun: true)
+        for control in AutoDevBand.Control.allCases {
+            let word = String(AutoDevBand.title(control).split(separator: " ")[0])
+            #expect(!band.runNote.contains(word), "the live-run sentence names \(word)")
+        }
+    }
+
     /// ⚠️ **What the band says today about a state nobody has written a sentence
     /// for**: a session that finished with fewer rows than it engaged.
     ///

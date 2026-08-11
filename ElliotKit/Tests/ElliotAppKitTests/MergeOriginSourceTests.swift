@@ -76,10 +76,17 @@ struct MergeOriginSourceTests {
     /// still passed. `Sources/ElliotMCPKit/Tools` shows the layout is already
     /// used in this package, so the subdirectory is not hypothetical.
     ///
-    /// The escaped caller does not merely go unchecked for its origin: it also
-    /// inherits `confirmMerge`'s hardcoded `requiresVerifiedGreen: false`, which
-    /// is the merge-by-omission `BoardService.proposeMove`'s ⛔ exists to
-    /// prevent — reached through a door the compiler does not guard.
+    /// ⚠️ **`requiresVerifiedGreen` stopped being a default this task, and the
+    /// paragraph this replaced said the escaped caller "inherits a hardcoded
+    /// `false`" — no longer true.** `confirmMerge` now requires every caller
+    /// to state its own value, so the compiler refuses a call that omits it,
+    /// escaped or not. What the compiler still cannot do is check that the
+    /// *value* an escaped caller states is honest — a `BreakProbeView` that
+    /// wrote `requiresVerifiedGreen: false` for an act with nobody watching
+    /// would compile clean and pass this gate, because this gate is about
+    /// `origin`, not about that argument's value. The escaped caller still
+    /// goes fully unchecked for its origin, which is what the rest of this
+    /// gate exists for.
     ///
     /// A missing directory is reported by name rather than read as an empty
     /// walk: `enumerator(at:)` skips what it cannot read, so without this the

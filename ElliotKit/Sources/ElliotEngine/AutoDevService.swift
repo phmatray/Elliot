@@ -104,17 +104,19 @@ public enum AutoDevError: Error, LocalizedError, Equatable {
 /// `RunScheduler.systemMover` and `PRWatcher.mover` are weak for the same
 /// cycle-breaking reason, and the hooks that point back here are weak too.
 ///
-/// ⚠️ **This does not conform to `AutoDevDriving`.** That protocol
+/// ⚠️ **This is the narrower, engine-facing half.** `AutoDevDriving`
 /// (`AutoDevDriving.swift`) is the higher-level surface `AppModel` drives —
-/// `start(repoID:selection:)`, `pause`, `resume`, `stop`, `engagements` — and
-/// its own doc names two obligations on whichever type adopts it: a finished
-/// session must become observable, and `stop` must never answer `nil` for a
-/// session that was already finished. This actor's `start(session:preflight:)`
-/// takes an already-built `AutoDevSession` rather than a repository and a
-/// selection, and declares neither `pause`, `resume`, `stop` nor `engagements`
-/// — those, and the `AutoDevDriving` conformance itself, belong to whichever
-/// later task adapts this service into that surface. Obligation one is honoured
-/// here anyway, because it applies just as much to this narrower `start`: see
+/// `start(repoID:selection:)`, `pause`, `resume`, `stop`, `engagements`,
+/// `session(sessionID:)` — and this actor's own `start(session:preflight:)`
+/// below takes an already-built `AutoDevSession` rather than a repository and a
+/// selection. The conformance, in the `// MARK: - AutoDevDriving` extension at
+/// the end of **this file** — not a separate `+Driving.swift`, since `store`,
+/// `board`, `launcher` and `clock` above are all `private`, and Swift's
+/// `private` is file-scoped — adapts one to the other: it resolves a
+/// `Selection` into an engaged set (PR2's `CardRanking.rank`) and forwards to
+/// this method, and adds the four calls this actor does not declare directly.
+/// Obligation one from that protocol's doc is honoured here regardless of the
+/// conformance, because it applies just as much to this narrower `start`: see
 /// the comment at the end of the method below.
 public actor AutoDevService: RoundTriggering {
     private let store: BoardStore
@@ -214,9 +216,10 @@ public actor AutoDevService: RoundTriggering {
 
         await advance()
 
-        // Obligation from `AutoDevDriving.swift:64-68`, which binds this method
-        // even though this actor does not conform to that protocol: "a loop
-        // that reaches its own end must make that observable." `advance()` may
+        // Obligation from `AutoDevDriving.swift:64-72`, which binds this
+        // method independently of the `AutoDevDriving` conformance in the
+        // extension at the end of this file: "a loop that reaches its own end
+        // must make that observable." `advance()` may
         // already have settled every engaged card and flipped the session to
         // `.finished` by the time it returns — for a session with exactly one
         // round of work, that happens on this very call. Returning the
@@ -539,5 +542,152 @@ public actor AutoDevService: RoundTriggering {
         case .running, .cancelling: false
         case .succeeded, .completedWithDenials, .failed, .cancelled, .timedOut: false
         }
+    }
+}
+
+// MARK: - AutoDevDriving
+
+extension AutoDevService: AutoDevDriving {
+
+    /// The two defaults every unattended session opens with, until a screen
+    /// exists to choose them per session or per repository. Nothing anywhere
+    /// in this tree picks either value today — `AppModel.startAutoDev` only
+    /// ever chooses `selection` — so one constant each is the honest answer
+    /// rather than a number invented once for this file alone. `900` (fifteen
+    /// minutes) is what this suite's own fixtures already converge on almost
+    /// everywhere they hand-write a `patience`; `3` sits in the middle of the
+    /// range (1-3) those same fixtures use for `maxAttemptsPerCard`.
+    static let defaultMaxAttemptsPerCard = 3
+    static let defaultPatience: TimeInterval = 900
+
+    /// Turns a selection into a closed set of engaged cards, then starts.
+    ///
+    /// `.automatic` is the design's "optional automatic selection of the
+    /// highest-value cards" (`AutoDevSelection`'s own doc). The ranking is
+    /// PR2's pure function, `CardRanking.rank` — this actor performs the I/O,
+    /// reading the repository's own Backlog, and holds the answer. A card
+    /// nothing has measured is refused by that function and simply does not
+    /// appear in `ranked`; it is never ranked low. `refused` is not surfaced
+    /// anywhere from here — neither `AutoDevSession` nor `AutoDevEngagement`
+    /// has a field for it, and adding one is outside this task's scope.
+    ///
+    /// - Parameter preflight: unlike `start(session:preflight:)` above, this
+    ///   entry point has no fresher reading to offer than the persisted
+    ///   column: it holds no `PreflightService` collaborator (deliberately —
+    ///   see this actor's own doc), so it reads `repo.preflightVerdict`, the
+    ///   same value `AppModel.autoDevRefusal` already gates on
+    ///   (`AppModel.swift:3884`), never `PreflightReading.verdict(of:)` —
+    ///   whose absent-reading case, `.notChecked`, *admits*, and would let an
+    ///   unattended session start against a repository Preflight had already
+    ///   failed.
+    public func start(repoID: UUID, selection: AutoDevSelection) async throws -> AutoDevSession {
+        guard let repo = try await store.repo(id: repoID) else {
+            throw AutoDevError.repoNotFound(repoID)
+        }
+        let engaged: [UUID]
+        switch selection {
+        case .automatic(let limit):
+            let backlog = try await store.cards(repoID: repoID, column: .backlog)
+            engaged = Array(CardRanking.rank(backlog).ranked.prefix(limit).map(\.card.id))
+        case .explicit(let ids):
+            engaged = ids
+        }
+        let opened = AutoDevSession(
+            repoID: repoID, engagedCardIDs: engaged,
+            maxAttemptsPerCard: Self.defaultMaxAttemptsPerCard,
+            patience: Self.defaultPatience,
+            startedAt: clock()
+        )
+        return try await start(session: opened, preflight: repo.preflightVerdict)
+    }
+
+    /// Engages no further move. The run already going finishes on its own —
+    /// `stop` is the one call that reaches it, not this one.
+    ///
+    /// Only from `.running`: pausing a session that is not currently running
+    /// would either be a silent no-op (already paused) or, for a `.finished`
+    /// session, resurrect a terminal state the band renders as a permanent
+    /// report. `nil` there means "cannot confirm," this protocol's rule for
+    /// every state this method is not willing to move from.
+    public func pause(sessionID: UUID) async -> AutoDevSession? {
+        await transition(sessionID: sessionID, from: [.running], to: .paused)
+    }
+
+    /// Puts the session back to `.running` and immediately asks for a round,
+    /// so a resumed session does not sit idle until the next externally
+    /// triggered event — a run finishing, or the PR watcher's own tick.
+    public func resume(sessionID: UUID) async -> AutoDevSession? {
+        guard await transition(sessionID: sessionID, from: [.paused], to: .running) != nil
+        else { return nil }
+        await advance()
+        // Same reasoning as `start(session:preflight:)` above: `advance()` may
+        // already have re-settled and finished this very session by the time
+        // it returns, so the row it wrote — not the `.running` value this
+        // method just set — is what the caller must see.
+        return try? await store.autoDevSession(id: sessionID)
+    }
+
+    /// Ends the session **and cancels the run already going** — the one thing
+    /// `finish()` above (the internal, automatic settlement) deliberately
+    /// does not do, per its own doc: patience expiry can settle a card while
+    /// its run is genuinely still `.running`, and only a user's own stop
+    /// reaches it.
+    ///
+    /// ⛔ **Obligation 2.** Unlike `pause`/`resume`, this never refuses on the
+    /// session's current state: a session that is already `.finished` is
+    /// exactly the case obligation 2 is about, and it still has to answer
+    /// with the session rather than `nil` — including cancelling whatever
+    /// live run `finish()` left alone for it, which is precisely the state
+    /// the previous task proved reachable. `nil` here means only "this id is
+    /// not one I can find," never "there was nothing left to stop."
+    ///
+    /// ⚠️ **Does not settle rows still `.engaged`.** A session stopped mid
+    /// flight can leave engagement rows that are neither `.merged` nor
+    /// `.blocked` — the same "fewer rows than cards" shape
+    /// `AutoDevBand.of`'s own doc already treats as a deliberate boundary
+    /// rather than something to falsify by clamping. Composing a settlement
+    /// reason for an interrupted card is a real feature; it is not what
+    /// obligation 2 asks for, which is only that the *session* is answered
+    /// honestly.
+    public func stop(sessionID: UUID) async -> AutoDevSession? {
+        guard var session = try? await store.autoDevSession(id: sessionID) else { return nil }
+
+        let active = (try? await store.activeRuns(cardIDs: session.engagedCardIDs)) ?? [:]
+        for run in active.values where run.state.isCancellable {
+            await launcher.cancel(runID: run.id)
+        }
+
+        if session.state != .finished {
+            session.state = .finished
+            session.endedAt = clock()
+            try? await store.saveAutoDevSession(session)
+        }
+        return session
+    }
+
+    public func engagements(sessionID: UUID) async -> [AutoDevEngagement] {
+        (try? await store.autoDevEngagements(sessionID: sessionID)) ?? []
+    }
+
+    /// The session itself, exactly as persisted — obligation 1's remedy. See
+    /// the protocol's own doc for why `AppModel.refreshAutoDev` needs this and
+    /// not only `engagements(sessionID:)`.
+    public func session(sessionID: UUID) async -> AutoDevSession? {
+        try? await store.autoDevSession(id: sessionID)
+    }
+
+    /// Reads the session, checks it is in one of `allowed`, writes `to`, and
+    /// persists — the shape `pause` and `resume` share. `stop` does not use
+    /// this: its transition is unconditional (obligation 2), and it does one
+    /// more thing neither `pause` nor `resume` may do — cancel a run.
+    private func transition(
+        sessionID: UUID, from allowed: Set<AutoDevSession.State>, to newState: AutoDevSession.State
+    ) async -> AutoDevSession? {
+        guard var session = try? await store.autoDevSession(id: sessionID),
+            allowed.contains(session.state)
+        else { return nil }
+        session.state = newState
+        try? await store.saveAutoDevSession(session)
+        return session
     }
 }

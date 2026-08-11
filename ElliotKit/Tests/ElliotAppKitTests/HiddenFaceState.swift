@@ -134,6 +134,22 @@ enum HiddenFaceState {
     /// Honest only where the target function holds no brace inside a string
     /// literal, and comments are expected to be cut already — the callers point it
     /// at `decide`, `reason` and `footer`, none of which do.
+    ///
+    /// ⚠️ **`signature` must stop short of the function's own opening `{`.**
+    /// The walk starts at `signature`'s end and returns as soon as depth
+    /// returns to zero, so it assumes the *first* `{` it meets is the
+    /// function's own. Measured while adding a fifth caller
+    /// (`AutoDevLaunchOrderShapeTests`, over `AppModel.start()`): passing the
+    /// signature *with* its trailing `{` — the shape a hand-rolled walk
+    /// elsewhere in this tree (`RunSchedulerShapeTests`, a different
+    /// algorithm entirely) does use — made this helper read `start()`'s first
+    /// `guard store == nil else { return }` as the whole function and return
+    /// eight characters, `" return "`, instead of the ~200-line body. Every
+    /// existing caller already stops short (`"private func adopt("`,
+    /// `"struct AutoDevBand: Equatable"`, `"private var autoDevBand: some
+    /// View"`, …); this is written down so the next one does not have to
+    /// rediscover it by watching three tests fail with `nil` needles that
+    /// are plainly present in the source.
     static func body(of signature: String, in source: String) throws -> String {
         let start = try #require(source.range(of: signature))
         var depth = 0

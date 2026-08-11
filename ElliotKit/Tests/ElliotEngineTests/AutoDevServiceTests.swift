@@ -1152,7 +1152,7 @@ struct AutoDevStartTests {
         // this test is named for. What a round does to `attempts` is Task 12's.
     }
 
-    // Obligation 1 from `AutoDevDriving.swift:64-68` ("a loop that reaches its
+    // Obligation 1 from `AutoDevDriving.swift:64-72` ("a loop that reaches its
     // own end must make that observable") requires `start` to re-read the
     // session after `advance()` and return the *stored* row, never the
     // in-memory value it opened — see the comment at the end of
@@ -1581,7 +1581,7 @@ struct AutoDevRoundTests {
     /// **Task 11's obligation, provable for the first time here.** `start`
     /// ends by calling `advance()` and then re-reading the session row rather
     /// than returning the in-memory value it opened with —
-    /// `AutoDevDriving.swift:64-68`'s "a loop that reaches its own end must
+    /// `AutoDevDriving.swift:64-72`'s "a loop that reaches its own end must
     /// make that observable." Task 11 could not write a test that discriminates
     /// this: `advance()` was a no-op in that task, so nothing could make the
     /// in-memory value diverge from the stored row, and it removed its own
@@ -2092,5 +2092,335 @@ struct AutoDevTerminationTests {
         await service.advance()
         #expect(await launcher.launchedRuns().isEmpty)
         #expect(try await store.card(id: card.id)?.column == .backlog)
+    }
+}
+
+/// `AutoDevService`'s conformance to `AutoDevDriving` — the surface `AppModel`
+/// actually drives (`start(repoID:selection:)`, `pause`, `resume`, `stop`,
+/// `engagements`, `session`), as opposed to the narrower `start(session:
+/// preflight:)` `AutoDevStartTests` above exercises directly.
+@Suite("Auto-dev — the AutoDevDriving conformance")
+struct AutoDevDrivingTests {
+
+    private let epoch = Date(timeIntervalSince1970: 1_770_000_000)
+
+    private struct Fixture {
+        var store: BoardStore
+        var board: BoardService
+        var launcher: FakeLauncher
+        var scheduler: RunScheduler
+        var service: AutoDevService
+        var repo: Repo
+        var cards: [Card]
+    }
+
+    /// Three plain Backlog cards, **none appraised** — `CardValue.of` answers
+    /// `.neverAppraised` for all three (`appraisedAt == nil`), so `.automatic`
+    /// engages none of them until a test explicitly ranks one. That default
+    /// is itself worth a test (`automaticRefusesWhenNothingIsRanked` below):
+    /// a card nothing has measured must never be engaged, not even to fill an
+    /// empty session.
+    private func fixture(dailyCeiling: Double? = 25) async throws -> Fixture {
+        _ = TestHome.root
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
+            gitPath: "/usr/bin/false", environment: [:])
+        let launcher = FakeLauncher()
+        let scheduler = RunScheduler(
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
+        let board = BoardService(store: store, launcher: launcher)
+        if let dailyCeiling {
+            try await store.saveSpendCeiling(SpendCeiling(perRunUSD: nil, perDayUSD: dailyCeiling))
+        }
+        let repo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+        var cards: [Card] = []
+        for index in 0..<3 {
+            cards.append(try await board.createCard(repoID: repo.id, title: "Card \(index)").card)
+        }
+        let service = AutoDevService(
+            store: store, board: board, launcher: launcher, queue: scheduler,
+            clock: { self.epoch })
+        return Fixture(
+            store: store, board: board, launcher: launcher, scheduler: scheduler,
+            service: service, repo: repo, cards: cards)
+    }
+
+    /// Gives a card what `CardValue.of` needs to rank it — the same four
+    /// fields `CardValueTests`' own `appraised(...)` helper sets, minimal
+    /// rather than reused: that helper builds a `Card` from scratch, and this
+    /// one has to mutate a card `board.createCard` already persisted.
+    private func rank(_ card: Card, in store: BoardStore) async throws -> Card {
+        var ranked = card
+        ranked.angle = .bugs
+        ranked.effort = .small
+        ranked.evidence = [Evidence(path: "Sources/A.swift", line: 1, exists: true)]
+        ranked.appraisedAt = epoch
+        try await store.saveCard(ranked)
+        return ranked
+    }
+
+    // MARK: - start(repoID:selection:) — .explicit
+
+    @Test(".explicit engages exactly the ids named, in the order given")
+    func explicitEngagesExactly() async throws {
+        let f = try await fixture()
+        let session = try await f.service.start(
+            repoID: f.repo.id, selection: .explicit([f.cards[1].id, f.cards[0].id]))
+        #expect(session.engagedCardIDs == [f.cards[1].id, f.cards[0].id])
+        #expect(session.state == .running)
+        #expect(try await f.store.autoDevSession(id: session.id) != nil)
+    }
+
+    @Test("start(repoID:selection:) refuses an unknown repository by name")
+    func startRefusesUnknownRepo() async throws {
+        let f = try await fixture()
+        let unknown = UUID()
+        await #expect(throws: AutoDevError.repoNotFound(unknown)) {
+            try await f.service.start(repoID: unknown, selection: .explicit([f.cards[0].id]))
+        }
+    }
+
+    /// `start(repoID:selection:)` reads `repo.preflightVerdict`, the same
+    /// persisted column `AppModel.autoDevRefusal` gates on — never a fresher
+    /// reading, since this entry point holds no `PreflightService` at all.
+    @Test("start(repoID:selection:) refuses a repository Preflight has blocked")
+    func startReadsThePersistedVerdict() async throws {
+        let f = try await fixture()
+        var blocked = f.repo
+        blocked.preflight = .failing
+        try await f.store.saveRepo(blocked)
+
+        await #expect(throws: AutoDevError.repoRefused(.preflightBlocked)) {
+            try await f.service.start(repoID: f.repo.id, selection: .explicit([f.cards[0].id]))
+        }
+        #expect(try await f.store.runningAutoDevSessions().isEmpty)
+    }
+
+    // MARK: - start(repoID:selection:) — .automatic
+
+    /// The default fixture's three cards are all `.neverAppraised` —
+    /// `CardValue.of`'s own third state, "nothing has measured this card" —
+    /// and `CardRanking.rank` refuses that case rather than ranking it low.
+    /// `.automatic` must therefore engage nothing and the whole session must
+    /// refuse, the same `AutoDevError.noCards` an explicitly empty selection
+    /// throws: engaging an unmeasured card to avoid an empty session would be
+    /// exactly the collapse `CardValue`'s three cases exist to prevent.
+    @Test(".automatic refuses when nothing in Backlog has been measured")
+    func automaticRefusesWhenNothingIsRanked() async throws {
+        let f = try await fixture()
+        await #expect(throws: AutoDevError.noCards) {
+            try await f.service.start(repoID: f.repo.id, selection: .automatic(limit: 10))
+        }
+    }
+
+    @Test(".automatic engages ranked cards and excludes an unranked one, up to the limit")
+    func automaticEngagesRankedCardsUpToLimit() async throws {
+        let f = try await fixture()
+        let rankedA = try await rank(f.cards[0], in: f.store)
+        let rankedB = try await rank(f.cards[1], in: f.store)
+        // f.cards[2] is left exactly as `fixture()` made it: unappraised.
+
+        let session = try await f.service.start(
+            repoID: f.repo.id, selection: .automatic(limit: 1))
+
+        #expect(session.engagedCardIDs.count == 1)
+        #expect(Set(session.engagedCardIDs).isSubset(of: [rankedA.id, rankedB.id]))
+        #expect(!session.engagedCardIDs.contains(f.cards[2].id))
+    }
+
+    /// A card outside Backlog — already engaged elsewhere in its lifecycle —
+    /// must not be swept into an unattended session behind the reader's back,
+    /// even if it happens to be ranked.
+    @Test(".automatic reads only the repository's own Backlog, never another column")
+    func automaticIgnoresCardsOutsideBacklog() async throws {
+        let f = try await fixture()
+        var inProgress = try await rank(f.cards[0], in: f.store)
+        inProgress.column = .todo
+        try await f.store.saveCard(inProgress)
+        _ = try await rank(f.cards[1], in: f.store)
+
+        let session = try await f.service.start(
+            repoID: f.repo.id, selection: .automatic(limit: 10))
+
+        #expect(session.engagedCardIDs == [f.cards[1].id])
+    }
+
+    // MARK: - pause / resume
+
+    @Test("pause moves a running session to paused, and round() then skips it")
+    func pauseHoldsTheSession() async throws {
+        let f = try await fixture()
+        let started = try await f.service.start(
+            repoID: f.repo.id, selection: .explicit([f.cards[0].id]))
+
+        let paused = await f.service.pause(sessionID: started.id)
+        #expect(paused?.state == .paused)
+        #expect(try await f.store.autoDevSession(id: started.id)?.state == .paused)
+        // `round()` only ever reads `runningAutoDevSessions()` — a paused
+        // session is invisible to it with no special-case code anywhere.
+        #expect(try await f.store.runningAutoDevSessions().isEmpty)
+    }
+
+    @Test("pause refuses a session that is not running — an unknown id or an already-paused one")
+    func pauseRefusesOutsideRunning() async throws {
+        let f = try await fixture()
+        let started = try await f.service.start(
+            repoID: f.repo.id, selection: .explicit([f.cards[0].id]))
+        _ = await f.service.pause(sessionID: started.id)
+
+        #expect(await f.service.pause(sessionID: started.id) == nil, "already paused")
+        #expect(await f.service.pause(sessionID: UUID()) == nil, "unknown id")
+    }
+
+    @Test("resume puts a paused session back to running")
+    func resumeRestartsTheSession() async throws {
+        let f = try await fixture()
+        let started = try await f.service.start(
+            repoID: f.repo.id, selection: .explicit([f.cards[0].id]))
+        _ = await f.service.pause(sessionID: started.id)
+
+        let resumed = await f.service.resume(sessionID: started.id)
+        // Whatever state the round `resume` triggers left the session in,
+        // the answer must be the *stored* row, not the `.running` value
+        // `resume` wrote before asking for that round — the identical hazard
+        // `start(session:preflight:)` documents two paragraphs into this
+        // file's own header comment.
+        #expect(resumed != nil)
+        #expect(resumed?.state == (try await f.store.autoDevSession(id: started.id))?.state)
+    }
+
+    @Test("resume refuses a session that is not paused — running, or unknown")
+    func resumeRefusesOutsidePaused() async throws {
+        let f = try await fixture()
+        let started = try await f.service.start(
+            repoID: f.repo.id, selection: .explicit([f.cards[0].id]))
+
+        #expect(await f.service.resume(sessionID: started.id) == nil, "still running")
+        #expect(await f.service.resume(sessionID: UUID()) == nil, "unknown id")
+    }
+
+    // MARK: - session(sessionID:) / engagements(sessionID:)
+
+    @Test("session(sessionID:) is a pure read of the persisted row")
+    func sessionReadsThePersistedRow() async throws {
+        let f = try await fixture()
+        let started = try await f.service.start(
+            repoID: f.repo.id, selection: .explicit([f.cards[0].id]))
+        #expect(await f.service.session(sessionID: started.id) == started)
+    }
+
+    @Test("session(sessionID:) answers nil for an id it has never seen")
+    func sessionAnswersNilForUnknownID() async throws {
+        let f = try await fixture()
+        #expect(await f.service.session(sessionID: UUID()) == nil)
+    }
+
+    @Test("engagements(sessionID:) reads the per-card rows")
+    func engagementsReadsTheRows() async throws {
+        let f = try await fixture()
+        let started = try await f.service.start(
+            repoID: f.repo.id, selection: .explicit(f.cards.map(\.id)))
+        let rows = await f.service.engagements(sessionID: started.id)
+        #expect(Set(rows.map(\.cardID)) == Set(f.cards.map(\.id)))
+    }
+
+    // MARK: - stop(sessionID:) — obligation 2
+
+    @Test("stop(sessionID:) answers nil only for an id it does not know")
+    func stopAnswersNilOnlyForUnknownID() async throws {
+        let f = try await fixture()
+        #expect(await f.service.stop(sessionID: UUID()) == nil)
+    }
+
+    /// ⛔ **Obligation 2, pinned directly.** A card with an empty title and no
+    /// story is `.blocked(.emptyIdea)` on its very first round — the same
+    /// shape `AutoDevTerminationTests.everyCardBlockedStillFinishes` uses —
+    /// so the session settles and reaches `.finished` inside `start` itself:
+    /// the shortest path in this suite to a session that is already over
+    /// before `stop` is ever called. `f.cards` will not do here — `fixture()`
+    /// gives each one a real title precisely so the *other* tests in this
+    /// suite are not settled out from under them; this test builds its own
+    /// single empty card instead. `stop` must still confirm the session,
+    /// never answer `nil` — `nil` there reads on screen as "the loop gave no
+    /// session back," which is the trap this obligation exists to name.
+    @Test("stop(sessionID:) on an already-finished session confirms it, never nil")
+    func stopConfirmsAnAlreadyFinishedSession() async throws {
+        let f = try await fixture()
+        let blank = try await f.board.createCard(repoID: f.repo.id, title: "").card
+        let started = try await f.service.start(
+            repoID: f.repo.id, selection: .explicit([blank.id]))
+        #expect(try await f.store.autoDevSession(id: started.id)?.state == .finished)
+
+        let stopped = await f.service.stop(sessionID: started.id)
+        #expect(stopped != nil)
+        #expect(stopped?.state == .finished)
+    }
+
+    /// ⛔ **The exact scenario override 5b names, closed by `stop` rather than
+    /// by `finish()`.** Same fixture shape as
+    /// `AutoDevTerminationTests.aRunningRunIsNeverCancelledByTermination`: a
+    /// card in Done behind a failed merge attempt, holding a second run that
+    /// is genuinely `.running` when patience expiry settles the card and the
+    /// session reaches `finish()` automatically. `finish()` leaves that run
+    /// alone by design — proven again here up to the point marked below,
+    /// duplicating the termination suite's own assertions as the setup for
+    /// what this test actually checks: that `stop`, unlike `finish()`, is the
+    /// one path that reaches it.
+    @Test("stop cancels a genuinely running run that finish() itself deliberately left alone")
+    func stopCancelsWhatFinishLeftAlone() async throws {
+        let store = try BoardStore.inMemory()
+        let launcher = FakeLauncher()
+        let queue = FakeQueue()
+        let board = BoardService(store: store, launcher: launcher)
+        try await store.saveSpendCeiling(SpendCeiling(perRunUSD: nil, perDayUSD: 25))
+        let repo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+
+        var card = try await board.createCard(repoID: repo.id, title: "Fell over").card
+        card.column = .done
+        card.prNumber = 52
+        try await store.saveCard(card)
+
+        var attempted = SkillRun.card(
+            cardID: card.id, repoID: repo.id, kind: .mergePR, prompt: "x", cwd: repo.path,
+            logPath: "/tmp/a", stderrPath: "/tmp/b", createdAt: epoch)
+        attempted.state = .failed
+        attempted.verifiedOutcome = .notMerged(reason: "Still open.")
+        try await store.saveRun(attempted)
+
+        var held = SkillRun.card(
+            cardID: card.id, repoID: repo.id, kind: .mergePR, prompt: "x", cwd: repo.path,
+            logPath: "/tmp/c", stderrPath: "/tmp/d",
+            createdAt: epoch.addingTimeInterval(1))
+        held.state = .running
+        try await store.saveRun(held)
+
+        let now = LockedDate(epoch)
+        let service = AutoDevService(
+            store: store, board: board, launcher: launcher, queue: queue, clock: { now.date })
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: card.repoID, engagedCardIDs: [card.id], maxAttemptsPerCard: 1,
+                patience: 600, startedAt: epoch),
+            preflight: .passing)
+
+        now.advance(by: 601)
+        await service.advance()
+
+        // --- duplicates `aRunningRunIsNeverCancelledByTermination`'s own proof ---
+        #expect(try await store.autoDevSession(id: started.id)?.state == .finished)
+        #expect(await launcher.cancelledRuns().isEmpty)
+        #expect(try await store.activeRun(cardID: card.id)?.state == .running)
+        // --- what this test actually checks ---
+        let stopped = await service.stop(sessionID: started.id)
+        #expect(stopped != nil)
+        #expect(stopped?.state == .finished)
+        #expect(await launcher.cancelledRuns() == [held.id])
     }
 }

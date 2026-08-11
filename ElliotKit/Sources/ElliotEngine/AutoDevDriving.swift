@@ -50,22 +50,26 @@ public enum AutoDevSelection: Sendable, Hashable {
 /// repository's own catalogued failure, *a mechanism that substitutes a
 /// different answer instead of erroring*.
 ///
-/// ⛔ **Two obligations on a conformer that this protocol's shape cannot
-/// enforce, and each is a dead end for the reader if it is missed.** There is no
-/// read for the *session* — only for its rows — so the board holds whatever a
-/// call last handed it and cannot discover a change by itself.
-/// `AppModel.refreshAutoDev` re-reads the **rows** and re-adopts the session the
-/// board already has — and ⚠️ **nothing calls it in this build**, so it is a
-/// poll-shaped seam PR4 wires, not a poll already running. Read it as an
-/// affordance, never as a board that re-polls. Meanwhile
-/// `AppModel.autoDevRefusal` answers *"A session is already going. Stop it
-/// before starting another."* for any state that is not `.finished`. Therefore:
+/// ⛔ **Two obligations on a conformer, and each was a dead end for the reader
+/// while neither had a remedy wired.** Before PR4, there was no read for the
+/// *session* — only for its rows — so the board held whatever a call last
+/// handed it and could not discover a change by itself. `AppModel.refreshAutoDev`
+/// re-read the **rows** and re-adopted them onto the session the board already
+/// had, which could never notice that session's own `state` had moved on; and
+/// ⚠️ **nothing called it in earlier builds**, so it was a poll-shaped seam with
+/// no caller. Meanwhile `AppModel.autoDevRefusal` answers *"A session is already
+/// going. Stop it before starting another."* for any state that is not
+/// `.finished`. Therefore:
 ///
 /// 1. **A loop that reaches its own end must make that observable.** Left to
 ///    itself the board shows `.running` for ever and refuses every new session
-///    for the rest of the launch. Either the conformer pushes the finished
-///    session, or this protocol grows a `session(sessionID:)` read — nothing
-///    here forbids either, and one of them is required.
+///    for the rest of the launch. PR4 discharges this with ``session(sessionID:)``
+///    below — the read this doc used to say the protocol would need to grow —
+///    plus a poll in `AppModel.start()` that calls `refreshAutoDev()` on a
+///    timer, unconditionally, not scoped to any window: the whole point of an
+///    unattended session is that nobody may be looking at Operations while it
+///    runs, and the refusal that gates a *new* session has to see the old one
+///    end whether or not anyone opens that screen.
 /// 2. **`stop` must return the finished session, including when the session was
 ///    already finished.** Answering `nil` there is a reasonable-*looking*
 ///    implementation and it is the trap: the reader is told *"Auto-dev did not
@@ -90,4 +94,15 @@ public protocol AutoDevDriving: Sendable {
 
     /// The session's per-card rows, as the report renders them.
     func engagements(sessionID: UUID) async -> [AutoDevEngagement]
+
+    /// The session itself, exactly as persisted — obligation 1's remedy.
+    ///
+    /// A pure read: it neither starts, stops nor advances anything, so it is
+    /// safe to call on a timer. `AppModel.refreshAutoDev` uses it to notice a
+    /// session that settled *itself* — every card merged or blocked, with
+    /// nobody pressing Pause, Resume or Stop — which is the one transition none
+    /// of the four calls above can ever report, because none of them fires for
+    /// it. `nil` means the same as everywhere else on this protocol: this id is
+    /// not one the conformer can confirm anything about.
+    func session(sessionID: UUID) async -> AutoDevSession?
 }

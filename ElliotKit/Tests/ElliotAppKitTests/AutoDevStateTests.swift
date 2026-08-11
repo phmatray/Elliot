@@ -69,11 +69,26 @@ private actor FakeAutoDev: AutoDevDriving {
 
     func engagements(sessionID: UUID) async -> [AutoDevEngagement] { rows }
 
+    /// `sessionID` is not checked against `session?.id`, the same simplicity
+    /// every other method here already takes — this fake stands in for a
+    /// single session at a time, never for the id-routing a real store would
+    /// do.
+    func session(sessionID: UUID) async -> AutoDevSession? { session }
+
     /// Marks the first row merged, so a test can watch the tally move.
     func settleFirstAsMerged() {
         guard !rows.isEmpty else { return }
         rows[0].disposition = .merged
         rows[0].reason = "gh says the pull request was merged."
+    }
+
+    /// The loop settling on its own — every card decided without a `pause`,
+    /// `resume` or `stop` call reaching this fake. This is exactly the
+    /// transition obligation 1 exists for: nothing but a re-read of the
+    /// session notices it.
+    func finishOnItsOwn() {
+        session?.state = .finished
+        session?.endedAt = Date(timeIntervalSince1970: 1_770_000_000)
     }
 
     /// A session this driver never started — so every command answers `nil`,
@@ -426,19 +441,47 @@ struct AutoDevStateTests {
         #expect(model.autoDevTally == AutoDevTally(engaged: 2, merged: 1, blocked: 0))
     }
 
+    /// ⛔ **The bug `refreshingMovesTheTally` above could not see**, because it
+    /// never asks the driver about the session's own `state` — only about its
+    /// engagements. The obvious-looking body, `let session = autoDev; adopt(session,
+    /// engagements: await driver.engagements(…))`, re-fetches the rows but re-adopts
+    /// them onto the **stale** session it started from — so a session that settled
+    /// every card on its own, between two polls, with nobody pressing Pause, Resume
+    /// or Stop, could never be noticed here. That is exactly the shape a background
+    /// round produces: `AutoDevService.advance()` writes `.finished` straight to the
+    /// store from inside the actor, and this method is the only thing standing
+    /// between that write and `AppModel` ever finding out.
+    @Test("Refreshing notices a session that finished on its own, not just its rows")
+    func refreshingNoticesTheSessionEnding() async throws {
+        let (model, _, cards) = seeded()
+        let driver = FakeAutoDev(cards: cards.map(\.id))
+        model.testOnlyAttachAutoDev(driver)
+        await model.startAutoDev()
+        #expect(model.autoDev?.state == .running)
+
+        await driver.finishOnItsOwn()
+        await model.refreshAutoDev()
+
+        #expect(model.autoDev?.state == .finished)
+    }
+
     /// ⚠️ **The one place silence is right, and it is right for the *shape* of
     /// the call rather than for a caller.** This comment used to justify it with
     /// *"the band's `.task` drives it, not a button"* — there is no `.task` in
-    /// `OperationsView.swift`, and `refreshAutoDev` has no production caller at
-    /// all; it is a seam PR4 wires or replaces with a push.
+    /// `OperationsView.swift`, and until this task `refreshAutoDev` had no
+    /// production caller at all.
     ///
-    /// What survives that correction is the whole argument: this is the only
-    /// auto-dev entry point nobody presses, and whatever ends up driving a poll
-    /// drives it repeatedly and unasked — so reporting here would repaint the
-    /// status bar with a refusal nobody asked for, on every tick, in every build
-    /// that has no loop. Losing a refresh costs a hint; losing a `stop` costs a
-    /// cancelled agent, which is why the three commands above may not make the
-    /// same trade.
+    /// It has one now — `AppModel.start()` ticks it every five seconds,
+    /// unconditionally, for the reason recorded there: `autoDevRefusal` gates
+    /// whether a *new* session may start, and it has to see the old one end
+    /// whether or not anyone has Operations open. What survives is the whole
+    /// argument for why *this method itself* stays silent on a miss rather
+    /// than reporting one: this is the only auto-dev entry point nobody
+    /// presses, and a poll that drives it repeatedly and unasked would
+    /// repaint the status bar with a refusal nobody asked for, on every tick,
+    /// in every build that has no loop attached. Losing a refresh costs a
+    /// hint; losing a `stop` costs a cancelled agent, which is why the three
+    /// commands above may not make the same trade.
     @Test("Refreshing with nothing behind it stays quiet")
     func refreshingIsSilent() async {
         let (model, _, _) = seeded()
@@ -470,6 +513,73 @@ struct AutoDevStateTests {
         model.testOnlySeedRuns(active: [cards[0].id: run])
 
         #expect(model.autoDevEngagedCardIDs.contains(cards[0].id))
+    }
+
+    // MARK: - Whether a run is still live
+
+    /// The fact `AutoDevBand`'s finished sentence needs and `autoDevTally`
+    /// cannot give it: `autoDevTally` counts settled *rows*, and a row can
+    /// settle — the whole session can reach `.finished` — while a run behind
+    /// one of its cards is genuinely still `.running` (`AutoDevService
+    /// .finish()`'s own doc). `autoDevHasLiveRun` is the one place that is
+    /// checked, from `activeRuns`, which the board already observes for
+    /// every card.
+    @Test("autoDevHasLiveRun is true exactly while an engaged card holds an active run")
+    func autoDevHasLiveRunTracksActiveRuns() async {
+        let (model, subject, cards) = seeded()
+        model.testOnlyAttachAutoDev(FakeAutoDev(cards: cards.map(\.id)))
+        await model.startAutoDev()
+        #expect(model.autoDevHasLiveRun == false, "no run has been seeded yet")
+
+        var run = SkillRun(
+            cardID: cards[0].id, repoID: subject.id, kind: .implementIssue,
+            prompt: "/ai-migration-kit:implement-issue 1", cwd: "/tmp",
+            logPath: "/tmp/run.ndjson", stderrPath: "/tmp/run.log", createdAt: epoch
+        )
+        run.state = .running
+        model.testOnlySeedRuns(active: [cards[0].id: run])
+        #expect(model.autoDevHasLiveRun)
+
+        model.testOnlySeedRuns(active: [:])
+        #expect(model.autoDevHasLiveRun == false, "clearing the active runs must clear the flag too")
+    }
+
+    @Test("autoDevHasLiveRun is false with no session, whatever activeRuns holds")
+    func autoDevHasLiveRunNeedsASession() async {
+        let (model, subject, cards) = seeded()
+        var run = SkillRun(
+            cardID: cards[0].id, repoID: subject.id, kind: .implementIssue,
+            prompt: "/ai-migration-kit:implement-issue 1", cwd: "/tmp",
+            logPath: "/tmp/run.ndjson", stderrPath: "/tmp/run.log", createdAt: epoch
+        )
+        run.state = .running
+        model.testOnlySeedRuns(active: [cards[0].id: run])
+
+        #expect(model.autoDev == nil)
+        #expect(model.autoDevHasLiveRun == false)
+        _ = subject
+    }
+
+    /// An active run on a card the session never engaged must not read as
+    /// this session having one — the flag is about the session's *own* cards,
+    /// not about the board's occupancy in general.
+    @Test("autoDevHasLiveRun ignores a run on a card outside the session")
+    func autoDevHasLiveRunIgnoresForeignCards() async throws {
+        let (model, subject, cards) = seeded()
+        model.testOnlyAttachAutoDev(FakeAutoDev(cards: [cards[0].id]))
+        model.autoDevCardLimit = 1
+        await model.startAutoDev()
+        #expect(model.autoDevEngagedCardIDs == [cards[0].id])
+
+        var run = SkillRun(
+            cardID: cards[1].id, repoID: subject.id, kind: .implementIssue,
+            prompt: "/ai-migration-kit:implement-issue 2", cwd: "/tmp",
+            logPath: "/tmp/run.ndjson", stderrPath: "/tmp/run.log", createdAt: epoch
+        )
+        run.state = .running
+        model.testOnlySeedRuns(active: [cards[1].id: run])
+
+        #expect(model.autoDevHasLiveRun == false)
     }
 
     @Test("Seeding a session without a driver is enough to render one")

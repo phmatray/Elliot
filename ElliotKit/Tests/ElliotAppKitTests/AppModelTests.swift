@@ -480,8 +480,18 @@ struct AppModelTests {
         // An empty array, not `nil`: "no follow-ups" is what the button sends
         // when the reader typed none, and it is what lets the merge proceed
         // instead of asking again.
+        //
+        // `.autoDev` origin here only exercises `confirmMerge`'s ability to
+        // record whatever origin it is given — no production caller actually
+        // reaches it this way (`AutoDevService` merges through
+        // `board.proposeMove`/`commitMove` directly, never through
+        // `AppModel`). `requiresVerifiedGreen: false` keeps this test's own
+        // claim (the card lands in `.done`) true: `board` here has no
+        // `verdicts:` reader wired, so `true` would find no green reading and
+        // the move would be blocked instead.
         await model.confirmMerge(
-            cardID: review.id, followUps: [], origin: .autoDev(sessionID: session))
+            cardID: review.id, followUps: [], origin: .autoDev(sessionID: session),
+            requiresVerifiedGreen: false)
 
         #expect(try await store.card(id: review.id)?.column == .done)
         let audits = try await store.audits(cardID: review.id)
