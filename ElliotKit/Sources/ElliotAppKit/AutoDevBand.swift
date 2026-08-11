@@ -162,6 +162,38 @@ struct AutoDevBand: Equatable {
                 controls: [.resume, .stop]
             )
         case .finished:
+            // ⛔ **Fix round 1, Important 2 — PR5's inherited contract 4,
+            // come due.** `stop(sessionID:)` (`AutoDevService.swift`) is the
+            // one production path that can reach `.finished` while a row is
+            // still `.engaged`: the automatic path never calls `finish()`
+            // until `states.allSatisfy(\.isSettled)`
+            // (`AutoDevService.round()`), so `tally.engaged > 0` here can
+            // only mean a reader pressed Stop before every card settled.
+            // Falling through to the sentence below would silently drop
+            // every abandoned card — "Finished — 5 cards…, 2 merged, 0
+            // blocked" for a session that still had 3 engaged — the exact
+            // "quiet success on short rows" the override's 5b principle was
+            // invoked to fix for `hasLiveRun`. Checked before `hasLiveRun`:
+            // `stop()` also cancels every cancellable active run for the
+            // session's cards, so by the time this renders `hasLiveRun` is
+            // usually already false, and even where it briefly is not, "left
+            // mid-flight" is the more actionable fact.
+            if tally.engaged > 0 {
+                return AutoDevBand(
+                    headline:
+                        "Stopped — \(cards) in \(repoName), \(tally.merged) merged, "
+                        + "\(tally.blocked) blocked, \(tally.engaged) left mid-flight.",
+                    runNote:
+                        "The reader stopped this session before every card settled. "
+                        + "This report stays until the next session starts.",
+                    // Blocked still outranks a mid-flight stop — the same
+                    // ordering `hasLiveRun` uses below: a session that both
+                    // blocked a card *and* left others mid-flight is still,
+                    // first and foremost, a session that failed somewhere.
+                    tone: tally.blocked > 0 ? .refused : .attention,
+                    controls: []
+                )
+            }
             return AutoDevBand(
                 headline:
                     "Finished — \(cards) in \(repoName), \(tally.merged) merged, "

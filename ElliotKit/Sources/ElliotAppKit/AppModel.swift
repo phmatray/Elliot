@@ -1056,9 +1056,16 @@ public final class AppModel {
             // runs, and the refusal that gates a *new* session has to see the
             // old one end whether or not anyone opens that screen. Cancelled
             // with everything else in `observationTasks` by `shutdown()`.
+            //
+            // Fix round 1, Minor: skips the real work — an actor hop and a
+            // SQLite point-read — on every tick where `autoDevSessionIsRunning`
+            // says nothing could have changed since the last one. See that
+            // property's own doc for why `.running` is the only state this
+            // can be true for.
             observationTasks.append(Task { [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(5))
+                    guard self?.autoDevSessionIsRunning == true else { continue }
                     await self?.refreshAutoDev()
                 }
             })
@@ -3897,6 +3904,30 @@ public final class AppModel {
         guard let autoDev else { return false }
         return autoDev.engagedCardIDs.contains { activeRuns[$0] != nil }
     }
+
+    /// Fix round 1, Minor: whether the obligation-1 poll in `start()` has
+    /// anything left to check on this tick.
+    ///
+    /// `AutoDevService.round()` only ever reads `runningAutoDevSessions()`
+    /// (`BoardStore.swift`, filtered on `state == .running`), so `.running` is
+    /// the *only* state a session can leave **on its own**, between two polls,
+    /// with nobody pressing a button. `.paused` and `.finished` can still
+    /// change — a paused session can be resumed, a finished one replaced by a
+    /// new `start()` — but both of those are commands `AppModel` issues
+    /// itself, and every one of `startAutoDev`/`pauseAutoDev`/`resumeAutoDev`/
+    /// `stopAutoDev` already calls `adopt(_:engagements:)` directly on its own
+    /// return. So a tick that finds `autoDev` nil or not `.running` has
+    /// nothing to learn that a poll could discover first — skipping it saves
+    /// the actor hop and the SQLite point-read `refreshAutoDev()` would
+    /// otherwise spend, unconditionally, for the rest of the app's life after
+    /// the first session.
+    ///
+    /// Internal rather than `private` so a test can reach it directly —
+    /// `observe(store:)`'s own doc gives the same reason for the same choice:
+    /// the poll's *timing* is not something `swift test` can see at all (no
+    /// test waits five real seconds), so this is the only part of the fix a
+    /// test can hold.
+    var autoDevSessionIsRunning: Bool { autoDev?.state == .running }
 
     /// How many Backlog cards the next session engages.
     ///

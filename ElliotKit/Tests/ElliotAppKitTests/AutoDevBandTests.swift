@@ -226,6 +226,80 @@ struct AutoDevBandTests {
         }
     }
 
+    // MARK: - A finished session that still has engaged rows — stop() mid-flight
+
+    /// ⛔ **Fix round 1, Important 2.** `stop(sessionID:)` (`AutoDevService.swift`)
+    /// is the one production path that can reach `.finished` with a row still
+    /// `.engaged`: the automatic path never calls `finish()` until every row is
+    /// settled. Before this fix the sentence below silently dropped every
+    /// abandoned card — "Finished — 5 cards…, 2 merged, 0 blocked" for a session
+    /// that still had 3 `.engaged` — reading as a clean, unremarkable success.
+    /// PR5's inherited contract 4, quoted in the override: *"a `.finished`
+    /// session whose engagement rows fall short reads as a quiet success ...
+    /// the band needs a sentence it does not have."*
+    @Test("A finished session with engaged rows says the reader stopped it, not that it merely finished")
+    func stoppedMidFlightTellsTheTruth() {
+        let band = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 3, merged: 2, blocked: 0),
+            repoName: "Elliot")
+        #expect(band.headline.hasPrefix("Stopped —"))
+        #expect(band.headline.contains("2 merged"))
+        #expect(band.headline.contains("3 left mid-flight"))
+        #expect(!band.headline.hasPrefix("Finished —"))
+        #expect(band.runNote.contains("stopped this session"))
+        #expect(!band.runNote.contains("Nothing is running"))
+        // The permanence clause survives here too — a mid-flight stop does not
+        // make the record disappear any sooner than a clean finish does.
+        #expect(band.runNote.contains("This report stays until the next session starts."))
+        #expect(band.controls.isEmpty, "the report is a record; there is nothing left to press")
+    }
+
+    /// The exact discriminator, proven rather than assumed: the same merged
+    /// and blocked counts, one card apart in `engaged`, must render two
+    /// different headlines.
+    @Test("Zero engaged rows reads as a clean finish; any engaged rows read as a stop")
+    func engagedCountIsTheDiscriminator() {
+        let clean = AutoDevBand.of(
+            session: session(.finished, cards: 5), tally: AutoDevTally(engaged: 0, merged: 3, blocked: 0),
+            repoName: "Elliot")
+        #expect(clean.headline.hasPrefix("Finished —"))
+
+        let stopped = AutoDevBand.of(
+            session: session(.finished, cards: 5), tally: AutoDevTally(engaged: 1, merged: 3, blocked: 0),
+            repoName: "Elliot")
+        #expect(stopped.headline.hasPrefix("Stopped —"))
+    }
+
+    /// Blocked still outranks a mid-flight stop, the same ordering `hasLiveRun`
+    /// already carries below: a session that both blocked a card *and* left
+    /// others engaged is a session that failed somewhere, first and foremost.
+    @Test("A mid-flight stop is attention alone; a blocked card is refused regardless")
+    func stoppedMidFlightToneRanksBelowBlocked() {
+        let attentionOnly = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 2, merged: 3, blocked: 0),
+            repoName: "Elliot")
+        #expect(attentionOnly.tone == .attention)
+
+        let blockedAndStopped = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 2, merged: 1, blocked: 2),
+            repoName: "Elliot")
+        #expect(blockedAndStopped.tone == .refused)
+    }
+
+    /// The stopped-mid-flight sentence offers no controls either — the same
+    /// obligation `liveRunSentenceNamesNoControl` holds the live-run sentence
+    /// to, applied to its sibling.
+    @Test("The stopped-mid-flight sentence names no control the finished band does not offer")
+    func stoppedMidFlightSentenceNamesNoControl() {
+        let band = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 3, merged: 2, blocked: 0),
+            repoName: "Elliot")
+        for control in AutoDevBand.Control.allCases {
+            let word = String(AutoDevBand.title(control).split(separator: " ")[0])
+            #expect(!band.runNote.contains(word), "the stopped-mid-flight sentence names \(word)")
+        }
+    }
+
     /// ⚠️ **What the band says today about a state nobody has written a sentence
     /// for**: a session that finished with fewer rows than it engaged.
     ///

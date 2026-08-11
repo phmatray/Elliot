@@ -582,6 +582,39 @@ struct AutoDevStateTests {
         #expect(model.autoDevHasLiveRun == false)
     }
 
+    // MARK: - The obligation-1 poll's gate
+
+    /// ⛔ **Fix round 1, Minor.** `.running` is the only state the poll in
+    /// `start()` can skip real work for-*from*: `round()` only ever reads
+    /// `runningAutoDevSessions()`, so a `.paused` or `.finished` session
+    /// cannot change on its own between two ticks. The poll's own timing is
+    /// outside what `swift test` can see (nothing waits five real seconds),
+    /// so this is the testable half of that fix — the gate's logic, not its
+    /// schedule.
+    @Test("autoDevSessionIsRunning is true only while a session is .running")
+    func autoDevSessionIsRunningTracksState() async {
+        let (model, _, cards) = seeded()
+        #expect(model.autoDevSessionIsRunning == false, "no session at all")
+
+        let driver = FakeAutoDev(cards: cards.map(\.id))
+        model.testOnlyAttachAutoDev(driver)
+        await model.startAutoDev()
+        #expect(model.autoDev?.state == .running)
+        #expect(model.autoDevSessionIsRunning)
+
+        await model.pauseAutoDev()
+        #expect(model.autoDev?.state == .paused)
+        #expect(model.autoDevSessionIsRunning == false)
+
+        await model.resumeAutoDev()
+        #expect(model.autoDev?.state == .running)
+        #expect(model.autoDevSessionIsRunning)
+
+        await model.stopAutoDev()
+        #expect(model.autoDev?.state == .finished)
+        #expect(model.autoDevSessionIsRunning == false)
+    }
+
     @Test("Seeding a session without a driver is enough to render one")
     func seedingWorksWithoutADriver() {
         let (model, subject, cards) = seeded()
