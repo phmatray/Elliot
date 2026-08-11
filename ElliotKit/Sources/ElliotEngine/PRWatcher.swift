@@ -19,14 +19,47 @@ public actor PRWatcher {
 
     /// Fast while something is running — the card should reach In Review the
     /// moment implement-issue flips its PR ready.
-    private let busyInterval: Duration = .seconds(15)
-    private let idleInterval: Duration = .seconds(60)
-    private let maxInterval: Duration = .seconds(300)
+    ///
+    /// `static`, not `private`, since #196: `interval(...)` below is a pure
+    /// static function and needs to read them without an instance.
+    static let busyInterval: Duration = .seconds(15)
+    static let idleInterval: Duration = .seconds(60)
+    static let maxInterval: Duration = .seconds(300)
+
+    /// Told once per sweep, unconditionally. A card waiting on CI has no run to
+    /// finish and no move to make, so without this nothing would ever wake its
+    /// session — a round is a handful of local reads and is idempotent by
+    /// contract, so a tick that changed nothing just costs a no-op.
+    ///
+    /// `weak`, the shape `mover` above and `RunScheduler.roundTrigger` already
+    /// use: the registrant owns the watcher (directly or through `AppModel`),
+    /// so a strong reference back would be a cycle neither could ever break.
+    private weak var roundTrigger: (any RoundTriggering)?
+
+    /// Whether anything unattended is going on right now.
+    ///
+    /// A closure and not a protocol: it is one boolean with one caller, and a
+    /// test needs `{ true }` rather than a double. Unlike `roundTrigger` this
+    /// has **no `weak` to save it** — a closure capture is strong by default —
+    /// so whoever installs one must capture `[weak self]` (or whatever it
+    /// actually needs), never the watcher itself or anything that owns it: a
+    /// strong capture of either would be exactly the retain cycle
+    /// `roundTrigger`'s `weak` exists to avoid, moved one property down and
+    /// hidden inside a closure instead of visible on the type.
+    private var sessionProbe: (@Sendable () async -> Bool)?
 
     public init(store: BoardStore, gh: GHClient, mover: any SystemMoving) {
         self.store = store
         self.gh = gh
         self.mover = mover
+    }
+
+    public func setRoundTrigger(_ trigger: any RoundTriggering) {
+        roundTrigger = trigger
+    }
+
+    public func setSessionProbe(_ probe: @escaping @Sendable () async -> Bool) {
+        sessionProbe = probe
     }
 
     public func start() {
@@ -48,14 +81,24 @@ public actor PRWatcher {
     /// One sweep. Returns how long to wait before the next.
     @discardableResult
     func tick() async -> Duration {
-        guard let repos = try? await store.repos() else { return idleInterval }
+        guard let repos = try? await store.repos() else { return Self.idleInterval }
         var sawChange = false
         var anyRunning = false
 
         for repo in repos where repo.isEnabled {
-            let cards = (try? await store.cards(repoID: repo.id))?
-                .filter { $0.column == .inProgress || $0.column == .inReview } ?? []
-            guard !cards.isEmpty else { continue }
+            let all = (try? await store.cards(repoID: repo.id)) ?? []
+            // A card whose merge is queued has already left In Review —
+            // `commitMove` moves it to Done *before* the run — so its reading
+            // would stop being refreshed at the exact moment admission starts
+            // demanding a current one. One query per repository per tick.
+            // `activeRuns` includes `.queued`: `RunState.isActive` is
+            // `!isTerminal`, and `.queued` is not terminal.
+            let mergePending = Set(
+                ((try? await store.activeRuns(cardIDs: all.map(\.id))) ?? [:])
+                    .filter { $0.value.kind == .mergePR }
+                    .keys)
+            let watched = all.filter { $0.column == .inProgress || $0.column == .inReview }
+            guard !watched.isEmpty || !mergePending.isEmpty else { continue }
 
             if let runs = try? await store.runs(repoID: repo.id, limit: 20),
                runs.contains(where: { $0.state.isActive }) {
@@ -66,35 +109,70 @@ public actor PRWatcher {
                 continue
             }
             var movedHere = false
-            for card in cards where await reconcile(card: card, against: prs) {
+            for card in watched where await reconcile(card: card, against: prs) {
                 sawChange = true
                 movedHere = true
             }
-            // Re-read rather than reuse `cards` when this repository's cards
-            // moved: `reconcile` above may have just promoted one. With the
-            // stale snapshot a card that reached In Review this very tick was
-            // skipped until the next one — up to ~6 minutes once the quiet
-            // backoff has widened — and a card promoted *out* of it still spent
-            // a call and wrote a row for a pull request already merged.
+            // Re-read rather than reuse the snapshot when this repository's
+            // cards moved: `reconcile` above may have just promoted one. With
+            // the stale snapshot a card that reached In Review this very tick
+            // was skipped until the next one — up to ~6 minutes once the quiet
+            // backoff has widened — and a card promoted *out* of it still
+            // spent a call and wrote a row for a pull request already merged.
             //
             // Local rather than the accumulating `sawChange`: that one is true
             // as soon as *any* repository moved, and would re-read every
             // repository after it for nothing.
-            let settled = movedHere ? (try? await store.cards(repoID: repo.id)) ?? cards : cards
-            await refreshStatuses(repo: repo, cards: settled, prs: prs)
+            let settled = movedHere ? (try? await store.cards(repoID: repo.id)) ?? all : all
+            await refreshStatuses(repo: repo, cards: settled, alsoRead: mergePending, prs: prs)
         }
 
         if sawChange || anyRunning {
             quietRounds = 0
-            return anyRunning ? jittered(busyInterval) : jittered(idleInterval)
+        } else {
+            quietRounds += 1
         }
-        quietRounds += 1
-        // Back off once nothing has moved for a while.
-        let backoff = min(
+
+        // Unconditional: a round is a handful of local reads and is idempotent
+        // by contract, so a tick that changed nothing costs a no-op — and a
+        // session whose only card is waiting on CI has no other event at all
+        // that would ever wake it.
+        await roundTrigger?.triggerRound()
+
+        let sessionRunning = await sessionProbe?() ?? false
+        return jittered(
+            Self.interval(
+                sawChange: sawChange, anyRunning: anyRunning,
+                sessionRunning: sessionRunning, quietRounds: quietRounds))
+    }
+
+    /// How long to wait before the next sweep, before jitter.
+    ///
+    /// Pure and static so the rule is testable without a clock: `tick()`
+    /// measures, this decides, and `jittered` still wraps whatever comes back
+    /// — several repositories must not fall into lockstep.
+    ///
+    /// `sessionRunning` caps the window at `idleInterval`. Under an unattended
+    /// session "nothing moved" is the *normal* state — the cards are waiting
+    /// on CI — so the quiet backoff would otherwise put the watcher to sleep
+    /// for five minutes exactly when it is working.
+    ///
+    /// For `sessionRunning: false` this returns exactly what the inline
+    /// formula it replaced returned, for every input — pinned by
+    /// `PRWatcherForSessionsTests.pinsTheWideningFormula`.
+    static func interval(
+        sawChange: Bool, anyRunning: Bool, sessionRunning: Bool, quietRounds: Int
+    ) -> Duration {
+        if sawChange || anyRunning {
+            return anyRunning ? busyInterval : idleInterval
+        }
+        let widened = min(
             idleInterval.components.seconds << min(quietRounds / 30, 3),
             maxInterval.components.seconds
         )
-        return jittered(.seconds(backoff))
+        let ceiling = sessionRunning
+            ? idleInterval.components.seconds : maxInterval.components.seconds
+        return .seconds(min(widened, ceiling))
     }
 
     /// Applies whatever the pull request says about this card. Returns whether
@@ -147,10 +225,16 @@ public actor PRWatcher {
 
     /// Reads what GitHub says about the pull requests the board is *waiting* on.
     ///
-    /// **In Review only, deliberately.** A card in In Progress has a draft pull
-    /// request that `implement-issue` is still writing, so a red check there is
-    /// a transient state the run is already handling. The information only
-    /// changes a decision once the card has stopped moving on its own.
+    /// **In Review, and any card whose merge is queued or running.** The first
+    /// half is the original rule and its reason stands: a card in In Progress
+    /// has a draft pull request that `implement-issue` is still writing, so a
+    /// red check there is a transient state the run is already handling.
+    ///
+    /// The second half exists because `BoardService.commitMove` puts a card in
+    /// Done *before* its merge run, so the instant a merge is queued this would
+    /// stop refreshing it — while admission refuses a merge whose green has
+    /// aged past `PRStatus.maximumAge`. Without it that refusal is permanent,
+    /// and a repository an unattended session keeps busy never merges anything.
     ///
     /// The listing above already carries `headRefOid`, so most ticks answer
     /// "nothing has changed" without spending a call — see
@@ -158,9 +242,11 @@ public actor PRWatcher {
     /// card fields are decided in one place, `VerifiedOutcome.applied(to:)`, and
     /// a poller that wrote one would be the second write path that invariant
     /// exists to prevent.
-    private func refreshStatuses(repo: Repo, cards: [Card], prs: [GHPullRequest]) async {
+    private func refreshStatuses(
+        repo: Repo, cards: [Card], alsoRead: Set<UUID>, prs: [GHPullRequest]
+    ) async {
         let now = Date()
-        for card in cards where card.column == .inReview {
+        for card in cards where card.column == .inReview || alsoRead.contains(card.id) {
             guard let number = card.prNumber else { continue }
             let currentHead = prs.first { $0.number == number }?.headRefOid
             let stored = try? await store.prStatus(repoID: repo.id, prNumber: number)

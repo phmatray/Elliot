@@ -848,3 +848,175 @@ struct RoundTriggeringTests {
         #expect(saved?.closing?.text == "The repository this run belongs to no longer exists.")
     }
 }
+
+/// What a session needs from the pull request watcher: a hook it can lean on
+/// while a card has nothing else to wake it, a backoff that does not put the
+/// watcher to sleep for five minutes exactly while a session is busy, and a
+/// reading that keeps flowing to a card whose merge is still queued.
+@Suite("PR watcher — what a session needs from it")
+struct PRWatcherForSessionsTests {
+
+    @Test("A running session stops the quiet backoff widening past the idle window")
+    func sessionCapsTheBackoff() {
+        // Sixty quiet rounds is well past the widening threshold of thirty.
+        let widened = PRWatcher.interval(
+            sawChange: false, anyRunning: false, sessionRunning: false, quietRounds: 60)
+        let capped = PRWatcher.interval(
+            sawChange: false, anyRunning: false, sessionRunning: true, quietRounds: 60)
+        #expect(widened > capped)
+        #expect(capped == .seconds(60))
+    }
+
+    @Test("Everything else about the interval is exactly what it was")
+    func theRestIsUnchanged() {
+        #expect(
+            PRWatcher.interval(
+                sawChange: false, anyRunning: true, sessionRunning: false, quietRounds: 0)
+                == .seconds(15))
+        #expect(
+            PRWatcher.interval(
+                sawChange: true, anyRunning: false, sessionRunning: false, quietRounds: 0)
+                == .seconds(60))
+        #expect(
+            PRWatcher.interval(
+                sawChange: false, anyRunning: false, sessionRunning: false, quietRounds: 1)
+                == .seconds(60))
+        // The widening: << 1 at 30 quiet rounds, << 3 and then the 300 s ceiling.
+        #expect(
+            PRWatcher.interval(
+                sawChange: false, anyRunning: false, sessionRunning: false, quietRounds: 30)
+                == .seconds(120))
+        #expect(
+            PRWatcher.interval(
+                sawChange: false, anyRunning: false, sessionRunning: false, quietRounds: 120)
+                == .seconds(300))
+    }
+
+    /// The extraction has to be behaviour-preserving and a spot check cannot
+    /// prove that: the widening shift has three steps (at 30, 60 and 90 quiet
+    /// rounds) and a ceiling, so this pins both edges of every step. The
+    /// expected values are literal seconds, not a second copy of the shift
+    /// formula — a refactor that reproduced the same mistake in both places
+    /// would still be caught, because nothing here computes an answer to
+    /// compare against, only names one.
+    @Test("The un-jittered rule matches the inline formula it replaced, at every step boundary")
+    func pinsTheWideningFormula() {
+        let boundaries: [(quietRounds: Int, expectedSeconds: Int)] = [
+            (0, 60), (29, 60), (30, 120), (59, 120), (60, 240), (89, 240), (90, 300), (120, 300),
+        ]
+        for (quietRounds, expectedSeconds) in boundaries {
+            let actual = PRWatcher.interval(
+                sawChange: false, anyRunning: false, sessionRunning: false,
+                quietRounds: quietRounds)
+            #expect(
+                actual == .seconds(expectedSeconds),
+                "quietRounds \(quietRounds) should back off to \(expectedSeconds)s, got \(actual)")
+        }
+    }
+
+    @Test("A tick tells the round trigger, so a card waiting on CI is re-evaluated")
+    func tickTriggersARound() async throws {
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
+            gitPath: "/usr/bin/false", environment: [:])
+        let board = BoardService(store: store, launcher: FakeLauncher())
+        let watcher = PRWatcher(store: store, gh: .init(config: config), mover: board)
+        let trigger = CountingTrigger()
+        await watcher.setRoundTrigger(trigger)
+
+        await watcher.tick()
+        #expect(trigger.triggers == 1)
+    }
+
+    /// The sibling hook to the test above, proven the same way. Testing only
+    /// `interval(sessionRunning:)` directly would leave `tick()`'s wiring of
+    /// `sessionProbe` into it unverified — a version of `tick()` that never
+    /// called the probe at all would still leave `sessionCapsTheBackoff`
+    /// green, since that test never goes through `tick()`.
+    @Test("A tick asks the session probe, not only the pure rule that reads its answer")
+    func tickAsksTheSessionProbe() async throws {
+        actor ProbeCalls {
+            private(set) var count = 0
+            func mark() { count += 1 }
+        }
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
+            gitPath: "/usr/bin/false", environment: [:])
+        let board = BoardService(store: store, launcher: FakeLauncher())
+        let watcher = PRWatcher(store: store, gh: .init(config: config), mover: board)
+        let calls = ProbeCalls()
+        await watcher.setSessionProbe {
+            await calls.mark()
+            return true
+        }
+
+        await watcher.tick()
+        #expect(await calls.count == 1)
+    }
+
+    /// The third change's own claim: `commitMove` moves a card to Done before
+    /// its merge run finishes, so a queued merge has already left In Review by
+    /// the time this runs. Without `alsoRead` its reading would never be
+    /// refreshed again, which is what would make Task 7's admission guard's
+    /// refusal permanent — confirmed separately by reading, not by a test
+    /// here: `RunState.isActive` is `!isTerminal`, and `.queued` is not
+    /// terminal, so `BoardStore.activeRuns(cardIDs:)` really does include it.
+    ///
+    /// No `verdicts:` argument to `BoardService` here — this test never
+    /// reaches `proposeMove`/`commitMove`, only `PRWatcher.tick()`, so the
+    /// `nil`-`gh` `PRVerdictReader` that a headless `BoardService` resolves to
+    /// is never asked anything.
+    @Test("A queued merge run still gets its card's pull request status refreshed")
+    func queuedMergeCardIsRefreshedToo() async throws {
+        _ = TestHome.root
+        let store = try BoardStore.inMemory()
+        let repo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+
+        let now = Date()
+        let card = Card(
+            repoID: repo.id, title: "Something", column: .done, orderIndex: 0,
+            issueNumber: 7, prNumber: 52, branch: "feat/7-something",
+            columnEnteredAt: now, createdAt: now, updatedAt: now)
+        try await store.saveCard(card)
+
+        let runID = UUID()
+        let run = SkillRun.card(
+            id: runID, cardID: card.id, repoID: repo.id, kind: .mergePR, prompt: "x",
+            cwd: repo.path,
+            logPath: StoreLocation.runLogURL(runID: runID).path,
+            stderrPath: StoreLocation.runStderrURL(runID: runID).path, createdAt: now)
+        try await store.saveRun(run)
+        #expect(try await store.run(id: runID)?.state == .queued)
+
+        let prsPath = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("prs-\(UUID().uuidString).json").path
+        try """
+            [{"number": 52, "url": "https://github.com/phmatray/Elliot/pull/52",
+              "title": "x", "body": "Closes #7", "headRefName": "feat/7-something",
+              "isDraft": false, "state": "OPEN", "createdAt": "2026-08-01T10:00:00Z",
+              "mergedAt": null, "headRefOid": "3be5f1ee906ff61bdedef0072b635ec6ec40c632"}]
+            """.write(toFile: prsPath, atomically: true, encoding: .utf8)
+
+        let config = ToolConfig(
+            claudePath: "", ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
+            gitPath: "",
+            environment: [
+                "FAKE_GH_PRS": prsPath,
+                "FAKE_GH_PR_VIEW": repositoryRoot.appendingPathComponent(
+                    "Fixtures/gh/pr-view-unstable.json"
+                ).path,
+            ])
+        let board = BoardService(store: store, launcher: FakeLauncher())
+        let watcher = PRWatcher(store: store, gh: GHClient(config: config), mover: board)
+
+        await watcher.tick()
+
+        let stored = try #require(try await store.prStatus(repoID: repo.id, prNumber: 52))
+        #expect(stored.rawMergeStateStatus == "UNSTABLE")
+    }
+}
