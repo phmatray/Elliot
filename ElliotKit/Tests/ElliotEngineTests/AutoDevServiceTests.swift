@@ -1,3 +1,4 @@
+import ElliotIPC
 import ElliotModel
 import ElliotProcess
 import Foundation
@@ -1018,5 +1019,187 @@ struct PRWatcherForSessionsTests {
 
         let stored = try #require(try await store.prStatus(repoID: repo.id, prNumber: 52))
         #expect(stored.rawMergeStateStatus == "UNSTABLE")
+    }
+}
+
+/// Task 11: the guards `AutoDevService.start` composes rather than
+/// re-deriving. `UnattendedStartRefusal` and `PreflightState` come from
+/// `ElliotModel`, `ElliotErrorCode` from `ElliotIPC` — both already imported by
+/// this file's header.
+@Suite("Auto-dev — starting")
+struct AutoDevStartTests {
+
+    private let epoch = Date(timeIntervalSince1970: 1_770_000_000)
+
+    private struct Fixture {
+        var store: BoardStore
+        var board: BoardService
+        var launcher: FakeLauncher
+        /// Here only as the `RunQueueReading` the service reads. It launches
+        /// nothing — see the comment in `fixture()`.
+        var scheduler: RunScheduler
+        var service: AutoDevService
+        var repo: Repo
+        var cards: [Card]
+    }
+
+    private func fixture(dailyCeiling: Double? = 25) async throws -> Fixture {
+        // `TestHome` first: `start` ends by calling `advance()`, and from Task 12
+        // on that round commits moves, which resolve `StoreLocation` run paths.
+        _ = TestHome.root
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
+            gitPath: "/usr/bin/false", environment: [:])
+        // The board launches through a **fake**, and the real scheduler is here
+        // only to answer `RunQueueReading`. This suite is about what `start`
+        // refuses; `advance()` is a no-op in this task (filled in by Task 12),
+        // so no proposal is ever evaluated and the default `verdicts:` a
+        // headless `BoardService` resolves to (a `nil`-`gh` `PRVerdictReader`)
+        // is never asked anything — unlike `AutoDevProposalTests.fixture()` in
+        // this file, which wires a real one for exactly that reason.
+        let launcher = FakeLauncher()
+        let scheduler = RunScheduler(
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
+        let board = BoardService(store: store, launcher: launcher)
+        if let dailyCeiling {
+            try await store.saveSpendCeiling(SpendCeiling(perRunUSD: nil, perDayUSD: dailyCeiling))
+        }
+        let repo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+        var cards: [Card] = []
+        for index in 0..<2 {
+            cards.append(try await board.createCard(
+                repoID: repo.id, title: "Card \(index)",
+                story: UserStory(
+                    role: "developer", want: "thing \(index)", benefit: "a reason")).card)
+        }
+        let service = AutoDevService(
+            store: store, board: board, launcher: launcher, queue: scheduler,
+            clock: { self.epoch })
+        return Fixture(
+            store: store, board: board, launcher: launcher, scheduler: scheduler,
+            service: service, repo: repo, cards: cards)
+    }
+
+    private func session(_ f: Fixture, cards: [UUID]? = nil) -> AutoDevSession {
+        AutoDevSession(
+            repoID: f.repo.id, engagedCardIDs: cards ?? f.cards.map(\.id),
+            maxAttemptsPerCard: 2, patience: 900, startedAt: epoch)
+    }
+
+    @Test("A started session persists itself and a row per engaged card, in one write")
+    func startPersists() async throws {
+        let f = try await fixture()
+        let started = try await f.service.start(session: session(f), preflight: .passing)
+
+        #expect(started.state == .running)
+        #expect(try await f.store.autoDevSession(id: started.id)?.engagedCardIDs.count == 2)
+        let rows = try await f.store.autoDevEngagements(sessionID: started.id)
+        #expect(rows.count == 2)
+        #expect(Set(rows.map(\.cardID)) == Set(f.cards.map(\.id)))
+        // Deliberately **not** an assertion about `attempts`. `start` ends by
+        // calling `advance()`, so from Task 12 on the first round has already
+        // run by the time these rows are read and both cards may have spent
+        // one. What `start` promises is the *set* — a row for every engaged
+        // card, written with the session in one transaction — and that is what
+        // this test is named for. What a round does to `attempts` is Task 12's.
+    }
+
+    // Obligation 1 from `AutoDevDriving.swift:64-68` ("a loop that reaches its
+    // own end must make that observable") requires `start` to re-read the
+    // session after `advance()` and return the *stored* row, never the
+    // in-memory value it opened — see the comment at the end of
+    // `AutoDevService.start`. **Deliberately no test claims to verify that
+    // here.** With `advance()` a no-op in this task (filled in by Task 12),
+    // nothing between the write and the return can make the in-memory `opened`
+    // diverge from the stored row — measured directly: reverting the fix to
+    // `return opened` left every test in this suite, including a
+    // store-vs-return equality check, passing anyway (9/9). A test that cannot
+    // fail when the mechanism it names is removed is exactly the trap this
+    // task's own instructions warn against, so the honest position is that
+    // this obligation is satisfied by inspection now (`return try await
+    // store.autoDevSession(id: opened.id) ?? opened`) and becomes provable at
+    // Task 12, once `advance()` can actually settle a card within `start`'s own
+    // call and give the two values room to disagree.
+
+    @Test("A repository Preflight blocks refuses the whole session, by name")
+    func preflightBlocks() async throws {
+        let f = try await fixture()
+        await #expect(throws: AutoDevError.repoRefused(.preflightBlocked)) {
+            try await f.service.start(session: session(f), preflight: .failing)
+        }
+        #expect(try await f.store.runningAutoDevSessions().isEmpty)
+    }
+
+    @Test("A disabled repository refuses the whole session too")
+    func disabledRepoRefuses() async throws {
+        let f = try await fixture()
+        var repo = f.repo
+        repo.isEnabled = false
+        try await f.store.saveRepo(repo)
+        await #expect(throws: AutoDevError.repoRefused(.repoDisabled)) {
+            try await f.service.start(session: session(f), preflight: .passing)
+        }
+    }
+
+    @Test("No daily ceiling, no session — the brake was sized against a human's rhythm")
+    func noCeilingRefuses() async throws {
+        let f = try await fixture(dailyCeiling: nil)
+        await #expect(throws: AutoDevError.noDailySpendCeiling) {
+            try await f.service.start(session: session(f), preflight: .passing)
+        }
+    }
+
+    @Test("A card from another repository is refused rather than quietly dropped")
+    func foreignCardRefuses() async throws {
+        let f = try await fixture()
+        let other = Repo(
+            path: "/tmp/other-\(UUID().uuidString)", nameWithOwner: "phmatray/Other",
+            displayName: "Other")
+        try await f.store.saveRepo(other)
+        let stranger = try await f.board.createCard(repoID: other.id, title: "Elsewhere").card
+
+        await #expect(throws: AutoDevError.foreignCard(stranger.id)) {
+            try await f.service.start(
+                session: session(f, cards: f.cards.map(\.id) + [stranger.id]),
+                preflight: .passing)
+        }
+    }
+
+    @Test("An empty engagement is refused, because a session with nothing to do is a mistake")
+    func emptyRefuses() async throws {
+        let f = try await fixture()
+        await #expect(throws: AutoDevError.noCards) {
+            try await f.service.start(session: session(f, cards: []), preflight: .passing)
+        }
+    }
+
+    @Test("The same card twice is one engagement, not two")
+    func duplicatesAreOne() async throws {
+        let f = try await fixture()
+        let started = try await f.service.start(
+            session: session(f, cards: [f.cards[0].id, f.cards[0].id]),
+            preflight: .passing)
+        #expect(started.engagedCardIDs == [f.cards[0].id])
+        #expect(try await f.store.autoDevEngagements(sessionID: started.id).count == 1)
+    }
+
+    @Test("Every refusal has a wire code and a next action")
+    func refusalsMapToTheWire() {
+        for error: AutoDevError in [
+            .repoNotFound(UUID()), .repoRefused(.repoDisabled), .repoRefused(.preflightBlocked),
+            .noCards, .foreignCard(UUID()), .noDailySpendCeiling,
+        ] {
+            let response = error.response
+            #expect(response.message.isEmpty == false)
+            #expect(response.hint?.isEmpty == false)
+        }
+        #expect(AutoDevError.repoRefused(.preflightBlocked).response.code == .autoDevRefused)
+        #expect(AutoDevError.repoRefused(.repoDisabled).response.code == .autoDevRefused)
+        #expect(AutoDevError.repoNotFound(UUID()).response.code == .repoNotFound)
+        #expect(ElliotErrorCode.autoDevRefused.rawValue == "auto_dev_refused")
     }
 }
