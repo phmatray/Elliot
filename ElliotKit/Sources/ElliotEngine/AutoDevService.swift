@@ -124,6 +124,11 @@ public actor AutoDevService: RoundTriggering {
     /// The clock, injected — the idiom of `PRStatus.resolved(now:)`. Every
     /// patience window in a test is expressed by moving this, never by sleeping.
     private let clock: @Sendable () -> Date
+    /// Whether a round is currently running. See ``advance()``.
+    private var roundInFlight = false
+    /// Set by a trigger that arrived while a round was already running, so the
+    /// runner in ``advance()`` loops once more instead of dropping it.
+    private var roundRequested = false
 
     public init(
         store: BoardStore,
@@ -235,7 +240,253 @@ public actor AutoDevService: RoundTriggering {
         await advance()
     }
 
-    /// One coalesced pass over every running session. Filled in by the next
-    /// task; a no-op here so `start` has something to call.
-    public func advance() async {}
+    // MARK: - Advancing
+
+    /// One coalesced pass over every running session.
+    ///
+    /// Coalesced rather than queued: a round asks the board the same question
+    /// again from scratch, so two rounds back to back are one round. A trigger
+    /// arriving while one is in flight sets a flag and returns at once — which
+    /// is also what keeps `RunScheduler.finish` from waiting on a whole round
+    /// before it returns.
+    public func advance() async {
+        guard !roundInFlight else {
+            roundRequested = true
+            return
+        }
+        roundInFlight = true
+        defer { roundInFlight = false }
+        repeat {
+            roundRequested = false
+            await round()
+        } while roundRequested
+    }
+
+    private func round() async {
+        // The user's own stop outranks everything. Recording dispositions while
+        // the queue is paused would burn the patience window against a hold the
+        // reader put there on purpose.
+        guard await queue.queueIsPaused() == false else { return }
+        for session in (try? await store.runningAutoDevSessions()) ?? [] {
+            await advance(session)
+        }
+    }
+
+    private func advance(_ session: AutoDevSession) async {
+        let now = clock()
+        var states = (try? await store.autoDevEngagements(sessionID: session.id)) ?? []
+        guard !states.isEmpty else {
+            // Every engaged card was deleted. Nothing left to settle.
+            await finish(session)
+            return
+        }
+
+        // Walked in the order the person engaged them, **not** in the order the
+        // rows came back. `autoDevEngagements` orders on `updatedAt`, and at the
+        // start of a session every row carries the same timestamp — so the walk
+        // order would be whatever SQLite happened to return, and it decides
+        // which card gets the session's one merge slot below. The engaged list
+        // is the promise and it is ordered; the rows are the state.
+        let engagedOrder = Dictionary(
+            session.engagedCardIDs.enumerated().map { ($0.element, $0.offset) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        states.sort { (engagedOrder[$0.cardID] ?? .max) < (engagedOrder[$1.cardID] ?? .max) }
+
+        // Three reads per session, not per card.
+        var cards: [UUID: Card] = [:]
+        for id in session.engagedCardIDs {
+            if let card = (try? await store.card(id: id)) ?? nil { cards[id] = card }
+        }
+        let active = (try? await store.activeRuns(cardIDs: session.engagedCardIDs)) ?? [:]
+        let held = Dictionary(
+            (await queue.queueSnapshot()).compactMap { row in row.cardID.map { ($0, row.refusal) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        // A session runs at most one merge, and **nothing beside it**.
+        //
+        // Stronger than "no new implement-issue", for the reason the design
+        // gives: `pump()` steps over a refused run and admits the next
+        // (`RunScheduler.swift:428-436`), so on a repository the session keeps
+        // busy `.mergeWaitsForRepoToBeIdle` can otherwise never lift. Anything
+        // started beside a pending merge is one more thing that merge waits for.
+        //
+        // `var`, and that is the whole of it: a merge this very round queued
+        // holds everything after it exactly as one already in flight does.
+        // Computed once before the loop and never updated, the round that
+        // queues a merge also starts the next card's run — and the serialising
+        // would be off by precisely the case it exists for.
+        var mergePending = active.values.contains { $0.kind == .mergePR }
+
+        var aborted: String?
+        for index in states.indices {
+            if aborted != nil { break }
+            let state = states[index]
+            guard !state.isSettled else { continue }
+
+            guard let card = cards[state.cardID] else {
+                states[index] = record(
+                    state, .settle(.blocked, reason: "This card is no longer on the board."),
+                    now: now)
+                continue
+            }
+
+            // Settled the moment `gh` says the merge landed.
+            if await didMerge(cardID: card.id) {
+                states[index] = record(state, .settle(.merged, reason: "Merged."), now: now)
+                continue
+            }
+
+            if let run = active[card.id] {
+                let disposition: Disposition
+                if let refusal = held[card.id] {
+                    disposition = AutoDevPolicy.held(
+                        refusal, unchangedSince: state.updatedAt,
+                        patience: session.patience, now: now)
+                } else {
+                    disposition = AutoDevPolicy.disposition(
+                        outcome: .blocked(.runAlreadyInFlight(runID: run.id)),
+                        attempts: state.attempts,
+                        maxAttempts: session.maxAttemptsPerCard,
+                        unchangedSince: state.updatedAt, patience: session.patience, now: now)
+                }
+                states[index] = record(state, disposition, now: now)
+                continue
+            }
+
+            if mergePending {
+                states[index] = record(
+                    state,
+                    AutoDevPolicy.held(
+                        .mergeWaitsForRepoToBeIdle, unchangedSince: state.updatedAt,
+                        patience: session.patience, now: now),
+                    now: now)
+                continue
+            }
+
+            guard let to = card.column.naturalNext else {
+                // Done, with no merged run behind it. `commitMove` puts a card
+                // in Done *before* the run (`BoardService.swift:196-226`) and
+                // `CardOutcome.applied` returns no move for `.notMerged`, so a
+                // failed merge leaves it exactly here. The column separates
+                // neither case; `didMerge` above already did.
+                states[index] = record(
+                    state,
+                    .settle(.blocked, reason: card.lastError ?? "The merge did not land."),
+                    now: now)
+                continue
+            }
+
+            let proposal: MoveProposal
+            do {
+                proposal = try await board.proposeMove(
+                    cardID: card.id, to: to, origin: .autoDev(sessionID: session.id),
+                    // Always `[]`: the session merges, filing nothing of its
+                    // own. Follow-ups genuinely found in the pull request are
+                    // filed by `merge-pr` itself.
+                    followUps: [],
+                    requiresVerifiedGreen: true
+                )
+            } catch {
+                states[index] = record(
+                    state, .settle(.blocked, reason: error.localizedDescription), now: now)
+                continue
+            }
+
+            // No `reading:` argument here: `AutoDevPolicy.disposition` decides
+            // off `proposal.outcome` alone. A `.blocked(.notVerifiedGreen(reason:))`
+            // already carries the `NotGreenReason` `evaluateMove` computed —
+            // there is no separate `PRReading` to pass, and no second read to
+            // take.
+            let disposition = AutoDevPolicy.disposition(
+                outcome: proposal.outcome,
+                attempts: state.attempts,
+                maxAttempts: session.maxAttemptsPerCard,
+                unchangedSince: state.updatedAt,
+                patience: session.patience,
+                now: now
+            )
+
+            switch disposition {
+            case .retry:
+                var advanced = record(state, disposition, now: now)
+                // Attempts count runs **started**, never rounds taken: a
+                // `.noAction` move advances a card and spawns nothing, and
+                // charging it an attempt would exhaust a session on free moves.
+                if case .some(.moved(let runID)) = try? await board.commitMove(proposal),
+                    runID != nil {
+                    advanced.attempts += 1
+                    // The merge this round just queued holds every card after
+                    // it, for the same reason one already in flight does.
+                    if case .action(.mergePR) = proposal.outcome { mergePending = true }
+                }
+                states[index] = advanced
+
+            case .abortSession(let reason):
+                aborted = reason
+                states[index] = record(state, disposition, now: now)
+
+            case .wait, .held, .settle:
+                states[index] = record(state, disposition, now: now)
+            }
+        }
+
+        if let aborted {
+            // `repoDisabled` and `repoBlocked` end the **session**, not one
+            // card: nothing else engaged here could run either.
+            for index in states.indices where !states[index].isSettled {
+                states[index] = record(states[index], .abortSession(reason: aborted), now: now)
+            }
+        }
+
+        for state in states { try? await store.saveAutoDevEngagement(state) }
+
+        if states.allSatisfy(\.isSettled) { await finish(session) }
+    }
+
+    /// Writes a disposition onto a card's row, moving `updatedAt` **only** when
+    /// the reason changed.
+    ///
+    /// That is the whole patience mechanism. A timestamp refreshed on every
+    /// round would make the window infinite and every stuck card immortal — the
+    /// one line in this file that has to be read twice.
+    private func record(
+        _ state: AutoDevEngagement, _ disposition: Disposition, now: Date
+    ) -> AutoDevEngagement {
+        var updated = state
+        updated.disposition = disposition.engagement
+        if disposition.reason != state.reason {
+            updated.reason = disposition.reason
+            updated.updatedAt = now
+        }
+        return updated
+    }
+
+    /// Whether the card's newest terminal merge run actually merged.
+    ///
+    /// Read from the persisted row — `RunScheduler` writes `verifiedOutcome`
+    /// once `Verifier` has judged the run and saves it on the way to
+    /// terminal — and never from the column: `commitMove` puts the card in
+    /// Done *before* the run, so Done means "a merge was attempted", not "a
+    /// merge landed".
+    ///
+    /// `if case`, not a `switch`: this asks one question of `VerifiedOutcome`,
+    /// and a fourth exhaustive switch over it is exactly what `CardOutcome`
+    /// exists to prevent.
+    private func didMerge(cardID: UUID) async -> Bool {
+        let runs = (try? await store.runs(cardID: cardID, limit: 20)) ?? []
+        guard let merge = runs.first(where: { $0.kind == .mergePR && $0.state.isTerminal })
+        else { return false }
+        if case .merged = merge.verifiedOutcome { return true }
+        return false
+    }
+
+    /// Ends a session. Task 13 gives this the cancellations it also owes.
+    private func finish(_ session: AutoDevSession) async {
+        var ended = session
+        ended.state = .finished
+        ended.endedAt = clock()
+        try? await store.saveAutoDevSession(ended)
+    }
 }

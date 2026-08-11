@@ -620,6 +620,50 @@ struct RunQueueReadingTests {
         await scheduler.pause()
         #expect(await queue.queueIsPaused())
     }
+
+    /// The seam is proven — deleting the `RunQueueReading` conformance is a
+    /// compile error — but `schedulerConforms` above only ever asserts the
+    /// **empty** snapshot through the existential, so forcing `queueSnapshot()`
+    /// to always answer `[]` would not redden it. This drives a real refusal
+    /// through the real scheduler and reads it back only through `any
+    /// RunQueueReading`, so a queued run's refusal — the one thing Task 12's
+    /// `AutoDevService.advance()` actually reads off this protocol — survives
+    /// the boundary with its reason intact.
+    @Test("A queued run's refusal survives the protocol boundary, reason intact")
+    func queueSnapshotCarriesARealRefusal() async throws {
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            gitPath: "/usr/bin/true", environment: [:])
+        let scheduler = RunScheduler(
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
+        await scheduler.pause()
+
+        let repo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+        let card = Card(
+            repoID: repo.id, title: "Held",
+            columnEnteredAt: Date(), createdAt: Date(), updatedAt: Date())
+        try await store.saveCard(card)
+        let run = SkillRun.card(
+            cardID: card.id, repoID: repo.id, kind: .createIssue, prompt: "x", cwd: repo.path,
+            logPath: "/tmp/a", stderrPath: "/tmp/b", createdAt: Date())
+        try await store.saveRun(run)
+
+        // `launch` calls `pump()` synchronously to completion, and `isPaused`
+        // is the first thing `refusal(for:)` checks — so this run is held, not
+        // started, by the time `launch` returns.
+        await scheduler.launch(runID: run.id)
+
+        let queue: any RunQueueReading = scheduler
+        let snapshot = await queue.queueSnapshot()
+        let entry = try #require(snapshot.first { $0.runID == run.id })
+        #expect(entry.cardID == card.id)
+        #expect(entry.refusal == .paused)
+        #expect(entry.refusal.sentence == "The queue is paused.")
+    }
 }
 
 /// Counts triggers without being an actor's worth of machinery.
@@ -1235,5 +1279,393 @@ struct AutoDevStartTests {
         #expect(
             AutoDevError.repoRefused(.preflightBlocked).response.hint
                 == "Open Elliot's Preflight screen and clear the failing check.")
+    }
+}
+
+/// A queue that answers without a scheduler, so a round is decided by what the
+/// test says is holding a run rather than by what a real drain happened to do.
+private actor FakeQueue: RunQueueReading {
+    private var paused = false
+    private var rows: [QueuedRun] = []
+
+    func queueIsPaused() async -> Bool { paused }
+    func queueSnapshot() async -> [QueuedRun] { rows }
+    func setPaused(_ value: Bool) { paused = value }
+    func setRows(_ value: [QueuedRun]) { rows = value }
+}
+
+/// A clock a test can move, and that the actor can read from any isolation.
+///
+/// At file scope rather than nested in one suite: Task 13 needs it too, and a
+/// `private` type nested inside `AutoDevRoundTests` is not reachable from a
+/// sibling suite in the same file.
+private final class LockedDate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+    init(_ value: Date) { self.value = value }
+    var date: Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+    func advance(by seconds: TimeInterval) {
+        lock.lock()
+        value = value.addingTimeInterval(seconds)
+        lock.unlock()
+    }
+}
+
+/// Task 12: one coalesced round of re-evaluation, the per-card rule, and the
+/// one-merge-at-a-time serialisation.
+///
+/// ⛔ Adapted from the plan's Step-1 code for six stale APIs — see
+/// `task-12-report.md`'s anchor table. The four the override names:
+/// `AutoDevPolicy.disposition` has no `reading:` parameter (`NotGreenReason`
+/// already carries what `PRReading` used to); `Disposition.code` →
+/// `Disposition.engagement`; `AutoDevCardState` → `AutoDevEngagement`;
+/// `store.autoDevCards`/`saveAutoDevCard` → `store.autoDevEngagements`/
+/// `saveAutoDevEngagement`. Two more found independently: `AutoDevService
+/// .start` takes `preflight: PreflightState`, not `preflightChecks:
+/// [CheckResult]`; `VerifiedOutcome.merged` takes four non-defaulted
+/// associated values, not one.
+@Suite("Auto-dev — one round")
+struct AutoDevRoundTests {
+
+    private let epoch = Date(timeIntervalSince1970: 1_770_000_000)
+
+    private struct Fixture {
+        var store: BoardStore
+        var board: BoardService
+        var launcher: FakeLauncher
+        var queue: FakeQueue
+        var repo: Repo
+        /// Moves the injected clock. A patience window is expressed by moving
+        /// this, never by sleeping.
+        var now: LockedDate
+    }
+
+    /// Wires a real `GHClient` against `Scripts/fake-gh.sh`, the same seam
+    /// `AutoDevProposalTests.fixture()` uses — per the override's ⛔ on
+    /// `BoardService(store:launcher:)`: a headless board resolves to a
+    /// `nil`-`gh` `PRVerdictReader`, which answers `nil` for every reading
+    /// whatever `PRStatus` row a test stores. Only `mergesAreSerialised` below
+    /// actually needs a green verdict to reach `.action(.mergePR(...))`, but
+    /// every test in this suite shares one fixture, and a headless board here
+    /// would silently be a trap for the next test appended to this suite.
+    private func fixture() async throws -> (Fixture, AutoDevService) {
+        // Every round below commits moves, which resolve `StoreLocation` run
+        // paths — so the shared home has to be final before the first one.
+        _ = TestHome.root
+        let store = try BoardStore.inMemory()
+        let launcher = FakeLauncher()
+        let queue = FakeQueue()
+        let gh = GHClient(config: ToolConfig(
+            claudePath: "", ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
+            gitPath: "",
+            environment: [
+                "FAKE_GH_MODE": "ok",
+                "FAKE_GH_PRS": repositoryRoot.appendingPathComponent(
+                    "Fixtures/gh/prs-52-a1b2c3.json"
+                ).path,
+            ]))
+        let board = BoardService(
+            store: store, launcher: launcher,
+            verdicts: PRVerdictReader(store: store, gh: gh))
+        try await store.saveSpendCeiling(SpendCeiling(perRunUSD: nil, perDayUSD: 25))
+        let repo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+        let now = LockedDate(epoch)
+        let service = AutoDevService(
+            store: store, board: board, launcher: launcher, queue: queue,
+            clock: { now.date })
+        return (
+            Fixture(
+                store: store, board: board, launcher: launcher, queue: queue, repo: repo, now: now),
+            service
+        )
+    }
+
+    private func story(_ index: Int) -> UserStory {
+        UserStory(role: "developer", want: "thing \(index)", benefit: "a reason")
+    }
+
+    @Test("A round moves a Backlog card and files its issue, and counts one attempt")
+    func aRoundAdvances() async throws {
+        let (f, service) = try await fixture()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id, title: "One", story: story(1)).card
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: [card.id], maxAttemptsPerCard: 2,
+                patience: 900, startedAt: epoch),
+            preflight: .passing)
+
+        #expect(try await f.store.card(id: card.id)?.column == .todo)
+        let run = try #require(try await f.store.runs(cardID: card.id).first)
+        #expect(run.kind == .createIssue)
+        #expect(await f.launcher.launchedRuns() == [run.id])
+
+        let row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.attempts == 1)
+
+        // The audit says who asked, and it is the session.
+        let audits = try await f.store.audits(cardID: card.id)
+        #expect(audits.first?.origin == .autoDev(sessionID: started.id))
+    }
+
+    @Test("A card its own run is holding waits, and spends no second attempt")
+    func aHeldCardWaits() async throws {
+        let (f, service) = try await fixture()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id, title: "One", story: story(1)).card
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: [card.id], maxAttemptsPerCard: 2,
+                patience: 900, startedAt: epoch),
+            preflight: .passing)
+
+        await service.advance()
+        let row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.attempts == 1)
+        #expect(row.disposition == .engaged)
+        #expect(try await f.store.runs(cardID: card.id).count == 1)
+    }
+
+    @Test("Nothing else in a session starts while one of its merges is pending")
+    func mergesAreSerialised() async throws {
+        let (f, service) = try await fixture()
+        // One card ready to merge, one ready to be implemented.
+        var merging = try await f.board.createCard(repoID: f.repo.id, title: "Merging").card
+        merging.column = .inReview
+        merging.issueNumber = 47
+        merging.prNumber = 52
+        try await f.store.saveCard(merging)
+        // ⚠️ `checkedAt: Date()`, **never** `epoch`. The session's clock is
+        // injected and frozen at `epoch`, but the *verdict* is resolved against
+        // the wall clock inside `BoardService` — `epoch` is months old, so
+        // `resolved(now:)` would call the reading stale, the decision would be
+        // `.blocked(.notVerifiedGreen(...))`, and no merge would ever be queued.
+        try await f.store.savePRStatus(
+            PRStatus(
+                repoID: f.repo.id, prNumber: 52, headRefOid: "a1b2c3", checkedAt: Date(),
+                rawMergeStateStatus: "CLEAN", rawMergeable: "MERGEABLE", rawReviewDecision: "",
+                checks: [GHMergeStatus.StatusCheck(
+                    name: "build-and-test", conclusion: "SUCCESS", status: "COMPLETED")]))
+
+        var waiting = try await f.board.createCard(repoID: f.repo.id, title: "Waiting").card
+        waiting.column = .todo
+        waiting.issueNumber = 48
+        try await f.store.saveCard(waiting)
+
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: [merging.id, waiting.id],
+                maxAttemptsPerCard: 2, patience: 900, startedAt: epoch),
+            preflight: .passing)
+
+        // The merge was queued; the implement-issue was not started beside it.
+        // `pump()` steps over a refused run and admits the next
+        // (`RunScheduler.swift:428-436`), so anything running here is one more
+        // thing `.mergeWaitsForRepoToBeIdle` waits for.
+        #expect(try await f.store.runs(cardID: merging.id).first?.kind == .mergePR)
+        #expect(try await f.store.runs(cardID: waiting.id).isEmpty)
+
+        let rows = try await f.store.autoDevEngagements(sessionID: started.id)
+        let waitingRow = try #require(rows.first { $0.cardID == waiting.id })
+        #expect(waitingRow.disposition == .engaged)
+        #expect(waitingRow.reason == QueueRefusal.mergeWaitsForRepoToBeIdle.sentence)
+        #expect(waitingRow.attempts == 0)
+    }
+
+    @Test("A paused queue stops the round rather than burning the patience window")
+    func aPausedQueueStopsTheRound() async throws {
+        let (f, service) = try await fixture()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id, title: "One", story: story(1)).card
+        await f.queue.setPaused(true)
+
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: [card.id], maxAttemptsPerCard: 2,
+                patience: 900, startedAt: epoch),
+            preflight: .passing)
+
+        #expect(try await f.store.card(id: card.id)?.column == .backlog)
+        let row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.reason == "Not started yet.")
+        #expect(row.updatedAt == epoch)
+    }
+
+    @Test("A reason that has not changed for the patience window settles the card")
+    func patienceSettles() async throws {
+        let (f, service) = try await fixture()
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Stuck").card
+        card.column = .todo
+        try await f.store.saveCard(card)   // To Do with no issue number: blocked for ever.
+
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: [card.id], maxAttemptsPerCard: 2,
+                patience: 600, startedAt: epoch),
+            preflight: .passing)
+
+        var row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.disposition == .engaged)
+
+        f.now.advance(by: 601)
+        await service.advance()
+        row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.disposition == .blocked)
+        #expect(row.reason.contains("601") == false)   // the window, not the elapsed time
+        #expect(row.reason.contains("600 seconds"))
+    }
+
+    @Test("A card in Done whose merge did not land is not a success")
+    func doneIsNotMerged() async throws {
+        let (f, service) = try await fixture()
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Fell over").card
+        card.column = .done
+        card.prNumber = 52
+        card.lastError = "Checks are failing: build."
+        try await f.store.saveCard(card)
+        // The run `merge-pr` left behind: terminal, and `gh` said it did not merge.
+        var run = SkillRun.card(
+            cardID: card.id, repoID: f.repo.id, kind: .mergePR, prompt: "x", cwd: f.repo.path,
+            logPath: "/tmp/a", stderrPath: "/tmp/b",
+            requiresVerifiedGreen: true, createdAt: epoch)
+        run.state = .succeeded
+        run.verifiedOutcome = .notMerged(reason: "The pull request is still open.")
+        try await f.store.saveRun(run)
+
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: [card.id], maxAttemptsPerCard: 2,
+                patience: 900, startedAt: epoch),
+            preflight: .passing)
+
+        let row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.disposition == .blocked)
+        // The column says Done for both outcomes; only the run separates them.
+        #expect(row.reason == "Checks are failing: build.")
+        #expect(try await f.store.card(id: card.id)?.column == .done)
+    }
+
+    @Test("A card in Done whose merge landed is a success, decided on the run")
+    func mergedIsASuccess() async throws {
+        let (f, service) = try await fixture()
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Landed").card
+        card.column = .done
+        card.prNumber = 52
+        try await f.store.saveCard(card)
+        var run = SkillRun.card(
+            cardID: card.id, repoID: f.repo.id, kind: .mergePR, prompt: "x", cwd: f.repo.path,
+            logPath: "/tmp/a", stderrPath: "/tmp/b",
+            requiresVerifiedGreen: true, createdAt: epoch)
+        run.state = .succeeded
+        run.verifiedOutcome = .merged(commitSHA: "deadbeef", number: nil, url: nil, branch: nil)
+        try await f.store.saveRun(run)
+
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: [card.id], maxAttemptsPerCard: 2,
+                patience: 900, startedAt: epoch),
+            preflight: .passing)
+
+        let row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.reason == "Merged.")
+        #expect(row.disposition == .merged)
+    }
+
+    /// **Task 11's obligation, provable for the first time here.** `start`
+    /// ends by calling `advance()` and then re-reading the session row rather
+    /// than returning the in-memory value it opened with —
+    /// `AutoDevDriving.swift:64-68`'s "a loop that reaches its own end must
+    /// make that observable." Task 11 could not write a test that discriminates
+    /// this: `advance()` was a no-op in that task, so nothing could make the
+    /// in-memory value diverge from the stored row, and it removed its own
+    /// test after proving that by actually deleting the re-read and watching
+    /// 9/9 stay green anyway.
+    ///
+    /// A single card already `.done` with a terminal, merged run settles in
+    /// round one — the round `start()` itself runs — so `finish(session)`
+    /// flips the *stored* row to `.finished` before `start` returns. If
+    /// `start` returned the in-memory `opened` instead of re-reading, this
+    /// would observe `.running` here and the row would already say
+    /// `.finished`: the two values would disagree, which is exactly the gap
+    /// Task 11 could never construct.
+    @Test("A session that settles its only card in round one reports itself finished, not running")
+    func aSessionThatSettlesInRoundOneReportsFinished() async throws {
+        let (f, service) = try await fixture()
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Landed").card
+        card.column = .done
+        card.prNumber = 52
+        try await f.store.saveCard(card)
+        var run = SkillRun.card(
+            cardID: card.id, repoID: f.repo.id, kind: .mergePR, prompt: "x", cwd: f.repo.path,
+            logPath: "/tmp/a", stderrPath: "/tmp/b",
+            requiresVerifiedGreen: true, createdAt: epoch)
+        run.state = .succeeded
+        run.verifiedOutcome = .merged(commitSHA: "deadbeef", number: nil, url: nil, branch: nil)
+        try await f.store.saveRun(run)
+
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: [card.id], maxAttemptsPerCard: 2,
+                patience: 900, startedAt: epoch),
+            preflight: .passing)
+
+        #expect(started.state == .finished)
+        #expect(try await f.store.autoDevSession(id: started.id)?.state == .finished)
+        #expect(started.endedAt != nil)
+    }
+
+    @Test("A blocked repository ends the session, not one card")
+    func abortSettlesEveryCard() async throws {
+        let (f, service) = try await fixture()
+        // Three cards in In Review with a pull request and **no reading**.
+        //
+        // The shape matters: `start` runs a round before this test can do
+        // anything, and a card that round can *advance* comes back holding its
+        // own run — after which every later round answers
+        // `.runAlreadyInFlight` and never reaches `evaluateMove` at all, so
+        // `.repoDisabled` could never be seen. These three settle on nothing:
+        // the first round answers `.blocked(.notVerifiedGreen(reason:
+        // .noReading))` (no `PRStatus` row at all for these numbers), which the
+        // policy reads as `.wait` and spawns nothing.
+        var cards: [Card] = []
+        for index in 0..<3 {
+            var card = try await f.board.createCard(
+                repoID: f.repo.id, title: "Card \(index)", story: story(index)).card
+            card.column = .inReview
+            card.issueNumber = 40 + index
+            card.prNumber = 60 + index
+            try await f.store.saveCard(card)
+            cards.append(card)
+        }
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: cards.map(\.id),
+                maxAttemptsPerCard: 2, patience: 900, startedAt: epoch),
+            preflight: .passing)
+
+        let waiting = try await f.store.autoDevEngagements(sessionID: started.id)
+        #expect(waiting.allSatisfy { $0.disposition == .engaged })
+        #expect(try await f.store.runs(cardID: cards[0].id).isEmpty)
+
+        // The repository is turned off under the session, which is what
+        // `evaluateMove` answers `.repoDisabled` to.
+        var repo = f.repo
+        repo.isEnabled = false
+        try await f.store.saveRepo(repo)
+        await service.advance()
+
+        let rows = try await f.store.autoDevEngagements(sessionID: started.id)
+        #expect(rows.allSatisfy { $0.disposition == .blocked })
+        #expect(
+            rows.allSatisfy {
+                $0.reason == "The repository is disabled in Elliot, so nothing in this session can run."
+            })
     }
 }
