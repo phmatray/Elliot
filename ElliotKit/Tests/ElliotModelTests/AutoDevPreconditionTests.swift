@@ -11,6 +11,13 @@ import Testing
 /// `AutoDevService`, where it reads as a defect in the new code rather than as
 /// a missing dependency. The same discipline `swift-floor.yml` applies to the
 /// toolchain: a tools-version refusal at manifest parse beats a mystery.
+///
+/// What it witnesses is that these symbols exist, with these shapes, at this
+/// commit — not that the behaviour they gate is correct. Where a test below
+/// also exercises a slice of a rule, that slice is a cross-check, not new
+/// coverage: the rule itself is already pinned in `MergeableUnattendedTests.swift`
+/// and `RuleEngineTests.swift`, and this file does not duplicate or substitute
+/// for either.
 @Suite("Auto-dev preconditions")
 struct AutoDevPreconditionTests {
 
@@ -46,6 +53,11 @@ struct AutoDevPreconditionTests {
             now: checkedAt.addingTimeInterval(secondsOld), currentHeadOid: "a1b2c3")
     }
 
+    /// This assertion duplicates `MoveOriginTests`, deliberately — it adds no
+    /// new coverage. This function's real job is the compile-time reference
+    /// to `.autoDev`: measured by deleting the case, which fails the build
+    /// from `SkillRun.swift`'s own exhaustive `allowsSideEffects` switch,
+    /// before the test target is ever reached.
     @Test("The origin auto-dev moves under exists, and is allowed to fire skills")
     func originExists() {
         let origin = MoveOrigin.autoDev(sessionID: UUID())
@@ -59,6 +71,13 @@ struct AutoDevPreconditionTests {
         #expect(MoveBlock.repoBlocked.code == "repo_blocked")
     }
 
+    /// Only the `requiresVerifiedGreen == true` half of the `(.inReview,
+    /// .done)` arm. Forcing the gate to run unconditionally (`if true` in
+    /// place of `if context.requiresVerifiedGreen`) leaves this test green
+    /// too — measured directly. The other half — a caller that does not
+    /// demand a verified green is not held to one — is pinned by
+    /// `RuleEngineTests`' "A watched merge is not held to a verified green,
+    /// on the same readings", not by this file.
     @Test("A move that demands a verified green is blocked on anything short of one")
     func contextCarriesTheRule() {
         let context = MoveContext(
@@ -79,6 +98,12 @@ struct AutoDevPreconditionTests {
         #expect(outcome == .blocked(.notVerifiedGreen(reason: .sign(.checksFailing(count: 1)))))
     }
 
+    /// Isolates only one of `isMergeableUnattended`'s four conjuncts:
+    /// `merge == .clean`, through the `UNSTABLE` case below. Dropping
+    /// `!isStale`, `sign == nil`, or `ci.hasBuildVerdict` from the property
+    /// each leaves this test green — measured directly, by deleting each
+    /// conjunct in turn and re-running. Those three are pinned by
+    /// `MergeableUnattendedTests.swift`, not by this file.
     @Test("A clean, fresh, unsigned reading is mergeable unattended; a stale one is not")
     func predicateExists() {
         #expect(reading().isMergeableUnattended)
