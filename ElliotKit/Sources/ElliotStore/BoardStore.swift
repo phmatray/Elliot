@@ -100,8 +100,19 @@ public final class BoardStore: Sendable {
     /// typed API belongs there: raw SQL passes straight through the schema, so
     /// it can also create rows no migration would ever produce, which is a test
     /// proving something about a database that cannot exist.
+    ///
+    /// `writeWithoutTransaction`, not `write`: GRDB's `write` wraps the whole
+    /// closure in a transaction, and SQLite treats `PRAGMA foreign_keys` as a
+    /// **no-op inside one** — silently, no error. A caller toggling the pragma
+    /// to orphan a row the schema's own `ON DELETE CASCADE` would otherwise
+    /// sweep away (`RoundTriggeringTests.unreadableRepositoryTriggersARound`)
+    /// would see the pragma "succeed" and do nothing, then watch the very row
+    /// it meant to keep vanish in the cascade it thought it had disabled.
+    /// Measured directly: with `write`, `DELETE FROM repo ...` cascade-deleted
+    /// the dependent `skillRun` row too, and the caller had no way to tell —
+    /// the delete itself didn't fail, it just deleted more than asked.
     func testOnlyExecute(_ sql: String) async throws {
-        try await requireWriter().write { db in try db.execute(sql: sql) }
+        try await requireWriter().writeWithoutTransaction { db in try db.execute(sql: sql) }
     }
 
     // MARK: - Repos

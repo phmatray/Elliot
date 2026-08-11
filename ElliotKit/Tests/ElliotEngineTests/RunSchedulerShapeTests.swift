@@ -271,4 +271,94 @@ struct RunSchedulerShapeTests {
             """
         )
     }
+
+    /// The body of `private func finish(run: SkillRun, outcome: ClaudeRunOutcome?) async {`
+    /// up to the next declaration at the same indentation.
+    private func finishBody() -> String {
+        let code = Self.code
+        guard
+            let begin = code.range(
+                of: "private func finish(run: SkillRun, outcome: ClaudeRunOutcome?) async {")
+        else { return "" }
+        let rest = code[begin.upperBound...]
+        guard let end = rest.range(of: "\n    private func ") ?? rest.range(of: "\n    static func ")
+        else { return String(rest) }
+        return String(rest[..<end.lowerBound])
+    }
+
+    /// The body of `private func discardQueued(_ runID: UUID) async -> Bool {`
+    /// up to the next declaration.
+    private func discardQueuedBody() -> String {
+        let code = Self.code
+        guard let begin = code.range(of: "private func discardQueued(_ runID: UUID) async -> Bool {")
+        else { return "" }
+        let rest = code[begin.upperBound...]
+        guard let end = rest.range(of: "\n    public func promote(") else { return String(rest) }
+        return String(rest[..<end.lowerBound])
+    }
+
+    /// `RoundTriggeringTests` (`AutoDevServiceTests.swift`) proves the trigger
+    /// fires from `finish`. It cannot prove *where* — a behavioural test that
+    /// never exercises the ordering stays green whichever side of `pump()` the
+    /// call sits on, which is exactly what fix round 1 found: moving the call
+    /// above `pump()` reddened nothing in the whole suite. The design's entire
+    /// stated reason for this task (see `RoundTriggering.swift`'s doc comment
+    /// and the plan's own note) is that a round triggered from here must never
+    /// observe a queue that has not yet reconsidered itself under the run that
+    /// just finished — which only holds if `pump()` has already returned.
+    /// Source-shape is the only thing that can pin the ordering itself, the
+    /// same reasoning `pumpRemovesFromPendingBeforeStart` above gives for its
+    /// own ordering claim.
+    @Test("finish tells the round trigger only after pump() has drained the queue")
+    func finishTriggersARoundAfterPumpNotBefore() {
+        let body = finishBody()
+        #expect(
+            !body.isEmpty,
+            "finish(run:outcome:) not found — this test's parser needs updating, not deleting")
+        let pump = body.range(of: "await pump()")
+        let trigger = body.range(of: "await roundTrigger?.triggerRound()")
+        #expect(pump != nil, "finish no longer calls pump() — the queue would never re-drain")
+        #expect(trigger != nil, "finish no longer tells the round trigger — Task 9's whole point")
+        guard let pump, let trigger else { return }
+        #expect(
+            pump.lowerBound < trigger.lowerBound,
+            """
+            `finish` tells the round trigger before calling `pump()`, or the \
+            call moved out of `finish` entirely. A round triggered before \
+            `pump()` has drained the queue can observe pending runs that have \
+            not yet been reconsidered under the occupancy this run's ending \
+            just freed — the exact half-finished state the placement was \
+            chosen to avoid.
+            """
+        )
+    }
+
+    /// `discardQueued` is the reader cancelling a queued run, not a run ending
+    /// on its own — cancellation is a later task's subject, and the override
+    /// that shaped this task said so explicitly. Nothing behavioural pins the
+    /// omission: fix round 1 found that adding a trigger call here passes the
+    /// full 2 692-test suite unchanged, which is exactly "one refactor from
+    /// being reversed silently." The comment left at the call site is the
+    /// only thing standing between that and a silent reversal; this is the
+    /// gate that makes the comment enforceable.
+    @Test("discardQueued never tells the round trigger")
+    func discardQueuedDoesNotTriggerARound() {
+        let body = discardQueuedBody()
+        #expect(
+            !body.isEmpty,
+            "discardQueued(_:) not found — this test's parser needs updating, not deleting")
+        #expect(
+            !body.contains("triggerRound"),
+            """
+            `discardQueued` now calls the round trigger. That reverses a \
+            deliberate omission: this is the reader cancelling a *queued* run \
+            before it ever started, not a run ending on its own, and \
+            cancellation is a later task's subject (see the comment at the \
+            call site in `RunScheduler.swift`). If cancellation now needs to \
+            trigger a round too, that is a decision for the task that owns \
+            cancellation to make and pin — not something to fall out of this \
+            file going untested.
+            """
+        )
+    }
 }

@@ -1,11 +1,17 @@
 import ElliotModel
 import ElliotProcess
-import ElliotStore
 import Foundation
 import TestSupport
 import Testing
 
 @testable import ElliotEngine
+// `@testable`, not the plain `import ElliotStore` this file used to have: the
+// repo-unreadable-arm test below needs `BoardStore.testOnlyExecute` and
+// `UUID.databaseKey`, both `internal`, to produce a `skillRun` row the typed
+// API refuses to write — `skillRun.repoID` is a NOT NULL foreign key with
+// `ON DELETE CASCADE` (`Migrations.swift`), so an orphaned run cannot be
+// created through `saveRun`/`deleteRepo` at all.
+@testable import ElliotStore
 
 /// The repository root, climbed once from this file's own path.
 ///
@@ -654,8 +660,18 @@ struct RoundTriggeringTests {
         let trigger = CountingTrigger()
         await scheduler.setRoundTrigger(trigger)
 
+        // Fix round 1: a real, existing directory, not `"/tmp/repo-<uuid>"`.
+        // `Foundation.Process.run()` validates `currentDirectoryURL` and throws
+        // **synchronously** when it does not exist, which lands in `start()`'s
+        // spawn-failure `catch` — the same arm `failedSpawnTriggersARound`
+        // covers — instead of `consume()`/`finish()`, the site this test's own
+        // name and comment claim to exercise. `TestHome.scratch`, the same
+        // seam the end-to-end suites (`Stack.make`) use for exactly this.
+        let repoPath = TestHome.scratch("round-trigger-finish")
+        try FileManager.default.createDirectory(at: repoPath, withIntermediateDirectories: true)
+
         let repo = Repo(
-            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            path: repoPath.path, nameWithOwner: "phmatray/Elliot",
             displayName: "Elliot")
         try await store.saveRepo(repo)
         let card = Card(
@@ -677,7 +693,18 @@ struct RoundTriggeringTests {
             while trigger.triggers == 0 { try await Task.sleep(for: .milliseconds(20)) }
         }
         #expect(trigger.triggers >= 1)
-        #expect(try await store.run(id: run.id)?.state.isTerminal == true)
+        let saved = try await store.run(id: run.id)
+        #expect(saved?.state.isTerminal == true)
+        // Confirm this is really `finish()`'s path, not `start()`'s
+        // spawn-failure `catch` — the exact confusion fix round 1 found.
+        // `state(for:)` only ever produces `.succeeded` from a *real*
+        // `ClaudeRunOutcome`; the catch block always writes `.failed` with a
+        // nil `exitCode` and an `.elliot`-sourced closing remark, never this
+        // shape. `/usr/bin/true` exits 0 and prints nothing, so a genuine run
+        // is `.succeeded` with `exitCode == 0`.
+        #expect(saved?.state == .succeeded)
+        #expect(saved?.exitCode == 0)
+        #expect(saved?.closing?.source != .elliot)
     }
 
     @Test("No trigger registered is not an error — the scheduler is unchanged without one")
@@ -739,5 +766,85 @@ struct RoundTriggeringTests {
         let saved = try await store.run(id: run.id)
         #expect(saved?.state == .failed)
         #expect(saved?.state.isTerminal == true)
+    }
+
+    /// The other arm the plan's placement missed, and fix round 1 found still
+    /// had zero coverage: `start`'s repo-unreadable guard, reached when
+    /// `store.repo(id:)` answers with no row at all.
+    ///
+    /// `skillRun.repoID` is a `NOT NULL` foreign key with `ON DELETE CASCADE`
+    /// (`Migrations.swift`), so this row cannot be produced through the typed
+    /// API — `saveRun` would refuse an unknown `repoID` outright, and a normal
+    /// `deleteRepo` cascades away the very run this test needs to survive.
+    /// `testOnlyExecute` exists for exactly this shape of claim (its own doc
+    /// comment: "some claims are about rows the type system cannot write").
+    /// Foreign-key enforcement has to come down for the one raw `DELETE` that
+    /// orphans the row, then back up — GRDB wraps `write` in a transaction,
+    /// and SQLite refuses `PRAGMA foreign_keys` while one is open, so both
+    /// PRAGMAs are their own `testOnlyExecute` calls, not folded into the
+    /// `DELETE`'s.
+    @Test("A run whose repository row is gone still tells the registered round trigger")
+    func unreadableRepositoryTriggersARound() async throws {
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
+            gitPath: "/usr/bin/false", environment: [:])
+        let scheduler = RunScheduler(
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
+        let trigger = CountingTrigger()
+        await scheduler.setRoundTrigger(trigger)
+
+        let repo = Repo(
+            path: FileManager.default.temporaryDirectory.path, nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+        let card = Card(
+            repoID: repo.id, title: "Anything",
+            columnEnteredAt: Date(), createdAt: Date(), updatedAt: Date())
+        try await store.saveCard(card)
+        let runID = UUID()
+        let run = SkillRun.card(
+            id: runID, cardID: card.id, repoID: repo.id, kind: .createIssue, prompt: "x",
+            cwd: repo.path,
+            logPath: StoreLocation.runLogURL(runID: runID).path,
+            stderrPath: StoreLocation.runStderrURL(runID: runID).path, createdAt: Date())
+        try await store.saveRun(run)
+
+        // Orphan the row `store.repo(id:)` will look up, without cascading
+        // away the run itself.
+        //
+        // Deliberately left **off** for the rest of this test, not restored:
+        // `start()`'s repo-unreadable branch ends by writing the run's own
+        // row back (`try? store.saveRun(updated)`, setting `.state = .failed`)
+        // — and that row's `repoID` still names the now-missing parent. With
+        // foreign keys back on, SQLite re-validates the FK on that very
+        // `UPDATE` and refuses it; `try?` swallows the failure silently, so
+        // the trigger still fires (nothing between the yield and the write
+        // depends on the save succeeding) but the persisted `state` never
+        // moves off `.queued` — a second, real defect this raw-SQL fixture
+        // would otherwise paper over. Confirmed directly: restoring
+        // `PRAGMA foreign_keys = ON` here reproduces exactly that — the
+        // trigger fires, `saved?.state` stays `.queued`. This in-memory store
+        // is single-use and discarded at the end of the test, so leaving
+        // enforcement off for its remainder costs nothing.
+        try await store.testOnlyExecute("PRAGMA foreign_keys = OFF")
+        try await store.testOnlyExecute("DELETE FROM repo WHERE id = '\(repo.id.databaseKey)'")
+        #expect(try await store.repo(id: repo.id) == nil)
+
+        await scheduler.launch(runID: run.id)
+
+        // Synchronous once admitted — `store.repo(id:)` answers `nil` with no
+        // process ever spawned — but bounded all the same.
+        try await withTimeout(.seconds(20)) {
+            while trigger.triggers == 0 { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        #expect(trigger.triggers >= 1)
+        let saved = try await store.run(id: run.id)
+        #expect(saved?.state == .failed)
+        #expect(saved?.state.isTerminal == true)
+        // The repo-unreadable arm's own sentence, distinct from the
+        // spawn-failure arm's — proof this hit the intended guard, not a
+        // neighbour.
+        #expect(saved?.closing?.text == "The repository this run belongs to no longer exists.")
     }
 }

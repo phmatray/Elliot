@@ -3,8 +3,9 @@ import Foundation
 /// Something that wants to re-evaluate whenever Elliot's own machinery moves.
 ///
 /// Registered explicitly and held weakly, in the shape of the `SystemMoving` the
-/// scheduler and the watcher already hold — for the same cycle-breaking reason,
-/// and for one more.
+/// scheduler and the watcher already hold — for the same cycle-breaking reason:
+/// the holder owns the scheduler, so a strong reference back would be a cycle
+/// neither could ever break.
 ///
 /// ⚠️ `RunScheduler.updates` is an `AsyncStream`, and an `AsyncStream` does not
 /// multiplex: two `for await` loops draw from one buffer, so each event reaches
