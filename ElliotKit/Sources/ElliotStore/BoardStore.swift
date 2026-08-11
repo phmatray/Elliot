@@ -1076,6 +1076,60 @@ public final class BoardStore: Sendable {
         }
     }
 
+    // MARK: - Auto-dev
+
+    /// A session and its engaged cards in one transaction — the shape and the
+    /// reason of `saveAnalysis(_:runs:)`. Either every row lands or none does: a
+    /// session with fewer cards than it was started with is a promise that
+    /// quietly shrank, and nothing walks the array against the rows to notice.
+    public func saveAutoDevSession(
+        _ session: AutoDevSession, cards: [AutoDevEngagement]
+    ) async throws {
+        try await requireWriter().write { db in
+            try session.save(db)
+            for card in cards { try card.insert(db) }
+        }
+    }
+
+    public func saveAutoDevSession(_ session: AutoDevSession) async throws {
+        try await requireWriter().write { db in try session.save(db) }
+    }
+
+    public func autoDevSession(id: UUID) async throws -> AutoDevSession? {
+        try await reader.read { db in try AutoDevSession.fetchOne(db, key: id.databaseKey) }
+    }
+
+    /// The sessions that were still going when Elliot stopped, oldest first.
+    public func runningAutoDevSessions() async throws -> [AutoDevSession] {
+        try await reader.read { db in
+            try AutoDevSession
+                .filter(AutoDevSession.Columns.state == AutoDevSession.State.running.rawValue)
+                .order(AutoDevSession.Columns.startedAt)
+                .fetchAll(db)
+        }
+    }
+
+    /// One session's engaged-card rows. A card the user deleted is gone from
+    /// here, which is what leaving a session means.
+    ///
+    /// Filtered on `sessionID` and never on `AutoDevEngagement.id` — that `id`
+    /// is a computed `{ cardID }`, not the row's real key, and `filter(id:)`
+    /// would hang off the composite primary key `(sessionID, cardID)` instead.
+    /// Two sessions can each hold a row for the same card; this is the query
+    /// that keeps them apart.
+    public func autoDevEngagements(sessionID: UUID) async throws -> [AutoDevEngagement] {
+        try await reader.read { db in
+            try AutoDevEngagement
+                .filter(AutoDevEngagement.Columns.sessionID == sessionID.databaseKey)
+                .order(AutoDevEngagement.Columns.updatedAt)
+                .fetchAll(db)
+        }
+    }
+
+    public func saveAutoDevEngagement(_ engagement: AutoDevEngagement) async throws {
+        try await requireWriter().write { db in try engagement.save(db) }
+    }
+
     // MARK: - Proposals
 
     public func saveProposals(_ proposals: [StoryProposal]) async throws {

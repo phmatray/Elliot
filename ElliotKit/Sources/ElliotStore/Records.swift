@@ -139,6 +139,40 @@ extension PRStatus: FetchableRecord, PersistableRecord {
     }
 }
 
+extension AutoDevSession: FetchableRecord, PersistableRecord {
+    public static let databaseTableName = "autoDevSession"
+    public static func databaseUUIDEncodingStrategy(for column: String) -> DatabaseUUIDEncodingStrategy {
+        .uppercaseString
+    }
+
+    public enum Columns {
+        public static let repoID = GRDB.Column("repoID")
+        public static let state = GRDB.Column("state")
+        public static let startedAt = GRDB.Column("startedAt")
+    }
+}
+
+/// A composite primary key, so the columns are named here rather than leaning on
+/// `id` — `AutoDevEngagement.id` is a computed `UUID` (`{ cardID }`) for
+/// SwiftUI's `Identifiable`, not a column, and a synthesised `Codable` does not
+/// encode a computed property. GRDB hangs `filter(id:)` off the primary key, and
+/// the primary key here is the pair `(sessionID, cardID)`, not `id` alone —
+/// **never call `filter(id:)` on this type.** Two different sessions can each
+/// hold a row for the same card, which is exactly when a lookup keyed on
+/// `cardID` alone would return the wrong session's row.
+extension AutoDevEngagement: FetchableRecord, PersistableRecord {
+    public static let databaseTableName = "autoDevEngagement"
+    public static func databaseUUIDEncodingStrategy(for column: String) -> DatabaseUUIDEncodingStrategy {
+        .uppercaseString
+    }
+
+    public enum Columns {
+        public static let sessionID = GRDB.Column("sessionID")
+        public static let cardID = GRDB.Column("cardID")
+        public static let updatedAt = GRDB.Column("updatedAt")
+    }
+}
+
 /// `Column` means the board's five columns everywhere in Elliot. GRDB's SQL
 /// `Column` is reached through this alias so the unqualified name keeps the
 /// meaning that matters to the domain.

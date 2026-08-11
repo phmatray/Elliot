@@ -424,6 +424,69 @@ enum Migrations {
             }
         }
 
+        // v16, additive: an unattended session, its engaged cards, and the flag
+        // that carries a move's green requirement onto the run it made.
+        //
+        // Two tables and not one JSON blob on the session: the per-card row is
+        // what the report renders, and a blob does not join. The session keeps
+        // `engagedCardIDs` all the same — that array is the *promise* (closed at
+        // start, never grown), where the rows are the *state*.
+        //
+        // `requiresVerifiedGreen` is nullable with no default, deliberately.
+        // `BoardStore.openReadOnly` lets a helper read a file it is ahead of,
+        // and that tolerance is exactly GRDB decoding an absent column as nil.
+        //
+        // `ON DELETE CASCADE` from `card`: deleting a card takes its row with
+        // it, so a card a user deleted mid-session leaves the session rather
+        // than holding it open for ever.
+        //
+        // ⚠️ No `RenamedMigration` entry, for the reason `:276`, `:334`, `:360`
+        // and `:394` above already give: a rename entry records a migration
+        // that *actually reached a database* under a different name, and
+        // nothing has ever run this one — this branch has never merged, so
+        // neither `v16_autoDev` nor any earlier number it might have carried
+        // has reached a database anywhere.
+        migrator.registerMigration("v16_autoDev") { db in
+            try db.create(table: "autoDevSession") { t in
+                t.primaryKey("id", .text)
+                t.column("repoID", .text).notNull()
+                    .references("repo", onDelete: .cascade)
+                t.column("engagedCardIDs", .text).notNull()      // JSON array
+                t.column("maxAttemptsPerCard", .integer).notNull()
+                t.column("patience", .double).notNull()
+                t.column("startedAt", .datetime).notNull()
+                t.column("endedAt", .datetime)
+                t.column("state", .text).notNull()
+            }
+            // The launch path asks exactly one thing: which sessions were still
+            // running when the app stopped.
+            try db.create(
+                index: "autoDevSession_on_state", on: "autoDevSession", columns: ["state"])
+
+            // Named `autoDevEngagement`, matching `AutoDevEngagement` — not
+            // `autoDevCard`, which would name a type this branch never ships.
+            //
+            // Keyed on `(sessionID, cardID)`, not `id`: `AutoDevEngagement.id`
+            // is a computed `{ cardID }`, not a stored column — two different
+            // sessions can each hold a row for the same card, and the pair is
+            // the row's real identity.
+            try db.create(table: "autoDevEngagement") { t in
+                t.column("sessionID", .text).notNull()
+                    .references("autoDevSession", onDelete: .cascade)
+                t.column("cardID", .text).notNull()
+                    .references("card", onDelete: .cascade)
+                t.column("attempts", .integer).notNull()
+                t.column("disposition", .text).notNull()
+                t.column("reason", .text).notNull()
+                t.column("updatedAt", .datetime).notNull()
+                t.primaryKey(["sessionID", "cardID"])
+            }
+
+            try db.alter(table: "skillRun") { t in
+                t.add(column: "requiresVerifiedGreen", .boolean)
+            }
+        }
+
         return migrator
     }
 
