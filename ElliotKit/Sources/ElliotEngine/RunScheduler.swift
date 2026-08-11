@@ -37,7 +37,7 @@ public enum SchedulerUpdate: Sendable {
 }
 
 /// Runs skills, at most a few at a time, respecting what can safely overlap.
-public actor RunScheduler: RunLaunching {
+public actor RunScheduler: RunLaunching, RunQueueReading {
     private let store: BoardStore
     private let toolConfig: ToolConfig
     private let verifier: Verifier
@@ -184,6 +184,12 @@ public actor RunScheduler: RunLaunching {
     }
 
     public var paused: Bool { isPaused }
+
+    /// `paused` as `RunQueueReading` asks for it. Two spellings of one value,
+    /// and deliberately not a rename: `AppModel.swift:2197` reads `paused`
+    /// directly, and a protocol requirement is a different thing from a
+    /// property the app happens to read.
+    public func queueIsPaused() async -> Bool { isPaused }
 
     /// Empties the queue without touching what is running.
     ///

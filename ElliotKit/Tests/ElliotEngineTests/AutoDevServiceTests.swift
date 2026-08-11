@@ -585,3 +585,32 @@ struct MergeAdmissionTests {
         #expect(queue.first?.refusal == .mergeVerdictNotEstablished)
     }
 }
+
+/// `RunQueueReading` is the read-only half of what `RunScheduler` exposes to
+/// auto-dev: whether the queue is stopped, and what is holding each pending
+/// run. A second protocol beside `RunLaunching` on purpose — see
+/// `RunQueueReading.swift`'s header for why widening `RunLaunching` itself
+/// would be wrong.
+@Suite("Run queue reading")
+struct RunQueueReadingTests {
+
+    private func scheduler() throws -> RunScheduler {
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            gitPath: "/usr/bin/true", environment: [:])
+        return RunScheduler(
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
+    }
+
+    @Test("The scheduler answers the protocol auto-dev reads it through")
+    func schedulerConforms() async throws {
+        let scheduler = try scheduler()
+        let queue: any RunQueueReading = scheduler
+        #expect(await queue.queueIsPaused() == false)
+        #expect(await queue.queueSnapshot().isEmpty)
+
+        await scheduler.pause()
+        #expect(await queue.queueIsPaused())
+    }
+}
