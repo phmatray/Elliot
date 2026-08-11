@@ -2,11 +2,14 @@ import Foundation
 
 /// Why an unattended agent may not be started against a repository right now.
 ///
-/// **One rule, four callers**: `AnalysisService.start`, the appraisal — neither
+/// **One rule, five callers**: `AnalysisService.start`, the appraisal — neither
 /// of which passes through a board transition — `AnalysisRefusal`, which renders
 /// it for the toolbar's tooltip and the analysis panel's footer and adds the
-/// remedy each sentence names, and `AppModel.autoDevRefusal`, which gates a
-/// session that drives cards by itself and so **merges**.
+/// remedy each sentence names, `AppModel.autoDevRefusal`, which gates a
+/// session that drives cards by itself and so **merges**, and
+/// `AutoDevService.start`, the session's own act of starting — the site that
+/// actually refuses before spawning the first unattended run, rather than only
+/// disabling the button that opens one.
 ///
 /// ⚠️ **The count is load-bearing prose, so it moves with the code.** Each new
 /// asker adds a gate to `UnattendedStartDelegationTests`, which is the only

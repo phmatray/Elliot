@@ -1202,4 +1202,38 @@ struct AutoDevStartTests {
         #expect(AutoDevError.repoNotFound(UUID()).response.code == .repoNotFound)
         #expect(ElliotErrorCode.autoDevRefused.rawValue == "auto_dev_refused")
     }
+
+    /// Fix round 1, finding 2: `refusalsMapToTheWire` above only checks
+    /// non-emptiness, which a fixed unrelated string and a swapped hint both
+    /// satisfy — measured directly: both breaks left the whole suite green.
+    /// The wire *code* was already pinned; this pins the *text*, which is the
+    /// entire explanation a person gets when a session refuses to start.
+    @Test("A repoRefused response's message is the rule's sentence, and each hint names its own fix")
+    func repoRefusedTextIsPinned() {
+        // The message half: not a copy of the rule's two sentences (that copy
+        // would itself be a second home for them, which `eachSentenceHasOneHome`
+        // in `UnattendedStartDelegationTests` polices for `Sources/`) but a
+        // comparison against the one place they live, so a placeholder replacing
+        // `refusal.sentence` in `AutoDevError.response` cannot pass by
+        // coincidence.
+        #expect(
+            AutoDevError.repoRefused(.repoDisabled).response.message
+                == UnattendedStartRefusal.repoDisabled.sentence)
+        #expect(
+            AutoDevError.repoRefused(.preflightBlocked).response.message
+                == UnattendedStartRefusal.preflightBlocked.sentence)
+
+        // The hint half: `AutoDevError.response`'s own words, pinned as
+        // literals — the convention `RefusalHintTests` uses for exactly this
+        // reason, "the text is the interface here". Two separate equalities,
+        // not a not-equal-to-each-other check: a hint that drifted to some
+        // *third* wrong sentence would still differ from its sibling and slip
+        // past a mere inequality.
+        #expect(
+            AutoDevError.repoRefused(.repoDisabled).response.hint
+                == "Enable the repository in Elliot's Preflight screen.")
+        #expect(
+            AutoDevError.repoRefused(.preflightBlocked).response.hint
+                == "Open Elliot's Preflight screen and clear the failing check.")
+    }
 }
