@@ -1809,3 +1809,252 @@ struct AutoDevRoundTests {
         #expect(row.reason != "A run is already working on this card.")
     }
 }
+
+/// Task 13: what `finish(_:)` owes the runs a settled card is still holding.
+///
+/// **Abandoning a card and cancelling its run are not the same act, and only
+/// the second frees the card.** A `.stalled` run is non-terminal
+/// (`RunState.isTerminal`), so `activeRun(cardID:)` answers with it for ever —
+/// the card is held by a run nobody is waiting for. A `.queued` run is the
+/// same shape one refusal over.
+///
+/// ⛔ **A `.running` run is never cancelled by termination.** `finish` reaches
+/// every kind of held run through the same `activeRun(cardID:)` read, so the
+/// distinction has to be made by `finish` itself, not by what the store hands
+/// back. `aRunningRunIsNeverCancelledByTermination` below is what pins it —
+/// see that test's own comment for why the session can still reach `finish`
+/// with a `.running` run on an engaged card, which is narrower than "a running
+/// run keeps the session alive" and is the actual mechanism this file found
+/// while tracing `AutoDevPolicy.decide(block:...)`.
+///
+/// Every fixture here is headless (`BoardService(store:launcher:)`, no
+/// `verdicts:`) rather than wired to `Scripts/fake-gh.sh` the way
+/// `AutoDevProposalTests`/`AutoDevRoundTests` are: no card constructed below
+/// carries both `requiresVerifiedGreen` reachability *and* a live
+/// `proposeMove` call — the blocked-by-empty-idea card has no `prNumber` at
+/// all, and every held-run card is caught by the `if let run = active[card.id]`
+/// branch in `AutoDevService.advance(_:)` before `proposeMove` is ever called,
+/// so `BoardService.proposeMove`'s verdict read (`BoardService.swift:153`,
+/// gated on `requiresVerifiedGreen && card.prNumber != nil`) is never reached.
+@Suite("Auto-dev — termination")
+struct AutoDevTerminationTests {
+
+    private let epoch = Date(timeIntervalSince1970: 1_770_000_000)
+
+    /// A session where every card is blocked must finish. Under `withTimeout`
+    /// because the failure this guards against is not a wrong answer, it is a
+    /// loop that never gives one.
+    @Test("A session whose every card is blocked finishes")
+    func everyCardBlockedStillFinishes() async throws {
+        try await withTimeout(.seconds(20)) {
+            let store = try BoardStore.inMemory()
+            let launcher = FakeLauncher()
+            let queue = FakeQueue()
+            let board = BoardService(store: store, launcher: launcher)
+            try await store.saveSpendCeiling(SpendCeiling(perRunUSD: nil, perDayUSD: 25))
+            let repo = Repo(
+                path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+                displayName: "Elliot")
+            try await store.saveRepo(repo)
+
+            // Three cards with nothing on them: `.backlog → .todo` is
+            // `.blocked(.emptyIdea)`, which settles without repetition.
+            var ids: [UUID] = []
+            for _ in 0..<3 {
+                let card = try await board.createCard(repoID: repo.id, title: "").card
+                ids.append(card.id)
+            }
+
+            let service = AutoDevService(
+                store: store, board: board, launcher: launcher, queue: queue,
+                clock: { self.epoch })
+            let started = try await service.start(
+                session: AutoDevSession(
+                    repoID: repo.id, engagedCardIDs: ids, maxAttemptsPerCard: 2,
+                    patience: 600, startedAt: self.epoch),
+                preflight: .passing)
+
+            let ended = try #require(try await store.autoDevSession(id: started.id))
+            #expect(ended.state == .finished)
+            #expect(ended.endedAt == self.epoch)
+            #expect(try await store.runningAutoDevSessions().isEmpty)
+        }
+    }
+
+    /// A fixture shared by the three "a settled card is still holding a run"
+    /// tests below: one card in Done behind a failed merge attempt (settled —
+    /// `didMerge` reads its `verifiedOutcome`, not the column), holding a
+    /// second, still-active run in the caller-chosen state. The card's own
+    /// history — a terminal, non-merged run — is what makes Done mean
+    /// "attempted, not landed" rather than "nothing happened here yet", the
+    /// same shape `AutoDevRoundTests.doneIsNotMerged` exercises.
+    private func fixtureWithHeldRun(_ heldState: RunState) async throws
+        -> (store: BoardStore, launcher: FakeLauncher, queue: FakeQueue, card: Card, held: SkillRun)
+    {
+        let store = try BoardStore.inMemory()
+        let launcher = FakeLauncher()
+        let queue = FakeQueue()
+        let board = BoardService(store: store, launcher: launcher)
+        try await store.saveSpendCeiling(SpendCeiling(perRunUSD: nil, perDayUSD: 25))
+        let repo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+
+        var card = try await board.createCard(repoID: repo.id, title: "Fell over").card
+        card.column = .done
+        card.prNumber = 52
+        try await store.saveCard(card)
+
+        var attempted = SkillRun.card(
+            cardID: card.id, repoID: repo.id, kind: .mergePR, prompt: "x", cwd: repo.path,
+            logPath: "/tmp/a", stderrPath: "/tmp/b", createdAt: epoch)
+        attempted.state = .failed
+        attempted.verifiedOutcome = .notMerged(reason: "Still open.")
+        try await store.saveRun(attempted)
+
+        var held = SkillRun.card(
+            cardID: card.id, repoID: repo.id, kind: .mergePR, prompt: "x", cwd: repo.path,
+            logPath: "/tmp/c", stderrPath: "/tmp/d",
+            createdAt: epoch.addingTimeInterval(1))
+        held.state = heldState
+        try await store.saveRun(held)
+
+        return (store, launcher, queue, card, held)
+    }
+
+    /// A `.queued` run held by a settled card is cancelled when the session
+    /// ends — the queued-only half of the plan's combined test, kept separate
+    /// per the override: one test covering both `.queued` and `.stalled` would
+    /// let either arm rot behind the other.
+    @Test("Ending a session cancels a queued run its settled card is still holding")
+    func queuedRunIsCancelledWhenTheSessionEnds() async throws {
+        let (store, launcher, queue, card, held) = try await fixtureWithHeldRun(.queued)
+
+        // A clock this test moves, because the cut is reached **through** the
+        // patience window and not around it: an active run is what
+        // `activeRun(cardID:)` keeps answering with regardless of its state,
+        // so every round short of the patience window reads
+        // `.runAlreadyInFlight` — a `.wait`. Under a frozen clock that wait
+        // never expires, the card never settles, `finish` is never reached and
+        // nothing is ever cancelled.
+        let now = LockedDate(epoch)
+        let service = AutoDevService(
+            store: store, board: BoardService(store: store, launcher: launcher),
+            launcher: launcher, queue: queue, clock: { now.date })
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: card.repoID, engagedCardIDs: [card.id], maxAttemptsPerCard: 1,
+                patience: 600, startedAt: epoch),
+            preflight: .passing)
+
+        // While the run still holds the card the session waits, and cancels
+        // nothing: abandoning a card mid-wait would be the opposite mistake.
+        #expect(await launcher.cancelledRuns().isEmpty)
+        #expect(try await store.autoDevSession(id: started.id)?.state == .running)
+
+        now.advance(by: 601)
+        await service.advance()
+
+        #expect(try await store.autoDevSession(id: started.id)?.state == .finished)
+        #expect(await launcher.cancelledRuns() == [held.id])
+    }
+
+    /// The `.stalled` counterpart — `.stalled` is the subtle arm, because it
+    /// is **non-terminal** (`RunState.isTerminal`), so `activeRun(cardID:)`
+    /// answers with it for ever and the card is held by a run nobody is
+    /// waiting for unless `finish` cuts it loose.
+    @Test("Ending a session cancels a stalled run its settled card is still holding")
+    func stalledRunIsCancelledWhenTheSessionEnds() async throws {
+        let (store, launcher, queue, card, held) = try await fixtureWithHeldRun(.stalled)
+
+        let now = LockedDate(epoch)
+        let service = AutoDevService(
+            store: store, board: BoardService(store: store, launcher: launcher),
+            launcher: launcher, queue: queue, clock: { now.date })
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: card.repoID, engagedCardIDs: [card.id], maxAttemptsPerCard: 1,
+                patience: 600, startedAt: epoch),
+            preflight: .passing)
+
+        #expect(await launcher.cancelledRuns().isEmpty)
+        #expect(try await store.autoDevSession(id: started.id)?.state == .running)
+
+        now.advance(by: 601)
+        await service.advance()
+
+        #expect(try await store.autoDevSession(id: started.id)?.state == .finished)
+        #expect(await launcher.cancelledRuns() == [held.id])
+    }
+
+    /// ⛔ **The arm the plan states as a rule and tests nowhere.** `finish`
+    /// reaches this card exactly the way it reaches the `.queued`/`.stalled`
+    /// cases above — `AutoDevPolicy.decide(block:...)`'s `.runAlreadyInFlight`
+    /// arm does not read the held run's `RunState` at all, so patience expiry
+    /// settles the card `.blocked` and the session reaches `finish` with a
+    /// live `.running` run still on an engaged card. That is *narrower* than
+    /// "a running run keeps the session alive" — the session genuinely
+    /// finishes — and it is exactly why this line has to be pinned in code:
+    /// the one thing standing between "the session gave up" and "the session
+    /// killed a child mid-merge" is that `finish` must not call
+    /// `launcher.cancel(runID:)` for a `.running` run. Nothing upstream of
+    /// `finish` protects that; only `finish`'s own `run.state == .queued ||
+    /// run.state == .stalled` guard does.
+    @Test("A running run is never cancelled by termination")
+    func aRunningRunIsNeverCancelledByTermination() async throws {
+        let (store, launcher, queue, card, held) = try await fixtureWithHeldRun(.running)
+
+        let now = LockedDate(epoch)
+        let service = AutoDevService(
+            store: store, board: BoardService(store: store, launcher: launcher),
+            launcher: launcher, queue: queue, clock: { now.date })
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: card.repoID, engagedCardIDs: [card.id], maxAttemptsPerCard: 1,
+                patience: 600, startedAt: epoch),
+            preflight: .passing)
+
+        #expect(await launcher.cancelledRuns().isEmpty)
+
+        now.advance(by: 601)
+        await service.advance()
+
+        // The session gave up on the card — that much patience expiry always
+        // does — but the live run it is still holding is untouched.
+        #expect(try await store.autoDevSession(id: started.id)?.state == .finished)
+        #expect(await launcher.cancelledRuns().isEmpty)
+        #expect(try await store.activeRun(cardID: card.id)?.id == held.id)
+        #expect(try await store.activeRun(cardID: card.id)?.state == .running)
+    }
+
+    /// A finished session is not resumed, and not advanced again: `round()`
+    /// only ever reads `runningAutoDevSessions()`, so a `.finished` row is
+    /// invisible to every later `advance()` call.
+    @Test("A finished session is not resumed, and not advanced again")
+    func aFinishedSessionStaysFinished() async throws {
+        let store = try BoardStore.inMemory()
+        let launcher = FakeLauncher()
+        let queue = FakeQueue()
+        let board = BoardService(store: store, launcher: launcher)
+        try await store.saveSpendCeiling(SpendCeiling(perRunUSD: nil, perDayUSD: 25))
+        let repo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+        let card = try await board.createCard(repoID: repo.id, title: "").card
+
+        let service = AutoDevService(
+            store: store, board: board, launcher: launcher, queue: queue, clock: { self.epoch })
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: repo.id, engagedCardIDs: [card.id], maxAttemptsPerCard: 1,
+                patience: 600, startedAt: epoch),
+            preflight: .passing)
+        #expect(try await store.autoDevSession(id: started.id)?.state == .finished)
+
+        await service.advance()
+        #expect(await launcher.launchedRuns().isEmpty)
+        #expect(try await store.card(id: card.id)?.column == .backlog)
+    }
+}

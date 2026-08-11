@@ -488,8 +488,29 @@ public actor AutoDevService: RoundTriggering {
         return false
     }
 
-    /// Ends a session. Task 13 gives this the cancellations it also owes.
+    /// Ends a session, and lets go of what its cards are still holding.
+    ///
+    /// **Abandoning a card and cancelling its run are not the same act, and
+    /// only the second frees the card.** A `.stalled` run is non-terminal
+    /// (`RunState.isTerminal`), so `activeRun(cardID:)` answers with it for
+    /// ever; a `.queued` run held by a refusal such as
+    /// `.mergeWaitsForRepoToBeIdle` is the same shape one refusal over. Both
+    /// would otherwise outlive the session that made them, hold their card
+    /// against every future move, and be waited on by nobody.
+    ///
+    /// ⛔ A `.running` run is deliberately left alone: patience expiry can
+    /// settle a card even while its run is genuinely still going
+    /// (`AutoDevPolicy`'s `.runAlreadyInFlight` arm does not consult
+    /// `RunState`), so this method *is* reached with a live child in the
+    /// picture. The only path that stops one is the user's own stop, which is
+    /// PR5's — not a session giving up.
     private func finish(_ session: AutoDevSession) async {
+        for cardID in session.engagedCardIDs {
+            guard let run = (try? await store.activeRun(cardID: cardID)) ?? nil else { continue }
+            guard run.state == .queued || run.state == .stalled else { continue }
+            await launcher.cancel(runID: run.id)
+        }
+
         var ended = session
         ended.state = .finished
         ended.endedAt = clock()
