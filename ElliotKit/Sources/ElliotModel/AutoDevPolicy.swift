@@ -177,8 +177,15 @@ public enum AutoDevPolicy {
             // `.unknown` → `.unknown`), and `NotGreenReason.of`'s own guard already excludes
             // `.clean`. Binding `merge` rather than assuming `.unstable` keeps this arm correct if
             // a future `MergeState` case ever changes that.
+            //
+            // `mergeStateWord(merge)` below, not `merge.code`: that computed property is
+            // documented as a "stable identifier surfaced to MCP callers" and is already read off
+            // the wire once, at `ElliotIPC/Protocol.swift:556` — a frozen wire token, not display
+            // prose, and this sentence must stay free to be improved without silently changing
+            // what an agent matches on there.
             return waiting(
-                "GitHub does not yet consider this pull request clean to merge (\(merge.code)).",
+                "GitHub does not consider this pull request's merge state clean — it is "
+                    + "\(mergeStateWord(merge)).",
                 unchangedSince, patience, now)
 
         case .noBuildVerdict:
@@ -187,6 +194,30 @@ public enum AutoDevPolicy {
                 reason: "Everything known about this pull request is fine and it still cannot be "
                     + "merged unattended — every check that passed is an analyser, never a build, "
                     + "and no amount of waiting produces one that is not configured.")
+        }
+    }
+
+    /// A short, human phrase for `merge`, kept local to this file rather than a public
+    /// `MergeState.summary`. One caller wants this word today; a new public API for it is the
+    /// YAGNI a second caller would need to justify, and a local function moves easily if one ever
+    /// appears — `PRSign.summary` earned its public place by having several (a tooltip and a panel
+    /// headline); this has one.
+    ///
+    /// Total over all six `MergeState` cases, not only `.unstable`: the reachability comment at
+    /// the call site establishes which value actually arrives *today*, but this switch does not
+    /// lean on that derivation — it stays correct for whichever case shows up, the same discipline
+    /// as binding `merge` there instead of assuming. No `default:`.
+    private static func mergeStateWord(_ merge: MergeState) -> String {
+        switch merge {
+        case .clean:
+            // Unreachable through `NotGreenReason.of` — its own guard excludes `.clean` before
+            // this arm is ever reached — kept for the switch's own totality, not for a real case.
+            "clean"
+        case .conflict: "conflicting"
+        case .blocked: "blocked"
+        case .behind: "behind the base branch"
+        case .unstable: "unstable"
+        case .unknown: "not established"
         }
     }
 

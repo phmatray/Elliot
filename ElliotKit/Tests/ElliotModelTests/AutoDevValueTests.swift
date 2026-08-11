@@ -107,9 +107,17 @@ struct AutoDevPolicyTests {
         #expect(settles(decide(.action(.implementIssue(issueNumber: 47)), attempts: 3)))
     }
 
-    @Test("A move that fires nothing is still a move, and costs no attempt")
+    /// `.noAction` shares its guard with `.action` (`case .action, .noAction:`), so it is bound by
+    /// the same `attempts`/`maxAttempts` pair even though it spawns nothing. Driven at the bound
+    /// the same way `actionRetriesThenSettles` drives `.action`, so a future edit that splits the
+    /// shared case and narrows `.noAction`'s own treatment cannot ship green unnoticed.
+    @Test("A move that fires nothing is still a move, and costs no attempt — but shares the bound")
     func noActionAdvances() {
         #expect(decide(.noAction) == .retry)
+        #expect(decide(.noAction, attempts: 2) == .retry)
+        let settled = decide(.noAction, attempts: 3)
+        #expect(settles(settled))
+        #expect(!settled.reason.isEmpty)
     }
 
     @Test("A move that asks a human settles, because no human is watching")
