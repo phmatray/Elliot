@@ -54,7 +54,10 @@ public enum AutoDevSelection: Sendable, Hashable {
 /// enforce, and each is a dead end for the reader if it is missed.** There is no
 /// read for the *session* — only for its rows — so the board holds whatever a
 /// call last handed it and cannot discover a change by itself.
-/// `AppModel.refreshAutoDev` re-adopts the session it already has, and
+/// `AppModel.refreshAutoDev` re-reads the **rows** and re-adopts the session the
+/// board already has — and ⚠️ **nothing calls it in this build**, so it is a
+/// poll-shaped seam PR4 wires, not a poll already running. Read it as an
+/// affordance, never as a board that re-polls. Meanwhile
 /// `AppModel.autoDevRefusal` answers *"A session is already going. Stop it
 /// before starting another."* for any state that is not `.finished`. Therefore:
 ///

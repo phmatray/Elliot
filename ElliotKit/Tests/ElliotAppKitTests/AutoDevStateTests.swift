@@ -426,11 +426,19 @@ struct AutoDevStateTests {
         #expect(model.autoDevTally == AutoDevTally(engaged: 2, merged: 1, blocked: 0))
     }
 
-    /// ⚠️ **The one place silence is right, and it is right for a measured
-    /// reason.** `refreshAutoDev` is a poll — the band's `.task` drives it, not a
-    /// button — so reporting here would repaint the status bar with a refusal
-    /// nobody asked for, on every tick, in every build that has no loop. Losing a
-    /// refresh costs a hint; losing a `stop` costs a cancelled agent.
+    /// ⚠️ **The one place silence is right, and it is right for the *shape* of
+    /// the call rather than for a caller.** This comment used to justify it with
+    /// *"the band's `.task` drives it, not a button"* — there is no `.task` in
+    /// `OperationsView.swift`, and `refreshAutoDev` has no production caller at
+    /// all; it is a seam PR4 wires or replaces with a push.
+    ///
+    /// What survives that correction is the whole argument: this is the only
+    /// auto-dev entry point nobody presses, and whatever ends up driving a poll
+    /// drives it repeatedly and unasked — so reporting here would repaint the
+    /// status bar with a refusal nobody asked for, on every tick, in every build
+    /// that has no loop. Losing a refresh costs a hint; losing a `stop` costs a
+    /// cancelled agent, which is why the three commands above may not make the
+    /// same trade.
     @Test("Refreshing with nothing behind it stays quiet")
     func refreshingIsSilent() async {
         let (model, _, _) = seeded()

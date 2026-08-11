@@ -3969,12 +3969,25 @@ public final class AppModel {
 
     /// Re-reads the session's rows.
     ///
-    /// ⚠️ **Silence here is deliberate, and it is the one place it is.** This is
-    /// a poll — the band's `.task` drives it, not a button — so a build with no
-    /// loop attached would otherwise repaint the status bar with a refusal
-    /// nobody asked for, on every tick. ``refreshBusyLenses()`` makes the same
-    /// trade one section up and for the same reason: losing a refresh costs a
-    /// hint, losing a `stop` costs a cancelled agent.
+    /// ⚠️ **A poll-shaped seam with no caller in this build.** This doc used to
+    /// say *"the band's `.task` drives it"*; there is no `.task` in
+    /// `OperationsView.swift`, and `grep -rn refreshAutoDev Sources` finds this
+    /// declaration and a single cross-reference in `AutoDevDriving`'s doc. PR4
+    /// wires it — on a `.task`, on its own tick — or replaces it with a push
+    /// from the loop. The plan this screen was built from asks for none of the
+    /// three, so the absence is the delivery order rather than a missing line;
+    /// what it is **not** is a board that already re-polls.
+    ///
+    /// ⚠️ **Silence here is deliberate, and it is the one place it is** — and
+    /// the reason stands on the *shape* of the call rather than on the sentence
+    /// above. This is the only auto-dev entry point nobody presses: whatever
+    /// ends up driving it drives it repeatedly and unasked, so a build with no
+    /// loop attached would repaint the status bar with a refusal nobody asked
+    /// for, on every tick. The three commands may not make that trade, because
+    /// a reader is looking at the button they just used.
+    /// ``refreshBusyLenses()`` makes the same one one section up and for the
+    /// same reason: losing a refresh costs a hint, losing a `stop` costs a
+    /// cancelled agent.
     public func refreshAutoDev() async {
         guard let driver = autoDevDriver, let session = autoDev else { return }
         adopt(session, engagements: await driver.engagements(sessionID: session.id))
