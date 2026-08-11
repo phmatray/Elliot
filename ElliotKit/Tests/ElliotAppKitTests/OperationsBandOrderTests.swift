@@ -8,7 +8,7 @@ import Testing
 /// `swift test` cannot see the screen — this project has paid three merges for
 /// pretending otherwise (#47, #50, #52, #53) — but it can read the source, which
 /// is the idiom `CardAngleMarkTests`, `UpNextBandSourceTests` and
-/// `DrainDuplicationTests` already use for claims about a view's *shape*. Four
+/// `DrainDuplicationTests` already use for claims about a view's *shape*. Six
 /// claims here, and each is load-bearing:
 ///
 /// 1. **Adjacency.** "Above Up next" is not "somewhere above": Up next is the
@@ -19,10 +19,16 @@ import Testing
 ///    nothing is failing, and it is right to: preflight is a state nobody has to
 ///    remember. A session's outcome is a record — and the record it carries is a
 ///    failed merge, which stays in Done where `rankNextSteps` cannot see it.
-/// 3. **Reach.** The control that starts an unattended session must be where a
+/// 3. **Contents.** Drawn is not the same as drawing *this*: every field
+///    `AutoDevBand.of` decides has to reach the screen, and the report's rows
+///    have to come from the model.
+/// 4. **Wiring.** Each control has to run its own command and no other. The
+///    band's whole copy rests on Pause not being Stop, and nothing outside this
+///    file can see which one a button calls.
+/// 5. **Reach.** The control that starts an unattended session must be where a
 ///    reader can see it, nowhere a key can reach it, and disabled by the one
 ///    property that answers whether it may start — *on the button itself*.
-/// 4. **Tier.** The band decides the tone and `Consequence.swift` decides the
+/// 6. **Tier.** The band decides the tone and `Consequence.swift` decides the
 ///    colour, in that order and in those two files.
 ///
 /// ⛔ **Every scan here reads `HiddenFaceState.code`, never the raw file**, and
@@ -102,6 +108,98 @@ struct OperationsBandOrderTests {
             chain.append(line)
         }
         return chain
+    }
+
+    /// A block with every run of whitespace collapsed to one space.
+    ///
+    /// ⚠️ Without it a gate over a line of view code is brittle in a way that
+    /// would eventually be read as the defect rather than as the instrument: a
+    /// rename that pushed a call past 110 columns would be re-wrapped by hand,
+    /// turning a correct line into a failure whose obvious "fix" is to delete
+    /// the assertion. `MergeOriginSourceTests.flat` carries the same reasoning,
+    /// one gate over, for the same reason.
+    private static func flat(_ block: String) -> String {
+        block.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// The stored properties `AutoDevBand` decides, by name.
+    ///
+    /// ⛔ **Derived from the type, never listed here.** A written-out list of
+    /// four names holds today's four fields and silently covers a fifth not at
+    /// all — which is the whole failure mode of the gate it serves, since the
+    /// point is that a decision nothing renders looks exactly like a decision
+    /// nobody made.
+    ///
+    /// ⚠️ **Its bound**: it reads `let` declarations at the struct's *own* brace
+    /// depth, so a stored property declared inside a nested type is invisible to
+    /// it, and so is one written on a line the comment cut has already emptied.
+    /// A restructured type reads as an empty list, which its caller fails on
+    /// rather than passing.
+    private static func bandFields() throws -> [String] {
+        let body = try HiddenFaceState.body(
+            of: "struct AutoDevBand: Equatable", in: try HiddenFaceState.code(of: "AutoDevBand.swift"))
+        var names: [String] = []
+        var depth = 0
+        for raw in body.components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if depth == 0, line.hasPrefix("let ") {
+                let name = line.dropFirst(4).prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+                if !name.isEmpty { names.append(String(name)) }
+            }
+            depth += raw.filter { $0 == "{" }.count - raw.filter { $0 == "}" }.count
+        }
+        return names
+    }
+
+    /// What pressing each control must run, and nothing else.
+    ///
+    /// ⛔ **Exhaustive over `AutoDevBand.Control` on purpose.** A fourth control
+    /// does not compile here until someone states which command it runs — the
+    /// half of "added unwired" that a scan of the screen's source cannot reach,
+    /// because a control nobody wired leaves no text behind to find.
+    private static func command(for control: AutoDevBand.Control) -> String {
+        switch control {
+        case .pause: "model.pauseAutoDev()"
+        case .resume: "model.resumeAutoDev()"
+        case .stop: "model.stopAutoDev()"
+        }
+    }
+
+    /// Every auto-dev command an arm could be wired to.
+    ///
+    /// `startAutoDev` is here although no control runs it: a control wired to
+    /// Start is the same defect as one wired to Stop, and it is the one a list
+    /// derived from the three controls alone would miss.
+    private static var commands: [String] {
+        AutoDevBand.Control.allCases.map(command(for:)) + ["model.startAutoDev()"]
+    }
+
+    /// One `switch` arm of a declaration's body: its `case` label, and every
+    /// line up to the next label.
+    ///
+    /// ⚠️ **Its bound**: it reads arms written one label per line, which is this
+    /// file's hand formatting. A shared `case .pause, .resume:` label, or an arm
+    /// folded onto the `switch` line, is not found — and the `#require` then
+    /// **fails naming the label** rather than passing, which is the direction
+    /// that asks a person to look.
+    private static func arm(_ label: String, in body: String) throws -> String {
+        let lines = body.components(separatedBy: "\n")
+        let start = try #require(
+            lines.firstIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix(label) },
+            Comment(
+                rawValue: """
+                    act(_:) has no `\(label)` arm. Every AutoDevBand.Control must be wired to its \
+                    own command here: a control the switch does not name is a button that does \
+                    nothing, and a button that silently does nothing looks exactly like a button \
+                    nobody pressed.
+                    """))
+        var arm = [lines[start]]
+        for raw in lines[(start + 1)...] {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("case ") || line.hasPrefix("default") { break }
+            arm.append(raw)
+        }
+        return arm.joined(separator: "\n")
     }
 
     /// The bare band identifiers inside the screen's one `VStack`, in order.
@@ -222,6 +320,184 @@ struct OperationsBandOrderTests {
                         session that failed everywhere, which `rankNextSteps` cannot see and \
                         Up next below therefore never shows.
                         """))
+        }
+    }
+
+    /// ⛔ **Every sentence the band decides has to reach the screen**, and until
+    /// now nothing said so. Measured by the whole-branch review, on this branch:
+    /// deleting `Text(AutoDevBand.caption)` **and** the entire
+    /// `ForEach(model.autoDevEngagements)` report left **2628 tests in 300
+    /// suites green**, and the same is true of the headline, the run note and
+    /// the controls.
+    ///
+    /// That is `CaretAnchorTests`' shape exactly, and worth naming because both
+    /// halves look covered: `AutoDevBandTests` proves the four fields are
+    /// *decided* correctly, ``bandIsUnconditional()`` proves the band is
+    /// *drawn* at all — and the step between them, which renders one from the
+    /// other, had nothing on it. Everything either side of a step is green and
+    /// the step itself has no test.
+    ///
+    /// The field list is **derived from `AutoDevBand`** — see ``bandFields()`` —
+    /// so a fifth field cannot arrive unrendered.
+    ///
+    /// ⚠️ **What it does not catch, said here so nobody over-trusts it.**
+    ///
+    /// - It holds that each field is *mentioned* in the band's body, never that
+    ///   it is legible. A zero `font` or `frame` leaves the field rendered and
+    ///   the screen blank — the third evasion `HiddenFaceState.braceDepth`
+    ///   names, and one no source scan closes. The other two hiding shapes,
+    ///   `.opacity(` and `.hidden()`, are banned in *this same body* by
+    ///   ``bandIsUnconditional()``.
+    /// - A field mentioned only inside a `.help(…)` string, or handed to a
+    ///   helper that drops it, counts as rendered here.
+    /// - The button assertion pins the one form that exists. A *second* button
+    ///   added beside it, reading one control's title while acting on another,
+    ///   leaves this string present and passes.
+    @Test("Every sentence the band decides is drawn, and the rows come from the model")
+    func theBandDrawsEverythingItIsGiven() throws {
+        let body = try HiddenFaceState.body(
+            of: "private var autoDevBand: some View", in: try Self.code())
+        let fields = try Self.bandFields()
+
+        // A negative needs its positive witness: a restructured or renamed type
+        // would leave `fields` empty and the loop below would establish nothing
+        // while going green — the failure this whole gate is about, one level up.
+        #expect(
+            fields.contains("headline"),
+            Comment(
+                rawValue:
+                    "the AutoDevBand field scan read \(fields) — it is looking at the wrong "
+                    + "declaration, so this gate is holding nothing at all"))
+
+        for field in fields {
+            #expect(
+                body.contains("rendering.\(field)"),
+                Comment(
+                    rawValue: """
+                        The band decides `\(field)` and this view never reads it. A field decided \
+                        and not drawn looks exactly like a field nobody decided: `AutoDevBand.of` \
+                        is total and tested, so the whole of its answer being on screen is what \
+                        makes those tests claims about the product rather than about a struct.
+                        """))
+        }
+
+        #expect(
+            body.contains("Text(AutoDevBand.caption)"),
+            """
+            The band no longer draws `AutoDevBand.caption`. It is the one sentence in this feature \
+            that is not a field of what `AutoDevBand.of` returns, and it is what says this band is \
+            not the ranking below it — without it two orders are stacked in one window reading as \
+            one, which is the whole reason for the adjacency the test above holds.
+            """)
+
+        #expect(
+            Self.flat(body).contains("Button(AutoDevBand.title(control)) { act(control) }"),
+            """
+            The band's controls are no longer drawn as `Button(AutoDevBand.title(control)) \
+            { act(control) }`. That one line is where the control the reader sees and the control \
+            the screen acts on are the same value; written any other way, the title and the act \
+            can name two different controls and `eachControlRunsItsOwnCommand` — which reads \
+            act(_:) alone — cannot tell.
+            """)
+
+        #expect(
+            body.contains("ForEach(model.autoDevEngagements)"),
+            """
+            The report's rows no longer come from `model.autoDevEngagements`. That property is \
+            assigned only by `AppModel.adopt`, together with the session and the engaged set, so \
+            a row read from anywhere else is the second source of truth `adoptIsTheOnlyWriter` \
+            exists to refuse — and a session whose merges failed has no other surface at all.
+            """)
+        #expect(
+            body.contains("engagementRow(engagement)"),
+            "the rows are enumerated and nothing is drawn for them")
+    }
+
+    /// ⛔ **Which command a control runs is not held by anything else, and the
+    /// band's whole copy rests on the distinction.**
+    ///
+    /// Measured by the whole-branch review, on this branch: rewiring
+    /// `case .pause` to `await model.stopAutoDev()` left **2628 tests in 300
+    /// suites green**. A button titled *Pause*, under a note promising *"Pause
+    /// engages no further move and lets the run already going finish"*, would
+    /// **cancel the run already going** — the one act `AutoDevDriving`'s doc,
+    /// `AutoDevBand.Control`'s doc and the run note all exist to keep apart from
+    /// Pause.
+    ///
+    /// `AutoDevStateTests` holds the model's half in both directions — pause
+    /// leaves the session `.paused`, stop leaves it `.finished` and sets the
+    /// fake's `stopped` — but not one of those tests can see the **button**, and
+    /// the band is the only production caller there is. That is
+    /// `MergeOriginSourceTests`' sentence, one screen over, in this same pull
+    /// request, on this same reasoning.
+    ///
+    /// ⚠️ **Latent today, live the day PR4 lands.** With no conformer every
+    /// command returns at `autoDevCommand`'s first guard, so the three are
+    /// indistinguishable from outside — which is exactly why the gate is written
+    /// now rather than "later", when the button becomes the thing that cancels
+    /// an unattended agent.
+    ///
+    /// ⚠️ **What it does not catch.**
+    ///
+    /// - It reads the `switch` in `act(_:)` and nothing else. A command reached
+    ///   indirectly — through a helper, a stored closure, a key path — leaves
+    ///   the arm without its needle and **fails**, which is the safe direction,
+    ///   but this gate cannot then say the indirection is right.
+    /// - It cannot see that the button carrying a control's *title* is the one
+    ///   that hands `act` that same control. The one-line form where both read
+    ///   `control` is pinned by ``theBandDrawsEverythingItIsGiven()`` above,
+    ///   which is as close as reading source gets.
+    /// - It says nothing about what the three commands *do*. That
+    ///   `pauseAutoDev` does not cancel a run is `AutoDevDriving`'s contract and
+    ///   PR4's obligation; no test in this build can hold it, because no
+    ///   conformer exists to hold it against.
+    @Test("Each control runs its own command, and none runs another's")
+    func eachControlRunsItsOwnCommand() throws {
+        let code = try Self.code()
+        // Positive witness: a renamed or restructured dispatch would make every
+        // claim below vacuously true and this gate would go green having read
+        // nothing.
+        #expect(
+            code.contains("private func act(_ control: AutoDevBand.Control)"),
+            "OperationsView no longer declares act(_:) — this gate is reading the wrong thing")
+
+        let body = try HiddenFaceState.body(
+            of: "private func act(_ control: AutoDevBand.Control)", in: code)
+        #expect(
+            body.contains("switch control"),
+            "act(_:) no longer switches on the control it was handed")
+        #expect(
+            !body.contains("default"),
+            """
+            act(_:) has a catch-all arm. The switch is exhaustive over AutoDevBand.Control, so a \
+            fourth control cannot compile unwired — a `default` is the one shape that lets it, and \
+            it would send the new control to some other control's command in silence.
+            """)
+
+        for control in AutoDevBand.Control.allCases {
+            let mine = Self.command(for: control)
+            let arm = try Self.arm("case .\(control):", in: body)
+            #expect(
+                arm.contains(mine),
+                Comment(
+                    rawValue: """
+                        The \(control) control does not run \(mine). Its arm reads: \
+                        \(Self.flat(arm)). The band's run note tells the reader what each button \
+                        does to the run already going, and that sentence is only true if the \
+                        button runs the command it names.
+                        """))
+            for other in Self.commands where other != mine {
+                #expect(
+                    !arm.contains(other),
+                    Comment(
+                        rawValue: """
+                            The \(control) control runs \(other). Its arm reads: \
+                            \(Self.flat(arm)). Pause and Stop are kept apart by three doc \
+                            comments and the note under the buttons — stop cancels the run \
+                            already going, pause lets it finish — and one of these two is an \
+                            unattended agent killed by a button that promised not to.
+                            """))
+            }
         }
     }
 
