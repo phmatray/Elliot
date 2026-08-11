@@ -614,3 +614,130 @@ struct RunQueueReadingTests {
         #expect(await queue.queueIsPaused())
     }
 }
+
+/// Counts triggers without being an actor's worth of machinery.
+///
+/// Deviation from the plan's literal text: the plan's sketch paired `.lock()`
+/// with `.unlock()` directly, which this toolchain (Swift 6.3.1) refuses —
+/// "instance method 'lock' is unavailable from asynchronous contexts; Use
+/// async-safe scoped locking instead". `withLock` is the same mutex, scoped,
+/// and is the idiom this file's own `ReadOnlyOrphanTests.MoveSpy` already uses.
+private final class CountingTrigger: RoundTriggering, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func triggerRound() async {
+        lock.withLock { count += 1 }
+    }
+
+    var triggers: Int {
+        lock.withLock { count }
+    }
+}
+
+@Suite("Round triggering")
+struct RoundTriggeringTests {
+
+    @Test("A finished run tells the registered round trigger, without touching the stream")
+    func finishedRunTriggersARound() async throws {
+        // The one test in this plan that really spawns a child and really
+        // **writes** a run log. Without this the log lands in the operator's own
+        // `~/Library/Application Support/Elliot/runs` — the case `TestHome`'s
+        // doc comment names outright.
+        _ = TestHome.root
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
+            gitPath: "/usr/bin/false", environment: [:])
+        let scheduler = RunScheduler(
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
+        let trigger = CountingTrigger()
+        await scheduler.setRoundTrigger(trigger)
+
+        let repo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+        let card = Card(
+            repoID: repo.id, title: "Anything",
+            columnEnteredAt: Date(), createdAt: Date(), updatedAt: Date())
+        try await store.saveCard(card)
+        let runID = UUID()
+        let run = SkillRun.card(
+            id: runID, cardID: card.id, repoID: repo.id, kind: .createIssue, prompt: "x",
+            cwd: repo.path,
+            logPath: StoreLocation.runLogURL(runID: runID).path,
+            stderrPath: StoreLocation.runStderrURL(runID: runID).path, createdAt: Date())
+        try await store.saveRun(run)
+        await scheduler.launch(runID: run.id)
+
+        // Bounded, and waiting on a condition rather than on a duration: the
+        // child is `/usr/bin/true`, so this is milliseconds in practice.
+        try await withTimeout(.seconds(20)) {
+            while trigger.triggers == 0 { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        #expect(trigger.triggers >= 1)
+        #expect(try await store.run(id: run.id)?.state.isTerminal == true)
+    }
+
+    @Test("No trigger registered is not an error — the scheduler is unchanged without one")
+    func noTriggerIsFine() async throws {
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            gitPath: "/usr/bin/true", environment: [:])
+        let scheduler = RunScheduler(
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
+        await scheduler.testOnlyDrain()
+        #expect(await scheduler.queueSnapshot().isEmpty)
+    }
+
+    /// The arm the plan's own placement missed: `start` never reaches `finish`
+    /// when the spawn itself fails (`ClaudeRun.start` throws before a child
+    /// exists), so a trigger hooked only at the end of `finish` would leave a
+    /// session waiting out the full stall window for a fact that was knowable
+    /// synchronously. `claudePath` names a file that does not exist, so
+    /// `ChildProcess.init`'s `isExecutableFile` guard throws before any process
+    /// is spawned — this exercises `start`'s `catch` block, not `consume`/`finish`.
+    @Test("A run whose spawn fails still tells the registered round trigger")
+    func failedSpawnTriggersARound() async throws {
+        _ = TestHome.root
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/nonexistent/definitely-not-a-binary-\(UUID().uuidString)",
+            ghPath: "/usr/bin/false",
+            gitPath: "/usr/bin/false", environment: [:])
+        let scheduler = RunScheduler(
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
+        let trigger = CountingTrigger()
+        await scheduler.setRoundTrigger(trigger)
+
+        let repo = Repo(
+            path: FileManager.default.temporaryDirectory.path, nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+        let card = Card(
+            repoID: repo.id, title: "Anything",
+            columnEnteredAt: Date(), createdAt: Date(), updatedAt: Date())
+        try await store.saveCard(card)
+        let runID = UUID()
+        let run = SkillRun.card(
+            id: runID, cardID: card.id, repoID: repo.id, kind: .createIssue, prompt: "x",
+            cwd: repo.path,
+            logPath: StoreLocation.runLogURL(runID: runID).path,
+            stderrPath: StoreLocation.runStderrURL(runID: runID).path, createdAt: Date())
+        try await store.saveRun(run)
+        await scheduler.launch(runID: run.id)
+
+        // The failure is synchronous — no child is ever spawned — so this
+        // resolves fast in practice. Still bounded, per this file's own
+        // discipline: nothing waits on a fixed duration.
+        try await withTimeout(.seconds(20)) {
+            while trigger.triggers == 0 { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        #expect(trigger.triggers >= 1)
+        let saved = try await store.run(id: run.id)
+        #expect(saved?.state == .failed)
+        #expect(saved?.state.isTerminal == true)
+    }
+}

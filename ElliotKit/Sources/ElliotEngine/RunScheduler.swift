@@ -91,6 +91,10 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
     private var pending: [UUID] = []
 
     public weak var systemMover: (any SystemMoving)?
+    /// Told after every run-ending path, once the row is written and (where the
+    /// path reaches it) the queue has drained. Weak, like `systemMover`: the
+    /// holder owns the scheduler.
+    public weak var roundTrigger: (any RoundTriggering)?
 
     public nonisolated let updates: AsyncStream<SchedulerUpdate>
     private nonisolated let continuation: AsyncStream<SchedulerUpdate>.Continuation
@@ -134,6 +138,10 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
 
     public func setSystemMover(_ mover: any SystemMoving) {
         systemMover = mover
+    }
+
+    public func setRoundTrigger(_ trigger: any RoundTriggering) {
+        roundTrigger = trigger
     }
 
     /// Changes the caps, and drains whatever the old ones were holding back.
@@ -245,6 +253,9 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
         try? await store.saveRun(run)
         continuation.yield(
             .runFinished(runID: runID, cardID: run.cardID, state: .cancelled, outcome: nil))
+        // Deliberately no `roundTrigger` call here. This is the reader
+        // cancelling a queued run, not one of it ending on its own — a
+        // cancellation belongs to a later task, not this one.
         return true
     }
 
@@ -647,6 +658,13 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
             continuation.yield(.runFinished(
                 runID: run.id, cardID: run.cardID, state: .failed, outcome: nil
             ))
+            // No `pump()` here — a failed spawn frees a writer slot that
+            // nothing re-drains until an unrelated event, a pre-existing
+            // scheduler defect out of scope for this task. The round trigger
+            // still fires: the fact that this run ended is knowable right
+            // now, and a session waiting on it should not sit through the
+            // full stall window for nothing.
+            await roundTrigger?.triggerRound()
             return
         }
 
@@ -700,6 +718,11 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
             continuation.yield(.runFinished(
                 runID: run.id, cardID: run.cardID, state: .failed, outcome: nil
             ))
+            // Same reasoning as the repo-read guard above: no `pump()` (a
+            // pre-existing scheduler defect, out of scope here), but the
+            // round trigger still fires — the spawn failure is knowable
+            // right now, not ten minutes from now.
+            await roundTrigger?.triggerRound()
             return
         }
 
@@ -826,6 +849,11 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
             runID: run.id, cardID: updated.cardID, state: updated.state, outcome: verified
         ))
         await pump()
+        // Last, deliberately. By here the row is written, the in-flight set is
+        // clear and the queue has been reconsidered under the new occupancy, so
+        // a round triggered from this call can never read a half-finished run or
+        // a queue that has not yet had its say.
+        await roundTrigger?.triggerRound()
     }
 
     /// Verify against `gh`, then write what it said onto the card.
