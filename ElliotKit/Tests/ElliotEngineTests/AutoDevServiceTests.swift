@@ -7,6 +7,22 @@ import Testing
 
 @testable import ElliotEngine
 
+/// The repository root, climbed once from this file's own path.
+///
+/// Shared by every fixture in this file — and the ones Tasks 8-14 append —
+/// that needs to point a `GHClient` at `Scripts/fake-gh.sh` or a fixture under
+/// `Fixtures/gh/`. `#filePath` resolves to wherever this file lives on disk,
+/// so the four `deletingLastPathComponent()` calls below climb
+/// `ElliotEngineTests` → `Tests` → `ElliotKit` → the repository root exactly
+/// once, rather than being re-derived inline by every fixture that needs it.
+private let repositoryRoot: URL = {
+    URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()  // ElliotEngineTests
+        .deletingLastPathComponent()  // Tests
+        .deletingLastPathComponent()  // ElliotKit
+        .deletingLastPathComponent()  // repository root
+}()
+
 /// Records what the board asked for without spawning anything — the shape
 /// `BoardServiceTests` already uses.
 private actor FakeLauncher: RunLaunching {
@@ -39,17 +55,14 @@ struct AutoDevProposalTests {
         // a run's log and stderr paths through `makeRun`.
         _ = TestHome.root
         let store = try BoardStore.inMemory()
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()  // ElliotEngineTests
-            .deletingLastPathComponent()  // Tests
-            .deletingLastPathComponent()  // ElliotKit
-            .deletingLastPathComponent()  // repository root
         let gh = GHClient(config: ToolConfig(
-            claudePath: "", ghPath: root.appendingPathComponent("Scripts/fake-gh.sh").path,
+            claudePath: "", ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
             gitPath: "",
             environment: [
                 "FAKE_GH_MODE": "ok",
-                "FAKE_GH_PRS": root.appendingPathComponent("Fixtures/gh/prs-52-a1b2c3.json").path,
+                "FAKE_GH_PRS": repositoryRoot.appendingPathComponent(
+                    "Fixtures/gh/prs-52-a1b2c3.json"
+                ).path,
             ]))
         let board = BoardService(
             store: store, launcher: FakeLauncher(),
@@ -119,5 +132,88 @@ struct AutoDevProposalTests {
         let run = try await store.run(id: runID)
         #expect(run?.requiresVerifiedGreen == false)
         #expect(run?.demandsVerifiedGreen == false)
+    }
+}
+
+/// `makeRun`'s `unknownMethod`/`methodHasNoStep` guard
+/// (`BoardService.swift`, just above the `SkillRun(` call) is documented as an
+/// "unreachable floor, not the gate" — `evaluateMove` already refuses both as
+/// `MoveBlock`s before a proposal reaches `commitMove`, so nothing built
+/// through `proposeMove` can ever trip it. Its own ⛔ comment says it is kept
+/// anyway for *"a future caller that reaches `makeRun` by some other path"*.
+///
+/// `commitMove` is that other path: it switches on `proposal.outcome` alone,
+/// so a hand-built `MoveProposal` carrying an `.action` `evaluateMove` would
+/// never have produced reaches `makeRun` with none of `evaluateMove`'s guards
+/// run first. `MoveProposal` is a public struct with a synthesised memberwise
+/// init, so no access-control loosening is needed to build one.
+@Suite("Auto-dev — makeRun's unreachable floor, reached anyway")
+struct MakeRunUnreachableFloorTests {
+
+    /// A repository on the named method, with a card whose issue and pull
+    /// request numbers are already set — the `commitMove` route does not need
+    /// `card.column` or `card.prNumber` to line up with the hand-built
+    /// proposal's `outcome`, since it never asks `evaluateMove`.
+    private func fixture(methodID: String) async throws -> (BoardStore, BoardService, Card) {
+        _ = TestHome.root
+        let store = try BoardStore.inMemory()
+        let board = BoardService(store: store, launcher: FakeLauncher())
+        var repo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        repo.methodID = methodID
+        try await store.saveRepo(repo)
+
+        var card = try await board.createCard(repoID: repo.id, title: "Landing").card
+        card.column = .inReview
+        card.issueNumber = 47
+        card.prNumber = 52
+        try await store.saveCard(card)
+        return (store, board, card)
+    }
+
+    /// GSD (`MethodCatalog.builtIn`) declares a step only for `.createIssue` —
+    /// `.mergePR` is absent by name, and its own comment says why: `/gsd-ship`
+    /// takes a phase number, not the pull-request number Elliot holds at
+    /// In Review → Done. So a `.mergePR` action against a GSD repository is
+    /// exactly the case `methodHasNoStep` exists to refuse.
+    @Test("A method with no step for the action refuses closed, not open")
+    func methodWithNoStepRefusesClosed() async throws {
+        let (_, board, card) = try await fixture(methodID: "gsd")
+        let proposal = MoveProposal(
+            card: card, from: .inReview, to: .done, orderIndex: 1024,
+            outcome: .action(.mergePR(prNumber: 52, followUps: [])),
+            origin: .autoDev(sessionID: UUID()),
+            requiresVerifiedGreen: false, prVerdict: nil)
+
+        do {
+            _ = try await board.commitMove(proposal)
+            Issue.record("expected BoardError.methodHasNoStep")
+        } catch BoardError.methodHasNoStep(let method, let kind) {
+            #expect(method == "GSD")
+            #expect(kind == "merge-pr")
+        } catch {
+            Issue.record("wrong error: \(error)")
+        }
+    }
+
+    /// An id `MethodCatalog.builtIn` does not carry at all.
+    @Test("A repository whose method nobody knows refuses closed, not open")
+    func unknownMethodRefusesClosed() async throws {
+        let (_, board, card) = try await fixture(methodID: "not-a-real-method")
+        let proposal = MoveProposal(
+            card: card, from: .inReview, to: .done, orderIndex: 1024,
+            outcome: .action(.mergePR(prNumber: 52, followUps: [])),
+            origin: .autoDev(sessionID: UUID()),
+            requiresVerifiedGreen: false, prVerdict: nil)
+
+        do {
+            _ = try await board.commitMove(proposal)
+            Issue.record("expected BoardError.unknownMethod")
+        } catch BoardError.unknownMethod(let id) {
+            #expect(id == "not-a-real-method")
+        } catch {
+            Issue.record("wrong error: \(error)")
+        }
     }
 }
