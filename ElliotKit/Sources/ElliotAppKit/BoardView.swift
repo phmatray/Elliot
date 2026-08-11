@@ -773,7 +773,7 @@ extension Binding where Value == [ElliotModel.Column: Set<UUID>] {
 /// 2. a **resize** — the drag handle, or View ▸ Narrow/Widen — changing
 ///    `panelSpans`, which changes how far the row extends and therefore where a
 ///    scroll offset clamps;
-/// 3. `AppModel.armPendingMerge(cardID:prNumber:)`, which selects a card *and*
+/// 3. `AppModel.armPendingMerge(cardID:prNumber:origin:)`, which selects a card *and*
 ///    opens the panel together. It re-framed only when the card it arms was not
 ///    the one already selected — and that is the path to the one act in the
 ///    product that cannot be taken back, so a confirmation opening off-screen
@@ -931,6 +931,46 @@ struct StatusBar: View {
                 spoken: "\(model.occupancy.writers) of \(model.limits.maxConcurrent) workers busy",
                 face: .operations
             )
+
+            // Permanent for the life of a session **and its report**, which is
+            // the difference from the queue's figure below: that one is a live
+            // state and rightly disappears, this one is a record. The card the
+            // record has to carry — one whose merge failed — stays in Done,
+            // where `Column.naturalNext` is `nil` and `rankNextSteps` drops it,
+            // so nothing else on the board can show it.
+            //
+            // Gone only when **no session has run this launch**, and cleared by
+            // the next session starting. The template is `lastSyncSummary`.
+            //
+            // The text is `AutoDevBand.figureText`'s and not this view's:
+            // `swift test` cannot enter a `body`, so a sentence written here is
+            // a claim nothing can hold, and the band already says this one. It
+            // is optional for exactly one case — no session at all — which is
+            // why it is a clause of the same `if let` rather than a `??`
+            // fallback nothing could ever reach.
+            //
+            // The tally is read **once**, above the `if`: `AutoDevTally.of`
+            // walks the rows three times, and this strip re-renders on every
+            // status change.
+            let autoDevTally = model.autoDevTally
+            if let autoDevSession = model.autoDev,
+                let autoDevText = AutoDevBand.figureText(
+                    session: autoDevSession, tally: autoDevTally)
+            {
+                let autoDevBand = AutoDevBand.of(
+                    session: autoDevSession, tally: autoDevTally,
+                    repoName: AutoDevBand.repoName(
+                        session: autoDevSession, selectedRepoID: model.selectedRepoID,
+                        repos: model.repos))
+                figure(
+                    text: autoDevText,
+                    tint: autoDevBand.tone.tint,
+                    help: autoDevBand.headline,
+                    spoken: BoardAccessibility.autoDevFigure(
+                        session: autoDevSession, tally: autoDevTally),
+                    face: .operations
+                )
+            }
 
             // Only when there is one. A permanent "0 queued" is furniture, and
             // this strip has been pushed around by its own contents before.
@@ -1649,6 +1689,42 @@ enum BoardAccessibility {
         guard let proposalCount else { return "Analysis of \(repoName). Not started." }
         let noun = proposalCount == 1 ? "proposal" : "proposals"
         return "Analysis of \(repoName), \(proposalCount) \(noun) to decide."
+    }
+
+    /// The status bar's auto-dev figure, as a sentence.
+    ///
+    /// The state and the count, because the two together are the answer: "3 of 5
+    /// settled" says nothing about whether anything is still going, and a
+    /// finished session showing the same numbers as a running one is exactly the
+    /// confusion a permanent figure would otherwise create.
+    ///
+    /// ⛔ **It takes the session, not just the tally, and both numbers come from
+    /// where the visible figure's come from.** `AutoDevBand.figureText` is what a
+    /// sighted reader sees and this is what a listening one hears, so the two
+    /// have to state one pair of numbers. `AutoDevTally` counts engagement
+    /// **rows** and `AutoDevSession.engagedCardIDs` is the set the session closed
+    /// at start; `AutoDevBand` records that the two disagree in the window
+    /// between a session starting and its first row landing — which every run
+    /// passes through. Read off the tally, this says *"0 of 0 cards settled"*
+    /// beside a figure reading `0/3`, and only the reader who cannot see the
+    /// figure is told the wrong thing.
+    ///
+    /// The clamp is asked of ``AutoDevBand/settledCards(_:_:)`` rather than
+    /// rewritten, which is the shape `AutoDevBand.repoName` already has: two
+    /// surfaces, one answer.
+    ///
+    /// Singular written out by hand, as this file's header requires of every
+    /// caption in it: these strings are read aloud.
+    static func autoDevFigure(session: AutoDevSession, tally: AutoDevTally) -> String {
+        let phase: String
+        switch session.state {
+        case .running: phase = "running"
+        case .paused: phase = "paused"
+        case .finished: phase = "finished"
+        }
+        let total = session.engagedCardIDs.count
+        let settled = AutoDevBand.settledCards(session, tally)
+        return "Auto-dev \(phase), \(settled) of \(total) \(cards(total)) settled"
     }
 
     private static func cards(_ count: Int) -> String {

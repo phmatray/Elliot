@@ -82,6 +82,43 @@ enum HiddenFaceState {
             .joined(separator: "\n")
     }
 
+    /// The same file with **whole comment lines dropped** and every other line
+    /// left intact — the second opinion ``code(of:)`` needs.
+    ///
+    /// ⚠️ **It exists because the cut above can hide code, which was measured
+    /// rather than reasoned about.** ``stripped(_:)`` cuts at the first `//` on a
+    /// line, including one inside a string literal, and licenses that with *"none
+    /// of the needles these gates use can occur after one"*. Two callers' needles
+    /// can: a real `.toolbar { Button("Start auto-dev") … }` written after
+    /// `"https://ops"` on one line is invisible to the cut, compiles, and leaves
+    /// the whole suite green. So a whole-file negative is checked against **both**
+    /// readings and holds only where they agree — `DefaultActionTests.isCode`'s
+    /// rule (a line is code unless it *starts* with `//`) used as a second
+    /// opinion rather than as a replacement.
+    ///
+    /// ⛔ The trade, stated so it is a rule rather than a surprise: **prose about
+    /// a needle any gate uses must live on its own comment line, not trailing a
+    /// line of code.** A whole-line comment is dropped by this reading and cut by
+    /// the other, so an explanation stays free either way.
+    ///
+    /// ⚠️ **Negatives only.** This reading keeps a trailing comment's text, so a
+    /// *positive* needle checked against it can be satisfied by prose beside
+    /// code, which is the mention-for-a-claim error pointed the other way.
+    /// Callers assert positives against ``code(of:)``.
+    ///
+    /// Written here rather than in a suite for the reason the header gives, and
+    /// because it now has two callers: `OperationsBandOrderTests` introduced it
+    /// and `BoardAccessibilityTests` needs exactly the same second opinion over
+    /// the same file. #146 charges three defects to one mechanism written twice,
+    /// and its sharper form applies squarely — the ⚠️ above would have been the
+    /// paragraph copied.
+    static func codeLines(of file: String) throws -> String {
+        try source(of: file)
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+    }
+
     /// One function's body, by brace matching from its signature.
     ///
     /// ⚠️ **The fourth copy of this walk is the reason it is here, and three of
@@ -114,6 +151,67 @@ enum HiddenFaceState {
         }
         Issue.record("no matching brace for \(signature)")
         return ""
+    }
+
+    /// How many braces deep the first occurrence of `needle` sits inside
+    /// `block`, or `nil` if it does not occur there at all.
+    ///
+    /// The structural half of a presence gate, and worth having beside a needle
+    /// because it answers about the **shape** of the code rather than about its
+    /// vocabulary: an `if` written around the call reddens whatever that `if`
+    /// tests — `controls.isEmpty`, a tally threshold, a condition nobody has
+    /// thought of yet — where a banned-word list only ever holds the words on it.
+    ///
+    /// ⛔ **What it is not.** This doc said *"a `ViewBuilder` cannot return early,
+    /// so every way of not drawing something is a brace"*. That is false, and
+    /// **three** evasions have now been measured green against gates built on it:
+    ///
+    /// 1. a **braceless ternary** — `(cond ? AnyView(EmptyView()) : AnyView(x))`
+    ///    — no brace between the guard and the call, so the depth is unchanged;
+    /// 2. a **sibling-function guard** — an overload whose own body holds the
+    ///    `if`, leaving the call site byte-identical bar one argument and the
+    ///    branch outside the slice entirely;
+    /// 3. a **modifier that draws nothing**, *inside* the correct branch —
+    ///    `.opacity(0)`, `.hidden()`, a zero `font` or `frame`. The view is
+    ///    present, the depth is right, and there is nothing on screen. Measured
+    ///    while fixing `AutoDevCardMarkTests`: `.opacity(activeRun == nil ? 1 : 0)`
+    ///    on the engaged card's mark restored the exact defect that suite exists
+    ///    to prevent, with **2628 tests in 300 suites green**.
+    ///
+    /// So this is a guarantee against a **brace-shaped branch inside the block it
+    /// is handed**, and nothing wider. A caller that needs the other three says
+    /// so in its own words, because the shapes differ per surface — the pattern
+    /// worth copying is `BoardAccessibilityTests`', which bans `.hidden()` and
+    /// `.opacity(` in the strip's body *beside* its depth check, and which both
+    /// modifier breaks above reddened on.
+    ///
+    /// ⚠️ **The false sentence had already been retired once on this branch** —
+    /// in `BoardAccessibilityTests`, two commits before this helper existed — and
+    /// was then written again here. A universal is the premise the next author
+    /// reasons from, so it is the one kind of comment worth measuring before
+    /// writing.
+    ///
+    /// ⚠️ **The second copy of this walk, and the first is `BoardAccessibility
+    /// Tests.braceDepth`.** Written here rather than a third time, on the
+    /// precedent ``body(of:in:)`` sets four doc comments up: new gates reach for
+    /// the shared one, the count stops growing, and folding the existing private
+    /// copy in is named as its own change — that copy is live evidence for the
+    /// commit that introduced it, so editing it inside an unrelated task is
+    /// exactly the half-way consolidation that comment warns against.
+    ///
+    /// Honest only where the block holds no brace inside a string literal, and
+    /// comments are expected to be cut already — the same bound ``body(of:in:)``
+    /// carries, for the same reason.
+    static func braceDepth(of needle: String, in block: String) -> Int? {
+        var depth = 0
+        var index = block.startIndex
+        while index < block.endIndex {
+            if block[index...].hasPrefix(needle) { return depth }
+            if block[index] == "{" { depth += 1 }
+            if block[index] == "}" { depth -= 1 }
+            index = block.index(after: index)
+        }
+        return nil
     }
 
     /// Every `@State private var` declared anywhere in a file, by name.

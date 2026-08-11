@@ -1,0 +1,93 @@
+import ElliotModel
+import Foundation
+
+/// How a session's cards are chosen.
+///
+/// The automatic half is what makes "optional automatic selection of the
+/// highest-value cards" optional: a caller that has already decided passes
+/// ``explicit(_:)``, and the ranking never runs.
+///
+/// ⛔ **The choice lives behind ``AutoDevDriving`` rather than in the caller**,
+/// so that no caller can hand the loop a badly chosen set, and so a future MCP
+/// start tool inherits the rule instead of re-deriving it. It is also why
+/// ``AutoDevDriving/start(repoID:selection:)`` takes this rather than a bare
+/// count: a count is not a choice, and `AppModel` passing one read as though the
+/// loop owned the choice while the loop read as though the board did.
+public enum AutoDevSelection: Sendable, Hashable {
+    /// Rank the repository's Backlog and engage at most `limit` of the cards
+    /// that are rankable. Cards nothing has measured are **refused and named**,
+    /// never sorted to the bottom — see `CardRanking.rank` (PR2).
+    case automatic(limit: Int)
+    /// Engage exactly these, in this order.
+    case explicit([UUID])
+}
+
+/// What the board's auto-dev controls reach.
+///
+/// A protocol rather than a concrete type, because the loop that conforms to it
+/// is the **next** pull request: this one ships the screen. `AppModel` holds one
+/// optional conformer exactly as it holds `analysisService`, so with none
+/// attached every control returns at its guard and `AppModel.autoDevRefusal`
+/// says so in a sentence — the #151 shape, an explanation rather than a control
+/// that cannot be switched off.
+///
+/// ⚠️ **`stop` cancels the run already going; `pause` does not.** That is the
+/// whole reason a session cannot lean on the queue's Pause
+/// (`RunScheduler.pause`), which holds *queued* runs and leaves the running one
+/// alone — and it is why the band's stop control says on its face what it does
+/// to that run.
+///
+/// The three mutating calls hand back the session they produced rather than
+/// `Void`, so the board's copy and the loop's cannot come apart while nobody is
+/// pushing updates. PR4 may add a push; nothing here forbids one.
+///
+/// ⚠️ **`nil` from `pause`/`resume`/`stop` is an answer the caller must render,
+/// not one it may drop.** It is a *refusal to confirm* — a session the loop does
+/// not know, an actor that would not act — and it deliberately does not say
+/// which, because a conformer that guessed would be inventing a cause.
+/// `AppModel` therefore reports it rather than returning in silence: a control
+/// that cancels an unattended agent and answers nothing at all is this
+/// repository's own catalogued failure, *a mechanism that substitutes a
+/// different answer instead of erroring*.
+///
+/// ⛔ **Two obligations on a conformer that this protocol's shape cannot
+/// enforce, and each is a dead end for the reader if it is missed.** There is no
+/// read for the *session* — only for its rows — so the board holds whatever a
+/// call last handed it and cannot discover a change by itself.
+/// `AppModel.refreshAutoDev` re-reads the **rows** and re-adopts the session the
+/// board already has — and ⚠️ **nothing calls it in this build**, so it is a
+/// poll-shaped seam PR4 wires, not a poll already running. Read it as an
+/// affordance, never as a board that re-polls. Meanwhile
+/// `AppModel.autoDevRefusal` answers *"A session is already going. Stop it
+/// before starting another."* for any state that is not `.finished`. Therefore:
+///
+/// 1. **A loop that reaches its own end must make that observable.** Left to
+///    itself the board shows `.running` for ever and refuses every new session
+///    for the rest of the launch. Either the conformer pushes the finished
+///    session, or this protocol grows a `session(sessionID:)` read — nothing
+///    here forbids either, and one of them is required.
+/// 2. **`stop` must return the finished session, including when the session was
+///    already finished.** Answering `nil` there is a reasonable-*looking*
+///    implementation and it is the trap: the reader is told *"Auto-dev did not
+///    stop: the loop gave no session back"*, the board keeps a `.running`
+///    session that is over, and **no further session can be started this
+///    launch**. `nil` means "I can confirm nothing about this id", never "there
+///    was nothing left to do".
+public protocol AutoDevDriving: Sendable {
+    /// Engages the Backlog cards `selection` names and starts driving them.
+    /// The engaged list is closed here and never grows.
+    func start(repoID: UUID, selection: AutoDevSelection) async throws -> AutoDevSession
+
+    /// Engages no further move. The run already going finishes.
+    func pause(sessionID: UUID) async -> AutoDevSession?
+
+    func resume(sessionID: UUID) async -> AutoDevSession?
+
+    /// Ends the session **and cancels the run already going**. Abandoning a card
+    /// and cancelling its run are not the same act, and only the second frees
+    /// the card.
+    func stop(sessionID: UUID) async -> AutoDevSession?
+
+    /// The session's per-card rows, as the report renders them.
+    func engagements(sessionID: UUID) async -> [AutoDevEngagement]
+}

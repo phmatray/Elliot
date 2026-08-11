@@ -94,6 +94,11 @@ public enum DefaultAction {
             label: "Start",
             commits: "nothing — it starts up to eight unattended runs"
         ),
+        Claimant(
+            file: "OperationsView.swift",
+            label: "Start auto-dev",
+            commits: "nothing — it hands a fixed set of cards to an unattended loop that merges"
+        ),
     ]
 
     /// How many claims the source of `ElliotAppKit` should contain.

@@ -21,6 +21,20 @@ private final class ObservationFlag: Sendable {
     var isRaised: Bool { raised.withLock { $0 } }
 }
 
+/// Records what the board asked for without spawning anything.
+///
+/// A third copy of the four lines `BoardServiceTests` and `ReorderGlueTests`
+/// each hold privately, and deliberately not hoisted into `TestSupport`: that
+/// target "depends on nothing" (`Package.swift`), and `RunLaunching` lives in
+/// `ElliotEngine`.
+private actor FakeLauncher: RunLaunching {
+    private(set) var launched: [UUID] = []
+
+    func launch(runID: UUID) async { launched.append(runID) }
+    func cancel(runID: UUID) async {}
+    func launchedRuns() -> [UUID] { launched }
+}
+
 /// `AppModel` held 800 lines and no tests, because `ElliotApp` was an
 /// `executableTarget` and nothing in it could be imported. These cover it where
 /// it *decides* — filtering, ordering, previewing, refusing, wording — and not
@@ -373,7 +387,7 @@ struct AppModelTests {
         model.selectedCardID = other.id
         model.showingInspector = false
 
-        model.armPendingMerge(cardID: review.id, prNumber: 9)
+        model.armPendingMerge(cardID: review.id, prNumber: 9, origin: .userDrag)
 
         #expect(model.selectedCardID == review.id)
         #expect(model.showingInspector)
@@ -387,7 +401,7 @@ struct AppModelTests {
         let review = card("ready", repoID: a.id, column: .inReview, order: 1, issue: 4, pr: 9)
         let model = model(repos: [a], cards: [review])
 
-        model.armPendingMerge(cardID: review.id, prNumber: 9)
+        model.armPendingMerge(cardID: review.id, prNumber: 9, origin: .userDrag)
         model.cancelPendingMerge()
 
         #expect(model.pendingFollowUps == nil)
@@ -395,6 +409,152 @@ struct AppModelTests {
         // a reason to lose your place.
         #expect(model.card(id: review.id)?.column == .inReview)
         #expect(model.selectedCardID == review.id)
+    }
+
+    @Test("The origin travels from the arming to the confirmation")
+    func armingCarriesItsOrigin() {
+        // `confirmMerge` used to hardcode `.userDrag`, so every merge that went
+        // through the confirmation was written into `moveAudit` as a drag —
+        // whoever actually asked for it. The origin is decided by the caller
+        // that arms the merge and has to survive the trip to the button.
+        let a = repo("Elliot")
+        let review = card("ready", repoID: a.id, column: .inReview, order: 1, issue: 4, pr: 9)
+        let model = model(repos: [a], cards: [review])
+
+        model.armPendingMerge(cardID: review.id, prNumber: 9, origin: .mcp(client: "agent-x"))
+
+        #expect(model.pendingFollowUps?.origin == .mcp(client: "agent-x"))
+    }
+
+    @Test("An auto-dev merge is not rendered as a drag")
+    func autoDevMergeIsNotDragged() {
+        // The whole reason the origin has to travel. `MoveOrigin.historyLabel`
+        // is what the move-history block prints; with `.userDrag` hardcoded in
+        // `confirmMerge`, a session's merge appeared in the card's history as
+        // "Dragged" — attributing the one irreversible act in the product to a
+        // person who did not make it.
+        //
+        // ⚠️ `.autoDev` is PR1's case. If this does not compile, PR1 has not
+        // landed and this plan is being run out of order.
+        let session = UUID()
+        let a = repo("Elliot")
+        let review = card("ready", repoID: a.id, column: .inReview, order: 1, issue: 4, pr: 9)
+        let model = model(repos: [a], cards: [review])
+
+        model.armPendingMerge(
+            cardID: review.id, prNumber: 9, origin: .autoDev(sessionID: session))
+
+        #expect(model.pendingFollowUps?.origin == .autoDev(sessionID: session))
+        #expect(MoveOrigin.autoDev(sessionID: session).historyLabel != "Dragged")
+        #expect(!MoveOrigin.autoDev(sessionID: session).historyLabel.isEmpty)
+    }
+
+    /// The two tests above stop at `pendingFollowUps`, which is one field short
+    /// of the claim: a `confirmMerge` that took an `origin` and then passed
+    /// `.userDrag` to `board.move` anyway would pass both of them. This is the
+    /// only test that reads what was actually *written* — `moveAudit` is what
+    /// `MoveHistory` renders, and it is a real board, a real store and the real
+    /// funnel rather than a fake that would only echo the argument back.
+    @Test("The origin the confirmation was given is the one the audit records")
+    func confirmMergeRecordsTheOriginItWasGiven() async throws {
+        let session = UUID()
+        let store = try BoardStore.inMemory()
+        let board = BoardService(store: store, launcher: FakeLauncher())
+
+        var repo = Repo(
+            path: "/tmp/merge-origin-\(UUID().uuidString)",
+            nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        repo.isEnabled = true
+        try await store.saveRepo(repo)
+        var review = Card(
+            repoID: repo.id, title: "ready", column: .inReview, orderIndex: 1,
+            issueNumber: 4, prNumber: 9,
+            columnEnteredAt: epoch, createdAt: epoch, updatedAt: epoch)
+        try await store.saveCard(review)
+        review = try #require(try await store.card(id: review.id))
+
+        let model = AppModel()
+        model.testOnlySeedStore(store)
+        model.testOnlyAttachBoard(board)
+
+        // An empty array, not `nil`: "no follow-ups" is what the button sends
+        // when the reader typed none, and it is what lets the merge proceed
+        // instead of asking again.
+        await model.confirmMerge(
+            cardID: review.id, followUps: [], origin: .autoDev(sessionID: session))
+
+        #expect(try await store.card(id: review.id)?.column == .done)
+        let audits = try await store.audits(cardID: review.id)
+        #expect(audits.first?.to == .done)
+        #expect(audits.first?.origin == .autoDev(sessionID: session))
+    }
+
+    /// A repository and a card in one seeded store, for the two drag tests below.
+    private func draggableBoard(column: ElliotModel.Column, pr: Int? = nil) async throws
+        -> (store: BoardStore, model: AppModel, card: Card)
+    {
+        let store = try BoardStore.inMemory()
+        let board = BoardService(store: store, launcher: FakeLauncher())
+        var repo = Repo(
+            path: "/tmp/drag-origin-\(UUID().uuidString)",
+            nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        repo.isEnabled = true
+        try await store.saveRepo(repo)
+        var card = Card(
+            repoID: repo.id, title: "story", column: column, orderIndex: 1,
+            issueNumber: pr == nil ? nil : 4, prNumber: pr,
+            columnEnteredAt: epoch, createdAt: epoch, updatedAt: epoch)
+        try await store.saveCard(card)
+        card = try #require(try await store.card(id: card.id))
+
+        let model = AppModel()
+        model.testOnlySeedStore(store)
+        model.testOnlyAttachBoard(board)
+        return (store, model, card)
+    }
+
+    /// ⛔ **`AppModel.move` names its origin in one local that now feeds two
+    /// consumers, and nothing witnessed either of them.**
+    ///
+    /// Measured: changing `let origin = MoveOrigin.userDrag` to
+    /// `.autoDev(sessionID: UUID())` left all 2561 tests green. That is this
+    /// task's own defect with the actors swapped — a person's drag recording
+    /// itself as an unattended session — and it is the *shared local* that is
+    /// new here, so the risk is concentrated by the change even though the
+    /// argument passed is byte-identical to what it was before.
+    ///
+    /// This test covers the first consumer, `board.move`. The one below covers
+    /// the second, `armPendingMerge`; one test cannot see both, because the two
+    /// are reached by different move outcomes.
+    @Test("A drag records itself as a drag, in the audit the history renders")
+    func aDragRecordsUserDrag() async throws {
+        let seeded = try await draggableBoard(column: .backlog)
+
+        await seeded.model.move(cardID: seeded.card.id, to: .todo)
+
+        #expect(try await seeded.store.card(id: seeded.card.id)?.column == .todo)
+        let audits = try await seeded.store.audits(cardID: seeded.card.id)
+        #expect(audits.first?.to == .todo)
+        #expect(audits.first?.origin == .userDrag)
+    }
+
+    /// The second consumer of that same local.
+    ///
+    /// A drag onto Done does not move the card — it comes back `.needsInput` and
+    /// arms the confirmation — so the origin reaches `moveAudit` only later,
+    /// through `PendingMerge`. A wrong literal here would put the lie into the
+    /// merge the drag armed, which is the one act the product calls
+    /// irreversible, and the test above cannot see it.
+    @Test("A drag that arms a merge arms it as a drag")
+    func aDragArmsTheMergeAsADrag() async throws {
+        let seeded = try await draggableBoard(column: .inReview, pr: 9)
+
+        await seeded.model.move(cardID: seeded.card.id, to: .done)
+
+        #expect(seeded.model.pendingFollowUps?.origin == .userDrag)
+        // The card has not moved: this is the confirmation being armed, not a
+        // merge. If it had, the assertion above would be about the wrong path.
+        #expect(try await seeded.store.card(id: seeded.card.id)?.column == .inReview)
     }
 
     // MARK: - What to do next

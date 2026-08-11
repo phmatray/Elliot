@@ -41,6 +41,7 @@ public struct OperationsView: View {
                 workersBand
                 queueBand
                 spendingBand
+                autoDevBand
                 upNextBand
             }
             .padding(16)
@@ -407,6 +408,152 @@ public struct OperationsView: View {
             model.isOverDailyCeiling
                 ? "\(MoneyFormat.usd(run)) per run, \(MoneyFormat.usd(day)) a day — reached."
                 : "\(MoneyFormat.usd(run)) per run, \(MoneyFormat.usd(day)) a day."
+        }
+    }
+
+    // MARK: - Auto-dev
+
+    /// Immediately above Up next, and the adjacency is the argument.
+    ///
+    /// Up next is the ranking of moves Elliot *could* make; auto-dev is one
+    /// fixed set of them being made. Both read the world `rankNextSteps` ranks,
+    /// so two orders stacked in one window read as one unless the top one says
+    /// it is not the same order — which is what `AutoDevBand.caption` says.
+    ///
+    /// **Permanent, never conditional** — unlike `preflightBand` above, and the
+    /// difference is not taste. Preflight is a *state* nobody has to remember;
+    /// a session's outcome is a **record**, and the record it has to carry is
+    /// the failure: `Column.naturalNext` is `nil` for `.done`, so a card whose
+    /// merge failed — which stays in Done with a `lastError` — is structurally
+    /// absent from `UpNextBand` below. A conditional band would render a session
+    /// that failed everywhere exactly like a session that never happened. The
+    /// template is `model.lastSyncSummary` on Repositories, which stays after
+    /// the sweep.
+    ///
+    /// It computes nothing: `AutoDevBand.of` is total and decides every
+    /// sentence, `AutoDevBand.repoName` decides which repository the session is
+    /// about, and this renders what they return.
+    private var autoDevBand: some View {
+        let rendering = AutoDevBand.of(
+            session: model.autoDev, tally: model.autoDevTally,
+            repoName: AutoDevBand.repoName(
+                session: model.autoDev, selectedRepoID: model.selectedRepoID, repos: model.repos))
+        return band("Auto-dev") {
+            Text(rendering.headline)
+                .font(Type.prose)
+                .foregroundStyle(rendering.tone.tint)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(AutoDevBand.caption)
+                .font(Type.prose)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // The queue band's shape above: the sentence that says what the
+            // controls do, then the controls. The sentence is not decoration —
+            // a title has no room to say that Stop cancels the run already
+            // going, and the queue's own Pause cannot do that at all.
+            HStack(alignment: .top, spacing: 8) {
+                Text(rendering.runNote)
+                    .font(Type.prose)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                ForEach(rendering.controls, id: \.self) { control in
+                    Button(AutoDevBand.title(control)) { act(control) }
+                        .controlSize(.small)
+                        .help(AutoDevBand.explains(control))
+                        .accessibilityHint(AutoDevBand.explains(control))
+                }
+            }
+
+            ForEach(model.autoDevEngagements) { engagement in
+                engagementRow(engagement)
+            }
+
+            startRow
+        }
+    }
+
+    /// One engaged card, in `queueRow`'s shape: what it is, and the rule that
+    /// decided it. The reason is the row's point — a report that says a card is
+    /// blocked without saying why sends the reader nowhere.
+    private func engagementRow(_ engagement: AutoDevEngagement) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: engagement.disposition.icon)
+                .font(.system(size: 10))
+                .foregroundStyle(engagement.disposition.tint)
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(engagementTitle(engagement))
+                    .font(Type.prose)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(engagement.reason)
+                    .font(Type.prose)
+                    .foregroundStyle(engagement.disposition.tint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Fact(text: "\(engagement.attempts)", tint: Palette.quiet, small: true)
+                .help("Attempts on this card")
+        }
+        .padding(8)
+        .background(Surface.recess)
+        .clipShape(RoundedRectangle(cornerRadius: Metric.cardRadius))
+        .accessibilityElement(children: .combine)
+    }
+
+    /// A deleted card still has a row: the session engaged it, and dropping the
+    /// row would make the report quietly shorter than the session it describes.
+    private func engagementTitle(_ engagement: AutoDevEngagement) -> String {
+        model.card(id: engagement.cardID)?.displayTitle ?? "A card that is no longer on the board"
+    }
+
+    /// Start, how many cards it engages, and — when it cannot start — why.
+    ///
+    /// ⛔ Deliberately **not** in a toolbar, the one region `board_screenshot`
+    /// renders blank, and it never claims the Return key. The analysis panel was
+    /// refused a default action for claiming up to eight unattended runs; this
+    /// claims more, and merges. `DefaultAction.denied` carries the record and
+    /// `DefaultActionTests` enforces it.
+    ///
+    /// The refusal is *stated beside* a disabled Start rather than hidden — the
+    /// same arrangement `AnalysisPanelView` reached after #151: a control you
+    /// cannot press has to say what would let you press it.
+    private var startRow: some View {
+        @Bindable var model = model
+        return HStack(spacing: 8) {
+            Stepper(value: $model.autoDevCardLimit, in: 1...10) {
+                Text(
+                    "\(model.autoDevCardLimit) "
+                        + (model.autoDevCardLimit == 1 ? "card" : "cards")
+                )
+                .font(Type.prose)
+            }
+            .fixedSize()
+
+            Button("Start auto-dev") { Task { await model.startAutoDev() } }
+                .controlSize(.small)
+                .disabled(model.autoDevRefusal != nil)
+
+            if let refusal = model.autoDevRefusal {
+                Text(refusal)
+                    .font(Type.prose)
+                    .foregroundStyle(Palette.refused)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func act(_ control: AutoDevBand.Control) {
+        Task {
+            switch control {
+            case .pause: await model.pauseAutoDev()
+            case .resume: await model.resumeAutoDev()
+            case .stop: await model.stopAutoDev()
+            }
         }
     }
 

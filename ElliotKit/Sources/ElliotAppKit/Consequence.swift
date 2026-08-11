@@ -386,3 +386,47 @@ extension PRSign {
         }
     }
 }
+
+extension AutoDevBand.Tone {
+    /// The same arrangement as `RunState.tint` above, and for the same reason:
+    /// the *sentence* is `AutoDevBand`'s and only the colour is decided here,
+    /// because only the colour needs SwiftUI. **Two** surfaces draw this band's
+    /// tone — the Operations band and the status bar's figure — so one mapping
+    /// rather than two is the point.
+    ///
+    /// Four cases and no sixth accent: three are `BrandColor.consequences`, and
+    /// `quiet` is greyscale, which spends none of the budget.
+    var tint: Color {
+        switch self {
+        case .armed: Palette.armed
+        case .attention: Palette.attention
+        case .refused: Palette.refused
+        case .quiet: Palette.quiet
+        }
+    }
+}
+
+extension AutoDevDisposition {
+    /// `merged` is `verified` and not `irreversible`: the merge has already
+    /// happened and `gh` confirmed it, which is precisely what `verified` means.
+    /// `irreversible` is reserved for the act about to be taken.
+    var tint: Color {
+        switch self {
+        case .engaged: Palette.armed
+        case .merged: Palette.verified
+        case .blocked: Palette.refused
+        }
+    }
+
+    /// Three glyphs, and no two the same: a report where a merged card and a
+    /// blocked one carry the same mark is a report the reader has to read twice
+    /// to learn what it already said. `AutoDevBandTests` pins the distinctness
+    /// rather than the choices, because that is the part a careless edit breaks.
+    var icon: String {
+        switch self {
+        case .engaged: "bolt.circle.fill"
+        case .merged: "checkmark.seal.fill"
+        case .blocked: "xmark.seal.fill"
+        }
+    }
+}

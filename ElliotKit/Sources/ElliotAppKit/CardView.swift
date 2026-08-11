@@ -27,6 +27,37 @@ struct CardView: View {
                         .accessibilityLabel(angle.title)
                         .help(angle.title)
                 }
+                // Beside the lens, in the title row, because this row is
+                // unconditional and survives a run. Deliberately **not** in the
+                // facts row below: that row's guard makes it absent for a
+                // freshly engaged card — no issue, no pull request, and
+                // `stagnation` and `prSign` both suppressed while a run is going
+                // — which is exactly the card this mark is about. Widening that
+                // guard to admit the mark would draw a facts row containing only
+                // the mark, on the cards least able to spare the height.
+                //
+                // ⚠️ No `guard activeRun == nil`, unlike `stagnation` and
+                // `prSign` below. Those two are right to defer to
+                // `RunningStrip`: two elapsed times on one card read as one
+                // contradicting the other. This is not that kind of fact. It
+                // says *who is driving the card*, not what state the card is in,
+                // and a card auto-dev is driving is most worth marking while its
+                // run is going.
+                //
+                // `Palette.armed` and no sixth tint: an engaged card is armed,
+                // which is what `armed` already means.
+                if isEngagedByAutoDev {
+                    Image(systemName: AutoDevBand.engagedSymbol)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Palette.armed)
+                        // The card is one combined accessibility element, so an
+                        // unlabelled glyph is read aloud as whatever the system
+                        // calls the character — the lens mark above carries a
+                        // label for the same reason, and a `.help` does not
+                        // close it, being invisible to VoiceOver.
+                        .accessibilityLabel(AutoDevBand.engagedLabel)
+                        .help(AutoDevBand.engagedLabel)
+                }
                 Text(card.displayTitle)
                     .font(Type.cardTitle)
                     .foregroundStyle(.primary)
@@ -237,6 +268,19 @@ struct CardView: View {
 
     private var isSelected: Bool { model.selectedCardID == card.id }
     private var activeRun: SkillRun? { model.activeRuns[card.id] }
+
+    /// Whether an auto-dev session has engaged this card.
+    ///
+    /// Read from the **session's** engaged set rather than from its engagement
+    /// rows: the set is closed at start, so the mark is right from the instant
+    /// the session exists — the rows arrive on their own clock — and it stays
+    /// right through the report, where a card whose merge failed is still a card
+    /// the session engaged.
+    ///
+    /// `AppModel` holds it as a `Set` so each card asks once rather than
+    /// rebuilding the set per card; every card in every column evaluates this on
+    /// every render.
+    private var isEngagedByAutoDev: Bool { model.autoDevEngagedCardIDs.contains(card.id) }
 
     private var refusalMessage: String? {
         model.refusal?.cardID == card.id ? model.refusal?.message : nil
