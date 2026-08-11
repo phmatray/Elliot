@@ -492,7 +492,7 @@ public actor AutoDevService: RoundTriggering {
     ///
     /// **Abandoning a card and cancelling its run are not the same act, and
     /// only the second frees the card.** A `.stalled` run is non-terminal
-    /// (`RunState.isTerminal`), so `activeRun(cardID:)` answers with it for
+    /// (`RunState.isTerminal`), so `activeRun`/`activeRuns` answer with it for
     /// ever; a `.queued` run held by a refusal such as
     /// `.mergeWaitsForRepoToBeIdle` is the same shape one refusal over. Both
     /// would otherwise outlive the session that made them, hold their card
@@ -503,11 +503,17 @@ public actor AutoDevService: RoundTriggering {
     /// (`AutoDevPolicy`'s `.runAlreadyInFlight` arm does not consult
     /// `RunState`), so this method *is* reached with a live child in the
     /// picture. The only path that stops one is the user's own stop, which is
-    /// PR5's — not a session giving up.
+    /// PR5's — not a session giving up. `.cancelling` is spared for a
+    /// different reason: the SIGTERM is already out
+    /// (`RunState.isCancellable` excludes it too), so cancelling it again is
+    /// a no-op at best.
+    ///
+    /// One batched read, not one per card — `advance(_:)` above states the
+    /// same principle ("three reads per session, not per card") and this
+    /// follows it.
     private func finish(_ session: AutoDevSession) async {
-        for cardID in session.engagedCardIDs {
-            guard let run = (try? await store.activeRun(cardID: cardID)) ?? nil else { continue }
-            guard run.state == .queued || run.state == .stalled else { continue }
+        let active = (try? await store.activeRuns(cardIDs: session.engagedCardIDs)) ?? [:]
+        for run in active.values where shouldCancelOnTermination(run.state) {
             await launcher.cancel(runID: run.id)
         }
 
@@ -515,5 +521,23 @@ public actor AutoDevService: RoundTriggering {
         ended.state = .finished
         ended.endedAt = clock()
         try? await store.saveAutoDevSession(ended)
+    }
+
+    /// Whether ending a session should cancel a run its own card is still
+    /// holding, decided per `RunState` rather than as a boolean condition.
+    ///
+    /// **Exhaustive, with no `default:`**, for the reason `MoveOrigin
+    /// .allowsSideEffects` and `RunState.isUnderway` are — a case added to
+    /// `RunState` must be classified here deliberately, rather than silently
+    /// inheriting "don't cancel it" the way a boolean guard would. The five
+    /// terminal cases are unreachable in practice — `activeRun`/`activeRuns`
+    /// only ever return an active run — but the switch stays total over the
+    /// whole enum rather than leaning on that.
+    private func shouldCancelOnTermination(_ state: RunState) -> Bool {
+        switch state {
+        case .queued, .stalled: true
+        case .running, .cancelling: false
+        case .succeeded, .completedWithDenials, .failed, .cancelled, .timedOut: false
+        }
     }
 }

@@ -1814,18 +1814,22 @@ struct AutoDevRoundTests {
 ///
 /// **Abandoning a card and cancelling its run are not the same act, and only
 /// the second frees the card.** A `.stalled` run is non-terminal
-/// (`RunState.isTerminal`), so `activeRun(cardID:)` answers with it for ever —
-/// the card is held by a run nobody is waiting for. A `.queued` run is the
-/// same shape one refusal over.
+/// (`RunState.isTerminal`), so `activeRuns(cardIDs:)` answers with it for
+/// ever — the card is held by a run nobody is waiting for. A `.queued` run is
+/// the same shape one refusal over.
 ///
-/// ⛔ **A `.running` run is never cancelled by termination.** `finish` reaches
-/// every kind of held run through the same `activeRun(cardID:)` read, so the
-/// distinction has to be made by `finish` itself, not by what the store hands
-/// back. `aRunningRunIsNeverCancelledByTermination` below is what pins it —
-/// see that test's own comment for why the session can still reach `finish`
-/// with a `.running` run on an engaged card, which is narrower than "a running
-/// run keeps the session alive" and is the actual mechanism this file found
-/// while tracing `AutoDevPolicy.decide(block:...)`.
+/// ⛔ **A `.running` run is never cancelled by termination, and neither is a
+/// `.cancelling` one.** `finish` reaches every kind of held run through the
+/// same batched `activeRuns(cardIDs:)` read, so the distinction has to be
+/// made by `finish`'s own `shouldCancelOnTermination` switch, not by what the
+/// store hands back. `aRunningRunIsNeverCancelledByTermination` and
+/// `aCancellingRunIsNeverCancelledByTermination` below are what pin the two
+/// arms — see the former's own comment for why the session can still reach
+/// `finish` with a `.running` run on an engaged card, which is narrower than
+/// "a running run keeps the session alive" and is the actual mechanism this
+/// file found while tracing `AutoDevPolicy.decide(block:...)`. `.cancelling`
+/// is spared for the simpler reason `RunState.isCancellable` already
+/// excludes it: the SIGTERM is already out.
 ///
 /// Every fixture here is headless (`BoardService(store:launcher:)`, no
 /// `verdicts:`) rather than wired to `Scripts/fake-gh.sh` the way
@@ -1999,8 +2003,8 @@ struct AutoDevTerminationTests {
     /// the one thing standing between "the session gave up" and "the session
     /// killed a child mid-merge" is that `finish` must not call
     /// `launcher.cancel(runID:)` for a `.running` run. Nothing upstream of
-    /// `finish` protects that; only `finish`'s own `run.state == .queued ||
-    /// run.state == .stalled` guard does.
+    /// `finish` protects that; only `finish`'s own `shouldCancelOnTermination`
+    /// switch does.
     @Test("A running run is never cancelled by termination")
     func aRunningRunIsNeverCancelledByTermination() async throws {
         let (store, launcher, queue, card, held) = try await fixtureWithHeldRun(.running)
@@ -2026,6 +2030,38 @@ struct AutoDevTerminationTests {
         #expect(await launcher.cancelledRuns().isEmpty)
         #expect(try await store.activeRun(cardID: card.id)?.id == held.id)
         #expect(try await store.activeRun(cardID: card.id)?.state == .running)
+    }
+
+    /// The `.cancelling` counterpart to the `.running` test above: fix round 1
+    /// found this arm correct but unpinned. A run already winding down (the
+    /// SIGTERM is already out — `RunState.isCancellable` excludes it for the
+    /// same reason) must not be cancelled a second time by termination;
+    /// `finish` reaches it through the same `activeRuns` read as every other
+    /// active state, so only its own `shouldCancelOnTermination` switch keeps
+    /// it untouched.
+    @Test("A cancelling run is never cancelled again by termination")
+    func aCancellingRunIsNeverCancelledByTermination() async throws {
+        let (store, launcher, queue, card, held) = try await fixtureWithHeldRun(.cancelling)
+
+        let now = LockedDate(epoch)
+        let service = AutoDevService(
+            store: store, board: BoardService(store: store, launcher: launcher),
+            launcher: launcher, queue: queue, clock: { now.date })
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: card.repoID, engagedCardIDs: [card.id], maxAttemptsPerCard: 1,
+                patience: 600, startedAt: epoch),
+            preflight: .passing)
+
+        #expect(await launcher.cancelledRuns().isEmpty)
+
+        now.advance(by: 601)
+        await service.advance()
+
+        #expect(try await store.autoDevSession(id: started.id)?.state == .finished)
+        #expect(await launcher.cancelledRuns().isEmpty)
+        #expect(try await store.activeRun(cardID: card.id)?.id == held.id)
+        #expect(try await store.activeRun(cardID: card.id)?.state == .cancelling)
     }
 
     /// A finished session is not resumed, and not advanced again: `round()`
