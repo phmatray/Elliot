@@ -182,4 +182,72 @@ struct AutoDevStoreTests {
         #expect(readA.first?.attempts == 1)
         #expect(readB.first?.attempts == 2)
     }
+
+    // Fix round 1 — the review's Critical finding: dropping either `ON DELETE
+    // CASCADE` on `autoDevEngagement` left the full suite green. The next two
+    // tests pin both edges of the migration's own claim — "deleting a card
+    // takes its row with it, so a card a user deleted mid-session leaves the
+    // session rather than holding it open for ever" — and each was confirmed to
+    // redden when its own cascade is dropped (see the fix-round report).
+
+    @Test("Deleting a card takes its engagement row with it, and leaves the session alone")
+    func deletingACardTakesItsEngagementRow() async throws {
+        let (store, repo, cards) = try await seeded()
+        let session = AutoDevSession(
+            repoID: repo.id, engagedCardIDs: cards.map(\.id), maxAttemptsPerCard: 2,
+            patience: 900, startedAt: epoch)
+        let rows = cards.map {
+            AutoDevEngagement(
+                sessionID: session.id, cardID: $0.id, attempts: 0,
+                disposition: .engaged, reason: "Not started.", updatedAt: epoch)
+        }
+        try await store.saveAutoDevSession(session, cards: rows)
+
+        try await store.deleteCard(id: cards[0].id)
+
+        let readRows = try await store.autoDevEngagements(sessionID: session.id)
+        #expect(readRows.count == 2)
+        #expect(Set(readRows.map(\.cardID)) == Set(cards[1...].map(\.id)))
+        // The session itself is untouched — only the one row that named the
+        // deleted card is gone.
+        #expect(try await store.autoDevSession(id: session.id) != nil)
+    }
+
+    /// The card's cascade (`autoDevEngagement.cardID → card`) and the session's
+    /// cascade (`autoDevEngagement.sessionID → autoDevSession`) both ultimately
+    /// hang off `repo` — `card.repoID` and `autoDevSession.repoID` each cascade
+    /// from the same table. Deleting *the session's own repo* would therefore
+    /// exercise both edges at once whenever a session and its engaged cards
+    /// share a repository, and a broken session cascade would still pass this
+    /// test because the card cascade deletes the identical row.
+    ///
+    /// To isolate the session edge, this test parks the session under a
+    /// *second*, otherwise-unrelated repository — nothing in the schema
+    /// requires `AutoDevSession.repoID` to match its engaged cards' `repoID`,
+    /// since `engagedCardIDs` is a JSON array, not a foreign key. Deleting that
+    /// second repo exercises only `repo → autoDevSession → autoDevEngagement`
+    /// and never touches the card or its own repo at all.
+    @Test("A session's rows go when the session does")
+    func deletingASessionTakesItsRowsWithIt() async throws {
+        let (store, _, cards) = try await seeded()
+        let sessionsRepo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot (session holder)")
+        try await store.saveRepo(sessionsRepo)
+
+        let session = AutoDevSession(
+            repoID: sessionsRepo.id, engagedCardIDs: [cards[0].id], maxAttemptsPerCard: 2,
+            patience: 900, startedAt: epoch)
+        let row = AutoDevEngagement(
+            sessionID: session.id, cardID: cards[0].id, attempts: 0,
+            disposition: .engaged, reason: "Not started.", updatedAt: epoch)
+        try await store.saveAutoDevSession(session, cards: [row])
+
+        try await store.deleteRepo(id: sessionsRepo.id)
+
+        #expect(try await store.autoDevSession(id: session.id) == nil)
+        #expect(try await store.autoDevEngagements(sessionID: session.id).isEmpty)
+        // The card, in the repo that was never touched, survives.
+        #expect(try await store.card(id: cards[0].id) != nil)
+    }
 }

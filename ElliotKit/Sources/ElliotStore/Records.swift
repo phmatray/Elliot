@@ -157,9 +157,17 @@ extension AutoDevSession: FetchableRecord, PersistableRecord {
 /// SwiftUI's `Identifiable`, not a column, and a synthesised `Codable` does not
 /// encode a computed property. GRDB hangs `filter(id:)` off the primary key, and
 /// the primary key here is the pair `(sessionID, cardID)`, not `id` alone —
-/// **never call `filter(id:)` on this type.** Two different sessions can each
-/// hold a row for the same card, which is exactly when a lookup keyed on
-/// `cardID` alone would return the wrong session's row.
+/// **never call `filter(id:)` on this type.**
+///
+/// ⚠️ **Measured, not reasoned about: the failure is a crash, not a silent wrong
+/// row.** `AutoDevEngagement.filter(id:)` traps unconditionally —
+/// `Fatal error: Filtering by primary key requires a single-column primary key`
+/// — because GRDB's `Identifiable`-keyed convenience only knows how to match a
+/// single-column primary key, and this table's is a composite pair. That is
+/// still a reason never to call it: a `fatalError` inside a shipping app is not
+/// an acceptable outcome, and a caller reaching for `filter(id:)` because it
+/// reads naturally would take the whole process down rather than get a merely
+/// wrong answer.
 extension AutoDevEngagement: FetchableRecord, PersistableRecord {
     public static let databaseTableName = "autoDevEngagement"
     public static func databaseUUIDEncodingStrategy(for column: String) -> DatabaseUUIDEncodingStrategy {
