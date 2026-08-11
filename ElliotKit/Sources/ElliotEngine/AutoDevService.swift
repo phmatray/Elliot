@@ -276,7 +276,13 @@ public actor AutoDevService: RoundTriggering {
         let now = clock()
         var states = (try? await store.autoDevEngagements(sessionID: session.id)) ?? []
         guard !states.isEmpty else {
-            // Every engaged card was deleted. Nothing left to settle.
+            // A pure short-circuit, not a correctness requirement: every
+            // engaged card was deleted, and `[].allSatisfy(\.isSettled)` is
+            // vacuously true, so the trailing `finish` call below would reach
+            // the same conclusion on its own. This only skips a handful of
+            // now-pointless store reads (`card`, `activeRuns`,
+            // `queueSnapshot()`) for a session already known to have nothing
+            // left.
             await finish(session)
             return
         }

@@ -1668,4 +1668,144 @@ struct AutoDevRoundTests {
                 $0.reason == "The repository is disabled in Elliot, so nothing in this session can run."
             })
     }
+
+    // MARK: - Fix round 1
+
+    /// **The central invariant, on the one path that merges to a default
+    /// branch unattended.** `gh` is the fact; the agent's — and the loop's
+    /// own — prose is a hint. The round that decides to *attempt* a merge and
+    /// queues the run must not itself report the card `.merged`: that fact is
+    /// established later, and only by `didMerge` reading a *terminal* run's
+    /// persisted `verifiedOutcome`. A regression that reports `.merged` the
+    /// instant `.mergePR` is committed — before `gh` has said anything — would
+    /// leave every other test in this suite green, including
+    /// `mergesAreSerialised`, whose own setup this test reuses: that test only
+    /// asserts what the *waiting* card's disposition is, never what the
+    /// *merging* card's own disposition is in the round its merge is queued.
+    @Test("A queued merge is not reported merged until gh confirms it, only queued")
+    func aQueuedMergeIsNotReportedMergedYet() async throws {
+        let (f, service) = try await fixture()
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Merging").card
+        card.column = .inReview
+        card.issueNumber = 47
+        card.prNumber = 52
+        try await f.store.saveCard(card)
+        try await f.store.savePRStatus(
+            PRStatus(
+                repoID: f.repo.id, prNumber: 52, headRefOid: "a1b2c3", checkedAt: Date(),
+                rawMergeStateStatus: "CLEAN", rawMergeable: "MERGEABLE", rawReviewDecision: "",
+                checks: [GHMergeStatus.StatusCheck(
+                    name: "build-and-test", conclusion: "SUCCESS", status: "COMPLETED")]))
+
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: [card.id], maxAttemptsPerCard: 2,
+                patience: 900, startedAt: epoch),
+            preflight: .passing)
+
+        // The merge run exists and was queued this very round — nothing has
+        // confirmed it yet.
+        let run = try #require(try await f.store.runs(cardID: card.id).first)
+        #expect(run.kind == .mergePR)
+        #expect(run.state == .queued)
+        #expect(run.verifiedOutcome == nil)
+
+        // The one assertion that actually discriminates: not "the row says
+        // `.merged` when the PR really merged" (a defect that writes
+        // `.merged` early would pass that too), but that the row does **not**
+        // say `.merged` while the only thing that has happened is the loop
+        // deciding to try.
+        let row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.disposition == .engaged)
+        #expect(row.disposition != .merged)
+    }
+
+    /// **`attempts` counts runs started, not rounds taken — unprotected by
+    /// every other test in this suite.** None of the tests above ever drives
+    /// a `.noAction` round, so nothing catches a regression that charges an
+    /// attempt for a move that spawned nothing. A card already filed (its
+    /// `issueNumber` set) moving Backlog → To Do is `.noAction`
+    /// (`RuleEngine.swift`: "already filed — moving it again must not open a
+    /// second issue"); `maxAttemptsPerCard: 1` makes the failure mode
+    /// concrete — a card wrongly charged for the free move would already be
+    /// exhausted by round two and settle `.blocked` on "Tried 1 time…"
+    /// without ever reaching the real `implement-issue` run.
+    @Test("A .noAction move advances the card for free and spends no attempt")
+    func noActionRoundCostsNoAttempt() async throws {
+        let (f, service) = try await fixture()
+        var card = try await f.board.createCard(
+            repoID: f.repo.id, title: "Already filed", story: story(9)).card
+        card.issueNumber = 999
+        try await f.store.saveCard(card)
+
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: [card.id], maxAttemptsPerCard: 1,
+                patience: 900, startedAt: epoch),
+            preflight: .passing)
+
+        // Round one, inside `start()`: the card advances for free.
+        #expect(try await f.store.card(id: card.id)?.column == .todo)
+        #expect(try await f.store.runs(cardID: card.id).isEmpty)
+        var row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.attempts == 0)
+        #expect(row.disposition == .engaged)
+
+        // Round two: a card wrongly charged in round one would already read
+        // `attempts == maxAttemptsPerCard` here and settle blocked instead of
+        // reaching this real run.
+        await service.advance()
+        let run = try #require(try await f.store.runs(cardID: card.id).first)
+        #expect(run.kind == .implementIssue)
+        row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.attempts == 1)
+        #expect(row.disposition == .engaged)
+    }
+
+    /// **The `held[card.id]` branch — untested by every other test in this
+    /// suite.** `RunQueueReading` exists precisely to let a session tell a run
+    /// the *scheduler* is holding (the writer cap, the daily ceiling, a pause,
+    /// a duplicate `create-issue`, a merge waiting for its repository to be
+    /// idle, a merge verdict not yet established) apart from one genuinely
+    /// still working — `.paused`, `.dailyCeilingReached` and
+    /// `.mergeWaitsForRepoToBeIdle` send the reader somewhere else entirely
+    /// than "wait for this run to finish." Every other test in this suite
+    /// leaves `FakeQueue`'s rows empty, so `held` is always empty and this
+    /// branch is never reached — deleting it entirely leaves the rest of the
+    /// suite, and the whole package, green.
+    @Test("An active run the scheduler itself is holding reports the scheduler's own reason")
+    func heldBranchReportsSchedulersReason() async throws {
+        let (f, service) = try await fixture()
+        let card = try await f.board.createCard(
+            repoID: f.repo.id, title: "Held by the scheduler", story: story(1)).card
+        // An active run for this card, saved directly rather than through a
+        // committed move — what the branch under test reads is
+        // `activeRuns(cardIDs:)` and `queue.queueSnapshot()`, not how the run
+        // came to exist.
+        let run = SkillRun.card(
+            cardID: card.id, repoID: f.repo.id, kind: .createIssue, prompt: "x", cwd: f.repo.path,
+            logPath: "/tmp/a", stderrPath: "/tmp/b", createdAt: epoch)
+        try await f.store.saveRun(run)
+        let refusal = QueueRefusal.writerCapReached(inFlight: 2, cap: 2)
+        await f.queue.setRows([
+            QueuedRun(
+                runID: run.id, cardID: card.id, repoID: f.repo.id,
+                repoName: f.repo.nameWithOwner, cardTitle: card.title, kind: .createIssue,
+                position: 1, refusal: refusal, queuedAt: epoch),
+        ])
+
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: [card.id], maxAttemptsPerCard: 2,
+                patience: 900, startedAt: epoch),
+            preflight: .passing)
+
+        let row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.disposition == .engaged)
+        // The scheduler's own reason, not the generic "a run is already
+        // working on this card" `AutoDevPolicy` would say for a run held by
+        // no queue entry at all.
+        #expect(row.reason == refusal.sentence)
+        #expect(row.reason != "A run is already working on this card.")
+    }
 }
