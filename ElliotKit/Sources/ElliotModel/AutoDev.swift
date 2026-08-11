@@ -25,9 +25,10 @@ import Foundation
 /// declared `Optional` or, **if it is a `[String]`**, wrapped in
 /// `@DefaultsToEmpty` (`ElliotKit/Sources/ElliotModel/DefaultsToEmpty.swift`),
 /// or a database written before the new column existed fails to decode.
-/// ⚠️ The wrapper is hard-typed to `[String]` — its `wrappedValue` and its
-/// `KeyedDecodingContainer` overload both are — so for an `Int`, a `Date` or a
-/// new enum the second remedy does not exist and `Optional` is the only one.
+/// ⚠️ The wrapper is hard-typed: its `wrappedValue` is `[String]`, and the
+/// `KeyedDecodingContainer` overload that does the work is keyed to the wrapper
+/// itself, so there is no generic form to reach for. For an `Int`, a `Date` or
+/// a new enum the second remedy does not exist and `Optional` is the only one.
 /// `BoardStore.openReadOnly` is read against exactly this hazard — it
 /// deliberately reads a database older than the code reading it — and a
 /// non-optional field with only an initialiser default has broken it once

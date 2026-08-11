@@ -3990,7 +3990,7 @@ public final class AppModel {
     /// loop attached would repaint the status bar with a refusal nobody asked
     /// for, on every tick. The three commands may not make that trade, because
     /// a reader is looking at the button they just used.
-    /// ``refreshBusyLenses()`` makes the same one one section up and for the
+    /// ``refreshBusyLenses()`` makes the same trade one section up and for the
     /// same reason: losing a refresh costs a hint, losing a `stop` costs a
     /// cancelled agent.
     public func refreshAutoDev() async {

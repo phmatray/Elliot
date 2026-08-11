@@ -136,8 +136,8 @@ struct OperationsBandOrderTests {
     /// A restructured type reads as an empty list, which its caller fails on
     /// rather than passing.
     private static func bandFields() throws -> [String] {
-        let body = try HiddenFaceState.body(
-            of: "struct AutoDevBand: Equatable", in: try HiddenFaceState.code(of: "AutoDevBand.swift"))
+        let band = try HiddenFaceState.code(of: "AutoDevBand.swift")
+        let body = try HiddenFaceState.body(of: "struct AutoDevBand: Equatable", in: band)
         var names: [String] = []
         var depth = 0
         for raw in body.components(separatedBy: "\n") {
