@@ -185,8 +185,9 @@ struct AnalysisRefusal: Equatable {
     /// may start against a repository is one question with four askers — the
     /// analysis service, the appraisal, this screen, and auto-dev's own start —
     /// and the appraisal passes through no transition at all, so `evaluateMove`
-    /// is not a place it could have been asked. What is left here is this screen's own job: the
-    /// sentence a reader sees, and the ``AnalysisFix`` beside it.
+    /// is not a place it could have been asked. What is left here is this
+    /// screen's own job: the sentence a reader sees, and the ``AnalysisFix``
+    /// beside it.
     ///
     /// ⛔ **The order — switched off before failing — is load-bearing, and it now
     /// lives in the rule** (`UnattendedStartRefusal.refusal(repo:preflight:)`,

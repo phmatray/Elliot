@@ -22,12 +22,16 @@ import Foundation
 /// correct today: PR4 creates this table wholesale, so every column exists
 /// from the first migration that writes a row. It stops being correct the
 /// moment a *later* migration adds a field to this type — that field must be
-/// declared `Optional` or wrapped in `@DefaultsToEmpty`
-/// (`ElliotKit/Sources/ElliotModel/DefaultsToEmpty.swift`), or a database
-/// written before the new column existed fails to decode. `BoardStore
-/// .openReadOnly` is read against exactly this hazard — it deliberately reads
-/// a database older than the code reading it — and a non-optional field with
-/// only an initialiser default has broken it once already.
+/// declared `Optional` or, **if it is a `[String]`**, wrapped in
+/// `@DefaultsToEmpty` (`ElliotKit/Sources/ElliotModel/DefaultsToEmpty.swift`),
+/// or a database written before the new column existed fails to decode.
+/// ⚠️ The wrapper is hard-typed to `[String]` — its `wrappedValue` and its
+/// `KeyedDecodingContainer` overload both are — so for an `Int`, a `Date` or a
+/// new enum the second remedy does not exist and `Optional` is the only one.
+/// `BoardStore.openReadOnly` is read against exactly this hazard — it
+/// deliberately reads a database older than the code reading it — and a
+/// non-optional field with only an initialiser default has broken it once
+/// already.
 public struct AutoDevSession: Identifiable, Codable, Sendable, Hashable {
 
     /// Running, held by the reader, or over.
