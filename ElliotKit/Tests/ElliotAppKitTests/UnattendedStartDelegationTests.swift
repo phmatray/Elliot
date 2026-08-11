@@ -287,6 +287,12 @@ struct UnattendedStartDelegationTests {
     /// `subject.preflightVerdict` is not one for the screen and `gate.verdict(for:)`
     /// is not one for the two services: handing the rule a verdict *is* the
     /// delegation.
+    ///
+    /// ⚠️ **`repoReadings` *is* a needle, and it is a different ruling** — which
+    /// verdict the rule is handed, not whether its guards were re-derived. It is
+    /// asserted separately at the end of the body, with its own sentence and its
+    /// own bound, because collapsing the two would file a measured ruling under
+    /// a message that does not explain it.
     @Test("The auto-dev refusal asks the rule rather than re-implementing its guards")
     func theAutoDevScreenAsksTheRule() throws {
         let code = try HiddenFaceState.code(of: "AppModel.swift")
@@ -319,6 +325,36 @@ struct UnattendedStartDelegationTests {
                         not facts about a repository and belong here; these four are not.
                         """))
         }
+
+        // ⛔ **A different ruling, and it is about *which* verdict the rule is
+        // handed rather than about re-deriving a guard** — so it is its own
+        // assertion with its own sentence, not a fifth needle in the loop above.
+        // Measured (task 4, break 4a): swapping `repo.preflightVerdict` for
+        // `PreflightReading.verdict(of: repoReadings[id])` **starts a session
+        // against a `.failing` repository**, because `verdict(of: nil)` is
+        // `.notChecked`, which admits — and a launch has no reading until its
+        // first sweep lands. The settlement was a prose paragraph until now.
+        //
+        // ⚠️ What this does not catch: any *other* route to a fresher-looking
+        // verdict. A helper that reads the readings itself, an awaited sweep
+        // inlined here, a reading passed in as a parameter — none of them spell
+        // `repoReadings`, and this needle would not fire. It closes the one
+        // shape a careful implementer actually arrives at, which is the one
+        // that was measured.
+        #expect(
+            !body.contains("repoReadings"),
+            """
+            AppModel.autoDevRefusal reads `repoReadings`. The verdict handed to the rule must be \
+            `repo.preflightVerdict`, the persisted column — the same value blockedBadge(for:) and \
+            analysisRefusal decide on, so the three cannot disagree about one repository. A \
+            reading is the fresher-looking value and it is the wrong one here: \
+            `PreflightReading.verdict(of: nil)` is `.notChecked`, which admits, so between launch \
+            and the first sweep a repository whose persisted verdict is `.failing` would be \
+            **permitted** to start an unattended session that merges. That is the two-valued \
+            answer to a three-valued question #302 removed from the screens, restored one asker \
+            later. A caller that has just swept hands the rule its own reading; this model has no \
+            sweep of its own to be fresher than.
+            """)
     }
 
     @Test("A refused move reads the rule's sentence rather than keeping a copy")

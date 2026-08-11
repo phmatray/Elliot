@@ -3868,6 +3868,11 @@ public final class AppModel {
     /// fresher-looking value. That is the two-valued answer #302 removed from
     /// the screens. A caller that has just swept hands the rule its own reading;
     /// this model has no sweep of its own to be fresher than.
+    /// `UnattendedStartDelegationTests.theAutoDevScreenAsksTheRule` bans
+    /// `repoReadings` inside this body, so the ruling is re-run rather than
+    /// merely written down — it was prose only until the final fix wave, and a
+    /// ruling that cost a break-test to establish deserves better than a
+    /// paragraph.
     public var autoDevRefusal: String? {
         if autoDevDriver == nil { return "Auto-dev is not wired into this build yet." }
         if let session = autoDev, session.state != .finished {
