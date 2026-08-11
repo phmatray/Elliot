@@ -393,6 +393,21 @@ public actor RunScheduler: RunLaunching {
             // The ceiling holds runs rather than cancelling them: tomorrow, or a
             // raised ceiling, releases the same queue untouched.
             let mergeVerdict = await mergeAdmission(for: run, now: now)
+            // ⛔ Re-checked *again*, for the same reason as the recheck above:
+            // `mergeAdmission` suspends on real store reads — a card read and a
+            // `prStatus` read — for exactly the run kind this whole guard exists
+            // for, so `drain`/`cancel` can land their synchronous
+            // `pending.removeAll` in *this* window too, not only the one before
+            // `store.run(id:)`. Skipping this would spawn a `claude` for a run
+            // the user just discarded, one `await` later than the bug this
+            // method already guards against. The invariant this loop depends on:
+            // every `await` between the top of this loop and `start(run)` needs
+            // its own `pending.contains` recheck immediately after it — a future
+            // `await` inserted here without one reopens exactly this window.
+            guard pending.contains(runID) else {
+                lastRefusals.removeValue(forKey: runID)
+                continue
+            }
             if let why = refusal(for: run, overBudget: overBudget, mergeVerdict: mergeVerdict) {
                 lastRefusals[runID] = why
             } else {
@@ -430,9 +445,15 @@ public actor RunScheduler: RunLaunching {
     /// throwing call produces — the idiom `PRWatcher.refreshStatuses` already
     /// uses.
     private func mergeAdmission(for run: SkillRun, now: Date) async -> MergeAdmission {
-        guard run.kind == .mergePR, run.demandsVerifiedGreen, let cardID = run.cardID else {
-            return .notDemanded
-        }
+        guard run.kind == .mergePR, run.demandsVerifiedGreen else { return .notDemanded }
+        // A demanding merge with no card to check has *less* established about
+        // it than one whose card lookup fails below, not more: `.notDemanded`
+        // is "nothing was asked", and something was. Grouping the two here was
+        // the bug — reachable today only by bypassing `SkillRun.card(...)`,
+        // which every real merge run goes through, so the database's own
+        // `cardID`/`analysisID` CHECK constraint is what actually stands
+        // between this branch and a run that could reach it.
+        guard let cardID = run.cardID else { return .notEstablished }
         guard let card = (try? await store.card(id: cardID)) ?? nil,
               let number = card.prNumber,
               let status = (try? await store.prStatus(repoID: run.repoID, prNumber: number)) ?? nil

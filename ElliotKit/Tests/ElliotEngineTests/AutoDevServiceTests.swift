@@ -11,11 +11,21 @@ import Testing
 ///
 /// Shared by every fixture in this file — and the ones Tasks 8-14 append —
 /// that needs to point a `GHClient` at `Scripts/fake-gh.sh` or a fixture under
-/// `Fixtures/gh/`. `#filePath` resolves to wherever this file lives on disk,
-/// so the four `deletingLastPathComponent()` calls below climb
-/// `ElliotEngineTests` → `Tests` → `ElliotKit` → the repository root exactly
-/// once, rather than being re-derived inline by every fixture that needs it.
-private let repositoryRoot: URL = {
+/// `Fixtures/gh/`. `#filePath` resolves to wherever *this declaration* lives
+/// on disk regardless of which file calls it, so the four
+/// `deletingLastPathComponent()` calls below climb `ElliotEngineTests` →
+/// `Tests` → `ElliotKit` → the repository root exactly once, rather than
+/// being re-derived inline by every fixture that needs it.
+///
+/// `internal`, not `private` — fix round 1, finding G. `private` at file
+/// scope is invisible to another file in the same target even under
+/// `@testable import`, which is what forced Task 7's `MergeAdmissionTests`
+/// into this file instead of its own: 219 lines before that task, 465 after
+/// it alone. `internal` costs nothing this file was relying on (nothing here
+/// needed the extra restriction) and lets tasks 8-14 use their own files
+/// while still sharing this fixture, rather than every task after Task 7
+/// accreting into the same one.
+let repositoryRoot: URL = {
     URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()  // ElliotEngineTests
         .deletingLastPathComponent()  // Tests
@@ -25,6 +35,16 @@ private let repositoryRoot: URL = {
 
 /// Records what the board asked for without spawning anything — the shape
 /// `BoardServiceTests` already uses.
+///
+/// ⛔ Stays `private`, unlike `repositoryRoot` above — `BoardServiceTests.swift`
+/// declares its own file-scoped `private actor FakeLauncher` with the same
+/// name, and Swift allows two `private` (file-scoped) types to share a name
+/// across files but not one `private` and one `internal`: widening this one
+/// collides with that declaration (`invalid redeclaration`, then `is
+/// ambiguous for type lookup` inside `BoardServiceTests.swift` itself,
+/// measured directly). A file that wants this needs its own copy, or the two
+/// existing copies need to be unified under one shared internal name first —
+/// out of scope for this fix round.
 private actor FakeLauncher: RunLaunching {
     private(set) var launched: [UUID] = []
     private(set) var cancelled: [UUID] = []
@@ -414,7 +434,14 @@ struct MergeAdmissionTests {
     /// refuses every human drag's merge on a ten-minute-old reading. Both
     /// halves below share one fixture, one flag apart, driven through the
     /// real `pump()` rather than through a hand-supplied `MergeAdmission`.
-    private func drivenAdmissionFixture(demanding: Bool) async throws -> (
+    ///
+    /// `stale` widens the fixture for `admissionAdmitsAFreshDemandingMerge`
+    /// below, added in fix round 1: nothing before it drove a demanding
+    /// merge with a *current* reading through the real derivation and
+    /// checked that it actually starts — every existing case here either
+    /// short-circuits before `mergeAdmission` reaches `store.prStatus` at all
+    /// (`.notDemanded`) or is stale by construction.
+    private func drivenAdmissionFixture(demanding: Bool, stale: Bool) async throws -> (
         store: BoardStore, scheduler: RunScheduler, runID: UUID
     ) {
         _ = TestHome.root
@@ -430,12 +457,11 @@ struct MergeAdmissionTests {
         card.prNumber = 52
         try await store.saveCard(card)
 
-        // Already stale the moment it is written — the point of both tests is
-        // what a run does with a reading this old, not how it got that way.
-        try await store.savePRStatus(
-            greenStatus(
-                repoID: repo.id,
-                checkedAt: Date().addingTimeInterval(-(PRStatus.maximumAge + 60))))
+        // Stale the moment it is written, or genuinely current — the point of
+        // every test built on this fixture is what a run does with the
+        // reading it is handed, not how that reading came to be.
+        let checkedAt = stale ? Date().addingTimeInterval(-(PRStatus.maximumAge + 60)) : Date()
+        try await store.savePRStatus(greenStatus(repoID: repo.id, checkedAt: checkedAt))
 
         let run = mergeRun(cardID: card.id, repoID: repo.id, demanding: demanding)
         try await store.saveRun(run)
@@ -445,7 +471,7 @@ struct MergeAdmissionTests {
 
     @Test("Admission derives .notDemanded for a run that asked for nothing, even against a stale reading")
     func admissionDerivesNotDemandedForAPlainMerge() async throws {
-        let (store, _, runID) = try await drivenAdmissionFixture(demanding: false)
+        let (store, _, runID) = try await drivenAdmissionFixture(demanding: false, stale: true)
         // Admitted despite the stale row: `/usr/bin/true` spawns and exits at
         // once, so a run still `.queued` would be the witness of a wrongly
         // held merge. Here the witness runs the other way — `.queued`
@@ -456,10 +482,106 @@ struct MergeAdmissionTests {
 
     @Test("Admission derives .notEstablished for a run that demanded a green, against the same stale reading")
     func admissionDerivesNotEstablishedForADemandingMerge() async throws {
-        let (store, scheduler, runID) = try await drivenAdmissionFixture(demanding: true)
+        let (store, scheduler, runID) = try await drivenAdmissionFixture(demanding: true, stale: true)
         #expect(try await store.run(id: runID)?.state == .queued)
         let queue = await scheduler.queueSnapshot()
         #expect(queue.first?.runID == runID)
+        #expect(queue.first?.refusal == .mergeVerdictNotEstablished)
+    }
+
+    /// Fix round 1, finding C. `staleVerdictIsRefusedAtAdmission` establishes
+    /// a fresh verdict at *propose* time but never observes admission
+    /// succeed on it — the sibling it seeds holds the repository busy on the
+    /// very first drain, and by the time the repository goes idle the row has
+    /// been re-dated stale on purpose. `currentVerdictIsAdmitted` passes
+    /// `mergeVerdict: .current` by hand, the same shortcut
+    /// `admissionDerivesNotDemandedForAPlainMerge`'s own doc comment names.
+    /// Nothing before this proved the `.current` *derivation* — the
+    /// `isStale == false` arm of `mergeAdmission`'s own ternary — actually
+    /// lets a demanding merge start. Inverting `currentHeadOid: nil` to a
+    /// mismatched literal (permanently stale) passed the whole suite clean;
+    /// this is the test that would have caught it.
+    @Test("Admission derives .current for a demanding run with a genuinely fresh reading, and it starts")
+    func admissionAdmitsAFreshDemandingMerge() async throws {
+        let (store, _, runID) = try await drivenAdmissionFixture(demanding: true, stale: false)
+        #expect(try await store.run(id: runID)?.state != .queued)
+    }
+
+    /// Fix round 1, finding E. The `.notEstablished` branch sits above the
+    /// repository rules in `refusal` *by construction* — but nothing before
+    /// this exercised "repository busy **and** verdict stale" together, so
+    /// moving that branch below the repository rules passed the whole suite
+    /// clean. Both busy-repo and full-writer-cap variants are asserted, since
+    /// they are two different branches of `refusal` the ordering could have
+    /// been placed under.
+    @Test("A stale verdict outranks a busy repository, and the refusal says so")
+    func verdictOutranksRepositoryBusy() async throws {
+        let store = try BoardStore.inMemory()
+        let scheduler = scheduler(store)
+        let repo = UUID()
+        await scheduler.testOnlyMarkInFlight(
+            SkillRun.card(
+                cardID: UUID(), repoID: repo, kind: .mergePR, prompt: "held", cwd: "/tmp",
+                logPath: "/tmp/a", stderrPath: "/tmp/b", createdAt: Date()))
+        let run = mergeRun(cardID: UUID(), repoID: repo, demanding: true)
+        #expect(
+            await scheduler.refusal(for: run, overBudget: false, mergeVerdict: .notEstablished)
+                == .mergeVerdictNotEstablished)
+    }
+
+    @Test("A stale verdict outranks a full writer cap, and the refusal says so")
+    func verdictOutranksWriterCap() async throws {
+        let store = try BoardStore.inMemory()
+        let config = toolConfig()
+        let scheduler = RunScheduler(
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)),
+            limits: SchedulerLimits(maxConcurrent: 1, maxConcurrentAnalyses: 1))
+        await scheduler.testOnlyMarkInFlight(
+            SkillRun.card(
+                cardID: UUID(), repoID: UUID(), kind: .implementIssue, prompt: "held", cwd: "/tmp",
+                logPath: "/tmp/a", stderrPath: "/tmp/b", createdAt: Date()))
+        let run = mergeRun(cardID: UUID(), repoID: UUID(), demanding: true)
+        #expect(
+            await scheduler.refusal(for: run, overBudget: false, mergeVerdict: .notEstablished)
+                == .mergeVerdictNotEstablished)
+    }
+
+    /// Fix round 1, finding F. `mergeAdmission`'s first guard used to answer
+    /// `.notDemanded` — the permissive branch — for a demanding `.mergePR`
+    /// run with no card to check, conflating "nothing was asked" with "asked,
+    /// and there is nothing to check it against". Per the guard's own stated
+    /// philosophy, absence is not a green: the correct answer is
+    /// `.notEstablished`.
+    ///
+    /// Reachable only by bypassing `SkillRun.card(...)` — every real merge
+    /// run goes through it, and its `cardID` parameter is non-optional — so
+    /// this constructs the one thing that can hold `cardID: nil` and still
+    /// satisfy `skillRun`'s `CHECK (("cardID" IS NULL) <> ("analysisID" IS
+    /// NULL))` constraint: a `.mergePR` run wearing an analysis's id. Nothing
+    /// in the codebase produces this combination; the point is only that the
+    /// database schema, not a guard in this file, is what currently stops it.
+    @Test("A demanding merge run with no card to check is refused, not admitted")
+    func admissionRefusesADemandingMergeWithNoCard() async throws {
+        _ = TestHome.root
+        let store = try BoardStore.inMemory()
+        let scheduler = scheduler(store)
+        let repo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+        let analysis = Analysis(repoID: repo.id, angles: [.bugs], createdAt: Date())
+        try await store.saveAnalysis(analysis)
+
+        let run = SkillRun(
+            cardID: nil, repoID: repo.id, analysisID: analysis.id, kind: .mergePR, prompt: "x",
+            cwd: "/tmp", logPath: "/tmp/a", stderrPath: "/tmp/b",
+            requiresVerifiedGreen: true, createdAt: Date())
+        try await store.saveRun(run)
+        await scheduler.launch(runID: run.id)
+
+        #expect(try await store.run(id: run.id)?.state == .queued)
+        let queue = await scheduler.queueSnapshot()
+        #expect(queue.first?.runID == run.id)
         #expect(queue.first?.refusal == .mergeVerdictNotEstablished)
     }
 }
