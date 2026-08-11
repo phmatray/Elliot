@@ -415,11 +415,10 @@ struct EndToEndTests {
             cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         let run = try await stack.awaitRun(cardID: card.id)
 
-        let mode = try #require(run.argv.firstIndex(of: "--permission-mode"))
-        #expect(run.argv[mode + 1] == "acceptEdits")
-
-        let tools = try #require(run.argv.firstIndex(of: "--allowedTools"))
-        #expect(run.argv[tools + 1] == "Read,Bash(git status *)")
+        #expect(argumentValues(after: "--permission-mode", in: run.argv) == ["acceptEdits"])
+        #expect(
+            argumentValues(after: "--allowedTools", in: run.argv)
+                == ["Read,Bash(git status *)"])
     }
 
     /// The other half of the same criterion, and the reason `ExtraAllowedTools`
@@ -1017,9 +1016,19 @@ struct AnalysisCompletionTests {
     /// reports `false` when the tree was untouched, and that must read as
     /// something other than the `nil` an orphan reports for "never checked".
     /// A test that only sees one of the two states cannot show they differ.
-    @Test("A checked-clean run and an orphaned run report different things through the same field")
+    ///
+    /// - Note: gated on a real `git` for the reason the appraisal and analysis
+    ///   sentinels are — the fourth site of the same defect, found by grepping
+    ///   the pattern rather than by the issue naming it. Unguarded, a machine
+    ///   without `/usr/bin/git` ran this test to a green `workingTreeChanged ==
+    ///   false` produced by two swallowed failures, directly under a comment
+    ///   claiming the answer "comes from `git` actually saying so".
+    @Test(
+        "A checked-clean run and an orphaned run report different things through the same field",
+        .enabled(if: gitFixtureIsAvailable))
     func sentinelDistinguishesCleanFromUnchecked() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson", gitPath: "/usr/bin/git")
+        let stack = try await Stack.make(
+            fixture: "create-issue-success.ndjson", gitPath: gitFixturePath)
         defer { stack.cleanUp() }
 
         // A directory of its own, distinct from `stack.home`: `stack.home` is
@@ -1034,11 +1043,10 @@ struct AnalysisCompletionTests {
 
         // A real, empty git repository, so "the tree didn't change" comes from
         // `git` actually saying so — not from a git binary that fails the same
-        // way both before and after.
-        _ = try? await ProcessRunner.run(
-            executable: "/usr/bin/git", arguments: ["init"],
-            cwd: analyzedRoot.path, environment: [:], timeout: .seconds(10)
-        )
+        // way both before and after. Through `TestSupport`'s throwing `git`,
+        // because `_ = try? await …` discarded exactly the failure that would
+        // make the sentence above false.
+        try await git(["init", "-q"], in: analyzedRoot.path)
 
         let analyzedRepo = Repo(
             path: analyzedRoot.path, nameWithOwner: "phmatray/Analyzed", displayName: "Analyzed"

@@ -1,5 +1,6 @@
 import ElliotModel
 import Foundation
+import TestSupport
 import Testing
 
 @testable import ElliotProcess
@@ -87,12 +88,13 @@ struct GHLabelTests {
         // Asserted as a pair, not just as present: a colour that landed under
         // `--description` would still "contain" both strings.
         #expect(arguments.contains("--color"))
-        #expect(arguments[(arguments.firstIndex(of: "--color") ?? 0) + 1] == "d73a4a")
+        // Not `arguments[(firstIndex(of:) ?? 0) + 1]`: with the flag absent that
+        // read index 1 and could compare equal to a value that was never after
+        // `--color` at all — a trap's quieter cousin. This fails by name.
+        #expect(argumentValues(after: "--color", in: arguments) == ["d73a4a"])
         #expect(arguments.contains("--description"))
         #expect(
-            arguments[(arguments.firstIndex(of: "--description") ?? 0) + 1]
-                == "Something isn't working"
-        )
+            argumentValues(after: "--description", in: arguments) == ["Something isn't working"])
         #expect(arguments.contains("--repo"))
     }
 

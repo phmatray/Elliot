@@ -32,8 +32,8 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**2418 tests in 277 suites**, 5 of 5 samples on
-  **`main` at `7e3801e`** on 2026-08-10, on a wiped `.build`;
+- **Full test:** `cd ElliotKit && swift test` (**2561 tests in 296 suites**, 5 of 5 samples on
+  **`fix/372-e2e-test-hygiene`**, based on `main` at `9cff06f`, on 2026-08-10, on a wiped `.build`;
   ⚠️ **this line was corrected twice in one evening and the second correction is the interesting
   one.** It went in at 2006/230 off `feat/333-repo-run-terms`, honestly measured — and was stale
   within the hour, because four pull requests landed in sequence and `main` measured **2135 in 244**
@@ -65,6 +65,20 @@
     routine enough that the line's *value* is worth less than its date-stamp. Corrected a fifth time
     in #146 (1050 → 1061, 122 → 124), which is the plan's own instruction: record your baseline from
     your own untouched run and compare against *that*, never against this line.
+  - ✅ **Landing #372 both halves were wrong, and for once both were measured apart.** The line read
+    2418 in 277 off `main` at `7e3801e`; `main` at `9cff06f`, three squashes later, measures
+    **2551 in 294** — so the value was 133 tests and 17 suites behind *and* the stamp was three
+    commits behind, most of it #368's. This branch then adds exactly +8/+2 (`GitFixturesTests` 3,
+    `ArgumentValuesTests` 5), and `main` did not move for its whole life — `git rev-list --count
+    HEAD..origin/main` was **0** at the ready-flip, the #145 shape. ⚠️ That +8 was written down
+    honestly and was wrong within the hour: the code-review pass added two tests **after** the line
+    was written, so the branch's own delta is **+10/+2** and the value above came from the run that
+    followed, never from adding two to the previous number. The ⛔ bullet below is not a historical
+    curiosity — it caught this entry's own author, in the entry itself. The two numbers are separable
+    only because the baseline was taken **on `main` itself, before the branch was cut**, rather than
+    inferred by subtracting this line: had I trusted the line, the whole 141 would have looked like
+    this branch's own. ⚠️ And per the entry above, "`main` did not move" is a reading at an instant,
+    not a property — it can still be overtaken between the flip and the merge.
   - ⚠️ **Landing #363 the gap was 280 tests and 32 suites — by far the largest this entry has
     recorded, and it opened in one act rather than over an afternoon.** The line read 2138 in 245 off
     a branch; `main` measures 2418 in 277. Neither the previous author nor this one let it drift: a

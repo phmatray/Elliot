@@ -47,7 +47,7 @@ struct RepoGateTests {
     /// repository", so a test built on it passes whatever the check under it
     /// does — including nothing at all.
     private func service(
-        git: String = "/usr/bin/git", environment: [String: String] = [:]
+        git: String = gitFixturePath, environment: [String: String] = [:]
     ) -> PreflightService {
         PreflightService(
             environment: LoginShellEnvironment(variables: [:], capturedVia: "test"),
@@ -73,7 +73,7 @@ struct RepoGateTests {
         // ships with the Xcode command-line tools this package needs to build,
         // so a machine that fails here cannot build the package either.
         try #require(
-            FileManager.default.isExecutableFile(atPath: "/usr/bin/git"),
+            gitFixtureIsAvailable,
             "no /usr/bin/git — the passing-verdict witness cannot be built without a real checkout")
 
         let root = TestHome.scratch("repo-gate")
@@ -89,7 +89,7 @@ struct RepoGateTests {
             ["-c", "user.email=t@e.st", "-c", "user.name=T", "commit", "-q", "-m", "seed"],
         ] {
             _ = try await ProcessRunner.run(
-                executable: "/usr/bin/git", arguments: arguments, cwd: root.path,
+                executable: gitFixturePath, arguments: arguments, cwd: root.path,
                 environment: env, timeout: .seconds(30))
         }
         return root
