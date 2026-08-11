@@ -142,7 +142,10 @@ struct QueueRefusalAdmissionTests {
     @Test("An admissible run has no reason not to start")
     func admissibleHasNoRefusal() async throws {
         let scheduler = try scheduler()
-        #expect(await scheduler.refusal(for: run(.implementIssue), overBudget: false) == nil)
+        #expect(
+            await scheduler.refusal(for: run(.implementIssue), overBudget: false, mergeVerdict: .notDemanded)
+                == nil
+        )
     }
 
     @Test("A merge in the repository is named as such, not as a full cap")
@@ -153,7 +156,9 @@ struct QueueRefusalAdmissionTests {
         // Caps are wide open, so if this said "cap reached" it would be sending
         // the user to raise a limit that is not the problem.
         #expect(
-            await scheduler.refusal(for: run(.implementIssue, repo: repo), overBudget: false)
+            await scheduler.refusal(
+                for: run(.implementIssue, repo: repo), overBudget: false, mergeVerdict: .notDemanded
+            )
                 == .mergeInFlightInRepo
         )
     }
@@ -164,7 +169,7 @@ struct QueueRefusalAdmissionTests {
         await scheduler.testOnlyMarkInFlight(run(.implementIssue))
         await scheduler.testOnlyMarkInFlight(run(.implementIssue))
         #expect(
-            await scheduler.refusal(for: run(.implementIssue), overBudget: false)
+            await scheduler.refusal(for: run(.implementIssue), overBudget: false, mergeVerdict: .notDemanded)
                 == .writerCapReached(inFlight: 2, cap: 2)
         )
     }
@@ -174,11 +179,14 @@ struct QueueRefusalAdmissionTests {
         let scheduler = try scheduler(SchedulerLimits(maxConcurrent: 4, maxConcurrentAnalyses: 1))
         await scheduler.testOnlyMarkInFlight(run(.analyzeRepo))
         #expect(
-            await scheduler.refusal(for: run(.analyzeRepo), overBudget: false)
+            await scheduler.refusal(for: run(.analyzeRepo), overBudget: false, mergeVerdict: .notDemanded)
                 == .analysisCapReached(inFlight: 1, cap: 1)
         )
         // And a writer is still admissible: the lanes are separate.
-        #expect(await scheduler.refusal(for: run(.implementIssue), overBudget: false) == nil)
+        #expect(
+            await scheduler.refusal(for: run(.implementIssue), overBudget: false, mergeVerdict: .notDemanded)
+                == nil
+        )
     }
 
     @Test("A second create-issue in one repository is named for what it is")
@@ -187,11 +195,16 @@ struct QueueRefusalAdmissionTests {
         let repo = UUID()
         await scheduler.testOnlyMarkInFlight(run(.createIssue, repo: repo))
         #expect(
-            await scheduler.refusal(for: run(.createIssue, repo: repo), overBudget: false)
+            await scheduler.refusal(
+                for: run(.createIssue, repo: repo), overBudget: false, mergeVerdict: .notDemanded
+            )
                 == .duplicateCreateIssueInRepo
         )
         // Only in the same repository — elsewhere it is free to run.
-        #expect(await scheduler.refusal(for: run(.createIssue), overBudget: false) == nil)
+        #expect(
+            await scheduler.refusal(for: run(.createIssue), overBudget: false, mergeVerdict: .notDemanded)
+                == nil
+        )
     }
 
     @Test("A merge waiting on an analysis says so, rather than blaming a cap")
@@ -200,7 +213,9 @@ struct QueueRefusalAdmissionTests {
         let repo = UUID()
         await scheduler.testOnlyMarkInFlight(run(.analyzeRepo, repo: repo))
         #expect(
-            await scheduler.refusal(for: run(.mergePR, repo: repo), overBudget: false)
+            await scheduler.refusal(
+                for: run(.mergePR, repo: repo), overBudget: false, mergeVerdict: .notDemanded
+            )
                 == .mergeWaitsForRepoToBeIdle
         )
     }
@@ -212,7 +227,7 @@ struct QueueRefusalAdmissionTests {
         let scheduler = try scheduler(SchedulerLimits(maxConcurrent: 1, maxConcurrentAnalyses: 1))
         await scheduler.testOnlyMarkInFlight(run(.implementIssue))
         #expect(
-            await scheduler.refusal(for: run(.implementIssue), overBudget: true)
+            await scheduler.refusal(for: run(.implementIssue), overBudget: true, mergeVerdict: .notDemanded)
                 == .dailyCeilingReached
         )
     }

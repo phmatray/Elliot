@@ -277,7 +277,25 @@ public actor RunScheduler: RunLaunching {
     /// below exists to keep two *builds* out of one `.build/`, and neither of
     /// them builds anything.
     func canStart(_ run: SkillRun) -> Bool {
-        refusal(for: run, overBudget: false) == nil
+        refusal(for: run, overBudget: false, mergeVerdict: .notDemanded) == nil
+    }
+
+    /// What admission knows about a merge run's reading, as of this drain.
+    ///
+    /// Passed into `refusal(for:)` rather than read there, for exactly the
+    /// reason `overBudget` is: the reading lives behind an `await` and that
+    /// method is deliberately synchronous, because it is consulted once per
+    /// pending run per drain.
+    enum MergeAdmission: Sendable, Hashable {
+        /// Not a merge, or the move that queued it demanded no verified green.
+        /// Admission is exactly what it always was.
+        case notDemanded
+        /// It demanded a green, and the reading behind it is still current.
+        case current
+        /// It demanded a green, and the reading is missing or has aged past
+        /// `PRStatus.maximumAge`. For a run that asked for a green, those two
+        /// are the same answer.
+        case notEstablished
     }
 
     /// The same decision as `canStart`, keeping the reason instead of throwing
@@ -289,10 +307,15 @@ public actor RunScheduler: RunLaunching {
     ///
     /// `overBudget` is passed in rather than read here because the spend lives
     /// behind an `await` and this must stay synchronous: it is consulted once
-    /// per pending run per drain.
-    func refusal(for run: SkillRun, overBudget: Bool) -> QueueRefusal? {
+    /// per pending run per drain. `mergeVerdict` is the same idea applied to
+    /// the reading behind a merge that demanded a verified green.
+    func refusal(for run: SkillRun, overBudget: Bool, mergeVerdict: MergeAdmission) -> QueueRefusal? {
         if isPaused { return .paused }
         if overBudget { return .dailyCeilingReached }
+        // Third, and above the repository rules on purpose: no other rule can
+        // release this one, so naming a cap here would send the reader to raise
+        // a limit that is not the block.
+        if mergeVerdict == .notEstablished { return .mergeVerdictNotEstablished }
 
         let sameRepo = inFlight.values.filter { $0.repoID == run.repoID }
         if sameRepo.contains(where: { $0.kind == .mergePR }) { return .mergeInFlightInRepo }
@@ -335,6 +358,9 @@ public actor RunScheduler: RunLaunching {
         // every pending run and is deliberately synchronous; a SQL aggregate in
         // there would turn draining a queue of twenty into twenty queries.
         let overBudget = await isOverDailyCeiling()
+        // One clock for the whole drain, so every pending run is judged against
+        // the same instant rather than one that creeps forward run by run.
+        let now = Date()
         // The snapshot decides the *order* to consider; the queue itself is
         // edited in place below. `pending = stillPending` at the end of this
         // method is what dropped a run that `launch` appended while this pump
@@ -366,7 +392,8 @@ public actor RunScheduler: RunLaunching {
             }
             // The ceiling holds runs rather than cancelling them: tomorrow, or a
             // raised ceiling, releases the same queue untouched.
-            if let why = refusal(for: run, overBudget: overBudget) {
+            let mergeVerdict = await mergeAdmission(for: run, now: now)
+            if let why = refusal(for: run, overBudget: overBudget, mergeVerdict: mergeVerdict) {
                 lastRefusals[runID] = why
             } else {
                 // Removed *before* `start` suspends, so a re-entering pump
@@ -380,6 +407,39 @@ public actor RunScheduler: RunLaunching {
         // outlive its run and be read back by `queueSnapshot`.
         lastRefusals = lastRefusals.filter { pending.contains($0.key) }
         await publishQueue()
+    }
+
+    /// What is known about one pending run's reading, as of this drain.
+    ///
+    /// Called once per pending run from inside `pump`'s loop, where the run has
+    /// already been read — not as a pre-pass over `pending`, which would read
+    /// the store a second time for every id and contradict the comment above
+    /// `overBudget`: read once per drain, not once per run. A card read and a
+    /// `prStatus` read only happen for a `.mergePR` run that demanded a green;
+    /// every other run is `.notDemanded` for the price of the `SkillRun` this
+    /// caller already holds.
+    ///
+    /// `currentHeadOid: nil` deliberately. Establishing the head right now would
+    /// be a network call inside a drain, and `PRWatcher` already re-reads the
+    /// moment the head moves. What that leaves in force is the **age** rule,
+    /// which is the one this guard exists for: by the time `pump()` admits a
+    /// held merge, the reading that decided the move is structurally the most
+    /// delayed one in the system.
+    ///
+    /// `?? nil` flattens the `T??` a `try?` around an optional-returning
+    /// throwing call produces — the idiom `PRWatcher.refreshStatuses` already
+    /// uses.
+    private func mergeAdmission(for run: SkillRun, now: Date) async -> MergeAdmission {
+        guard run.kind == .mergePR, run.demandsVerifiedGreen, let cardID = run.cardID else {
+            return .notDemanded
+        }
+        guard let card = (try? await store.card(id: cardID)) ?? nil,
+              let number = card.prNumber,
+              let status = (try? await store.prStatus(repoID: run.repoID, prNumber: number)) ?? nil
+        else {
+            return .notEstablished
+        }
+        return status.resolved(now: now, currentHeadOid: nil).isStale ? .notEstablished : .current
     }
 
     /// The pending queue, in the order `pump()` will consider it, each entry
@@ -403,9 +463,12 @@ public actor RunScheduler: RunLaunching {
                     kind: run.kind,
                     position: index + 1,
                     // The recorded reason, or the one that applies right now for
-                    // a run queued since the last drain.
+                    // a run queued since the last drain. `.notDemanded` here is
+                    // not a claim about the run: this branch is only reached for
+                    // a run queued *since* the last drain, whose reading has not
+                    // been taken yet. The next drain records the real reason.
                     refusal: lastRefusals[runID]
-                        ?? refusal(for: run, overBudget: false)
+                        ?? refusal(for: run, overBudget: false, mergeVerdict: .notDemanded)
                         ?? .writerCapReached(inFlight: 0, cap: limits.maxConcurrent),
                     queuedAt: run.createdAt
                 )
@@ -923,5 +986,16 @@ public actor RunScheduler: RunLaunching {
     /// spawning anything.
     func testOnlyMarkInFlight(_ run: SkillRun) {
         inFlight[run.id] = run
+    }
+
+    /// Releases a seeded in-flight run, so a test can express "the sibling
+    /// finished" without spawning one.
+    func testOnlyClearInFlight(_ runID: UUID) {
+        inFlight[runID] = nil
+    }
+
+    /// Drains the queue the way a finished run does, without a finished run.
+    func testOnlyDrain() async {
+        await pump()
     }
 }

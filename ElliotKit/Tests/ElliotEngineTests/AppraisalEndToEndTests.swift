@@ -417,7 +417,7 @@ struct AppraisalEndToEndTests {
         )
         second.state = .queued
         #expect(
-            await stack.scheduler.refusal(for: second, overBudget: false)
+            await stack.scheduler.refusal(for: second, overBudget: false, mergeVerdict: .notDemanded)
                 == .writerCapReached(inFlight: 1, cap: 1)
         )
 

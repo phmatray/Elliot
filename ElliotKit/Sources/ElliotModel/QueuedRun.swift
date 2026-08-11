@@ -27,6 +27,9 @@ public enum QueueRefusal: Sendable, Equatable, Hashable {
     case dailyCeilingReached
     /// The scheduler is paused.
     case paused
+    /// A merge that must not land on anything short of a verified green, and
+    /// the reading behind it is missing or older than `PRStatus.maximumAge`.
+    case mergeVerdictNotEstablished
 
     /// Stable identifier, for MCP callers and for tests that must not depend on
     /// the prose.
@@ -39,6 +42,7 @@ public enum QueueRefusal: Sendable, Equatable, Hashable {
         case .mergeWaitsForRepoToBeIdle: "merge_waits_for_repo_to_be_idle"
         case .dailyCeilingReached: "daily_ceiling_reached"
         case .paused: "paused"
+        case .mergeVerdictNotEstablished: "merge_verdict_not_established"
         }
     }
 
@@ -60,6 +64,8 @@ public enum QueueRefusal: Sendable, Equatable, Hashable {
             "Today's spending ceiling is reached. Queued runs are held until tomorrow, or until you raise it in Preflight."
         case .paused:
             "The queue is paused."
+        case .mergeVerdictNotEstablished:
+            "This merge was queued by a session that only merges on a verified green, and the reading of the pull request is missing or older than \(Int(PRStatus.maximumAge / 60)) minutes. Elliot re-reads it while the merge waits; the merge starts as soon as a current reading says the pull request is green."
         }
     }
 }
