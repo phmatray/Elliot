@@ -437,12 +437,35 @@ struct OperationsBandOrderTests {
     /// now rather than "later", when the button becomes the thing that cancels
     /// an unattended agent.
     ///
-    /// ⚠️ **What it does not catch.**
+    /// ⚠️ **This gate covers two axes, and it is written as two because the
+    /// first version of this bound named one and was false about the other.** It
+    /// said a command *"reached indirectly … leaves the arm without its needle
+    /// and **fails**, which is the safe direction"* — true of indirection on the
+    /// **command**, false of indirection on the **control**, which is the axis a
+    /// per-arm reading structurally cannot see.
     ///
-    /// - It reads the `switch` in `act(_:)` and nothing else. A command reached
-    ///   indirectly — through a helper, a stored closure, a key path — leaves
-    ///   the arm without its needle and **fails**, which is the safe direction,
-    ///   but this gate cannot then say the indirection is right.
+    /// - **The command.** An arm reaching its command indirectly — a helper, a
+    ///   stored closure, a key path — leaves the arm without its needle and
+    ///   **fails**. That is the safe direction; the gate cannot then say the
+    ///   indirection is right, only that a person must look.
+    /// - **The subject.** The `switch` must be on `control` itself, which is
+    ///   what `flat(body).contains("switch control {")` pins — the trailing
+    ///   brace and not the words before it. Measured: `switch control.dispatched`
+    ///   and `switch controlToRun` each send the **Pause** button to
+    ///   `stopAutoDev()` with all three arms byte-correct, and each left the
+    ///   whole suite green against the loose form.
+    ///
+    /// ⛔ **The axis it does not cover, and no source scan can: an *extra* call
+    /// in the arm, under a name that is not on ``commands``.** Measured on this
+    /// branch — `case .pause: await model.pauseAutoDev()` followed by
+    /// `await model.refreshAutoDev()` keeps the right needle, trips no banned
+    /// one, and **passes, 2630 tests in 300 suites**. ``commands`` is a list of
+    /// names, so it holds exactly the names on it; widening it to "any `await`
+    /// in the arm" would redden legitimate work, so the honest answer is that
+    /// this is out of reach rather than that it is closed.
+    ///
+    /// Two more, unchanged and unrelated to the axes above:
+    ///
     /// - It cannot see that the button carrying a control's *title* is the one
     ///   that hands `act` that same control. The one-line form where both read
     ///   `control` is pinned by ``theBandDrawsEverythingItIsGiven()`` above,
@@ -463,9 +486,22 @@ struct OperationsBandOrderTests {
 
         let body = try HiddenFaceState.body(
             of: "private func act(_ control: AutoDevBand.Control)", in: code)
+        // ⛔ `switch control {`, not `switch control`. The trailing brace is the
+        // whole assertion: `switch control.dispatched` and `switch controlToRun`
+        // both satisfy the loose form, both reach `stopAutoDev()` from the Pause
+        // button with every arm's needle intact, and both were measured green.
+        // Read through `flat` so a hand rewrap does not redden a correct line.
         #expect(
-            body.contains("switch control"),
-            "act(_:) no longer switches on the control it was handed")
+            Self.flat(body).contains("switch control {"),
+            Comment(
+                rawValue: """
+                    act(_:) does not switch on `control` itself. Its body reads: \
+                    \(Self.flat(body)). Every assertion below reads one arm at a time, so a \
+                    switch on anything *derived* from the control — a computed property, a \
+                    remapped local — leaves all three arms correct and still sends the Pause \
+                    button to another control's command. The arms are not the wiring on their \
+                    own; the subject is half of it.
+                    """))
         #expect(
             !body.contains("default"),
             """
