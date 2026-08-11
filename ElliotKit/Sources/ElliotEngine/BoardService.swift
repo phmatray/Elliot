@@ -10,6 +10,15 @@ public struct MoveProposal: Sendable {
     public var orderIndex: Double
     public var outcome: MoveOutcome
     public var origin: MoveOrigin
+    /// The rule this proposal was decided under, carried so `commitMove` can
+    /// write it onto the run and admission can apply it a second time.
+    public var requiresVerifiedGreen: Bool
+    /// The reading the decision was actually made on — not a fresh one.
+    ///
+    /// Carried rather than re-read by the caller, for the reason `lastRefusals`
+    /// records its refusals instead of recomputing them: a second read is a
+    /// second answer, taken against a board that has since moved.
+    public var prVerdict: ResolvedPRStatus?
 }
 
 public enum MoveResult: Sendable, Equatable {
@@ -175,7 +184,9 @@ public actor BoardService: SystemMoving {
 
         return MoveProposal(
             card: card, from: card.column, to: column,
-            orderIndex: index, outcome: outcome, origin: origin
+            orderIndex: index, outcome: outcome, origin: origin,
+            requiresVerifiedGreen: context.requiresVerifiedGreen,
+            prVerdict: context.prVerdict
         )
     }
 
@@ -198,7 +209,9 @@ public actor BoardService: SystemMoving {
             return .moved(runID: nil)
 
         case .action(let action):
-            let run = try await makeRun(for: action, card: proposal.card)
+            let run = try await makeRun(
+                for: action, card: proposal.card,
+                requiresVerifiedGreen: proposal.requiresVerifiedGreen)
             // One transaction for the card, the run and the audit. The
             // scheduler is handed the id only after it commits, so a crash in
             // between leaves a queued run for the launch sweep rather than a
@@ -234,7 +247,9 @@ public actor BoardService: SystemMoving {
         return try await commitMove(proposal)
     }
 
-    private func makeRun(for action: TriggerAction, card: Card) async throws -> SkillRun {
+    private func makeRun(
+        for action: TriggerAction, card: Card, requiresVerifiedGreen: Bool
+    ) async throws -> SkillRun {
         guard let repo = try await store.repo(id: card.repoID) else {
             throw BoardError.repoNotFound(card.repoID)
         }
@@ -273,6 +288,10 @@ public actor BoardService: SystemMoving {
             cwd: repo.path,
             logPath: StoreLocation.runLogURL(runID: runID).path,
             stderrPath: StoreLocation.runStderrURL(runID: runID).path,
+            // The run remembers the rule the move demanded, so admission can
+            // apply it again — including across a crash, where nothing held in
+            // memory survives.
+            requiresVerifiedGreen: requiresVerifiedGreen,
             createdAt: Date()
         )
     }
