@@ -32,9 +32,17 @@ public actor Client {
 
     private let logger = Logger.forCategory("Client")
 
-    private let processManager: ACPProcessManager
+    /// The connection to the agent. Vendored change: upstream held an `ACPProcessManager` here and
+    /// spawned its own child. Elliot supplies a `Transport` over `ChildProcess` instead, because
+    /// this package has exactly one thing that starts a child.
+    private let transport: any Transport
     private let requestRouter: ACPRequestRouter
     private let errorHandler: ErrorHandler
+
+    /// Drains `transport.messages` and dispatches each into `handleMessage`. Retained so `terminate()`
+    /// can cancel it. `AsyncStream` is single-consumer — this task is the only iterator of
+    /// `transport.messages`, and nothing else may consume it.
+    private var readLoop: Task<Void, Never>?
 
     private var pendingRequests: [RequestId: CheckedContinuation<JSONRPCResponse, Error>] = [:]
     private var nextRequestId: Int = 1
@@ -56,7 +64,9 @@ public actor Client {
 
     // MARK: - Initialization
 
-    public init() {
+    public init(transport: any Transport) {
+        self.transport = transport
+
         decoder = JSONDecoder()
         encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
@@ -67,17 +77,37 @@ public actor Client {
         }
         notificationContinuation = continuation
 
-        processManager = ACPProcessManager(encoder: encoder, decoder: decoder)
         requestRouter = ACPRequestRouter(encoder: encoder, decoder: decoder)
         errorHandler = ErrorHandler(encoder: encoder)
 
-        Task {
-            await processManager.setDataReceivedCallback { [weak self] data in
-                await self?.handleMessage(data: data)
+        // A synchronous actor initializer is never isolated — there is no executor to hop onto
+        // before the actor exists — so `readLoop` cannot be assigned directly here; by this point
+        // every non-defaulted property is already set, so `self` reads as fully initialized and any
+        // further touch of actor state needs isolation. `startReadLoop()` has it, being an ordinary
+        // (isolated) actor method reached through `await`; deferring the loop's start by one hop
+        // loses nothing, since `transport.messages` is `.unbounded`-buffered and holds whatever
+        // arrives before a consumer starts pulling.
+        Task { [weak self] in
+            await self?.startReadLoop()
+        }
+    }
+
+    /// Drains `transport.messages` into `handleMessage`, storing the `Task` in `readLoop` so
+    /// `terminate()` can cancel it. Split out of `init` for the isolation reason explained there.
+    private func startReadLoop() {
+        // Captured locally rather than read as `self.transport` inside the closure below, so the
+        // loop does not hold `self` alive on its own — only the `[weak self]` calls it makes.
+        let transport = self.transport
+        readLoop = Task { [weak self] in
+            for await message in transport.messages {
+                await self?.handleMessage(data: message)
             }
-            await processManager.setTerminationCallback { [weak self] exitCode in
-                await self?.handleTermination(exitCode: exitCode)
-            }
+            // The stream finishing is the agent going away. `handleTermination` is what fails every
+            // in-flight request, so a caller is never left awaiting a reply that cannot come.
+            // ⚠️ The exit code is not knowable from here — the transport owns the child. Zero is a
+            // placeholder the caller must not read as "exited cleanly"; whoever built the
+            // `ACPTransport` has `waitForExit()` and the real number.
+            await self?.handleTermination(exitCode: 0)
         }
     }
 
@@ -106,40 +136,18 @@ public actor Client {
         debugStream = nil
     }
 
-    /// The running agent process identifier, when this client launched one.
-    public func processIdentifier() async -> Int32? {
-        await processManager.processIdentifier()
-    }
-
-    /// The running agent process group identifier, when process grouping succeeded.
-    public func processGroupIdentifier() async -> Int32? {
-        await processManager.processGroupIdentifier()
-    }
-
-    /// Complete stderr lines emitted by the running agent.
-    public func stderrLines() async -> AsyncStream<String>? {
-        await processManager.stderrLines()
-    }
+    // Vendored change: `processIdentifier()`, `processGroupIdentifier()`, `stderrLines()` and
+    // `launch(...)` are deleted rather than forwarded onto `transport`. The caller constructs the
+    // `Transport` — an `ACPTransport` over `ChildProcess` — and already has the process identifier,
+    // the stderr accumulated in `collectedStderr()`, and the thing that spawned the child in the
+    // first place. Re-exposing them here would be a second, narrower window onto state the owner
+    // already holds directly.
 
     public func setDelegate(_ delegate: ClientDelegate?) {
         self.delegate = delegate
         Task {
             await requestRouter.setDelegate(delegate)
         }
-    }
-
-    public func launch(
-        agentPath: String,
-        arguments: [String] = [],
-        workingDirectory: String? = nil,
-        environment: [String: String]? = nil
-    ) async throws {
-        try await processManager.launch(
-            agentPath: agentPath,
-            arguments: arguments,
-            workingDirectory: workingDirectory,
-            environment: environment
-        )
     }
 
     public func initialize(
@@ -876,7 +884,7 @@ public actor Client {
         params: T,
         timeout: TimeInterval? = nil
     ) async throws -> JSONRPCResponse {
-        guard await processManager.isRunning() else {
+        guard await transport.isConnected else {
             throw ClientError.processNotRunning
         }
 
@@ -938,7 +946,7 @@ public actor Client {
     }
 
     public func sendCancelNotification(sessionId: SessionId) async throws {
-        guard await processManager.isRunning() else {
+        guard await transport.isConnected else {
             throw ClientError.processNotRunning
         }
 
@@ -959,7 +967,7 @@ public actor Client {
     }
 
     public func sendCancelRequest(requestId: RequestId) async throws {
-        guard await processManager.isRunning() else {
+        guard await transport.isConnected else {
             throw ClientError.processNotRunning
         }
 
@@ -976,7 +984,7 @@ public actor Client {
     }
 
     private func sendNotification<T: Encodable>(method: String, params: T) async throws {
-        guard await processManager.isRunning() else {
+        guard await transport.isConnected else {
             throw ClientError.processNotRunning
         }
 
@@ -992,7 +1000,8 @@ public actor Client {
     }
 
     public func terminate() async {
-        await processManager.terminate()
+        await transport.close()
+        readLoop?.cancel()
 
         for (_, continuation) in pendingRequests {
             continuation.resume(throwing: ClientError.processNotRunning)
@@ -1155,7 +1164,9 @@ public actor Client {
                     ))
             }
         }
-        try await processManager.writeMessage(message)
+        // `writeMessage` took a model object and encoded it itself; `transport.send` takes `Data`,
+        // so the encode moves here, onto the encoder the client already holds.
+        try await transport.send(encoder.encode(message))
     }
 }
 

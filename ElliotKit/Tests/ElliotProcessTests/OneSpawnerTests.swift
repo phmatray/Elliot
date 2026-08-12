@@ -28,17 +28,10 @@ struct OneSpawnerTests {
         return walker.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
     }
 
-    /// The three files Task 5 removes, once `Client` no longer references them.
-    ///
-    /// They are one dependency chain — `Client` → `ProcessManager` → `ShellEnvironment` — so none
-    /// can go before the others. `ShellEnvironment.swift` is here for the second guard rather than
-    /// the first: it calls `waitUntilExit()`.
-    ///
-    /// Listed by name so the guard is **armed now** and this set emptying is Task 5's acceptance
-    /// criterion — which is not the same thing as a guard switched off and forgotten.
-    static let knownRemaining: Set<String> = [
-        "ProcessManager.swift", "ProcessRegistry.swift", "ShellEnvironment.swift",
-    ]
+    /// Empty, and it must stay empty. Task 5 removed the last three — `Client` now speaks through
+    /// the `Transport` protocol it already declared, and `ProcessManager.swift`, `ProcessRegistry.swift`
+    /// and `ShellEnvironment.swift` are deleted rather than merely unreferenced.
+    static let knownRemaining: Set<String> = []
 
     /// Files sanctioned to construct a `Process()` directly, each with its reason.
     ///

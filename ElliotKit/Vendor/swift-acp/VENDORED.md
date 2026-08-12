@@ -36,11 +36,12 @@ See `docs/superpowers/specs/2026-08-12-elliot-acp-design.md` §3.3. In short: th
 three separate places that spawn a process, and `ChildProcess` is the only thing in this repository
 allowed to do that.
 
-**This table records the branch's vendoring policy, not this commit's contents.** As of Task 1
-(`664d4cf`) every file listed below is still present in the tree and still compiles — nothing here
-has been deleted yet. `Client` → `ACPProcessManager` → `ShellEnvironment` is one call chain that
-has to be cut together, so the deletions move to Task 5; the `ACPProcessManager` → `Transport`
-protocol replacement in the next section becomes true there, not in this commit.
+**As of Task 5, this table is the tree's actual contents, not just its policy.** `Client` →
+`ACPProcessManager` → `ShellEnvironment` was one call chain, cut together: `Client` now holds a
+`private let transport: any Transport` instead of an `ACPProcessManager`, and
+`ACP/Internal/ProcessManager.swift`, `ProcessRegistry.swift` and `ACP/Utilities/ShellEnvironment.swift`
+are deleted, not merely unreferenced. `OneSpawnerTests.knownRemaining` — the excuse list this file's
+own guard read against those three names — is empty.
 
 | Removed | Replaced by |
 |---|---|
@@ -75,5 +76,9 @@ Four files, corrected 2026-08-12 (the "20 sites" this line previously claimed wa
   `nonisolated(unsafe) static var` — arbitrated 2026-08-12; see the comment at the site for
   exactly what synchronisation this does and does not rely on.
 
-`ACPProcessManager` is still called directly from `Client.swift` (`:35`, `:70`, `:137`, `:1158`);
-its replacement by the `Transport` protocol is Task 5's edit, not this one.
+**Task 5 (`refactor(vendor): the client speaks through the Transport it already declared`) made the
+replacement above true.** `Client.swift` no longer names `ACPProcessManager` anywhere except in a
+doc comment recording why the property changed; the fourteen call sites (`isRunning()` ×4,
+`terminate()`, `writeMessage()`, plus `processIdentifier()`/`processGroupIdentifier()`/`stderrLines()`/
+`launch()`, which are deleted rather than forwarded) are gone. `launch()`'s deletion means `Client`
+no longer starts anything — the caller constructs the `Transport` and hands it to `init(transport:)`.
