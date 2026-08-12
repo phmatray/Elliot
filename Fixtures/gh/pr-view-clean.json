@@ -1,0 +1,22 @@
+{
+  "headRefOid": "3be5f1ee906ff61bdedef0072b635ec6ec40c632",
+  "mergeCommit": null,
+  "mergeStateStatus": "CLEAN",
+  "mergeable": "MERGEABLE",
+  "mergedAt": null,
+  "reviewDecision": "",
+  "state": "OPEN",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-08-07T11:55:41Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/phmatray/Elliot/actions/runs/31175706424/job/92857201578",
+      "name": "build-and-test",
+      "startedAt": "2026-08-07T11:51:03Z",
+      "status": "COMPLETED",
+      "workflowName": "ci"
+    }
+  ],
+  "url": "https://github.com/phmatray/Elliot/pull/52"
+}

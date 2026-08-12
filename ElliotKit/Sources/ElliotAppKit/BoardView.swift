@@ -961,7 +961,8 @@ struct StatusBar: View {
                     session: autoDevSession, tally: autoDevTally,
                     repoName: AutoDevBand.repoName(
                         session: autoDevSession, selectedRepoID: model.selectedRepoID,
-                        repos: model.repos))
+                        repos: model.repos),
+                    hasLiveRun: model.autoDevHasLiveRun)
                 figure(
                     text: autoDevText,
                     tint: autoDevBand.tone.tint,

@@ -155,6 +155,28 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     /// `ProposalHarvester`, an appraisal through `AppraisalHarvester`; the
     /// fields mean the same thing in both.
     public var analysisReport: AnalysisRunReport?
+    /// Whether the move that created this run demanded a verified green.
+    ///
+    /// Written by `BoardService` from the move's own context, so admission can
+    /// apply the same rule the decision applied — the guard exists twice, and
+    /// this is what carries it from one to the other across a crash, where
+    /// nothing held in memory survives.
+    ///
+    /// Optional, and not as a third state: `BoardStore.openReadOnly` deliberately
+    /// lets a helper read a file whose migrations it is ahead of, and that
+    /// tolerance *is* GRDB decoding an absent column as `nil`, which only works
+    /// for an optional. `nil` and `false` are the same answer to every question
+    /// asked of it — ask `demandsVerifiedGreen`, never this field.
+    ///
+    /// ⚠️ Not the same hazard `MoveContext.method` warns about, where a default
+    /// on a parameter silently hands the next caller a value it never chose.
+    /// `nil` here is a real, correct and common state — a run made before this
+    /// column existed, or one a watched human started — and `demandsVerifiedGreen`
+    /// resolves it the permissive way on purpose, because a human at the board
+    /// already made the claim. The site where a missing answer would be
+    /// dangerous is `BoardService.makeRun`, which takes this undefaulted for
+    /// exactly that reason; this initialiser is not it.
+    public var requiresVerifiedGreen: Bool?
     public var createdAt: Date
 
     public init(
@@ -180,6 +202,7 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         permissionDenials: [String] = [],
         verifiedOutcome: VerifiedOutcome? = nil,
         analysisReport: AnalysisRunReport? = nil,
+        requiresVerifiedGreen: Bool? = nil,
         createdAt: Date
     ) {
         self.id = id
@@ -205,8 +228,15 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         self.permissionDenials = permissionDenials
         self.verifiedOutcome = verifiedOutcome
         self.analysisReport = analysisReport
+        self.requiresVerifiedGreen = requiresVerifiedGreen
         self.createdAt = createdAt
     }
+}
+
+public extension SkillRun {
+    /// The one reading of `requiresVerifiedGreen`, so no site writes `== true`
+    /// twice and reasons about the nil case again.
+    var demandsVerifiedGreen: Bool { requiresVerifiedGreen == true }
 }
 
 public extension SkillRun {
@@ -284,6 +314,7 @@ public extension SkillRun {
         numTurns: Int? = nil,
         permissionDenials: [String] = [],
         verifiedOutcome: VerifiedOutcome? = nil,
+        requiresVerifiedGreen: Bool? = nil,
         createdAt: Date
     ) -> SkillRun {
         SkillRun(
@@ -293,7 +324,8 @@ public extension SkillRun {
             startedAt: startedAt, endedAt: endedAt, exitCode: exitCode,
             logPath: logPath, stderrPath: stderrPath, closing: closing,
             totalCostUSD: totalCostUSD, numTurns: numTurns, permissionDenials: permissionDenials,
-            verifiedOutcome: verifiedOutcome, analysisReport: nil, createdAt: createdAt
+            verifiedOutcome: verifiedOutcome, analysisReport: nil,
+            requiresVerifiedGreen: requiresVerifiedGreen, createdAt: createdAt
         )
     }
 
@@ -327,7 +359,10 @@ public extension SkillRun {
             startedAt: startedAt, endedAt: endedAt, exitCode: exitCode,
             logPath: logPath, stderrPath: stderrPath, closing: closing,
             totalCostUSD: totalCostUSD, numTurns: numTurns, permissionDenials: permissionDenials,
-            verifiedOutcome: nil, analysisReport: analysisReport, createdAt: createdAt
+            // An analysis run touches no card, so it never merges anything —
+            // nil explicitly, rather than leaning on the initialiser's default.
+            verifiedOutcome: nil, analysisReport: analysisReport,
+            requiresVerifiedGreen: nil, createdAt: createdAt
         )
     }
 }

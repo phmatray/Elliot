@@ -437,7 +437,8 @@ public struct OperationsView: View {
         let rendering = AutoDevBand.of(
             session: model.autoDev, tally: model.autoDevTally,
             repoName: AutoDevBand.repoName(
-                session: model.autoDev, selectedRepoID: model.selectedRepoID, repos: model.repos))
+                session: model.autoDev, selectedRepoID: model.selectedRepoID, repos: model.repos),
+            hasLiveRun: model.autoDevHasLiveRun)
         return band("Auto-dev") {
             Text(rendering.headline)
                 .font(Type.prose)

@@ -224,6 +224,18 @@ public enum ElliotErrorCode: String, Codable, Sendable {
     case proposalNotFound = "proposal_not_found"
     case unknownAngle = "unknown_angle"
     case analysisRefused = "analysis_refused"
+    /// An unattended session refused to start: the repository is disabled or
+    /// Preflight-blocked, the engagement is empty or names a foreign card, or
+    /// no daily spending ceiling is set. Shaped like `analysisRefused`, and for
+    /// the same reason — the caller can act on it, so it is not an internal
+    /// error.
+    ///
+    /// PR4 ships no wire case and no MCP tool that raises `AutoDevError`, so
+    /// nothing can put this string on the wire yet and `elliotProtocolVersion`
+    /// is unaffected. It is added now so the mapping in `AutoDevError.response`
+    /// lives beside the error it maps rather than being invented in a `catch`
+    /// later.
+    case autoDevRefused = "auto_dev_refused"
     /// No scene by that id exists. A typo, or a helper newer than the app.
     case windowNotFound = "window_not_found"
     /// The id is real and that window is simply not open right now.

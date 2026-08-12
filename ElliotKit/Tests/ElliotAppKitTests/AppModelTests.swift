@@ -480,13 +480,118 @@ struct AppModelTests {
         // An empty array, not `nil`: "no follow-ups" is what the button sends
         // when the reader typed none, and it is what lets the merge proceed
         // instead of asking again.
+        //
+        // `.autoDev` origin here only exercises `confirmMerge`'s ability to
+        // record whatever origin it is given — no production caller actually
+        // reaches it this way (`AutoDevService` merges through
+        // `board.proposeMove`/`commitMove` directly, never through
+        // `AppModel`). `requiresVerifiedGreen: false` keeps this test's own
+        // claim (the card lands in `.done`) true: `board` here has no
+        // `verdicts:` reader wired, so `true` would find no green reading and
+        // the move would be blocked instead.
         await model.confirmMerge(
-            cardID: review.id, followUps: [], origin: .autoDev(sessionID: session))
+            cardID: review.id, followUps: [], origin: .autoDev(sessionID: session),
+            requiresVerifiedGreen: false)
 
         #expect(try await store.card(id: review.id)?.column == .done)
         let audits = try await store.audits(cardID: review.id)
         #expect(audits.first?.to == .done)
         #expect(audits.first?.origin == .autoDev(sessionID: session))
+    }
+
+    /// `Scripts/fake-gh.sh`, for the reason `ScopedRetryTests` and
+    /// `ColdLaunchImportTests` each keep their own copy in this target: it is
+    /// `private`, so it needs one per file, the same shape
+    /// `AutoDevServiceTests.repositoryRoot`'s own doc explains for
+    /// `ElliotEngineTests`.
+    private enum Paths {
+        static let repoRoot: URL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // ElliotAppKitTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // ElliotKit
+            .deletingLastPathComponent()  // repo root
+
+        static let fakeGH = repoRoot.appendingPathComponent("Scripts/fake-gh.sh").path
+
+        static func fixture(_ name: String) -> String {
+            repoRoot.appendingPathComponent("Fixtures/gh/\(name)").path
+        }
+    }
+
+    /// A card behind a real, verified-green pull request — `gh pr list`
+    /// answered through `Scripts/fake-gh.sh` and `Fixtures/gh/prs-52-a1b2c3.json`
+    /// (PR 52, head `a1b2c3`), with a matching `PRStatus` row whose own head
+    /// agrees, so `requiresVerifiedGreen: true` finds something to verify
+    /// rather than refusing for want of a reading. The same fixture
+    /// `AutoDevServiceTests.AutoDevProposalTests.fixture()` uses one target
+    /// over, for the identical reason.
+    private func verifiedGreenBoard() async throws -> (store: BoardStore, board: BoardService, card: Card) {
+        _ = TestHome.root
+        let store = try BoardStore.inMemory()
+        let gh = GHClient(
+            config: ToolConfig(
+                claudePath: "", ghPath: Paths.fakeGH, gitPath: "",
+                environment: [
+                    "FAKE_GH_MODE": "ok",
+                    "FAKE_GH_PRS": Paths.fixture("prs-52-a1b2c3.json"),
+                ]))
+        let board = BoardService(
+            store: store, launcher: FakeLauncher(),
+            verdicts: PRVerdictReader(store: store, gh: gh))
+
+        var repo = Repo(
+            path: "/tmp/confirm-green-\(UUID().uuidString)",
+            nameWithOwner: "phmatray/Elliot", displayName: "Elliot")
+        repo.isEnabled = true
+        try await store.saveRepo(repo)
+
+        var card = Card(
+            repoID: repo.id, title: "ready", column: .inReview, orderIndex: 1,
+            issueNumber: 4, prNumber: 52,
+            columnEnteredAt: epoch, createdAt: epoch, updatedAt: epoch)
+        try await store.saveCard(card)
+        card = try #require(try await store.card(id: card.id))
+
+        try await store.savePRStatus(
+            PRStatus(
+                repoID: repo.id, prNumber: 52, headRefOid: "a1b2c3", checkedAt: Date(),
+                rawMergeStateStatus: "CLEAN", rawMergeable: "MERGEABLE", rawReviewDecision: "",
+                checks: [
+                    GHMergeStatus.StatusCheck(
+                        name: "build-and-test", conclusion: "SUCCESS", status: "COMPLETED")
+                ]
+            ))
+        return (store, board, card)
+    }
+
+    /// ⛔ **Fix round 1, Important 1.** Losing `confirmMerge`'s default only
+    /// protects against a caller with nobody watching inheriting an unsafe
+    /// answer if the *value* it passes is actually what lands on the run —
+    /// and nothing checked that. The reviewer hardcoded the internal forward
+    /// to `false` and the full 2758-test suite stayed green: the only test
+    /// call site and the only production call site both already pass
+    /// `false`, so `true` never travelled through this method.
+    ///
+    /// Reads `run.requiresVerifiedGreen` directly — never `demandsVerifiedGreen`,
+    /// which reads `== true` and so cannot tell a genuine `false` from a
+    /// forgotten `nil`, exactly the trap `AutoDevProposalTests.aDragIsUnchanged`
+    /// (`AutoDevServiceTests.swift`) already avoids one layer down for the same
+    /// field. Both values are driven against the same real, verified-green pull
+    /// request — a fresh fixture each time, so `true` genuinely produces a run
+    /// rather than being refused for want of a reading.
+    @Test("confirmMerge forwards requiresVerifiedGreen to the run it produces", arguments: [true, false])
+    func confirmMergeForwardsRequiresVerifiedGreen(_ value: Bool) async throws {
+        let (store, board, card) = try await verifiedGreenBoard()
+        let model = AppModel()
+        model.testOnlySeedStore(store)
+        model.testOnlyAttachBoard(board)
+
+        await model.confirmMerge(
+            cardID: card.id, followUps: [], origin: .userDrag, requiresVerifiedGreen: value)
+
+        let run = try #require(try await store.runs(cardID: card.id).first)
+        #expect(run.requiresVerifiedGreen == value)
+        #expect(try await store.card(id: card.id)?.column == .done)
     }
 
     /// A repository and a card in one seeded store, for the two drag tests below.

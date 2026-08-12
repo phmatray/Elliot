@@ -357,6 +357,67 @@ struct UnattendedStartDelegationTests {
             """)
     }
 
+    /// ⛔ **The fifth caller, and the one that actually spawns.**
+    ///
+    /// `AppModel.autoDevRefusal` above disables the button that opens a session;
+    /// `AutoDevService.start` is the session's own act of starting — the site
+    /// where a repeated guard would let `claude -p --permission-mode
+    /// bypassPermissions` fire N times against a repository this rule was meant
+    /// to refuse. It lives in `ElliotEngine`, so this reads `swiftSources()`
+    /// exactly as ``theServiceAsksTheRule`` and ``theAppraisalServiceAsksTheRule``
+    /// do, rather than `HiddenFaceState.code(of:)`, which only resolves
+    /// `ElliotAppKit`.
+    ///
+    /// ⚠️ **A source gate, because no behavioural test can reach this either.**
+    /// Measured, not assumed: writing the two guards back out inside `start` —
+    /// `guard repo.isEnabled` … `if preflight == .failing` — leaves every test in
+    /// `AutoDevStartTests` green, because the values either side of the
+    /// delegation are identical. Task 11's own report records the same
+    /// measurement for a different obligation on this method; this is
+    /// ``theScreenAsksTheRule``'s finding a third module over.
+    @Test("The auto-dev service asks the rule rather than re-implementing its guards")
+    func theAutoDevServiceAsksTheRule() throws {
+        let sources = try Self.swiftSources()
+        let file = try #require(
+            sources.first { $0.name == "AutoDevService.swift" && $0.module == "ElliotEngine" },
+            "the sweep did not find AutoDevService in ElliotEngine — it is reading the wrong tree")
+        let code = HiddenFaceState.stripped(file.source)
+
+        // Positive witness: a renamed or moved `start` would make every claim
+        // below vacuously true and this gate would go green having read nothing.
+        #expect(
+            code.contains("public func start("),
+            "AutoDevService no longer declares start( — this gate is reading the wrong thing")
+
+        let body = try Self.body(of: "public func start(", in: code)
+        #expect(
+            body.contains("UnattendedStartRefusal.refusal("),
+            """
+            AutoDevService.start does not consult UnattendedStartRefusal. Whether an unattended \
+            agent may start against a repository is one rule with five askers — the analysis \
+            panel, AnalysisService, the appraisal, AppModel's session button, and this one, which \
+            is the caller that actually fires claude -p at bypassPermissions N times inside a real \
+            checkout with nobody watching. A second copy here is how the button's answer and the \
+            session's own come to disagree.
+            """)
+
+        // The guards themselves. `preflight` is deliberately not a needle:
+        // accepting the caller's own measured verdict *is* the delegation —
+        // decision D3, `AutoDevService.start`'s own doc comment.
+        for needle in ["isEnabled", ".failing", ".passing", ".notChecked"] {
+            #expect(
+                !body.contains(needle),
+                Comment(
+                    rawValue: """
+                        AutoDevService.start reads \(needle). That is the rule's own guard \
+                        re-derived in a service — UnattendedStartRefusal.refusal(repo:preflight:) \
+                        answers it, in evaluateMove's order, with the reasons written beside it. \
+                        Taking a shortcut for a repository already switched off needs exactly this \
+                        knowledge, and that is a second copy of an ordering.
+                        """))
+        }
+    }
+
     @Test("A refused move reads the rule's sentence rather than keeping a copy")
     func theMoveRefusalReadsTheRule() throws {
         let code = try HiddenFaceState.code(of: "Consequence.swift")

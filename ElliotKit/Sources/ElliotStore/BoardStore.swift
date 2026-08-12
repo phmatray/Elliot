@@ -100,8 +100,19 @@ public final class BoardStore: Sendable {
     /// typed API belongs there: raw SQL passes straight through the schema, so
     /// it can also create rows no migration would ever produce, which is a test
     /// proving something about a database that cannot exist.
+    ///
+    /// `writeWithoutTransaction`, not `write`: GRDB's `write` wraps the whole
+    /// closure in a transaction, and SQLite treats `PRAGMA foreign_keys` as a
+    /// **no-op inside one** — silently, no error. A caller toggling the pragma
+    /// to orphan a row the schema's own `ON DELETE CASCADE` would otherwise
+    /// sweep away (`RoundTriggeringTests.unreadableRepositoryTriggersARound`)
+    /// would see the pragma "succeed" and do nothing, then watch the very row
+    /// it meant to keep vanish in the cascade it thought it had disabled.
+    /// Measured directly: with `write`, `DELETE FROM repo ...` cascade-deleted
+    /// the dependent `skillRun` row too, and the caller had no way to tell —
+    /// the delete itself didn't fail, it just deleted more than asked.
     func testOnlyExecute(_ sql: String) async throws {
-        try await requireWriter().write { db in try db.execute(sql: sql) }
+        try await requireWriter().writeWithoutTransaction { db in try db.execute(sql: sql) }
     }
 
     // MARK: - Repos
@@ -1074,6 +1085,60 @@ public final class BoardStore: Sendable {
                 .filter(Self.activeStates.contains(SkillRun.Columns.state))
                 .fetchAll(db)
         }
+    }
+
+    // MARK: - Auto-dev
+
+    /// A session and its engaged cards in one transaction — the shape and the
+    /// reason of `saveAnalysis(_:runs:)`. Either every row lands or none does: a
+    /// session with fewer cards than it was started with is a promise that
+    /// quietly shrank, and nothing walks the array against the rows to notice.
+    public func saveAutoDevSession(
+        _ session: AutoDevSession, cards: [AutoDevEngagement]
+    ) async throws {
+        try await requireWriter().write { db in
+            try session.save(db)
+            for card in cards { try card.insert(db) }
+        }
+    }
+
+    public func saveAutoDevSession(_ session: AutoDevSession) async throws {
+        try await requireWriter().write { db in try session.save(db) }
+    }
+
+    public func autoDevSession(id: UUID) async throws -> AutoDevSession? {
+        try await reader.read { db in try AutoDevSession.fetchOne(db, key: id.databaseKey) }
+    }
+
+    /// The sessions that were still going when Elliot stopped, oldest first.
+    public func runningAutoDevSessions() async throws -> [AutoDevSession] {
+        try await reader.read { db in
+            try AutoDevSession
+                .filter(AutoDevSession.Columns.state == AutoDevSession.State.running.rawValue)
+                .order(AutoDevSession.Columns.startedAt)
+                .fetchAll(db)
+        }
+    }
+
+    /// One session's engaged-card rows. A card the user deleted is gone from
+    /// here, which is what leaving a session means.
+    ///
+    /// Filtered on `sessionID` and never on `AutoDevEngagement.id` — that `id`
+    /// is a computed `{ cardID }`, not the row's real key, and `filter(id:)`
+    /// would hang off the composite primary key `(sessionID, cardID)` instead.
+    /// Two sessions can each hold a row for the same card; this is the query
+    /// that keeps them apart.
+    public func autoDevEngagements(sessionID: UUID) async throws -> [AutoDevEngagement] {
+        try await reader.read { db in
+            try AutoDevEngagement
+                .filter(AutoDevEngagement.Columns.sessionID == sessionID.databaseKey)
+                .order(AutoDevEngagement.Columns.updatedAt)
+                .fetchAll(db)
+        }
+    }
+
+    public func saveAutoDevEngagement(_ engagement: AutoDevEngagement) async throws {
+        try await requireWriter().write { db in try engagement.save(db) }
     }
 
     // MARK: - Proposals

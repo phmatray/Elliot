@@ -1006,6 +1006,18 @@ public final class AppModel {
             self.analysisService = analysisService
             startIPC(board: board, store: store, analysis: analysisService, verdicts: verdicts)
 
+            // Built here, beside the other services — but **not yet wired**.
+            // `autoDevDriver` stays nil, and every control reads
+            // `autoDevRefusal`'s "not wired into this build yet" sentence,
+            // until the block below runs after the launch sweep. Named for
+            // its type rather than `autoDev`, the same pairing
+            // `analysisService`/`analysis` already uses one section up — the
+            // property `autoDev` is a session, not this actor, and a local
+            // sharing its name is what `adoptIsTheOnlyWriter`'s source gate
+            // cannot tell apart from a write to that property.
+            let autoDevService = AutoDevService(
+                store: store, board: board, launcher: scheduler, queue: scheduler)
+
             // Put the board back in touch with reality before anything is
             // dragged: runs died when the app last quit.
             let reconciler = Reconciler(
@@ -1013,7 +1025,66 @@ public final class AppModel {
             )
             let summary = await reconciler.sweep()
 
+            // Only now. `Reconciler.sweep()` re-derives what every run that
+            // died with the app actually managed to do, and it re-launches
+            // the ones that were only queued. A round that ran before it
+            // would read an orphan still marked `.running`, answer
+            // `runAlreadyInFlight`, and wait for an event that will never
+            // come, because the sweep that would have produced it has not
+            // reached that run yet.
+            //
+            // The driver becomes reachable here too, in the same instant —
+            // `autoDevRefusal` stops answering "not wired into this build
+            // yet" at this exact line, not before. Attaching it earlier would
+            // let a press race the sweep; registering the trigger *here*
+            // rather than beside the actor above is what makes the ordering
+            // structural rather than a comment: while the sweep runs there is
+            // neither a driver to reach nor a trigger to fire.
+            self.autoDevDriver = autoDevService
+            await scheduler.setRoundTrigger(autoDevService)
+            await autoDevService.advance()
+
+            // Obligation 1 from `AutoDevDriving`'s own doc: a loop that
+            // reaches its own end must make that observable, or
+            // `autoDevRefusal` keeps refusing
+            // every future session on a `.running` row that is actually over.
+            // `refreshAutoDev()` is the poll-shaped seam its doc names — "on
+            // a `.task`, on its own tick" — and it cannot be scoped to a
+            // visible window the way `AnalysisPanelView`'s poll of
+            // `refreshBusyLenses()` is: the whole point of an unattended
+            // session is that nobody may be looking at Operations while it
+            // runs, and the refusal that gates a *new* session has to see the
+            // old one end whether or not anyone opens that screen. Cancelled
+            // with everything else in `observationTasks` by `shutdown()`.
+            //
+            // Skips the real work — an actor hop and a SQLite point-read —
+            // on every tick where `autoDevSessionIsRunning`
+            // says nothing could have changed since the last one. See that
+            // property's own doc for why `.running` is the only state this
+            // can be true for.
+            observationTasks.append(Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(5))
+                    guard self?.autoDevSessionIsRunning == true else { continue }
+                    await self?.refreshAutoDev()
+                }
+            })
+
             let watcher = PRWatcher(store: store, gh: ghClient, mover: board)
+            await watcher.setRoundTrigger(autoDevService)
+            // The other half of `.mergeVerdictNotEstablished`. The watcher is
+            // what makes a stale reading current again, and the scheduler is the
+            // only thing that can act on that — without this line the guard holds
+            // a merge that has become admissible until the session's patience
+            // runs out and cancels it. Registered here rather than beside the
+            // round trigger above by accident of order only: both are the
+            // watcher's outward wiring and neither may precede the launch sweep.
+            await watcher.setQueueReconsidering(scheduler)
+            // `[weak autoDevService]`: the watcher outlives nothing, and
+            // nothing here should be what keeps a session alive.
+            await watcher.setSessionProbe { [weak autoDevService] in
+                await autoDevService?.hasRunningSession() ?? false
+            }
             await watcher.start()
             self.watcher = watcher
 
@@ -1988,31 +2059,31 @@ public final class AppModel {
     /// for every caller. The confirmation is a *button*, not an actor: whoever
     /// armed the merge is who made it, and that is what `moveAudit` records and
     /// `MoveOrigin.historyLabel` prints.
-    public func confirmMerge(cardID: UUID, followUps: [String], origin: MoveOrigin) async {
+    ///
+    /// - Parameter requiresVerifiedGreen: **Not defaulted**, for the reason
+    ///   `move(cardID:to:orderIndex:)`'s own `false` above is stated rather
+    ///   than defaulted: an `origin` says who asked, this says what may be
+    ///   skipped, and `MoveContext.requiresVerifiedGreen` is explicit that the
+    ///   second is never derived from the first. This method's only
+    ///   production caller is `Sheets.swift`'s Merge button, reached solely
+    ///   from a human drag (`AppModel.move`), and it passes `false` — a
+    ///   person is looking at the confirmation on screen. `AutoDevService`
+    ///   never reaches this method at all: its own merges go straight through
+    ///   `board.proposeMove`/`commitMove` with `true`, inside the actor
+    ///   (`AutoDevService.swift`). This parameter is what stops a future
+    ///   caller with nobody watching from silently inheriting an answer that
+    ///   was only ever true for a human — the "merge by omission"
+    ///   `BoardService.proposeMove` refuses to allow by defaulting. That
+    ///   caller must bring its own value; this signature makes sure it has to.
+    public func confirmMerge(
+        cardID: UUID, followUps: [String], origin: MoveOrigin, requiresVerifiedGreen: Bool
+    ) async {
         guard let board else { return }
         pendingFollowUps = nil
         do {
             let result = try await board.move(
                 cardID: cardID, to: .done, origin: origin, followUps: followUps,
-                // The one merge a human performs by hand, having just typed the
-                // follow-ups into the panel. `false` is the whole point of the
-                // field being named for the rule rather than for the caller.
-                //
-                // ⛔ It is a claim about *this* caller, and this method now has
-                // an `origin` it did not have — so the claim is only still true
-                // while every path here ends at the Merge button. Threading the
-                // origin does not make the gate travel with it: an `origin` says
-                // who asked, `requiresVerifiedGreen` says what may be skipped,
-                // and `MoveContext.requiresVerifiedGreen` is explicit that the
-                // second is never derived from the first.
-                //
-                // So the day a caller with nobody watching reaches this funnel —
-                // an auto-dev session confirming its own merge — this `false`
-                // becomes *its* claim by inheritance, which is precisely the
-                // "merge by omission" `BoardService.proposeMove` refuses to
-                // allow by defaulting. That caller must bring the value with it
-                // (a parameter here, no default), not accept this one.
-                requiresVerifiedGreen: false
+                requiresVerifiedGreen: requiresVerifiedGreen
             )
             if case .blocked(let block) = result { status = Self.explain(block) }
         } catch {
@@ -3826,6 +3897,46 @@ public final class AppModel {
 
     public var autoDevTally: AutoDevTally { AutoDevTally.of(autoDevEngagements) }
 
+    /// Whether a run this session started is still active — what
+    /// `AutoDevBand.of`'s `hasLiveRun` parameter needs, and something
+    /// `autoDevTally` cannot answer: the tally counts settled *rows*, and
+    /// `AutoDevPolicy`'s `.runAlreadyInFlight` branch can settle a card's row
+    /// — and, once every row is settled, the whole session — while its run is
+    /// genuinely still `.running` (`AutoDevService.finish()`'s own doc: it
+    /// deliberately leaves a `.running` run alone rather than cancel it). So
+    /// a `.finished` session can still have a live `claude -p` child behind
+    /// it, and this is the one place that fact is checked. `activeRuns` is
+    /// already observed for every card on the board, so this costs no read
+    /// of its own. `false` with no session — nothing to be live.
+    public var autoDevHasLiveRun: Bool {
+        guard let autoDev else { return false }
+        return autoDev.engagedCardIDs.contains { activeRuns[$0] != nil }
+    }
+
+    /// Whether the obligation-1 poll in `start()` has anything left to check on
+    /// this tick.
+    ///
+    /// `AutoDevService.round()` only ever reads `runningAutoDevSessions()`
+    /// (`BoardStore.swift`, filtered on `state == .running`), so `.running` is
+    /// the *only* state a session can leave **on its own**, between two polls,
+    /// with nobody pressing a button. `.paused` and `.finished` can still
+    /// change — a paused session can be resumed, a finished one replaced by a
+    /// new `start()` — but both of those are commands `AppModel` issues
+    /// itself, and every one of `startAutoDev`/`pauseAutoDev`/`resumeAutoDev`/
+    /// `stopAutoDev` already calls `adopt(_:engagements:)` directly on its own
+    /// return. So a tick that finds `autoDev` nil or not `.running` has
+    /// nothing to learn that a poll could discover first — skipping it saves
+    /// the actor hop and the SQLite point-read `refreshAutoDev()` would
+    /// otherwise spend, unconditionally, for the rest of the app's life after
+    /// the first session.
+    ///
+    /// Internal rather than `private` so a test can reach it directly —
+    /// `observe(store:)`'s own doc gives the same reason for the same choice:
+    /// the poll's *timing* is not something `swift test` can see at all (no
+    /// test waits five real seconds), so this is the only part of the fix a
+    /// test can hold.
+    var autoDevSessionIsRunning: Bool { autoDev?.state == .running }
+
     /// How many Backlog cards the next session engages.
     ///
     /// ⚠️ On the model, never as `@State` in the band, for the reason the four
@@ -3994,8 +4105,18 @@ public final class AppModel {
     /// same reason: losing a refresh costs a hint, losing a `stop` costs a
     /// cancelled agent.
     public func refreshAutoDev() async {
-        guard let driver = autoDevDriver, let session = autoDev else { return }
-        adopt(session, engagements: await driver.engagements(sessionID: session.id))
+        // ⛔ **`session(sessionID:)`, not the in-memory `autoDev` this method
+        // started from.** The obvious-looking `let session = autoDev` was the
+        // bug this method shipped with: it re-fetches the *rows* below but
+        // re-adopts them onto the stale value it already had, so a session
+        // that finished on its own — every card settled, nobody pressing
+        // Pause, Resume or Stop — could never be noticed here. Obligation 1
+        // needs the session re-read too, which
+        // is exactly what the protocol's `session(sessionID:)` is for.
+        guard let driver = autoDevDriver, let id = autoDev?.id,
+            let session = await driver.session(sessionID: id)
+        else { return }
+        adopt(session, engagements: await driver.engagements(sessionID: id))
     }
 
     /// Said out loud *and* logged.

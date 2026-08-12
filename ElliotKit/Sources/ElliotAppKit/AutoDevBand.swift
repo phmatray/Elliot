@@ -112,8 +112,32 @@ struct AutoDevBand: Equatable {
     /// are genuinely about rows — settled, merged, blocked — come from the
     /// tally. "To go" is then the difference rather than `tally.engaged`, so the
     /// two halves of the sentence always account for the whole set.
+    ///
+    /// - Parameter hasLiveRun: whether a run this session started is still
+    ///   active, checked only for `.finished` — `AutoDevPolicy`'s
+    ///   `.runAlreadyInFlight` branch never consults `RunState`, so patience
+    ///   expiry can settle every engaged card and reach `finish()` while a
+    ///   `.mergePR` run is genuinely still `.running`, and `finish()`
+    ///   correctly leaves a running run alone rather than cancel it. So a
+    ///   live `claude -p` child can outlive a session this band reports as
+    ///   fully stopped.
+    ///
+    /// ⛔ **`hasLiveRun` has no default, and it had one for exactly as long as it
+    /// took a review to try deleting it.** The argument for `= false` was that
+    /// *"every existing caller and every existing test has no reason to thread it
+    /// through for the two states where it cannot change anything"* — true of the
+    /// tests and **false of the callers**: `BoardView.StatusBar` and
+    /// `OperationsView` are the only two, both render `.finished`, and that is
+    /// the one state where it changes something. Measured: dropping
+    /// `hasLiveRun: model.autoDevHasLiveRun` from both left the whole suite green
+    /// while the shipping board went back to saying *"Nothing is running."* over
+    /// a live `claude -p` child. A default here protects test fixtures and
+    /// exposes the surface that reports whether an unattended agent is still
+    /// going; the tests that genuinely do not care now say `false` out loud,
+    /// which is the trade `MoveContext.method` and `BoardService.proposeMove`
+    /// already made.
     static func of(
-        session: AutoDevSession?, tally: AutoDevTally, repoName: String
+        session: AutoDevSession?, tally: AutoDevTally, repoName: String, hasLiveRun: Bool
     ) -> AutoDevBand {
         guard let session else { return .idle }
         let count = session.engagedCardIDs.count
@@ -150,14 +174,58 @@ struct AutoDevBand: Equatable {
                 controls: [.resume, .stop]
             )
         case .finished:
+            // ⛔ **A stop can leave rows engaged, and a report that ignored
+            // that read as a clean success.** `stop(sessionID:)` is the
+            // one production path that can reach `.finished` while a row is
+            // still `.engaged`: the automatic path never calls `finish()`
+            // until `states.allSatisfy(\.isSettled)`
+            // (`AutoDevService.round()`), so `tally.engaged > 0` here can
+            // only mean a reader pressed Stop before every card settled.
+            // Falling through to the sentence below would silently drop
+            // every abandoned card — "Finished — 5 cards…, 2 merged, 0
+            // blocked" for a session that still had 3 engaged — the exact
+            // same quiet-success-on-short-rows failure `hasLiveRun` below
+            // exists to prevent, one field over. Checked before `hasLiveRun`:
+            // `stop()` also cancels every cancellable active run for the
+            // session's cards, so by the time this renders `hasLiveRun` is
+            // usually already false, and even where it briefly is not, "left
+            // mid-flight" is the more actionable fact.
+            if tally.engaged > 0 {
+                return AutoDevBand(
+                    headline:
+                        "Stopped — \(cards) in \(repoName), \(tally.merged) merged, "
+                        + "\(tally.blocked) blocked, \(tally.engaged) left mid-flight.",
+                    runNote:
+                        "The reader stopped this session before every card settled. "
+                        + "This report stays until the next session starts.",
+                    // Blocked still outranks a mid-flight stop — the same
+                    // ordering `hasLiveRun` uses below: a session that both
+                    // blocked a card *and* left others mid-flight is still,
+                    // first and foremost, a session that failed somewhere.
+                    tone: tally.blocked > 0 ? .refused : .attention,
+                    controls: []
+                )
+            }
             return AutoDevBand(
                 headline:
                     "Finished — \(cards) in \(repoName), \(tally.merged) merged, "
                     + "\(tally.blocked) blocked.",
-                runNote: "Nothing is running. This report stays until the next session starts.",
+                // ⛔ **Must stay conditional on `hasLiveRun`.** "Nothing is
+                // running" is false in a state the previous task proved
+                // reachable — see this method's own doc on the parameter —
+                // and shipping it unconditionally is the defect this branch
+                // has already corrected five times elsewhere: prose the same
+                // pull request makes untrue.
+                runNote: hasLiveRun
+                    ? "A run this session started is still going, and will finish on its own. "
+                        + "This report stays until the next session starts."
+                    : "Nothing is running. This report stays until the next session starts.",
                 // A session that blocked everything must not read like a quiet
                 // success — it is the outcome nothing else on the board shows.
-                tone: tally.blocked > 0 ? .refused : .quiet,
+                // A live run outranks quiet but not refused: a session that
+                // both blocked cards *and* left a run going is still, first
+                // and foremost, a session that failed somewhere.
+                tone: tally.blocked > 0 ? .refused : (hasLiveRun ? .attention : .quiet),
                 controls: []
             )
         }

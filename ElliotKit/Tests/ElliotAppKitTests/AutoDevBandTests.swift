@@ -44,7 +44,7 @@ struct AutoDevBandTests {
             let band = AutoDevBand.of(
                 session: state.map { session($0) },
                 tally: AutoDevTally(engaged: 2, merged: 2, blocked: 1),
-                repoName: "Elliot"
+                repoName: "Elliot", hasLiveRun: false
             )
             #expect(!band.headline.isEmpty, "\(String(describing: state)) has no headline")
             #expect(!band.runNote.isEmpty, "\(String(describing: state)) has no run note")
@@ -56,7 +56,8 @@ struct AutoDevBandTests {
     /// literals are what a reader sees, and what nothing else may say.
     @Test("With no session the band says so and offers no control")
     func idleBand() {
-        let band = AutoDevBand.of(session: nil, tally: noRows, repoName: "Elliot")
+        let band = AutoDevBand.of(
+            session: nil, tally: noRows, repoName: "Elliot", hasLiveRun: false)
         #expect(band == AutoDevBand.idle)
         #expect(band.headline == "Elliot is not driving anything by itself.")
         #expect(band.runNote == "Nothing is running.")
@@ -87,7 +88,8 @@ struct AutoDevBandTests {
                 (
                     "\(state)",
                     AutoDevBand.of(
-                        session: session(state, cards: cards), tally: tally, repoName: "Elliot")
+                        session: session(state, cards: cards), tally: tally,
+                        repoName: "Elliot", hasLiveRun: false)
                 ))
         }
         return bands
@@ -99,7 +101,7 @@ struct AutoDevBandTests {
     func runningBand() {
         let band = AutoDevBand.of(
             session: session(.running), tally: AutoDevTally(engaged: 3, merged: 1, blocked: 1),
-            repoName: "Elliot")
+            repoName: "Elliot", hasLiveRun: false)
         #expect(band.headline == "Driving 5 cards in Elliot — 2 settled, 3 to go.")
         #expect(band.tone == .armed)
         #expect(band.controls == [.pause, .stop])
@@ -109,7 +111,7 @@ struct AutoDevBandTests {
     func pausedBand() {
         let band = AutoDevBand.of(
             session: session(.paused), tally: AutoDevTally(engaged: 3, merged: 1, blocked: 1),
-            repoName: "Elliot")
+            repoName: "Elliot", hasLiveRun: false)
         #expect(band.headline == "Paused — 5 cards engaged in Elliot, 2 settled.")
         #expect(band.tone == .attention)
         #expect(band.controls == [.resume, .stop])
@@ -121,7 +123,7 @@ struct AutoDevBandTests {
     func finishedBand() {
         let band = AutoDevBand.of(
             session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 3, blocked: 2),
-            repoName: "Elliot")
+            repoName: "Elliot", hasLiveRun: false)
         #expect(band.headline == "Finished — 5 cards in Elliot, 3 merged, 2 blocked.")
         #expect(band.controls.isEmpty)
         #expect(band.runNote.contains("Nothing is running"))
@@ -135,13 +137,179 @@ struct AutoDevBandTests {
     func finishedTone() {
         let dirty = AutoDevBand.of(
             session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 3, blocked: 2),
-            repoName: "Elliot")
+            repoName: "Elliot", hasLiveRun: false)
         #expect(dirty.tone == .refused)
 
         let clean = AutoDevBand.of(
             session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 5, blocked: 0),
-            repoName: "Elliot")
+            repoName: "Elliot", hasLiveRun: false)
         #expect(clean.tone == .quiet)
+    }
+
+    // MARK: - A finished session that still has a live run
+
+    /// ⛔ **The sentence this task's own brief exists to fix.** `AutoDevPolicy`'s
+    /// `.runAlreadyInFlight` branch never consults `RunState`, so patience expiry
+    /// can settle every engaged card — and so the whole session — while a
+    /// `.mergePR` run behind one of them is genuinely still `.running`;
+    /// `AutoDevService.finish()` correctly leaves that run alone rather than
+    /// cancel it. A live `claude -p` child can therefore outlive a session the
+    /// band reports as fully stopped, and "Nothing is running." would be a
+    /// straightforward lie in that state.
+    @Test("A finished session with a live run says so, truthfully, instead of 'Nothing is running'")
+    func finishedWithLiveRunTellsTheTruth() {
+        let band = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 3, blocked: 0),
+            repoName: "Elliot", hasLiveRun: true)
+        #expect(!band.runNote.contains("Nothing is running"))
+        #expect(band.runNote.contains("still going"))
+        // The report's permanence is still stated — a live run does not make
+        // the record disappear any sooner than a quiet one does.
+        #expect(band.runNote.contains("This report stays until the next session starts."))
+        #expect(band.controls.isEmpty, "a live run belongs to the run scheduler now, not to a control here")
+    }
+
+    /// The `false` half of the branch, pinned as its own sentence rather than
+    /// left to the other tests' incidental coverage.
+    ///
+    /// ⚠️ This was *"Omitting hasLiveRun reads exactly as it always did"*, and
+    /// the parameter it exercised was defaulted. A review deleted
+    /// `hasLiveRun: model.autoDevHasLiveRun` from both production callers and
+    /// the whole suite stayed green — the default protected the fixtures here
+    /// and exposed the shipping board, which is the one surface that reports
+    /// whether an unattended agent is still going. The default is gone; every
+    /// caller in this file now says `false` out loud, and this test says what
+    /// `false` renders.
+    @Test("A finished session with no live run says nothing is running")
+    func noLiveRunReadsAsQuiet() {
+        let band = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 3, blocked: 0),
+            repoName: "Elliot", hasLiveRun: false)
+        #expect(band.runNote == "Nothing is running. This report stays until the next session starts.")
+    }
+
+    /// A blocked card is still the more urgent fact: a session that both left a
+    /// run going *and* blocked a card reads as refused, not merely attention —
+    /// it failed somewhere, and that outranks "something is still moving."
+    @Test("A live run alone is attention; a blocked card is refused regardless")
+    func liveRunToneRanksBelowBlocked() {
+        let quietlyLive = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 3, blocked: 0),
+            repoName: "Elliot", hasLiveRun: true)
+        #expect(quietlyLive.tone == .attention)
+
+        let blockedAndLive = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 1, blocked: 2),
+            repoName: "Elliot", hasLiveRun: true)
+        #expect(blockedAndLive.tone == .refused)
+    }
+
+    /// `hasLiveRun` is read only for `.finished` — a running or paused session
+    /// already has its own truthful account of what is going on, and the
+    /// parameter must not perturb either.
+    @Test("hasLiveRun changes nothing about a running or a paused band")
+    func hasLiveRunIsIgnoredOutsideFinished() {
+        let tally = AutoDevTally(engaged: 3, merged: 1, blocked: 1)
+        let runningIgnored = AutoDevBand.of(
+            session: session(.running), tally: tally, repoName: "Elliot", hasLiveRun: true)
+        let runningPlain = AutoDevBand.of(
+            session: session(.running), tally: tally, repoName: "Elliot", hasLiveRun: false)
+        #expect(runningIgnored == runningPlain)
+
+        let pausedIgnored = AutoDevBand.of(
+            session: session(.paused), tally: tally, repoName: "Elliot", hasLiveRun: true)
+        let pausedPlain = AutoDevBand.of(
+            session: session(.paused), tally: tally, repoName: "Elliot", hasLiveRun: false)
+        #expect(pausedIgnored == pausedPlain)
+    }
+
+    /// ⛔ **Both directions, the same discipline `runNoteNamesExactlyTheControlsOffered`
+    /// already holds this file to.** A finished band with a live run still offers
+    /// no controls, so its note must not accidentally start naming one just
+    /// because the sentence changed.
+    @Test("The live-run sentence names no control the finished band does not offer")
+    func liveRunSentenceNamesNoControl() {
+        let band = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 0, merged: 3, blocked: 0),
+            repoName: "Elliot", hasLiveRun: true)
+        for control in AutoDevBand.Control.allCases {
+            let word = String(AutoDevBand.title(control).split(separator: " ")[0])
+            #expect(!band.runNote.contains(word), "the live-run sentence names \(word)")
+        }
+    }
+
+    // MARK: - A finished session that still has engaged rows — stop() mid-flight
+
+    /// ⛔ **Fix round 1, Important 2.** `stop(sessionID:)` (`AutoDevService.swift`)
+    /// is the one production path that can reach `.finished` with a row still
+    /// `.engaged`: the automatic path never calls `finish()` until every row is
+    /// settled. Before this fix the sentence below silently dropped every
+    /// abandoned card — "Finished — 5 cards…, 2 merged, 0 blocked" for a session
+    /// that still had 3 `.engaged` — reading as a clean, unremarkable success.
+    /// PR5's inherited contract 4, quoted in the override: *"a `.finished`
+    /// session whose engagement rows fall short reads as a quiet success ...
+    /// the band needs a sentence it does not have."*
+    @Test("A finished session with engaged rows says the reader stopped it, not that it merely finished")
+    func stoppedMidFlightTellsTheTruth() {
+        let band = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 3, merged: 2, blocked: 0),
+            repoName: "Elliot", hasLiveRun: false)
+        #expect(band.headline.hasPrefix("Stopped —"))
+        #expect(band.headline.contains("2 merged"))
+        #expect(band.headline.contains("3 left mid-flight"))
+        #expect(!band.headline.hasPrefix("Finished —"))
+        #expect(band.runNote.contains("stopped this session"))
+        #expect(!band.runNote.contains("Nothing is running"))
+        // The permanence clause survives here too — a mid-flight stop does not
+        // make the record disappear any sooner than a clean finish does.
+        #expect(band.runNote.contains("This report stays until the next session starts."))
+        #expect(band.controls.isEmpty, "the report is a record; there is nothing left to press")
+    }
+
+    /// The exact discriminator, proven rather than assumed: the same merged
+    /// and blocked counts, one card apart in `engaged`, must render two
+    /// different headlines.
+    @Test("Zero engaged rows reads as a clean finish; any engaged rows read as a stop")
+    func engagedCountIsTheDiscriminator() {
+        let clean = AutoDevBand.of(
+            session: session(.finished, cards: 5), tally: AutoDevTally(engaged: 0, merged: 3, blocked: 0),
+            repoName: "Elliot", hasLiveRun: false)
+        #expect(clean.headline.hasPrefix("Finished —"))
+
+        let stopped = AutoDevBand.of(
+            session: session(.finished, cards: 5), tally: AutoDevTally(engaged: 1, merged: 3, blocked: 0),
+            repoName: "Elliot", hasLiveRun: false)
+        #expect(stopped.headline.hasPrefix("Stopped —"))
+    }
+
+    /// Blocked still outranks a mid-flight stop, the same ordering `hasLiveRun`
+    /// already carries below: a session that both blocked a card *and* left
+    /// others engaged is a session that failed somewhere, first and foremost.
+    @Test("A mid-flight stop is attention alone; a blocked card is refused regardless")
+    func stoppedMidFlightToneRanksBelowBlocked() {
+        let attentionOnly = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 2, merged: 3, blocked: 0),
+            repoName: "Elliot", hasLiveRun: false)
+        #expect(attentionOnly.tone == .attention)
+
+        let blockedAndStopped = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 2, merged: 1, blocked: 2),
+            repoName: "Elliot", hasLiveRun: false)
+        #expect(blockedAndStopped.tone == .refused)
+    }
+
+    /// The stopped-mid-flight sentence offers no controls either — the same
+    /// obligation `liveRunSentenceNamesNoControl` holds the live-run sentence
+    /// to, applied to its sibling.
+    @Test("The stopped-mid-flight sentence names no control the finished band does not offer")
+    func stoppedMidFlightSentenceNamesNoControl() {
+        let band = AutoDevBand.of(
+            session: session(.finished), tally: AutoDevTally(engaged: 3, merged: 2, blocked: 0),
+            repoName: "Elliot", hasLiveRun: false)
+        for control in AutoDevBand.Control.allCases {
+            let word = String(AutoDevBand.title(control).split(separator: " ")[0])
+            #expect(!band.runNote.contains(word), "the stopped-mid-flight sentence names \(word)")
+        }
     }
 
     /// ⚠️ **What the band says today about a state nobody has written a sentence
@@ -159,7 +327,7 @@ struct AutoDevBandTests {
     func finishedWithFewerRowsThanCards() {
         let partial = AutoDevTally(engaged: 0, merged: 3, blocked: 0)
         let band = AutoDevBand.of(
-            session: session(.finished, cards: 5), tally: partial, repoName: "Elliot")
+            session: session(.finished, cards: 5), tally: partial, repoName: "Elliot", hasLiveRun: false)
         #expect(band.headline == "Finished — 5 cards in Elliot, 3 merged, 0 blocked.")
         #expect(band.tone == .quiet)
         #expect(band.controls.isEmpty)
@@ -174,7 +342,7 @@ struct AutoDevBandTests {
         let band = AutoDevBand.of(
             session: session(.running, cards: 1),
             tally: AutoDevTally(engaged: 1, merged: 0, blocked: 0),
-            repoName: "Elliot")
+            repoName: "Elliot", hasLiveRun: false)
         #expect(band.headline == "Driving 1 card in Elliot — 0 settled, 1 to go.")
         #expect(!band.headline.contains("1 cards"))
     }
@@ -190,7 +358,7 @@ struct AutoDevBandTests {
     @Test("A session whose rows have not arrived still says how many cards it drives")
     func countsTheSessionNotTheRows() {
         let band = AutoDevBand.of(
-            session: session(.running, cards: 3), tally: noRows, repoName: "Elliot")
+            session: session(.running, cards: 3), tally: noRows, repoName: "Elliot", hasLiveRun: false)
         #expect(band.headline == "Driving 3 cards in Elliot — 0 settled, 3 to go.")
         #expect(AutoDevBand.figureText(session: session(.running, cards: 3), tally: noRows)
             == "0/3 auto-dev")
@@ -203,13 +371,13 @@ struct AutoDevBandTests {
     func partialRowsDoNotShrinkTheCount() {
         let partial = AutoDevTally(engaged: 1, merged: 1, blocked: 0)
         let band = AutoDevBand.of(
-            session: session(.running, cards: 4), tally: partial, repoName: "Elliot")
+            session: session(.running, cards: 4), tally: partial, repoName: "Elliot", hasLiveRun: false)
         #expect(band.headline == "Driving 4 cards in Elliot — 1 settled, 3 to go.")
         #expect(AutoDevBand.figureText(session: session(.running, cards: 4), tally: partial)
             == "1/4 auto-dev")
 
         let held = AutoDevBand.of(
-            session: session(.paused, cards: 4), tally: partial, repoName: "Elliot")
+            session: session(.paused, cards: 4), tally: partial, repoName: "Elliot", hasLiveRun: false)
         #expect(held.headline == "Paused — 4 cards engaged in Elliot, 1 settled.")
     }
 
@@ -233,7 +401,8 @@ struct AutoDevBandTests {
         // be spelled without one.
         let impossible = AutoDevTally(engaged: 0, merged: 2, blocked: 1)
         let band = AutoDevBand.of(
-            session: session(.running, cards: 2), tally: impossible, repoName: "repo-audit")
+            session: session(.running, cards: 2), tally: impossible,
+            repoName: "repo-audit", hasLiveRun: false)
         #expect(band.headline == "Driving 2 cards in repo-audit — 2 settled, 0 to go.")
         // The separator above is an em dash, U+2014. A hyphen-minus *following a
         // space* could only be introducing a negative count.
@@ -245,7 +414,7 @@ struct AutoDevBandTests {
                 == "2/2 auto-dev")
 
         let held = AutoDevBand.of(
-            session: session(.paused, cards: 2), tally: impossible, repoName: "repo-audit")
+            session: session(.paused, cards: 2), tally: impossible, repoName: "repo-audit", hasLiveRun: false)
         #expect(held.headline == "Paused — 2 cards engaged in repo-audit, 2 settled.")
     }
 
@@ -264,7 +433,7 @@ struct AutoDevBandTests {
         // `queueSentence` uses in the band above this one.
         let band = AutoDevBand.of(
             session: session(.running), tally: AutoDevTally(engaged: 5, merged: 0, blocked: 0),
-            repoName: "Elliot")
+            repoName: "Elliot", hasLiveRun: false)
         #expect(band.runNote.contains("already going"))
         #expect(band.runNote.contains("cancels"))
     }
@@ -320,8 +489,10 @@ struct AutoDevBandTests {
     @Test("Running and paused do not share a run note")
     func liveStatesDoNotShareANote() {
         let tally = AutoDevTally(engaged: 3, merged: 1, blocked: 1)
-        let running = AutoDevBand.of(session: session(.running), tally: tally, repoName: "Elliot")
-        let paused = AutoDevBand.of(session: session(.paused), tally: tally, repoName: "Elliot")
+        let running = AutoDevBand.of(
+            session: session(.running), tally: tally, repoName: "Elliot", hasLiveRun: false)
+        let paused = AutoDevBand.of(
+            session: session(.paused), tally: tally, repoName: "Elliot", hasLiveRun: false)
         #expect(running.runNote != paused.runNote)
         #expect(paused.runNote.contains("already going"))
         #expect(paused.runNote.contains("cancels"))

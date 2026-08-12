@@ -15,7 +15,9 @@ import Testing
 /// are asserted here, so the inversion cannot ship green.
 ///
 /// Nothing spawns: `testOnlyMarkInFlight` seeds the in-flight set and
-/// `refusal(for:overBudget:)` is asked directly, which is what `pump()` does.
+/// `refusal(for:overBudget:mergeVerdict:)` is asked directly, which is what
+/// `pump()` does. Every call here passes `.notDemanded`: none of these runs
+/// asked for a verified green, so admission is exactly what it always was.
 @Suite("Scheduler — the read-only lane")
 struct SchedulerReadOnlyLaneTests {
 
@@ -50,11 +52,14 @@ struct SchedulerReadOnlyLaneTests {
         await scheduler.testOnlyMarkInFlight(run(.createIssue))
         // The writer lane is full — proved, not assumed.
         #expect(
-            await scheduler.refusal(for: run(.implementIssue), overBudget: false)
+            await scheduler.refusal(for: run(.implementIssue), overBudget: false, mergeVerdict: .notDemanded)
                 == .writerCapReached(inFlight: 2, cap: 2)
         )
         // And the appraisal is admitted anyway, because it is not a writer.
-        #expect(await scheduler.refusal(for: run(.appraiseCards), overBudget: false) == nil)
+        #expect(
+            await scheduler.refusal(for: run(.appraiseCards), overBudget: false, mergeVerdict: .notDemanded)
+                == nil
+        )
     }
 
     @Test("An appraisal is held by the analysis cap, and says which cap")
@@ -63,12 +68,15 @@ struct SchedulerReadOnlyLaneTests {
         await scheduler.testOnlyMarkInFlight(run(.analyzeRepo))
         await scheduler.testOnlyMarkInFlight(run(.appraiseCards))
         #expect(
-            await scheduler.refusal(for: run(.appraiseCards), overBudget: false)
+            await scheduler.refusal(for: run(.appraiseCards), overBudget: false, mergeVerdict: .notDemanded)
                 == .analysisCapReached(inFlight: 2, cap: 2)
         )
         // Naming the right cap matters: "writer cap reached" here would send the
         // reader to raise a limit that is not the block.
-        #expect(await scheduler.refusal(for: run(.implementIssue), overBudget: false) == nil)
+        #expect(
+            await scheduler.refusal(for: run(.implementIssue), overBudget: false, mergeVerdict: .notDemanded)
+                == nil
+        )
     }
 
     @Test("Two appraisals in flight do not make a writer look capped")
@@ -76,7 +84,10 @@ struct SchedulerReadOnlyLaneTests {
         let scheduler = try scheduler(SchedulerLimits(maxConcurrent: 1, maxConcurrentAnalyses: 3))
         await scheduler.testOnlyMarkInFlight(run(.appraiseCards))
         await scheduler.testOnlyMarkInFlight(run(.appraiseCards))
-        #expect(await scheduler.refusal(for: run(.implementIssue), overBudget: false) == nil)
+        #expect(
+            await scheduler.refusal(for: run(.implementIssue), overBudget: false, mergeVerdict: .notDemanded)
+                == nil
+        )
     }
 
     @Test("Occupancy counts an appraisal on the reading side")
@@ -98,7 +109,9 @@ struct SchedulerReadOnlyLaneTests {
         let repo = UUID()
         await scheduler.testOnlyMarkInFlight(run(.appraiseCards, repo: repo))
         #expect(
-            await scheduler.refusal(for: run(.mergePR, repo: repo), overBudget: false)
+            await scheduler.refusal(
+                for: run(.mergePR, repo: repo), overBudget: false, mergeVerdict: .notDemanded
+            )
                 == .mergeWaitsForRepoToBeIdle
         )
     }
@@ -109,7 +122,9 @@ struct SchedulerReadOnlyLaneTests {
         let repo = UUID()
         await scheduler.testOnlyMarkInFlight(run(.mergePR, repo: repo))
         #expect(
-            await scheduler.refusal(for: run(.appraiseCards, repo: repo), overBudget: false)
+            await scheduler.refusal(
+                for: run(.appraiseCards, repo: repo), overBudget: false, mergeVerdict: .notDemanded
+            )
                 == .mergeInFlightInRepo
         )
     }

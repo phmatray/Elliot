@@ -1,0 +1,14 @@
+[
+  {
+    "number": 52,
+    "url": "https://github.com/phmatray/Elliot/pull/52",
+    "title": "feat(model): the thing issue 47 asked for",
+    "body": "Ready for review.",
+    "headRefName": "feat/47-landing",
+    "isDraft": false,
+    "state": "OPEN",
+    "createdAt": "2026-08-10T09:00:00Z",
+    "mergedAt": null,
+    "headRefOid": "a1b2c3"
+  }
+]

@@ -173,3 +173,84 @@ public struct AutoDevTally: Sendable, Hashable {
         )
     }
 }
+
+extension AutoDevEngagement {
+    /// The row-level **analogue** of ``AutoDevTally/settled``: `.engaged` is `AutoDevDisposition`'s
+    /// only case still in flight, so being settled is defined as *not* that, rather than as an
+    /// enumeration of the other two. That form is the defensible one — a fourth
+    /// `AutoDevDisposition` case with no arm written for it here reads as settled, which surfaces
+    /// in the report as something to go look at, rather than silently staying "still engaged"
+    /// forever the way `== .merged || == .blocked` would leave it.
+    ///
+    /// ⚠️ **Analogue, not "form": the two are not guaranteed to agree, and this said they were.**
+    /// ``AutoDevTally/settled`` is a hand-written `merged + blocked` sum, so it is exactly the
+    /// enumeration this property refuses to be. A fourth disposition would be settled *here* and
+    /// absent from *that* — the counts would stop adding up to `engaged + settled` and nothing
+    /// would say so. Making the tally a switch over the same enum is the fix and it belongs in the
+    /// file that owns the tally; until then, read this as "the same idea at row level", never as a
+    /// promise that one can be derived from the other.
+    public var isSettled: Bool {
+        disposition != .engaged
+    }
+}
+
+/// What the loop decided to do about one card, this round.
+///
+/// Transient — never persisted. ``AutoDevEngagement/disposition`` (`AutoDevDisposition`) is what a
+/// session's report renders; this is the finer-grained verdict the policy (`AutoDevPolicy`, a later
+/// task) computes each round to get there, and ``engagement`` below is the total, compile-checked
+/// bridge from one to the other.
+///
+/// `.held` is distinct from `.wait` on purpose: `.paused`, `.dailyCeilingReached` and
+/// `.mergeWaitsForRepoToBeIdle` are the *scheduler* holding a run, not the board waiting on the
+/// world, and a report that confused them would send the reader to fix the wrong thing.
+///
+/// `.wait` and `.abortSession` carry a sentence: the report renders one line per card, and a bare
+/// case renders nothing at all.
+public enum Disposition: Sendable, Hashable {
+    case retry
+    case wait(reason: String)
+    case held(QueueRefusal)
+    /// The card is done, one way or the other. The first element says which — `.merged` or
+    /// `.blocked`, never `.engaged`.
+    ///
+    /// ⚠️ The type cannot enforce that: `AutoDevDisposition` has three cases, and nothing here
+    /// stops a future caller writing `.settle(.engaged, reason: "…")`, which would mean a
+    /// disposition that just settled a card simultaneously reporting it as still engaged — a
+    /// contradiction the compiler will not catch. Every construction site of `.settle` must supply
+    /// `.merged` or `.blocked` and never derive it from `reason`, which is prose, not a value.
+    case settle(AutoDevDisposition, reason: String)
+    case abortSession(reason: String)
+
+    /// One sentence, for the report and for the row's `reason`.
+    public var reason: String {
+        switch self {
+        case .retry: "Moving this card now."
+        case .wait(let reason): reason
+        case .held(let refusal): refusal.sentence
+        case .settle(_, let reason): reason
+        case .abortSession(let reason): reason
+        }
+    }
+
+    /// Whether this card is finished with, one way or the other.
+    public var isSettled: Bool {
+        switch self {
+        case .settle, .abortSession: true
+        case .retry, .wait, .held: false
+        }
+    }
+}
+
+extension Disposition {
+    /// What this verdict means for the persisted row. Total by construction — a `switch` with no
+    /// `default`, so a sixth disposition is a compile error rather than a card silently reported
+    /// as still engaged.
+    public var engagement: AutoDevDisposition {
+        switch self {
+        case .retry, .wait, .held: .engaged
+        case .settle(let outcome, _): outcome
+        case .abortSession: .blocked
+        }
+    }
+}

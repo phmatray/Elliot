@@ -139,6 +139,48 @@ extension PRStatus: FetchableRecord, PersistableRecord {
     }
 }
 
+extension AutoDevSession: FetchableRecord, PersistableRecord {
+    public static let databaseTableName = "autoDevSession"
+    public static func databaseUUIDEncodingStrategy(for column: String) -> DatabaseUUIDEncodingStrategy {
+        .uppercaseString
+    }
+
+    public enum Columns {
+        public static let repoID = GRDB.Column("repoID")
+        public static let state = GRDB.Column("state")
+        public static let startedAt = GRDB.Column("startedAt")
+    }
+}
+
+/// A composite primary key, so the columns are named here rather than leaning on
+/// `id` — `AutoDevEngagement.id` is a computed `UUID` (`{ cardID }`) for
+/// SwiftUI's `Identifiable`, not a column, and a synthesised `Codable` does not
+/// encode a computed property. GRDB hangs `filter(id:)` off the primary key, and
+/// the primary key here is the pair `(sessionID, cardID)`, not `id` alone —
+/// **never call `filter(id:)` on this type.**
+///
+/// ⚠️ **Measured, not reasoned about: the failure is a crash, not a silent wrong
+/// row.** `AutoDevEngagement.filter(id:)` traps unconditionally —
+/// `Fatal error: Filtering by primary key requires a single-column primary key`
+/// — because GRDB's `Identifiable`-keyed convenience only knows how to match a
+/// single-column primary key, and this table's is a composite pair. That is
+/// still a reason never to call it: a `fatalError` inside a shipping app is not
+/// an acceptable outcome, and a caller reaching for `filter(id:)` because it
+/// reads naturally would take the whole process down rather than get a merely
+/// wrong answer.
+extension AutoDevEngagement: FetchableRecord, PersistableRecord {
+    public static let databaseTableName = "autoDevEngagement"
+    public static func databaseUUIDEncodingStrategy(for column: String) -> DatabaseUUIDEncodingStrategy {
+        .uppercaseString
+    }
+
+    public enum Columns {
+        public static let sessionID = GRDB.Column("sessionID")
+        public static let cardID = GRDB.Column("cardID")
+        public static let updatedAt = GRDB.Column("updatedAt")
+    }
+}
+
 /// `Column` means the board's five columns everywhere in Elliot. GRDB's SQL
 /// `Column` is reached through this alias so the unqualified name keeps the
 /// meaning that matters to the domain.
