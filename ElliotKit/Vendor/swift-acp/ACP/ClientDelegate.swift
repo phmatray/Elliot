@@ -69,6 +69,58 @@ public protocol ClientDelegate: AnyObject, Sendable {
 }
 
 public extension ClientDelegate {
+    func handleFileReadRequest(
+        _ path: String, sessionId: String, line: Int?, limit: Int?
+    ) async throws -> ReadTextFileResponse {
+        // Elliot declares `fs: {readTextFile: false, writeTextFile: false}` at `initialize`, so a
+        // conforming agent never sends this. Refusing is the honest answer if one does anyway.
+        throw ClientError.invalidResponse
+    }
+
+    func handleFileWriteRequest(
+        _ path: String, content: String, sessionId: String
+    ) async throws -> WriteTextFileResponse {
+        // Same capability, same reason. ⛔ Never make this a silent success: an agent that believes
+        // it wrote a file it did not is worse than one told no.
+        throw ClientError.invalidResponse
+    }
+
+    func handleTerminalCreate(
+        command: String, sessionId: String, args: [String]?, cwd: String?, env: [EnvVariable]?,
+        outputByteLimit: Int?
+    ) async throws -> CreateTerminalResponse {
+        // Elliot declares `terminal: false` at `initialize`, so a conforming agent never sends this.
+        throw ClientError.invalidResponse
+    }
+
+    func handleTerminalOutput(
+        terminalId: TerminalId, sessionId: String
+    ) async throws -> TerminalOutputResponse {
+        // `terminal: false` at `initialize` makes this unreachable too.
+        throw ClientError.invalidResponse
+    }
+
+    func handleTerminalWaitForExit(
+        terminalId: TerminalId, sessionId: String
+    ) async throws -> WaitForExitResponse {
+        // `terminal: false` at `initialize` makes this unreachable too.
+        throw ClientError.invalidResponse
+    }
+
+    func handleTerminalKill(
+        terminalId: TerminalId, sessionId: String
+    ) async throws -> KillTerminalResponse {
+        // `terminal: false` at `initialize` makes this unreachable too.
+        throw ClientError.invalidResponse
+    }
+
+    func handleTerminalRelease(
+        terminalId: TerminalId, sessionId: String
+    ) async throws -> ReleaseTerminalResponse {
+        // `terminal: false` at `initialize` makes this unreachable too.
+        throw ClientError.invalidResponse
+    }
+
     func handleMcpConnect(_ request: ConnectMcpRequest) async throws -> ConnectMcpResponse {
         throw ClientError.invalidResponse
     }
