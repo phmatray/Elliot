@@ -114,11 +114,13 @@ struct ChildProcessStdinTests {
         #expect(termination.code == 0)
     }
 
-    /// Pins the one line the whole file is named after: `.null` means the child gets EOF from
-    /// `/dev/null`, not that it inherits the app's terminal. Nobody here closes anything — `cat`
-    /// exits 0 on its own only if its stdin was already at end-of-file the moment it started.
-    @Test("a child spawned with the default stdin gets immediate EOF, never the app's own stdin")
-    func defaultStdinIsClosedNotInherited() async throws {
+    /// A weaker, behavioral sibling of `defaultStdinIsWiredToDevNull` below: it only proves a
+    /// default-stdin child terminates rather than blocking, never *why*. `cat` exits on EOF whether
+    /// that EOF comes from `/dev/null` or from an inherited descriptor that already happened to be
+    /// closed — measured directly, in `swiftpm-testing-helper`'s own process, both look the same. The
+    /// name used to claim the stronger fact; it no longer does.
+    @Test("a child spawned with the default stdin terminates rather than blocking")
+    func defaultStdinTerminatesRatherThanBlocking() async throws {
         var continuation: AsyncStream<Data>.Continuation!
         _ = AsyncStream<Data> { continuation = $0 }
 
@@ -132,6 +134,48 @@ struct ChildProcessStdinTests {
 
         let termination = try await withTimeout(.seconds(5)) { await child.wait() }
         #expect(termination.code == 0)
+    }
+
+    /// The white-box replacement for the behavioral pin above. Asks the child what its own fd 0
+    /// actually is, rather than inferring it from whether the child happens to exit — `stat -f
+    /// "%Hr,%Lr"` prints a special file's raw device number, and comparing `/dev/fd/0` against
+    /// `/dev/null` **in the same command** means the assertion carries no machine-specific constant:
+    /// it holds regardless of what `/dev/null`'s actual device number is on a given host.
+    ///
+    /// Measured on this machine: `.null` gives `"3,2\n3,2"` (equal); a `.pipe` child asked the same
+    /// question gives `"0,0\n3,2"` (a pipe's rdev is always zero — they differ).
+    @Test("a default-stdin child's fd 0 is wired to /dev/null, not the app's own stdin")
+    func defaultStdinIsWiredToDevNull() async throws {
+        var continuation: AsyncStream<Data>.Continuation!
+        let chunks = AsyncStream<Data> { continuation = $0 }
+
+        let child = try ChildProcess(
+            executable: "/bin/sh",
+            arguments: ["-c", "stat -f \"%Hr,%Lr\" /dev/fd/0 /dev/null"],
+            cwd: nil,
+            environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"],
+            sink: Collector(continuation: continuation!)
+        )
+
+        // Accumulate every chunk and wait for the stream to finish rather than asserting on the
+        // first: two short lines can arrive in one callback or split across two.
+        let output = try await withTimeout(.seconds(5)) { () -> Data in
+            var collected = Data()
+            for await chunk in chunks {
+                collected.append(chunk)
+            }
+            return collected
+        }
+
+        let termination = try await withTimeout(.seconds(5)) { await child.wait() }
+        #expect(termination.code == 0)
+
+        let lines = String(decoding: output, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "\n")
+            .map(String.init)
+        #expect(lines.count == 2, "expected two stat lines, got \(lines)")
+        #expect(lines.first == lines.last, "fd 0 rdev \(lines.first ?? "?") != /dev/null rdev \(lines.last ?? "?")")
     }
 
     /// The stdin twin of `ChildProcessTests.largeOutputDoesNotDeadlock`: 1 MiB is comfortably past
