@@ -68,11 +68,29 @@ final class ChildProcess<Sink: ChildOutputSink>: Sendable {
         var waiter: CheckedContinuation<ChildTermination, Never>?
     }
 
+    /// What the child's stdin is connected to.
+    ///
+    /// `.null` is the default and stays the default: a child that inherits the app's stdin blocks
+    /// waiting on it, which is what the single line here always prevented.
+    ///
+    /// `.pipe` exists for one kind of caller — an agent spoken to over JSON-RPC, which is written
+    /// to rather than only read from. ⛔ Its writer never closes the handle: a helper whose stdin
+    /// closes exits having written nothing, which reads exactly like a helper that failed to start.
+    /// Only `closeStdin()` closes it, and only at teardown.
+    enum StandardInput: Sendable {
+        case null
+        case pipe
+    }
+
+    /// `nil` when spawned `.null`. Boxed because the write can come from any isolation.
+    private let stdinHandle: Locked<FileHandle?>
+
     init(
         executable: String,
         arguments: [String],
         cwd: String?,
         environment: [String: String],
+        stdin: StandardInput = .null,
         sink: Sink
     ) throws {
         guard FileManager.default.isExecutableFile(atPath: executable) else {
@@ -84,8 +102,16 @@ final class ChildProcess<Sink: ChildOutputSink>: Sendable {
         process.arguments = arguments
         process.environment = environment
         if let cwd { process.currentDirectoryURL = URL(fileURLWithPath: cwd) }
-        // Never let a child inherit the app's stdin and block waiting on it.
-        process.standardInput = FileHandle.nullDevice
+        switch stdin {
+        case .null:
+            // Never let a child inherit the app's stdin and block waiting on it.
+            process.standardInput = FileHandle.nullDevice
+            stdinHandle = Locked(nil)
+        case .pipe:
+            let inPipe = Pipe()
+            process.standardInput = inPipe
+            stdinHandle = Locked(inPipe.fileHandleForWriting)
+        }
 
         let outPipe = Pipe(), errPipe = Pipe()
         process.standardOutput = outPipe
@@ -220,6 +246,29 @@ final class ChildProcess<Sink: ChildOutputSink>: Sendable {
     /// does with it can run inside the drain.
     func withSink<T: Sendable>(_ body: (Sink) -> T) -> T {
         state.withLock { body($0.sink) }
+    }
+
+    /// Writes to the child's stdin.
+    ///
+    /// Synchronous and under a lock, so two callers cannot interleave halves of a JSON-RPC line.
+    /// A write blocks if the child is not reading; the messages this carries are single lines, and
+    /// an agent that has stopped reading is one `terminate()` is about to reach anyway.
+    func writeStdin(_ data: Data) throws {
+        try stdinHandle.withLock { handle in
+            guard let handle else { throw ProcessError.stdinNotPiped }
+            try handle.write(contentsOf: data)
+        }
+    }
+
+    /// Closes the child's stdin, which is how a well-behaved agent learns to exit.
+    ///
+    /// Separate from `terminate()` on purpose: closing is a request the child may take its time
+    /// over, and `terminate()` is the escalation. Safe to call twice.
+    func closeStdin() {
+        stdinHandle.withLock { handle in
+            try? handle?.close()
+            handle = nil
+        }
     }
 
     /// Asks the child to stop, escalating only if it ignores the request.

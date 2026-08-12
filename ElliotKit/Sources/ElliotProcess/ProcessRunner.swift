@@ -14,6 +14,7 @@ public struct ProcessResult: Sendable {
 public enum ProcessError: Error, LocalizedError {
     case notExecutable(String)
     case failed(command: String, exitCode: Int32, stderr: String)
+    case stdinNotPiped
 
     public var errorDescription: String? {
         switch self {
@@ -21,6 +22,8 @@ public enum ProcessError: Error, LocalizedError {
             "Not an executable file: \(path)"
         case .failed(let command, let code, let stderr):
             "\(command) exited \(code)\(stderr.isEmpty ? "" : ": \(stderr.prefix(400))")"
+        case .stdinNotPiped:
+            "This child was spawned with stdin closed. Pass `stdin: .pipe` to write to it."
         }
     }
 }
