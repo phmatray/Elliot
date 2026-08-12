@@ -597,7 +597,10 @@ cd ElliotKit && swift build --build-tests > /dev/null 2>&1
 for i in 1 2 3 4 5; do swift test 2>&1 | tail -1; done
 ```
 
-Expected: five identical passing lines, `1418 tests in 158 suites` plus the new ones.
+Expected: five identical passing lines. Measured on this branch after Task 1: **2775 tests in 320
+suites**, 4.5 s. ⚠️ An earlier draft of this line said `1418 tests in 158 suites`, quoting a figure
+in `CLAUDE.md` that the repository has long since outgrown — comparing against it would have raised
+a false alarm. Assert *green and stable across samples*, not an exact count.
 
 - [ ] **Step 7: Commit**
 
