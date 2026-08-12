@@ -141,7 +141,14 @@ let package = Package(
             name: "ElliotStore",
             dependencies: ["ElliotModel", .product(name: "GRDB", package: "GRDB.swift")]
         ),
-        .target(name: "ElliotProcess", dependencies: ["ElliotModel"]),
+        // Vendored: wiedymi/swift-acp @ 9498537, MIT. See Vendor/swift-acp/VENDORED.md for the
+        // origin, the licence, and the list of what was deleted — chiefly three process spawners,
+        // because ChildProcess is the only thing here allowed to start a child.
+        //
+        // Upstream module names are kept so this tree stays diffable against upstream.
+        .target(name: "ACPModel", path: "Vendor/swift-acp/ACPModel"),
+        .target(name: "ACP", dependencies: ["ACPModel"], path: "Vendor/swift-acp/ACP"),
+        .target(name: "ElliotProcess", dependencies: ["ElliotModel", "ACP", "ACPModel"]),
         // ElliotIPC for `MCPRequestHandler`, which answers the wire on the app's
         // behalf. It lives here rather than in ElliotApp because ElliotApp is an
         // executableTarget with no test target: in there, the live half of the
