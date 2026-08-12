@@ -508,16 +508,25 @@ struct OneSpawnerTests {
 cd ElliotKit && swift test --filter OneSpawnerTests
 ```
 
-Expected: **`onlyOneSpawner` FAILS**, naming `StdioTransport.swift` (and `Agent.swift` /
-`StdinTransport.swift` if either constructs one).
+Measured on the vendored tree before any deletion — 5 files construct a `Process()`, 3 call
+`.waitUntilExit()`:
 
-⚠️ **`nothingBlocksOnWaitUntilExit` PASSES already** — its only offender, `ShellEnvironment.swift`,
-is in `knownRemaining`. That is expected, not a broken guard: it goes red the moment anything *else*
-calls `waitUntilExit()`, which is its job for the rest of the branch.
+| Guard | Fails naming | Excused by `knownRemaining` |
+|---|---|---|
+| `onlyOneSpawner` | `StdioTransport.swift`, `TerminalDelegate.swift` | `ProcessManager`, `ProcessRegistry`, `ShellEnvironment` |
+| `nothingBlocksOnWaitUntilExit` | `TerminalDelegate.swift` | `ProcessRegistry`, `ShellEnvironment` |
 
-⚠️ `ProcessManager.swift`, `ProcessRegistry.swift` and `ShellEnvironment.swift` are in neither
-failure list — `knownRemaining` excuses all three until Task 5. If any appears, the set was
-mistyped.
+**Both must FAIL here**, and both must pass after Step 3 deletes `StdioTransport.swift` and
+`TerminalDelegate.swift`.
+
+⚠️ An earlier draft of this step claimed `nothingBlocksOnWaitUntilExit` would already pass, and that
+`onlyOneSpawner` would name `StdioTransport.swift` alone. Both were wrong — `TerminalDelegate.swift`
+does each of these things and is in neither excuse list, because it is deleted here rather than at
+Task 5. Caught by Task 1's reviewer, then re-measured.
+
+⚠️ If a guard passes when the table says it should fail, check `swiftFiles` is finding files —
+an empty list passes every guard silently. If `ProcessManager`, `ProcessRegistry` or
+`ShellEnvironment` appears in a failure list, `knownRemaining` was mistyped.
 
 ⚠️ If both tests pass, the vendoring of Task 1 did not land — check `ElliotKit/Vendor/` exists and
 that `swiftFiles(under: "Vendor")` is finding files (a wrong `packageRoot` returns an empty list,
