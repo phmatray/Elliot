@@ -16,6 +16,10 @@ public enum ProcessError: Error, LocalizedError {
     case failed(command: String, exitCode: Int32, stderr: String)
     case stdinNotPiped
     case stdinClosed
+    /// `fcntl(F_SETNOSIGPIPE)` on the stdin pipe's write descriptor returned nonzero. See
+    /// `ChildProcess.init`'s `.pipe` arm for what this guard exists to prevent — a silent failure
+    /// here would hand back exactly the process-fatal behaviour it is meant to remove.
+    case stdinSigPipeGuardFailed(Int32)
 
     public var errorDescription: String? {
         switch self {
@@ -27,6 +31,9 @@ public enum ProcessError: Error, LocalizedError {
             "This child was spawned with stdin closed. Pass `stdin: .pipe` to write to it."
         case .stdinClosed:
             "This child's stdin has already been closed."
+        case .stdinSigPipeGuardFailed(let code):
+            "Could not disable SIGPIPE on this child's stdin pipe (fcntl F_SETNOSIGPIPE): "
+                + "\(String(cString: strerror(code))) (\(code))"
         }
     }
 }

@@ -56,6 +56,27 @@ struct DrainDuplicationTests {
         return !trimmed.hasPrefix("//") && !trimmed.isEmpty
     }
 
+    /// Shapes a named file is allowed to contain, each with the reason it is not a second
+    /// implementation of the mechanism this gate protects.
+    ///
+    /// Per (file, shape) rather than per file, deliberately: `ACPTransport.swift` is sanctioned for
+    /// one continuation and for nothing else — `Pipe()`, `readabilityHandler` and
+    /// `readDataToEndOfFile` must still fail there, because a transport handling a child's pipes
+    /// itself is the #146 defect wearing a new name. And the shape itself stays broad rather than
+    /// narrowed to one type: binding it to `CheckedContinuation<ChildTermination` would let a
+    /// second exit-waiter with a different payload — `CheckedContinuation<Exit, Never>`, say —
+    /// pass straight through, which is the exact failure this gate exists to catch.
+    private static let sanctionedShapes: [String: [String: String]] = [
+        "ACPTransport.swift": [
+            "CheckedContinuation": """
+                Bridges the blocking `writeStdin` call onto a private serial queue, so it never \
+                parks a cooperative-pool thread. It waits for a write to return, not for a child \
+                to exit, and it touches no pipe: `ChildProcess.wait()`'s continuation is \
+                `CheckedContinuation<ChildTermination, Never>` and remains the only exit-waiter.
+                """
+        ]
+    ]
+
     /// Acceptance criteria 1 and 2: the mechanism lives in one file, and neither
     /// spawner has any pipe-handling left of its own.
     @Test("Pipe handling exists only in ChildProcess")
@@ -64,7 +85,8 @@ struct DrainDuplicationTests {
 
         for file in try Self.swiftFiles() where file != "ChildProcess.swift" {
             let offenders = try Self.read(file).enumerated().filter { _, line in
-                Self.isCode(line) && shapes.contains { line.contains($0) }
+                Self.isCode(line)
+                    && shapes.contains { line.contains($0) && Self.sanctionedShapes[file]?[$0] == nil }
             }
             #expect(
                 offenders.isEmpty,
@@ -72,8 +94,9 @@ struct DrainDuplicationTests {
                 \(file) handles a child's pipes itself — that mechanism belongs to \
                 ChildProcess.swift alone: \
                 \(offenders.map { "line \($0.offset + 1)" }.joined(separator: ", ")). \
-                If this is a `CheckedContinuation` doing something unrelated to draining \
-                a child, narrow this gate to the drain shapes rather than deleting it.
+                If this is legitimate and not a second drain or a second exit-waiter, add an entry \
+                to `sanctionedShapes` naming the (file, shape) pair and why — or route the code \
+                through ChildProcess.
                 """
             )
         }

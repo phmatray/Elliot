@@ -120,7 +120,29 @@ final class ChildProcess<Sink: ChildOutputSink>: Sendable {
         case .pipe:
             let inPipe = Pipe()
             process.standardInput = inPipe
-            stdinState = Locked(.open(inPipe.fileHandleForWriting))
+
+            // Measured 2026-08-12 (Task 4, `SIGPIPEMeasurementTests`): writing to this pipe's
+            // write end after the child has already exited and closed its read end raises
+            // SIGPIPE, whose default disposition **terminates the process** — reproduced 3/3
+            // runs (signal 13), with no thrown error and no failing test: the whole `swift test`
+            // process simply went away mid-test. `ACPTransport.send` calls `writeStdin` from an
+            // `async` context that has no way to know the agent it is talking to exited moments
+            // earlier, so "the child is already gone" is an ordinary race here, not an edge case.
+            //
+            // `F_SETNOSIGPIPE` disables that **for this one file descriptor**, never process-wide:
+            // a write past a closed reader on it now returns -1/EPIPE instead of raising the
+            // signal. Deliberately not `signal(SIGPIPE, SIG_IGN)`, which is process-global and not
+            // a library's to set — it would silently change every other write in the app, not just
+            // this pipe.
+            let writeHandle = inPipe.fileHandleForWriting
+            guard fcntl(writeHandle.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+                // A pipe that can still kill the process on write is not a child worth having.
+                // Failing loudly here, rather than swallowing a nonzero return, is the whole
+                // point — a silently-failed fcntl would hand back exactly the fatal behaviour
+                // this guard exists to remove, with nothing pointing at why.
+                throw ProcessError.stdinSigPipeGuardFailed(errno)
+            }
+            stdinState = Locked(.open(writeHandle))
         }
 
         let outPipe = Pipe(), errPipe = Pipe()
