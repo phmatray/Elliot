@@ -15,6 +15,7 @@ public enum ProcessError: Error, LocalizedError {
     case notExecutable(String)
     case failed(command: String, exitCode: Int32, stderr: String)
     case stdinNotPiped
+    case stdinClosed
 
     public var errorDescription: String? {
         switch self {
@@ -24,6 +25,8 @@ public enum ProcessError: Error, LocalizedError {
             "\(command) exited \(code)\(stderr.isEmpty ? "" : ": \(stderr.prefix(400))")"
         case .stdinNotPiped:
             "This child was spawned with stdin closed. Pass `stdin: .pipe` to write to it."
+        case .stdinClosed:
+            "This child's stdin has already been closed."
         }
     }
 }

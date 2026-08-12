@@ -82,8 +82,18 @@ final class ChildProcess<Sink: ChildOutputSink>: Sendable {
         case pipe
     }
 
-    /// `nil` when spawned `.null`. Boxed because the write can come from any isolation.
-    private let stdinHandle: Locked<FileHandle?>
+    /// Tri-state rather than `FileHandle?`, which cannot distinguish "never piped" from "piped,
+    /// then closed" — the same two-valued answer to a three-valued question this project has
+    /// already paid for once, in `PreflightState.notChecked`. `writeStdin` answers each state on
+    /// its own, so its error never describes a state the caller has already left.
+    private enum StdinState: Sendable {
+        case notPiped
+        case open(FileHandle)
+        case closed
+    }
+
+    /// Boxed because the write, the close and the drain can each land on a different isolation.
+    private let stdinState: Locked<StdinState>
 
     init(
         executable: String,
@@ -106,11 +116,11 @@ final class ChildProcess<Sink: ChildOutputSink>: Sendable {
         case .null:
             // Never let a child inherit the app's stdin and block waiting on it.
             process.standardInput = FileHandle.nullDevice
-            stdinHandle = Locked(nil)
+            stdinState = Locked(.notPiped)
         case .pipe:
             let inPipe = Pipe()
             process.standardInput = inPipe
-            stdinHandle = Locked(inPipe.fileHandleForWriting)
+            stdinState = Locked(.open(inPipe.fileHandleForWriting))
         }
 
         let outPipe = Pipe(), errPipe = Pipe()
@@ -253,21 +263,35 @@ final class ChildProcess<Sink: ChildOutputSink>: Sendable {
     /// Synchronous and under a lock, so two callers cannot interleave halves of a JSON-RPC line.
     /// A write blocks if the child is not reading; the messages this carries are single lines, and
     /// an agent that has stopped reading is one `terminate()` is about to reach anyway.
+    ///
+    /// ⛔ Never call this from a `ChildOutputSink` method. Those run with the drain lock held, and a
+    /// blocking write from inside one can deadlock: the write waits for the child to read its stdin,
+    /// the child is blocked writing to its own full stdout pipe, and stdout only drains through the
+    /// sink method that is now stuck making this call. Nothing inverts a lock — the same lock simply
+    /// never lets go.
     func writeStdin(_ data: Data) throws {
-        try stdinHandle.withLock { handle in
-            guard let handle else { throw ProcessError.stdinNotPiped }
-            try handle.write(contentsOf: data)
+        try stdinState.withLock { state in
+            switch state {
+            case .open(let handle):
+                try handle.write(contentsOf: data)
+            case .notPiped:
+                throw ProcessError.stdinNotPiped
+            case .closed:
+                throw ProcessError.stdinClosed
+            }
         }
     }
 
     /// Closes the child's stdin, which is how a well-behaved agent learns to exit.
     ///
     /// Separate from `terminate()` on purpose: closing is a request the child may take its time
-    /// over, and `terminate()` is the escalation. Safe to call twice.
+    /// over, and `terminate()` is the escalation. Safe to call twice, and a no-op on a child that
+    /// was never piped.
     func closeStdin() {
-        stdinHandle.withLock { handle in
-            try? handle?.close()
-            handle = nil
+        stdinState.withLock { state in
+            guard case .open(let handle) = state else { return }
+            try? handle.close()
+            state = .closed
         }
     }
 
