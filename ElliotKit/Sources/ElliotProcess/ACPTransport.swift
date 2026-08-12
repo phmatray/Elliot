@@ -41,7 +41,8 @@ public final class ACPTransport: Transport, Sendable {
     /// JSON-RPC response is not a degraded picture, it is a request that never returns.
     public let messages: AsyncStream<Data>
 
-    /// Serializes every write to the child's stdin off the cooperative thread pool.
+    /// Serializes every write to the child's stdin — and its close — off the cooperative thread
+    /// pool.
     ///
     /// `ChildProcess.writeStdin` is synchronous and blocks when the pipe buffer is full and the
     /// child is not reading — exactly the kind of call `async` code must never make directly, since
@@ -54,9 +55,15 @@ public final class ACPTransport: Transport, Sendable {
     /// onto the same stdin could interleave their bytes mid-line, corrupting both messages.
     /// `writeStdin` already serializes under its own lock, but that only protects one call at a
     /// time — a serial queue is what keeps a second `async` caller from starting its write before
-    /// the first one's `withCheckedContinuation` has resumed. Do not replace this with
-    /// `DispatchQueue.global()` or a `Task.detached {}` — either reintroduces the race this queue
-    /// exists to close.
+    /// the first one's continuation has resumed. Do not replace this with `DispatchQueue.global()`
+    /// or a `Task.detached {}` — either reintroduces the race this queue exists to close.
+    ///
+    /// `close()` shares this queue rather than calling `closeStdin()` directly. `closeStdin()`
+    /// takes the same lock a blocking `writeStdin` holds across its write, so calling it from the
+    /// caller's own thread could park a cooperative-pool thread exactly like an unbridged `send`
+    /// would — a review round on this file caught that once already. Sharing the queue also makes
+    /// `close()` FIFO behind any `send` already enqueued, so a pending write is never silently
+    /// pre-empted by a close arriving on a different task.
     private let stdinQueue = DispatchQueue(label: "dev.phmatray.elliot.acp-transport.stdin")
 
     public init(_ agent: ACPAgentProcess) throws {
@@ -89,11 +96,19 @@ public final class ACPTransport: Transport, Sendable {
     /// never parks a cooperative thread waiting on the child to read its pipe.
     private func writeOnStdinQueue(_ data: Data) async throws {
         let child = self.child
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+        try await onStdinQueue { try child.writeStdin(data) }
+    }
+
+    /// Runs `work` on `stdinQueue` and resumes once it returns, so every caller of this queue —
+    /// `send`, `sendRaw`, `close` — goes through one dispatch-then-resume shape rather than each
+    /// reimplementing it. That is as much the point as the queue itself: two structurally identical
+    /// `withCheckedContinuation` blocks in this file would be the same kind of duplication this
+    /// package's own `DrainDuplicationTests` exists to catch one layer down, in `ChildProcess`.
+    private func onStdinQueue<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
             stdinQueue.async {
                 do {
-                    try child.writeStdin(data)
-                    continuation.resume()
+                    continuation.resume(returning: try work())
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -105,8 +120,14 @@ public final class ACPTransport: Transport, Sendable {
     ///
     /// ⛔ Not `terminate()`. A well-behaved agent exits when its stdin closes, having flushed
     /// whatever it still owed; signalling it first would race that flush.
+    ///
+    /// Routed through `stdinQueue` rather than calling `child.closeStdin()` on the caller's own
+    /// thread — see the queue's own doc comment for why that mattered. `closeStdin()` itself cannot
+    /// throw, so `onStdinQueue`'s error path is unreachable here; `try?` only satisfies the type
+    /// system, it never actually discards a failure.
     public func close() async {
-        child.closeStdin()
+        let child = self.child
+        try? await onStdinQueue { child.closeStdin() }
     }
 
     public var isConnected: Bool {
@@ -123,5 +144,21 @@ public final class ACPTransport: Transport, Sendable {
 
     public func waitForExit() async -> Int32 {
         await child.wait().code
+    }
+
+    /// The child's stderr, accumulated across its whole lifetime under the drain lock — the same
+    /// mechanism `StreamingProcess.waitForExit` reads its own `Exit.stderr` through.
+    ///
+    /// This is where an adapter's crash reason lands: a failed `npx` resolution, a Node stack
+    /// trace, a missing `CLAUDE_CODE_EXECUTABLE`. Collecting it into `MessageSink.stderr` without
+    /// exposing it would pay the cost of holding every byte for the whole session and buy the
+    /// caller nothing back — so a caller that sees a nonzero `waitForExit()` should read this
+    /// before deciding the run failed silently.
+    ///
+    /// ⚠️ Unlike `LineBuffer`, which caps a runaway line at 32 MB, nothing bounds this — a
+    /// pathological agent that writes gigabytes to stderr grows it without limit. Recorded as
+    /// deferred by the branch review, not fixed in this pass.
+    public func collectedStderr() -> String {
+        child.withSink { String(decoding: $0.stderr, as: UTF8.self) }
     }
 }
