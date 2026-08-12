@@ -12,10 +12,13 @@ import os.log
 public enum ShellEnvironment: Sendable {
     private static let cacheLock = NSLock()
     private static let cacheCondition = NSCondition()
-    // Guarded by `cacheLock`/`cacheCondition` above, on every access in this file — the
-    // `nonisolated(unsafe)` states that existing synchronisation rather than removing it. This
-    // whole file is scheduled for deletion (Task 5): the correct long-term fix is an actor, but
-    // hoisting one in for code on its way out is restructuring nobody will end up reviewing.
+    // `loadUserShellEnvironmentBlocking` writes both statics under `cacheLock` (below, the
+    // `isLoading`/`cachedEnvironment` assignments), but its other branch reads `cachedEnvironment`
+    // under `cacheCondition` instead (the `while cachedEnvironment == nil { cacheCondition.wait() }`
+    // loop) — two different mutexes, so that read is not ordered against the write. This is
+    // upstream's pre-existing race, unchanged by vendoring it; `nonisolated(unsafe)` here is not a
+    // proof that access is safe, it is an opt-out bought against this whole file's deletion in
+    // Task 5, where the race leaves with it rather than getting fixed in place.
     private nonisolated(unsafe) static var cachedEnvironment: [String: String]?
     private nonisolated(unsafe) static var isLoading = false
 

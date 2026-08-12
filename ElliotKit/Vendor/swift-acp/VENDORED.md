@@ -28,13 +28,19 @@ That is not the tree-wide formatter run `CLAUDE.md` forbids: that ⛔ protects `
 here is hand-formatted.
 
 **So comparing against upstream needs `git diff -w` or `diff -b`.** A plain diff shows the reformat
-and buries the two changes that actually matter, listed below.
+and buries the changes that actually matter, listed below.
 
 ## What was removed, and why
 
 See `docs/superpowers/specs/2026-08-12-elliot-acp-design.md` §3.3. In short: the library contained
 three separate places that spawn a process, and `ChildProcess` is the only thing in this repository
 allowed to do that.
+
+**This table records the branch's vendoring policy, not this commit's contents.** As of Task 1
+(`664d4cf`) every file listed below is still present in the tree and still compiles — nothing here
+has been deleted yet. `Client` → `ACPProcessManager` → `ShellEnvironment` is one call chain that
+has to be cut together, so the deletions move to Task 5; the `ACPProcessManager` → `Transport`
+protocol replacement in the next section becomes true there, not in this commit.
 
 | Removed | Replaced by |
 |---|---|
@@ -47,7 +53,27 @@ allowed to do that.
 
 ## What was changed in place
 
-- `Client.swift`: generic parameters constrained to `Sendable` (20 sites); `ACPProcessManager`
-  replaced by the `Transport` protocol the file already declared but never used.
-- `Utilities/Logger.swift`: mutable statics made immutable; subsystem repointed to
-  `dev.phmatray.elliot`.
+Four files, corrected 2026-08-12 (the "20 sites" this line previously claimed was Step 5's
+*diagnostic* count — 5 source sites × 4 reporting passes — not a count of edits; there is one):
+
+- `Client.swift:909`: the one generic parameter the build named at Step 6 —
+  `withRequestTimeout<T>` → `withRequestTimeout<T: Sendable>`.
+- `Client.swift:912`: `withRequestTimeout`'s `operation` parameter —
+  `@escaping () async throws -> T` → `@escaping @Sendable () async throws -> T`. Not a generic
+  parameter, so the line above doesn't cover it: this is a `SendingClosureRisksDataRace`
+  diagnostic that only appeared once `:909`'s fix let the file clear an earlier type error and
+  reach that later, SIL-level check.
+- `Client.swift:1142`: `writeMessageWithDebug<T: Encodable>` → `<T: Encodable & Sendable>`, the
+  other half of that same cascade (a `SendingRisksDataRace` at its call into
+  `processManager.writeMessage`).
+- `Internal/ProcessManager.swift:250`: `ACPProcessManager.writeMessage<T: Encodable>` →
+  `<T: Encodable & Sendable>` — the callee side of the edit directly above.
+- `Utilities/Logger.swift:12-14`: `acpSubsystem` made `let`, repointed to `dev.phmatray.elliot`;
+  `configureACPLogging` deleted (its body assigned to what is now a `let`, and it had zero call
+  sites anywhere in this repository).
+- `Utilities/ShellEnvironment.swift:19-20`: `cachedEnvironment`/`isLoading` made
+  `nonisolated(unsafe) static var` — arbitrated 2026-08-12; see the comment at the site for
+  exactly what synchronisation this does and does not rely on.
+
+`ACPProcessManager` is still called directly from `Client.swift` (`:35`, `:70`, `:137`, `:1158`);
+its replacement by the `Transport` protocol is Task 5's edit, not this one.
