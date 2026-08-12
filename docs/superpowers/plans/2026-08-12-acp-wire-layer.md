@@ -59,7 +59,9 @@ repointed to Elliot's — which satisfies the stated intent (not a second loggin
 Task 9 writes this correction back into the spec.
 
 `ShellEnvironment` is confirmed cuttable: its only callers are `TerminalDelegate`, `StdioTransport`
-and `ProcessManager`, all three of which this plan deletes.
+and `ProcessManager`, all three of which this plan deletes. ⚠️ **But not all at the same time** —
+`ProcessManager` outlives the other two, so `ShellEnvironment` is deleted in **Task 5**, not Task 2.
+An earlier draft cut it in Task 2 and would have gone red; see the ⛔ in Task 2's Step 3.
 
 ---
 
@@ -270,11 +272,32 @@ extension Logger {
     private static let acpSubsystem = "dev.phmatray.elliot"
 ```
 
-Apply the same `var` → `let` change to the other flagged statics. Where a static genuinely must
-stay mutable, `nonisolated(unsafe) let` is **not** an acceptable substitute — convert it or hoist it
-into the actor that uses it.
+Apply the same `var` → `let` change to the other flagged statics in `Logger.swift`. Where a static
+in code we **keep** genuinely must stay mutable, `nonisolated(unsafe)` is not an acceptable
+substitute — convert it or hoist it into the actor that uses it.
 
-`ShellEnvironment.swift`'s statics are also flagged; leave that file alone, Task 2 deletes it.
+⚠️ **`ShellEnvironment.swift` is the exception, arbitrated 2026-08-12 mid-execution.** Its 8 flagged
+statics get `nonisolated(unsafe) static var`, one line each, plus a comment in the file saying why.
+An earlier draft of this step said *"leave that file alone, Task 2 deletes it"* — which contradicted
+Step 8's green build, since those 8 errors are exactly what keeps the build red. Two reasons the
+escape hatch is right here and nowhere else:
+
+- **It is true.** The file already carries an `NSLock` and an `NSCondition` around the cached
+  environment, so *"accesses are protected by an external synchronization mechanism"* — the
+  diagnostic's own third note — actually holds. `nonisolated(unsafe)` states a fact rather than
+  silencing one.
+- **The file is deleted in Task 5**, so hoisting it into an actor is restructuring thrown away,
+  plus a behaviour risk in a doomed file nobody will review carefully.
+
+⛔ Do not apply `nonisolated(unsafe)` anywhere else in this plan.
+
+⚠️ **Expect errors this step's count does not predict.** Swift's region-isolation diagnostics run at
+SIL level, *after* a file type-checks — so fixing the 33 above can reveal `sending risks data races`
+errors that were masked, not introduced. Measured during execution: two appeared, on
+`withRequestTimeout`'s `operation` closure and on `writeMessage`. Fix them in the same principled
+shape (`@Sendable` on the closure parameter; `T: Sendable` alongside the existing constraint), never
+with `@unchecked`, and **record each in the report** — an unexplained delta from the brief's number
+is exactly what a reviewer cannot adjudicate.
 
 - [ ] **Step 8: Build until green**
 
@@ -377,18 +400,21 @@ statics, and the logger's subsystem is repointed to ours on the way past."
 ### Task 2: Cut what `Client` does not hold, and arm the guard against the rest
 
 **Files:**
-- Delete: `ElliotKit/Vendor/swift-acp/ACP/Internal/ProcessManager.swift`, `ProcessRegistry.swift`,
-  `Transport/StdioTransport.swift`, `Utilities/ShellEnvironment.swift`,
+- Delete: `ElliotKit/Vendor/swift-acp/ACP/Transport/StdioTransport.swift`,
   `FileSystemDelegate.swift`, `TerminalDelegate.swift`, `Agent/Agent.swift`,
   `Agent/StdinTransport.swift`
-- Modify: `ElliotKit/Vendor/swift-acp/ACP/Client.swift` (the 12 `processManager` sites) — Task 5
-  completes this; here it only needs to compile.
+- ⛔ **Not** `Internal/ProcessManager.swift`, `ProcessRegistry.swift` or
+  `Utilities/ShellEnvironment.swift` — those three form one dependency chain with `Client` and all
+  go together in Task 5.
+- Modify: `ElliotKit/Vendor/swift-acp/ACP/ClientDelegate.swift` (default the seven now-unimplemented
+  requirements)
 - Test: `ElliotKit/Tests/ElliotProcessTests/OneSpawnerTests.swift`
 
 **Interfaces:**
 - Consumes: `ACPModel`, `ACP` from Task 1.
-- Produces: an `ACP` module containing no process handling. `Transport` (protocol) is the only
-  remaining seam to a child.
+- Produces: an `ACP` module whose only remaining process handling is the `ProcessManager` →
+  `ShellEnvironment` chain that `Client` still holds. `OneSpawnerTests.knownRemaining` names those
+  three files, and Task 5 empties it.
 
 - [ ] **Step 1: Write the failing guard test**
 
@@ -428,11 +454,17 @@ struct OneSpawnerTests {
         return walker.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
     }
 
-    /// The two files Task 5 removes, once `Client` no longer references them.
+    /// The three files Task 5 removes, once `Client` no longer references them.
+    ///
+    /// They are one dependency chain — `Client` → `ProcessManager` → `ShellEnvironment` — so none
+    /// can go before the others. `ShellEnvironment.swift` is here for the second guard rather than
+    /// the first: it calls `waitUntilExit()`.
     ///
     /// Listed by name so the guard is **armed now** and this set emptying is Task 5's acceptance
     /// criterion — which is not the same thing as a guard switched off and forgotten.
-    static let knownRemaining: Set<String> = ["ProcessManager.swift", "ProcessRegistry.swift"]
+    static let knownRemaining: Set<String> = [
+        "ProcessManager.swift", "ProcessRegistry.swift", "ShellEnvironment.swift",
+    ]
 
     @Test("only ChildProcess.swift constructs a Process")
     func onlyOneSpawner() throws {
@@ -476,12 +508,16 @@ struct OneSpawnerTests {
 cd ElliotKit && swift test --filter OneSpawnerTests
 ```
 
-Expected: **both tests FAIL**. `onlyOneSpawner` names `StdioTransport.swift` (and `Agent.swift` /
-`StdinTransport.swift` if either constructs one); `nothingBlocksOnWaitUntilExit` names
-`ShellEnvironment.swift`.
+Expected: **`onlyOneSpawner` FAILS**, naming `StdioTransport.swift` (and `Agent.swift` /
+`StdinTransport.swift` if either constructs one).
 
-⚠️ `ProcessManager.swift` and `ProcessRegistry.swift` are **not** in either list — `knownRemaining`
-excuses them until Task 5. If they do appear, the excuse set was mistyped.
+⚠️ **`nothingBlocksOnWaitUntilExit` PASSES already** — its only offender, `ShellEnvironment.swift`,
+is in `knownRemaining`. That is expected, not a broken guard: it goes red the moment anything *else*
+calls `waitUntilExit()`, which is its job for the rest of the branch.
+
+⚠️ `ProcessManager.swift`, `ProcessRegistry.swift` and `ShellEnvironment.swift` are in neither
+failure list — `knownRemaining` excuses all three until Task 5. If any appears, the set was
+mistyped.
 
 ⚠️ If both tests pass, the vendoring of Task 1 did not land — check `ElliotKit/Vendor/` exists and
 that `swiftFiles(under: "Vendor")` is finding files (a wrong `packageRoot` returns an empty list,
@@ -496,7 +532,6 @@ a task must end green.
 ```bash
 cd ElliotKit/Vendor/swift-acp/ACP
 rm Transport/StdioTransport.swift
-rm Utilities/ShellEnvironment.swift
 rm FileSystemDelegate.swift TerminalDelegate.swift
 rm -rf Agent
 ```
@@ -504,6 +539,14 @@ rm -rf Agent
 `FileSystemDelegate` and `TerminalDelegate` go because this client declares
 `fs: {readTextFile: false, writeTextFile: false}` and `terminal: false`, so a conforming agent never
 issues those calls. ⚠️ Their *types* live in `ACPModel` and stay — only the implementations go.
+
+⛔ **`Utilities/ShellEnvironment.swift` is NOT deleted here** — corrected 2026-08-12 mid-execution.
+An earlier draft removed it in this task, which would have left the build red for the same reason
+Task 1's step 7 did: `Internal/ProcessManager.swift:107` still calls
+`ShellEnvironment.loadUserShellEnvironment()`, and `ProcessManager` survives until Task 5. The chain
+is `Client` → `ProcessManager` → `ShellEnvironment` and **none of the three can be cut without
+cutting all three**, so all three go together in Task 5. Task 1 made this file compile
+(`nonisolated(unsafe)`) precisely so it can survive to that point.
 
 - [ ] **Step 4: Give the deleted delegates a default refusal**
 
@@ -1117,7 +1160,8 @@ last two spawners go.
 **Files:**
 - Modify: `ElliotKit/Vendor/swift-acp/ACP/Client.swift` (lines 35, 70, 75, 78, 111, 116, 121, 137,
   868, 930, 951, 968, 984, 1136 — re-verify with the grep in Step 1)
-- Delete: `ElliotKit/Vendor/swift-acp/ACP/Internal/ProcessManager.swift`, `ProcessRegistry.swift`
+- Delete: `ElliotKit/Vendor/swift-acp/ACP/Internal/ProcessManager.swift`, `ProcessRegistry.swift`,
+  `Utilities/ShellEnvironment.swift` — one dependency chain, cut in one move
 - Modify: `ElliotKit/Tests/ElliotProcessTests/OneSpawnerTests.swift` (empty `knownRemaining`)
 - Test: `ElliotKit/Tests/ElliotProcessTests/ACPClientTransportTests.swift`
 
@@ -1290,17 +1334,28 @@ with a stored `private var readLoop: Task<Void, Never>?` beside the other proper
 ⚠️ `writeMessage` took a model object and encoded it inside the process manager. `transport.send`
 takes `Data`, so the encode moves to the call site. Use the `encoder` the client already holds.
 
-- [ ] **Step 7: Delete the last two spawners and disarm the excuse list**
+- [ ] **Step 7: Delete the last two spawners, the shell capture, and disarm the excuse list**
+
+All three go together: `ProcessManager` is `ShellEnvironment`'s last caller
+(`ProcessManager.swift:107`), and `Client` was `ProcessManager`'s. Cutting one without the others is
+what made an earlier draft of Task 2 go red.
 
 ```bash
 rm ElliotKit/Vendor/swift-acp/ACP/Internal/ProcessManager.swift
 rm ElliotKit/Vendor/swift-acp/ACP/Internal/ProcessRegistry.swift
+rm ElliotKit/Vendor/swift-acp/ACP/Utilities/ShellEnvironment.swift
+```
+
+⚠️ Confirm nothing still references it before building — the grep is cheaper than the compile:
+
+```bash
+grep -rn 'ShellEnvironment' ElliotKit/Vendor ElliotKit/Sources || echo "no references — clear to build"
 ```
 
 In `OneSpawnerTests.swift`, empty the excuse list — this is the task's acceptance criterion:
 
 ```swift
-    /// Empty, and it must stay empty. Task 5 removed the last two.
+    /// Empty, and it must stay empty. Task 5 removed the last three.
     static let knownRemaining: Set<String> = []
 ```
 
