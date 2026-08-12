@@ -744,7 +744,9 @@ struct ChildProcessStdinTests {
         #expect(String(decoding: first ?? Data(), as: UTF8.self) == "hello\n")
 
         child.closeStdin()
-        let termination = await withTimeout(.seconds(5)) { await child.wait() }
+        // `try`, even though the closure body does not throw: `withTimeout` itself throws when the
+        // deadline passes, which is the whole point of it.
+        let termination = try await withTimeout(.seconds(5)) { await child.wait() }
         #expect(termination.code == 0)
     }
 
@@ -1013,7 +1015,8 @@ struct ACPTransportTests {
         )
         await transport.close()
 
-        let exit = await withTimeout(.seconds(5)) { await transport.waitForExit() }
+        // `try` even though the closure body does not throw — `withTimeout` throws on the deadline.
+        let exit = try await withTimeout(.seconds(5)) { await transport.waitForExit() }
         #expect(exit == 0)
 
         let isConnected = await transport.isConnected
