@@ -22,8 +22,19 @@ here), Python 3 for the test double, Node ≥ 22 + `npx` for the live adapter.
   `6.3.0` and readmits a toolchain that hits a `#expect` type-check timeout.
 - `swiftLanguageModes: [.v6]`, `platforms: [.macOS(.v15)]`. Every type crossing an isolation
   boundary is `Sendable`.
-- ⛔ **Do not run `swift format` over the tree.** This code is formatted by hand. Match the
-  neighbours: 4 spaces, 110 columns.
+- **4 spaces, 110 columns — everywhere, `Vendor/` included.** Arbitrated 2026-08-12: one rule, no
+  exception. `.swift-format` already pins exactly those two values.
+  - ⛔ **`Sources/` and `Tests/` are formatted BY HAND.** Do not run `swift format` over them —
+    measured on a clean checkout, it reindents 140 files and `lint --strict` reports 22 463
+    violations, and the disagreement is the printer's layout rather than its width.
+  - ✅ **`Vendor/` is the exception, and it is not the forbidden run.** Nobody hand-wrote it and
+    nobody will hand-maintain its layout, so `swift format --in-place --recursive ElliotKit/Vendor`
+    — **scoped to that directory, never the package** — is the right tool and the only practical one
+    for 10 648 lines. Task 1 Step 2 does it once, before any of our own edits, so the 33 concurrency
+    fixes land as a readable diff rather than inside a reformat.
+  - ⚠️ **Consequence, recorded rather than discovered later:** upstream comparison stops being a
+    plain `git diff`. Use `-w`/`-b` (whitespace-insensitive) when checking this tree against
+    `wiedymi/swift-acp`. `VENDORED.md` says so.
 - ⛔ **`ChildProcess` is the only thing that starts a child**, drains its pipes and publishes its
   exit. Task 2 installs a test that fails by name if a second spawner appears.
 - ⛔ **Nothing waits on `Process.waitUntilExit()`.** Both existing spawners publish the exit from
@@ -109,7 +120,32 @@ cp /tmp/swift-acp-vendor/LICENSE             ElliotKit/Vendor/swift-acp/LICENSE
 ⚠️ `ACPHTTP` and `ACPRegistry` are **not** copied at all — WebSocket transport and agent discovery
 are out of scope, and not copying them is cheaper than deleting them later.
 
-- [ ] **Step 2: Write `VENDORED.md`**
+- [ ] **Step 2: Reformat the vendored tree to the project's rule, once, before touching anything**
+
+Upstream runs to 137 columns; this project pins 110 in `.swift-format`. Do it now, so the 33
+concurrency fixes in Steps 6–7 land as a readable diff instead of inside a reformat.
+
+```bash
+swift format --in-place --recursive ElliotKit/Vendor
+git -C . diff --stat -- ElliotKit/Vendor | tail -1
+python3 -c "
+import pathlib
+worst = max(
+    ((len(l.rstrip()), p, i + 1)
+     for p in pathlib.Path('ElliotKit/Vendor').rglob('*.swift')
+     for i, l in enumerate(p.read_text().splitlines())),
+    default=(0, None, 0))
+print('longest line now:', worst)
+"
+```
+
+⛔ **Scoped to `ElliotKit/Vendor`, never the package.** Running it over `Sources/` or `Tests/`
+rewrites 140 hand-formatted files, which is the ⛔ in `CLAUDE.md`.
+
+⚠️ A few lines may still exceed 110 — the printer cannot break a long string literal or a very long
+identifier. That is expected; do not hand-wrap them.
+
+- [ ] **Step 3: Write `VENDORED.md`**
 
 Create `ElliotKit/Vendor/swift-acp/VENDORED.md`:
 
@@ -130,8 +166,21 @@ sources are compiled under `.v6`. Vendoring is what makes it actually checked.
 
 ## Module names are upstream's, deliberately
 
-`ACPModel` and `ACP` keep their upstream names so this tree can be diffed against upstream to pick
+`ACPModel` and `ACP` keep their upstream names so this tree can be compared against upstream to pick
 up fixes. Do not rename them.
+
+## ⚠️ This tree has been reformatted — diff it whitespace-insensitively
+
+Arbitrated 2026-08-12: the project's format rule (4 spaces, 110 columns, pinned in `.swift-format`)
+applies here too, with no exception. Upstream runs to 137 columns, so a one-off
+`swift format --in-place --recursive` was applied to this directory **before** any of our own edits.
+
+That is not the tree-wide formatter run `CLAUDE.md` forbids: that ⛔ protects `Sources/` and
+`Tests/`, which are hand-formatted and which the pretty-printer would rewrite wholesale. Nothing
+here is hand-formatted.
+
+**So comparing against upstream needs `git diff -w` or `diff -b`.** A plain diff shows the reformat
+and buries the two changes that actually matter, listed below.
 
 ## What was removed, and why
 
@@ -156,7 +205,7 @@ allowed to do that.
   `dev.phmatray.elliot`.
 ```
 
-- [ ] **Step 3: Add the two targets to `Package.swift`**
+- [ ] **Step 4: Add the two targets to `Package.swift`**
 
 In `ElliotKit/Package.swift`, in the `targets:` array, immediately **before** the existing
 `.target(name: "ElliotProcess", …)` line:
@@ -177,7 +226,7 @@ and change the `ElliotProcess` target line to depend on them:
         .target(name: "ElliotProcess", dependencies: ["ElliotModel", "ACP", "ACPModel"]),
 ```
 
-- [ ] **Step 4: Build and capture the failures**
+- [ ] **Step 5: Build and capture the failures**
 
 ```bash
 cd ElliotKit && rm -rf .build && swift build > /tmp/acp-vendor-build.log 2>&1; echo "EXIT=$?"
@@ -196,7 +245,7 @@ plus one `emit-module command failed`.
 If the count differs, stop and report it rather than adapting: the number is a measurement from
 2026-08-12 and a different one means the commit is not the pinned one.
 
-- [ ] **Step 5: Constrain the generics in `Client.swift`**
+- [ ] **Step 6: Constrain the generics in `Client.swift`**
 
 Every failing generic is an unconstrained `T` passed through a task group or a continuation. The fix
 is one word per signature. For example, `withRequestTimeout`:
@@ -209,7 +258,7 @@ Apply `: Sendable` to the generic parameter of every signature the compiler name
 these with `@unchecked Sendable` or by removing the constraint from the caller — the diagnostic is
 correct, and this hole was found independently before the compiler named it.
 
-- [ ] **Step 6: Fix the mutable statics**
+- [ ] **Step 7: Fix the mutable statics**
 
 In `Vendor/swift-acp/ACP/Utilities/Logger.swift`, make each flagged `static var` a `static let`, and
 repoint the subsystem so this package has one logging story rather than two:
@@ -227,7 +276,7 @@ into the actor that uses it.
 
 `ShellEnvironment.swift`'s statics are also flagged; leave that file alone, Task 2 deletes it.
 
-- [ ] **Step 7: Build until green**
+- [ ] **Step 8: Build until green**
 
 ```bash
 cd ElliotKit && swift build > /tmp/acp-vendor-build.log 2>&1; echo "EXIT=$?"
@@ -237,7 +286,7 @@ tail -3 /tmp/acp-vendor-build.log
 
 Expected: `EXIT=0`, `0` errors, `0` warnings, `Build complete!`.
 
-- [ ] **Step 8: Write the failing decoding test**
+- [ ] **Step 9: Write the failing decoding test**
 
 This asserts the one property the whole "Claude via ACP" decision rests on: that `_meta` survives.
 
@@ -298,7 +347,7 @@ struct ACPModelDecodingTests {
 }
 ```
 
-- [ ] **Step 9: Run the tests**
+- [ ] **Step 10: Run the tests**
 
 ```bash
 cd ElliotKit && swift test --filter ACPModelDecodingTests
@@ -307,7 +356,7 @@ cd ElliotKit && swift test --filter ACPModelDecodingTests
 Expected: 2 tests pass. ⚠️ If it prints `warning: No matching test cases were run` and exits 0, the
 filter matched nothing — check the **type** name, not the suite's display name.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git rev-parse --abbrev-ref HEAD   # confirm the branch before committing; worktrees share this .git
