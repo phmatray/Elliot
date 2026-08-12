@@ -48,6 +48,20 @@ public actor PRWatcher {
     /// hidden inside a closure instead of visible on the type.
     private var sessionProbe: (@Sendable () async -> Bool)?
 
+    /// Told when this sweep refreshed the reading behind a merge that is already
+    /// queued — the one admission rule the scheduler cannot release by itself.
+    ///
+    /// ⛔ **Not the same thing as `roundTrigger`, and one is not a substitute for
+    /// the other.** A round asks a *session* what it wants to move next; it
+    /// re-reads the queue but never drains it, so a merge already sitting in that
+    /// queue under `.mergeVerdictNotEstablished` was never reconsidered by
+    /// anything, and the refusal's own sentence promised it would be. That is why
+    /// this is wired to the queue rather than folded into the round: a merge a
+    /// human dragged is held by the same rule and there may be no session at all.
+    ///
+    /// `weak`, for the reason `roundTrigger` and `mover` are.
+    private weak var queue: (any QueueReconsidering)?
+
     public init(store: BoardStore, gh: GHClient, mover: any SystemMoving) {
         self.store = store
         self.gh = gh
@@ -56,6 +70,10 @@ public actor PRWatcher {
 
     public func setRoundTrigger(_ trigger: any RoundTriggering) {
         roundTrigger = trigger
+    }
+
+    public func setQueueReconsidering(_ queue: any QueueReconsidering) {
+        self.queue = queue
     }
 
     public func setSessionProbe(_ probe: @escaping @Sendable () async -> Bool) {
@@ -84,6 +102,7 @@ public actor PRWatcher {
         guard let repos = try? await store.repos() else { return Self.idleInterval }
         var sawChange = false
         var anyRunning = false
+        var refreshedAHeldMerge = false
 
         for repo in repos where repo.isEnabled {
             let all = (try? await store.cards(repoID: repo.id)) ?? []
@@ -124,7 +143,25 @@ public actor PRWatcher {
             // as soon as *any* repository moved, and would re-read every
             // repository after it for nothing.
             let settled = movedHere ? (try? await store.cards(repoID: repo.id)) ?? all : all
-            await refreshStatuses(repo: repo, cards: settled, alsoRead: mergePending, prs: prs)
+            if await refreshStatuses(
+                repo: repo, cards: settled, alsoRead: mergePending, prs: prs) {
+                refreshedAHeldMerge = true
+            }
+        }
+
+        // ⛔ Before the round, and before the backoff is chosen. A merge held for
+        // a stale reading is released by *this* write and by nothing else, so the
+        // drain belongs in the same sweep — and ahead of `triggerRound()` so the
+        // session's round reads a queue that has already reconsidered rather than
+        // one still showing the refusal that has just stopped applying.
+        //
+        // Conditional, unlike the round below: a round is a handful of local
+        // reads over a session's own rows, while a drain reads the store once per
+        // pending run and can spawn a `claude`. Asking on every tick regardless
+        // would be harmless but it would also stop saying anything — the flag is
+        // the record that a *specific* fact changed.
+        if refreshedAHeldMerge {
+            await queue?.reconsiderQueue()
         }
 
         if sawChange || anyRunning {
@@ -242,10 +279,23 @@ public actor PRWatcher {
     /// card fields are decided in one place, `VerifiedOutcome.applied(to:)`, and
     /// a poller that wrote one would be the second write path that invariant
     /// exists to prevent.
+    ///
+    /// Returns whether a row was written for a card in `alsoRead` — that is, for
+    /// a card whose merge is *already queued*. That is the second half of this
+    /// method's reason for existing: refreshing the reading is what lifts
+    /// `.mergeVerdictNotEstablished`, and admission is only asked again when
+    /// something drains the queue. `tick()` turns this answer into exactly one
+    /// `reconsiderQueue()`. Refreshing the reading and never re-asking is the
+    /// half-fix that shipped: the guard was correct and unreachable-from.
+    ///
+    /// The In Review half deliberately does **not** count. Those cards have no
+    /// queued run to release; a drain for them would be a drain for a fact that
+    /// holds nothing.
     private func refreshStatuses(
         repo: Repo, cards: [Card], alsoRead: Set<UUID>, prs: [GHPullRequest]
-    ) async {
+    ) async -> Bool {
         let now = Date()
+        var refreshedAHeldMerge = false
         for card in cards where card.column == .inReview || alsoRead.contains(card.id) {
             guard let number = card.prNumber else { continue }
             let currentHead = prs.first { $0.number == number }?.headRefOid
@@ -260,7 +310,12 @@ public actor PRWatcher {
             else { continue }
             try? await store.savePRStatus(
                 status.prStatus(repoID: repo.id, prNumber: number, checkedAt: now))
+            // After the write, never before it: a read that failed at the guard
+            // above changed nothing, and reporting it would ask the queue to
+            // reconsider a rule that still holds.
+            if alsoRead.contains(card.id) { refreshedAHeldMerge = true }
         }
+        return refreshedAHeldMerge
     }
 
     /// ±20%, so several repos do not fall into lockstep.

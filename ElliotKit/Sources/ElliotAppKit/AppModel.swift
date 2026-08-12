@@ -1044,9 +1044,9 @@ public final class AppModel {
             await scheduler.setRoundTrigger(autoDevService)
             await autoDevService.advance()
 
-            // Obligation 1 from `AutoDevDriving`'s own doc
-            // (`AutoDevDriving.swift:64-72`): a loop that reaches its own end
-            // must make that observable, or `autoDevRefusal` keeps refusing
+            // Obligation 1 from `AutoDevDriving`'s own doc: a loop that
+            // reaches its own end must make that observable, or
+            // `autoDevRefusal` keeps refusing
             // every future session on a `.running` row that is actually over.
             // `refreshAutoDev()` is the poll-shaped seam its doc names — "on
             // a `.task`, on its own tick" — and it cannot be scoped to a
@@ -1057,8 +1057,8 @@ public final class AppModel {
             // old one end whether or not anyone opens that screen. Cancelled
             // with everything else in `observationTasks` by `shutdown()`.
             //
-            // Fix round 1, Minor: skips the real work — an actor hop and a
-            // SQLite point-read — on every tick where `autoDevSessionIsRunning`
+            // Skips the real work — an actor hop and a SQLite point-read —
+            // on every tick where `autoDevSessionIsRunning`
             // says nothing could have changed since the last one. See that
             // property's own doc for why `.running` is the only state this
             // can be true for.
@@ -1072,6 +1072,14 @@ public final class AppModel {
 
             let watcher = PRWatcher(store: store, gh: ghClient, mover: board)
             await watcher.setRoundTrigger(autoDevService)
+            // The other half of `.mergeVerdictNotEstablished`. The watcher is
+            // what makes a stale reading current again, and the scheduler is the
+            // only thing that can act on that — without this line the guard holds
+            // a merge that has become admissible until the session's patience
+            // runs out and cancels it. Registered here rather than beside the
+            // round trigger above by accident of order only: both are the
+            // watcher's outward wiring and neither may precede the launch sweep.
+            await watcher.setQueueReconsidering(scheduler)
             // `[weak autoDevService]`: the watcher outlives nothing, and
             // nothing here should be what keeps a session alive.
             await watcher.setSessionProbe { [weak autoDevService] in
@@ -3905,8 +3913,8 @@ public final class AppModel {
         return autoDev.engagedCardIDs.contains { activeRuns[$0] != nil }
     }
 
-    /// Fix round 1, Minor: whether the obligation-1 poll in `start()` has
-    /// anything left to check on this tick.
+    /// Whether the obligation-1 poll in `start()` has anything left to check on
+    /// this tick.
     ///
     /// `AutoDevService.round()` only ever reads `runningAutoDevSessions()`
     /// (`BoardStore.swift`, filtered on `state == .running`), so `.running` is
@@ -4103,7 +4111,7 @@ public final class AppModel {
         // re-adopts them onto the stale value it already had, so a session
         // that finished on its own — every card settled, nobody pressing
         // Pause, Resume or Stop — could never be noticed here. Obligation 1
-        // (`AutoDevDriving.swift:64-72`) needs the session re-read too, which
+        // needs the session re-read too, which
         // is exactly what the protocol's `session(sessionID:)` is for.
         guard let driver = autoDevDriver, let id = autoDev?.id,
             let session = await driver.session(sessionID: id)

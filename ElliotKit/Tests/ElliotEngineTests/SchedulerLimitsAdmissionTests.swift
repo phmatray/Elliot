@@ -11,7 +11,18 @@ import Testing
 /// takes effect immediately, and that lowering one never kills a live run.
 ///
 /// Nothing here spawns a process — `testOnlyMarkInFlight` seeds the in-flight
-/// set and `canStart` is asked directly, which is the same thing `pump()` does.
+/// set and `canStart` is asked directly.
+///
+/// ⚠️ **This line used to end "…which is the same thing `pump()` does", and that
+/// stopped being true the day the merge-verdict guard landed.** `canStart` was
+/// `refusal(for: run, overBudget: false, mergeVerdict: .notDemanded)` — both
+/// permissive values hardcoded — so it answered `true` for a demanding merge on
+/// a reading `pump()` refuses, under a sentence in this very file asserting the
+/// two agreed. It derives both inputs now, from the ceiling and the run's own
+/// `PRStatus`, so the claim holds again; `canStartRefusesWhatPumpRefuses` below
+/// is what keeps it holding. The rule the episode leaves behind is narrower than
+/// "keep docs current": **a convenience that claims to agree with a decision
+/// elsewhere must derive that decision, not restate a safe answer to it.**
 @Suite("Scheduler limits — admission")
 struct SchedulerLimitsAdmissionTests {
 
@@ -238,6 +249,59 @@ struct QueueRefusalAdmissionTests {
         #expect(await scheduler.canStart(run(.implementIssue)) == true)
         await scheduler.testOnlyMarkInFlight(run(.implementIssue))
         #expect(await scheduler.canStart(run(.implementIssue)) == false)
+    }
+
+    /// The measurement that opened this finding, turned into a gate: one
+    /// scheduler, one store, two merge runs a single flag apart, judged against
+    /// a reading 660 seconds old.
+    ///
+    /// With `.notDemanded` hardcoded inside `canStart`, the demanding half
+    /// answered **`true`** while a real `pump()` left that same run `.queued`
+    /// under `.mergeVerdictNotEstablished` — a convenience disagreeing with the
+    /// decision it advertises agreement with, on the one path that merges to a
+    /// default branch on github.com.
+    ///
+    /// The non-demanding half is not padding: it is what makes the assertion
+    /// about *what the move demanded* rather than about the row being old. Both
+    /// runs see the same stale `PRStatus`; only one of them asked for a green.
+    @Test("canStart refuses a demanding merge on a stale reading, exactly as pump does")
+    func canStartRefusesWhatPumpRefuses() async throws {
+        let store = try BoardStore.inMemory()
+        let config = ToolConfig(
+            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            gitPath: "/usr/bin/true", environment: [:]
+        )
+        let scheduler = RunScheduler(
+            store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
+
+        let repo = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot")
+        try await store.saveRepo(repo)
+        let now = Date()
+        let card = Card(
+            repoID: repo.id, title: "Landing", column: .done, orderIndex: 0,
+            issueNumber: 7, prNumber: 52, branch: "feat/7-landing",
+            columnEnteredAt: now, createdAt: now, updatedAt: now)
+        try await store.saveCard(card)
+        try await store.savePRStatus(
+            PRStatus(
+                repoID: repo.id, prNumber: 52, headRefOid: "a1b2c3",
+                // Dated rather than slept for: no assertion here may measure an
+                // absolute duration.
+                checkedAt: now.addingTimeInterval(-(PRStatus.maximumAge + 60)),
+                rawMergeStateStatus: "CLEAN", rawMergeable: "MERGEABLE",
+                rawReviewDecision: "", checks: []))
+
+        func merge(demanding: Bool) -> SkillRun {
+            SkillRun.card(
+                cardID: card.id, repoID: repo.id, kind: .mergePR, prompt: "x", cwd: "/tmp",
+                logPath: "/tmp/a", stderrPath: "/tmp/b",
+                requiresVerifiedGreen: demanding ? true : nil, createdAt: now)
+        }
+
+        #expect(await scheduler.canStart(merge(demanding: false)) == true)
+        #expect(await scheduler.canStart(merge(demanding: true)) == false)
     }
 }
 

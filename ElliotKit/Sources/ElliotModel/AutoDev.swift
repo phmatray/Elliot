@@ -175,12 +175,20 @@ public struct AutoDevTally: Sendable, Hashable {
 }
 
 extension AutoDevEngagement {
-    /// The row-level form of ``AutoDevTally/settled``: `.engaged` is `AutoDevDisposition`'s only
-    /// case still in flight, so being settled is defined as *not* that, rather than as an
+    /// The row-level **analogue** of ``AutoDevTally/settled``: `.engaged` is `AutoDevDisposition`'s
+    /// only case still in flight, so being settled is defined as *not* that, rather than as an
     /// enumeration of the other two. That form is the defensible one — a fourth
     /// `AutoDevDisposition` case with no arm written for it here reads as settled, which surfaces
     /// in the report as something to go look at, rather than silently staying "still engaged"
     /// forever the way `== .merged || == .blocked` would leave it.
+    ///
+    /// ⚠️ **Analogue, not "form": the two are not guaranteed to agree, and this said they were.**
+    /// ``AutoDevTally/settled`` is a hand-written `merged + blocked` sum, so it is exactly the
+    /// enumeration this property refuses to be. A fourth disposition would be settled *here* and
+    /// absent from *that* — the counts would stop adding up to `engaged + settled` and nothing
+    /// would say so. Making the tally a switch over the same enum is the fix and it belongs in the
+    /// file that owns the tally; until then, read this as "the same idea at row level", never as a
+    /// promise that one can be derived from the other.
     public var isSettled: Bool {
         disposition != .engaged
     }

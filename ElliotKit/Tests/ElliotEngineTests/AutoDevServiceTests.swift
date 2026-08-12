@@ -1522,6 +1522,70 @@ struct AutoDevRoundTests {
         #expect(row.reason.contains("600 seconds"))
     }
 
+    /// ⛔ **The rule is about the third round, and every patience test in this
+    /// suite drove two.**
+    ///
+    /// `record` moves `updatedAt` **only** when the reason changed, and that
+    /// conditional is the whole patience mechanism. Deleting it — refreshing
+    /// `reason` and `updatedAt` unconditionally — left the entire suite green,
+    /// `patienceSettles` above included. Not because any assertion is loose:
+    /// that test really would fail if the window stopped expiring. It is the
+    /// **fixture** that cannot see it. Two rounds — `start`, then one `advance()`
+    /// already past the window — never produce an *intervening* round for an
+    /// unconditional timestamp to push forward, and the policy is computed before
+    /// `record` writes, so the conditional never matters.
+    ///
+    /// Production never has two. `PRWatcher` fires a round every 15–60 s against
+    /// a default patience of 900 s, so with the conditional gone every tick would
+    /// move `updatedAt` and **patience would never fire at all** — a stuck card
+    /// held for ever by an unattended session, with the one bound on how long it
+    /// may hold one quietly removed.
+    ///
+    /// So the middle round is the test. The question that catches this is not
+    /// *"would this still pass if the mechanism were removed"* — it would fail —
+    /// but ***"does this fixture ever reach the state the rule is about?"***
+    @Test("A middle round that changes nothing does not push the patience window forward")
+    func patienceSurvivesAnInterveningRound() async throws {
+        let (f, service) = try await fixture()
+        var card = try await f.board.createCard(repoID: f.repo.id, title: "Stuck").card
+        card.column = .todo
+        try await f.store.saveCard(card)   // To Do with no issue number: blocked for ever.
+
+        // Round 1, at `epoch`: `start` ends by calling `advance()`.
+        let started = try await service.start(
+            session: AutoDevSession(
+                repoID: f.repo.id, engagedCardIDs: [card.id], maxAttemptsPerCard: 2,
+                patience: 600, startedAt: epoch),
+            preflight: .passing)
+        var row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.disposition == .engaged)
+        #expect(row.updatedAt == epoch)
+        let reason = row.reason
+
+        // Round 2, halfway through the window: the card has not moved, so the
+        // reason is the same one and the clock on it must not restart.
+        f.now.advance(by: 300)
+        await service.advance()
+        row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.disposition == .engaged, "the window is not up yet")
+        #expect(row.reason == reason, "nothing changed, so the reason must not have")
+        #expect(
+            row.updatedAt == epoch,
+            """
+            the middle round moved `updatedAt` to \(row.updatedAt) — a reason that did not change \
+            must not restart its own clock, or every tick of the PR watcher renews the window and \
+            patience never expires
+            """)
+
+        // Round 3, past the window measured from `epoch` — and only from `epoch`
+        // if round 2 left the timestamp alone.
+        f.now.advance(by: 301)
+        await service.advance()
+        row = try #require(try await f.store.autoDevEngagements(sessionID: started.id).first)
+        #expect(row.disposition == .blocked)
+        #expect(row.reason.contains("600 seconds"))
+    }
+
     @Test("A card in Done whose merge did not land is not a success")
     func doneIsNotMerged() async throws {
         let (f, service) = try await fixture()

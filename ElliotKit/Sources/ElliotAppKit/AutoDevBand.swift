@@ -120,12 +120,24 @@ struct AutoDevBand: Equatable {
     ///   `.mergePR` run is genuinely still `.running`, and `finish()`
     ///   correctly leaves a running run alone rather than cancel it. So a
     ///   live `claude -p` child can outlive a session this band reports as
-    ///   fully stopped. Defaulted to `false` rather than made non-optional:
-    ///   deciding it needs `AppModel.activeRuns`, which every existing caller
-    ///   and every existing test here has no reason to thread through for the
-    ///   two states where it cannot change anything.
+    ///   fully stopped.
+    ///
+    /// ⛔ **`hasLiveRun` has no default, and it had one for exactly as long as it
+    /// took a review to try deleting it.** The argument for `= false` was that
+    /// *"every existing caller and every existing test has no reason to thread it
+    /// through for the two states where it cannot change anything"* — true of the
+    /// tests and **false of the callers**: `BoardView.StatusBar` and
+    /// `OperationsView` are the only two, both render `.finished`, and that is
+    /// the one state where it changes something. Measured: dropping
+    /// `hasLiveRun: model.autoDevHasLiveRun` from both left the whole suite green
+    /// while the shipping board went back to saying *"Nothing is running."* over
+    /// a live `claude -p` child. A default here protects test fixtures and
+    /// exposes the surface that reports whether an unattended agent is still
+    /// going; the tests that genuinely do not care now say `false` out loud,
+    /// which is the trade `MoveContext.method` and `BoardService.proposeMove`
+    /// already made.
     static func of(
-        session: AutoDevSession?, tally: AutoDevTally, repoName: String, hasLiveRun: Bool = false
+        session: AutoDevSession?, tally: AutoDevTally, repoName: String, hasLiveRun: Bool
     ) -> AutoDevBand {
         guard let session else { return .idle }
         let count = session.engagedCardIDs.count
@@ -162,8 +174,8 @@ struct AutoDevBand: Equatable {
                 controls: [.resume, .stop]
             )
         case .finished:
-            // ⛔ **Fix round 1, Important 2 — PR5's inherited contract 4,
-            // come due.** `stop(sessionID:)` (`AutoDevService.swift`) is the
+            // ⛔ **A stop can leave rows engaged, and a report that ignored
+            // that read as a clean success.** `stop(sessionID:)` is the
             // one production path that can reach `.finished` while a row is
             // still `.engaged`: the automatic path never calls `finish()`
             // until `states.allSatisfy(\.isSettled)`
@@ -172,8 +184,8 @@ struct AutoDevBand: Equatable {
             // Falling through to the sentence below would silently drop
             // every abandoned card — "Finished — 5 cards…, 2 merged, 0
             // blocked" for a session that still had 3 engaged — the exact
-            // "quiet success on short rows" the override's 5b principle was
-            // invoked to fix for `hasLiveRun`. Checked before `hasLiveRun`:
+            // same quiet-success-on-short-rows failure `hasLiveRun` below
+            // exists to prevent, one field over. Checked before `hasLiveRun`:
             // `stop()` also cancels every cancellable active run for the
             // session's cards, so by the time this renders `hasLiveRun` is
             // usually already false, and even where it briefly is not, "left

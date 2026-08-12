@@ -37,7 +37,7 @@ public enum SchedulerUpdate: Sendable {
 }
 
 /// Runs skills, at most a few at a time, respecting what can safely overlap.
-public actor RunScheduler: RunLaunching, RunQueueReading {
+public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
     private let store: BoardStore
     private let toolConfig: ToolConfig
     private let verifier: Verifier
@@ -46,7 +46,7 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
     private var limits: SchedulerLimits
     private var ceiling: SpendCeiling
     /// Today's spend, cached. Read from the store when it goes stale rather than
-    /// on every admission: `canStart` runs once per pending run per `pump()`,
+    /// on every admission: `refusal` runs once per pending run per `pump()`,
     /// and a SQL aggregate there would turn a queue drain into N queries.
     /// Invalidated whenever a run finishes, which is the only moment it changes.
     private var spentTodayCache: Double?
@@ -150,7 +150,7 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
     /// visible until some unrelated run happened to finish — the user would set
     /// four workers, watch two run, and conclude the setting was ignored.
     ///
-    /// Lowering never kills anything: `canStart` is only consulted for runs that
+    /// Lowering never kills anything: admission is only consulted for runs that
     /// have not started, so runs already in flight finish under the old cap and
     /// the new one takes effect as they drain.
     public func setLimits(_ limits: SchedulerLimits) async {
@@ -191,10 +191,34 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
         await pump()
     }
 
+    /// `QueueReconsidering`: drain the queue because something *outside* the
+    /// scheduler released an admission rule.
+    ///
+    /// The eighth caller of `pump()`, and the only one that is not the scheduler
+    /// reacting to itself. The other seven all follow a change this actor made —
+    /// a limit, a ceiling, a resume, a launch, a promotion, a run finishing —
+    /// and `.mergeVerdictNotEstablished` is the one rule none of them can lift:
+    /// a merge's reading ages out on a clock nobody rings and becomes current
+    /// again only when `PRWatcher` writes a fresh `PRStatus` row. Without this,
+    /// `refusal`'s own sentence — "the merge starts as soon as a current reading
+    /// says the pull request is green" — was a promise with no keeper, and an
+    /// unattended session's merge waited out its patience and was cancelled.
+    ///
+    /// Named for what it does to the *pending* queue and deliberately **not**
+    /// `drain()`, which is 40 lines up and cancels every queued run: two verbs
+    /// that both empty a queue, one by starting the work and one by discarding
+    /// it, must not share a name.
+    ///
+    /// Idempotent, as the protocol requires — `pump()` is the same drain the
+    /// scheduler already runs on every run-ending path.
+    public func reconsiderQueue() async {
+        await pump()
+    }
+
     public var paused: Bool { isPaused }
 
     /// `paused` as `RunQueueReading` asks for it. Two spellings of one value,
-    /// and deliberately not a rename: `AppModel.swift:2197` reads `paused`
+    /// and deliberately not a rename: `AppModel.refreshOccupancy` reads `paused`
     /// directly, and a protocol requirement is a different thing from a
     /// property the app happens to read.
     public func queueIsPaused() async -> Bool { isPaused }
@@ -254,8 +278,9 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
         continuation.yield(
             .runFinished(runID: runID, cardID: run.cardID, state: .cancelled, outcome: nil))
         // Deliberately no `roundTrigger` call here. This is the reader
-        // cancelling a queued run, not one of it ending on its own — a
-        // cancellation belongs to a later task, not this one.
+        // cancelling a queued run, not one of it ending on its own; waking a
+        // session to react to the reader's own cancellation is a decision
+        // nobody has taken, and doing it silently here would take it.
         return true
     }
 
@@ -293,8 +318,39 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
     /// someone else's work. Read-only runs get their own lane because the cap
     /// below exists to keep two *builds* out of one `.build/`, and neither of
     /// them builds anything.
-    func canStart(_ run: SkillRun) -> Bool {
-        refusal(for: run, overBudget: false, mergeVerdict: .notDemanded) == nil
+    ///
+    /// ⛔ **It derives both of `refusal`'s inputs rather than being handed them,
+    /// and that is the whole fix.** This used to read `refusal(for: run,
+    /// overBudget: false, mergeVerdict: .notDemanded)` — hardcoding *both*
+    /// permissive values — so it answered `true` for a merge `pump()` refuses,
+    /// while `SchedulerLimitsAdmissionTests` went on stating in prose that asking
+    /// it was "the same thing `pump()` does". Measured on one scheduler and one
+    /// run: a `.mergePR` run demanding a verified green whose `PRStatus` was
+    /// 660 s old got `canStart == true` and stayed `.queued` through a real
+    /// drain. It has no production caller today, which is exactly the condition
+    /// under which a hardcoded safe value survives unnoticed — the next reader to
+    /// reach for it as the admission oracle is a test author, and a test author
+    /// is who it would mislead.
+    ///
+    /// ⚠️ **Deriving, not parameterising, is the deliberate half of that.**
+    /// Adding `overBudget:` and `mergeVerdict:` parameters was tried first and is
+    /// the worse fix: it makes every caller *supply* the answer, so the same
+    /// caller that hardcoded a permissive value inside this method hardcodes it
+    /// at the call site instead, and the trap moves rather than closes. Asking
+    /// the store here costs two point-reads for a `.mergePR` run that demanded a
+    /// green and an aggregate that is cached, which is affordable precisely
+    /// because nothing consults this per pending run.
+    ///
+    /// That is also why `async` is fine here and would not be in `refusal`:
+    /// `pump()` reads the ceiling once per *drain* and calls `mergeAdmission`
+    /// itself inside its loop, where each `await` has to be paired with a
+    /// `pending.contains` recheck. This has no queue to lose underneath it.
+    func canStart(_ run: SkillRun) async -> Bool {
+        refusal(
+            for: run,
+            overBudget: await isOverDailyCeiling(),
+            mergeVerdict: await mergeAdmission(for: run, now: Date())
+        ) == nil
     }
 
     /// What admission knows about a merge run's reading, as of this drain.
@@ -371,7 +427,7 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
     }
 
     private func pump() async {
-        // Read once per drain, not once per run. `canStart` is consulted for
+        // Read once per drain, not once per run. `refusal` is consulted for
         // every pending run and is deliberately synchronous; a SQL aggregate in
         // there would turn draining a queue of twenty into twenty queries.
         let overBudget = await isOverDailyCeiling()
@@ -659,8 +715,9 @@ public actor RunScheduler: RunLaunching, RunQueueReading {
                 runID: run.id, cardID: run.cardID, state: .failed, outcome: nil
             ))
             // No `pump()` here — a failed spawn frees a writer slot that
-            // nothing re-drains until an unrelated event, a pre-existing
-            // scheduler defect out of scope for this task. The round trigger
+            // nothing re-drains until an unrelated event. A pre-existing
+            // scheduler defect, deliberately left alone rather than fixed in
+            // passing on a branch about something else. The round trigger
             // still fires: the fact that this run ended is knowable right
             // now, and a session waiting on it should not sit through the
             // full stall window for nothing.

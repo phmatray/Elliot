@@ -216,7 +216,7 @@ public actor AutoDevService: RoundTriggering {
 
         await advance()
 
-        // Obligation from `AutoDevDriving.swift:64-72`, which binds this
+        // Obligation 1 from `AutoDevDriving`'s own doc, which binds this
         // method independently of the `AutoDevDriving` conformance in the
         // extension at the end of this file: "a loop that reaches its own end
         // must make that observable." `advance()` may
@@ -316,9 +316,10 @@ public actor AutoDevService: RoundTriggering {
         // A session runs at most one merge, and **nothing beside it**.
         //
         // Stronger than "no new implement-issue", for the reason the design
-        // gives: `pump()` steps over a refused run and admits the next
-        // (`RunScheduler.swift:428-436`), so on a repository the session keeps
-        // busy `.mergeWaitsForRepoToBeIdle` can otherwise never lift. Anything
+        // gives: `pump()` steps over a refused run and admits the next — it
+        // records `lastRefusals[runID]` and continues its loop rather than
+        // stopping — so on a repository the session keeps busy
+        // `.mergeWaitsForRepoToBeIdle` can otherwise never lift. Anything
         // started beside a pending merge is one more thing that merge waits for.
         //
         // `var`, and that is the whole of it: a merge this very round queued
@@ -376,7 +377,7 @@ public actor AutoDevService: RoundTriggering {
 
             guard let to = card.column.naturalNext else {
                 // Done, with no merged run behind it. `commitMove` puts a card
-                // in Done *before* the run (`BoardService.swift:196-226`) and
+                // in Done *before* the run (`BoardService.commitMove`) and
                 // `CardOutcome.applied` returns no move for `.notMerged`, so a
                 // failed merge leaves it exactly here. The column separates
                 // neither case; `didMerge` above already did.
@@ -505,8 +506,9 @@ public actor AutoDevService: RoundTriggering {
     /// settle a card even while its run is genuinely still going
     /// (`AutoDevPolicy`'s `.runAlreadyInFlight` arm does not consult
     /// `RunState`), so this method *is* reached with a live child in the
-    /// picture. The only path that stops one is the user's own stop, which is
-    /// PR5's — not a session giving up. `.cancelling` is spared for a
+    /// picture. The only path that stops one is the reader's own stop —
+    /// ``stop(sessionID:)``, 130 lines below in this file — not a session giving
+    /// up on its own. `.cancelling` is spared for a
     /// different reason: the SIGTERM is already out
     /// (`RunState.isCancellable` excludes it too), so cancelling it again is
     /// a no-op at best.
@@ -569,14 +571,17 @@ extension AutoDevService: AutoDevDriving {
     /// nothing has measured is refused by that function and simply does not
     /// appear in `ranked`; it is never ranked low. `refused` is not surfaced
     /// anywhere from here — neither `AutoDevSession` nor `AutoDevEngagement`
-    /// has a field for it, and adding one is outside this task's scope.
+    /// has a field for it. So `.automatic` engages *fewer* cards rather than
+    /// wrong ones, silently: ask for five, get three, hear nothing. A shortfall
+    /// on the one path the design calls optional automatic selection, and the
+    /// field to carry it is worth adding before that path is leaned on.
     ///
     /// - Parameter preflight: unlike `start(session:preflight:)` above, this
     ///   entry point has no fresher reading to offer than the persisted
     ///   column: it holds no `PreflightService` collaborator (deliberately —
     ///   see this actor's own doc), so it reads `repo.preflightVerdict`, the
-    ///   same value `AppModel.autoDevRefusal` already gates on
-    ///   (`AppModel.swift:3884`), never `PreflightReading.verdict(of:)` —
+    ///   same value `AppModel.autoDevRefusal` already gates on, never
+    ///   `PreflightReading.verdict(of:)` —
     ///   whose absent-reading case, `.notChecked`, *admits*, and would let an
     ///   unattended session start against a repository Preflight had already
     ///   failed.

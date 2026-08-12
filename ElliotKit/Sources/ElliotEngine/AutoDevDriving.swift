@@ -24,12 +24,15 @@ public enum AutoDevSelection: Sendable, Hashable {
 
 /// What the board's auto-dev controls reach.
 ///
-/// A protocol rather than a concrete type, because the loop that conforms to it
-/// is the **next** pull request: this one ships the screen. `AppModel` holds one
-/// optional conformer exactly as it holds `analysisService`, so with none
-/// attached every control returns at its guard and `AppModel.autoDevRefusal`
-/// says so in a sentence — the #151 shape, an explanation rather than a control
-/// that cannot be switched off.
+/// A protocol rather than a concrete type, so the board depends on the *surface*
+/// and not on the loop: `AutoDevService` conforms, and `AppModel` holds one
+/// optional conformer exactly as it holds `analysisService`. The optionality is
+/// not vestigial — the driver is attached only after the launch sweep returns
+/// (`AppModel.start()`, gated by `AutoDevLaunchOrderShapeTests`), so there is a
+/// real window on every launch with none attached, during which every control
+/// returns at its guard and `AppModel.autoDevRefusal` says so in a sentence:
+/// the #151 shape, an explanation rather than a control that cannot be switched
+/// off.
 ///
 /// ⚠️ **`stop` cancels the run already going; `pause` does not.** That is the
 /// whole reason a session cannot lean on the queue's Pause
@@ -39,7 +42,7 @@ public enum AutoDevSelection: Sendable, Hashable {
 ///
 /// The three mutating calls hand back the session they produced rather than
 /// `Void`, so the board's copy and the loop's cannot come apart while nobody is
-/// pushing updates. PR4 may add a push; nothing here forbids one.
+/// pushing updates. Nothing here forbids adding a push later.
 ///
 /// ⚠️ **`nil` from `pause`/`resume`/`stop` is an answer the caller must render,
 /// not one it may drop.** It is a *refusal to confirm* — a session the loop does
@@ -50,26 +53,26 @@ public enum AutoDevSelection: Sendable, Hashable {
 /// repository's own catalogued failure, *a mechanism that substitutes a
 /// different answer instead of erroring*.
 ///
-/// ⛔ **Two obligations on a conformer, and each was a dead end for the reader
-/// while neither had a remedy wired.** Before PR4, there was no read for the
-/// *session* — only for its rows — so the board held whatever a call last
-/// handed it and could not discover a change by itself. `AppModel.refreshAutoDev`
-/// re-read the **rows** and re-adopted them onto the session the board already
-/// had, which could never notice that session's own `state` had moved on; and
-/// ⚠️ **nothing called it in earlier builds**, so it was a poll-shaped seam with
-/// no caller. Meanwhile `AppModel.autoDevRefusal` answers *"A session is already
-/// going. Stop it before starting another."* for any state that is not
-/// `.finished`. Therefore:
+/// ⛔ **Two obligations on a conformer.** Both are discharged today; both are
+/// written here rather than in the implementation, because they bind the *next*
+/// conformer just as much, and each was once a dead end for the reader with no
+/// remedy wired. There was no read for the *session* — only for its rows — so
+/// the board held whatever a call last handed it and could not discover a change
+/// by itself. `AppModel.refreshAutoDev` re-read the **rows** and re-adopted them
+/// onto the session the board already had, which could never notice that
+/// session's own `state` had moved on; and ⚠️ **nothing called it**, so it was a
+/// poll-shaped seam with no caller. Meanwhile `AppModel.autoDevRefusal` answers
+/// *"A session is already going. Stop it before starting another."* for any
+/// state that is not `.finished`. Therefore:
 ///
 /// 1. **A loop that reaches its own end must make that observable.** Left to
 ///    itself the board shows `.running` for ever and refuses every new session
-///    for the rest of the launch. PR4 discharges this with ``session(sessionID:)``
-///    below — the read this doc used to say the protocol would need to grow —
-///    plus a poll in `AppModel.start()` that calls `refreshAutoDev()` on a
-///    timer, unconditionally, not scoped to any window: the whole point of an
-///    unattended session is that nobody may be looking at Operations while it
-///    runs, and the refusal that gates a *new* session has to see the old one
-///    end whether or not anyone opens that screen.
+///    for the rest of the launch. ``session(sessionID:)`` below is the read that
+///    discharges it, plus a poll in `AppModel.start()` that calls
+///    `refreshAutoDev()` on a timer, unconditionally, not scoped to any window:
+///    the whole point of an unattended session is that nobody may be looking at
+///    Operations while it runs, and the refusal that gates a *new* session has
+///    to see the old one end whether or not anyone opens that screen.
 /// 2. **`stop` must return the finished session, including when the session was
 ///    already finished.** Answering `nil` there is a reasonable-*looking*
 ///    implementation and it is the trap: the reader is told *"Auto-dev did not

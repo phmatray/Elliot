@@ -114,6 +114,47 @@ struct AutoDevLaunchOrderShapeTests {
         )
     }
 
+    /// The wire that releases a held merge, and the one piece of it no
+    /// behavioural test in this repository can reach.
+    ///
+    /// `PRWatcher` refreshing a queued merge's reading and asking the queue to
+    /// reconsider is held by `HeldMergeDrainTests` (`ElliotEngineTests`);
+    /// `RunScheduler.reconsiderQueue()` draining is held by the same file's
+    /// end-to-end case. **The value that travels between them is this one line**,
+    /// and deleting it leaves both halves green while the app quietly goes back
+    /// to holding an admissible merge until its session's patience expires and
+    /// cancels it. That gap — both halves held, the wiring between them not — is
+    /// the shape `PRWatcher.sessionProbe` was already caught in.
+    @Test("The PR watcher is given the scheduler to re-drain, after the launch sweep")
+    func watcherIsGivenTheQueueToReconsider() throws {
+        let body = try startBody()
+        #expect(!body.isEmpty, "start() not found — this test's parser needs updating, not deleting")
+
+        let sweep = body.range(of: "await reconciler.sweep()")
+        let wiring = body.range(of: "watcher.setQueueReconsidering(scheduler)")
+        #expect(
+            sweep != nil,
+            "start() no longer sweeps with the reconciler — has it moved, or been renamed?")
+        #expect(
+            wiring != nil,
+            """
+            start() no longer hands the PR watcher the scheduler to re-drain. A merge refused with \
+            `.mergeVerdictNotEstablished` is released by nothing else: the reading behind it goes \
+            stale on a clock nobody rings and becomes current again only when the watcher writes a \
+            fresh PRStatus row. Without this line the refusal's own sentence — "the merge starts as \
+            soon as a current reading says the pull request is green" — is a promise with no keeper.
+            """)
+        guard let sweep, let wiring else { return }
+        #expect(
+            sweep.upperBound < wiring.lowerBound,
+            """
+            the PR watcher is given the queue before the launch sweep returns — the sweep re-launches \
+            runs that only got as far as `.queued`, so a drain triggered ahead of it decides \
+            admission against a queue the sweep has not finished rebuilding
+            """
+        )
+    }
+
     /// The one place the wiring is deliberately split across the sweep: the
     /// actor itself costs nothing to build and needs nothing the sweep
     /// produces, so it is constructed early, beside `analysisService` — but

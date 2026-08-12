@@ -112,18 +112,19 @@ public enum AutoDevPolicy {
                     + "session can run.")
 
         case .unknownMethod(let id):
-            // Per-repository, not per-card: `evaluateMove` blocks every transition on this one
-            // (`RuleEngine.swift:311`), including the ones that run nothing, so every card in the
-            // session fails identically. Belongs beside `repoDisabled`/`repoBlocked`.
+            // Per-repository, not per-card: `evaluateMove` blocks every transition on this one —
+            // its `if case .unknown(let id) = context.method` arm, which sits above the transition
+            // switch — including the ones that run nothing, so every card in the session fails
+            // identically. Belongs beside `repoDisabled`/`repoBlocked`.
             return .abortSession(
                 reason: "The repository declares method \"\(id)\", which this build's catalogue "
                     + "does not carry, so nothing in this session can run.")
 
         case .methodHasNoStep(let method, let kind):
-            // Per-transition, and explicitly not a defect (`RuleEngine.swift:375-379` — the
-            // shipped BMAD pack carries no steps at all, GSD declares only its first). Another
-            // card in the same repository, at another column, may still move, so this settles the
-            // one card rather than aborting the whole session.
+            // Per-transition, and explicitly not a defect — see `MoveBlock.methodHasNoStep`'s own
+            // doc comment: the shipped BMAD pack carries no steps at all, GSD declares only its
+            // first. Another card in the same repository, at another column, may still move, so
+            // this settles the one card rather than aborting the whole session.
             return .settle(
                 .blocked,
                 reason: "The \(method) method declares no step for \(kind), so this card cannot "
@@ -170,7 +171,7 @@ public enum AutoDevPolicy {
             }
 
         case .notClean(let merge):
-            // Verified against `PRStatus.sign(ci:merge:review:)` (`PRStatus.swift:309-319`) rather
+            // Verified against `PRStatus.sign(ci:merge:review:)` itself rather
             // than assumed: `.unstable` is the only `MergeState` that can reach this arm with
             // `sign == nil` — every other value signs on its own before `merge` is asked whether
             // it is `.clean` (`.conflict` → `.conflict`; `.blocked`/`.behind` → `.mergeBlocked`;
@@ -180,7 +181,8 @@ public enum AutoDevPolicy {
             //
             // `mergeStateWord(merge)` below, not `merge.code`: that computed property is
             // documented as a "stable identifier surfaced to MCP callers" and is already read off
-            // the wire once, at `ElliotIPC/Protocol.swift:556` — a frozen wire token, not display
+            // the wire once, by `ElliotIPC`'s `PRStatusDTO.init(_:resolved:)` — a frozen wire
+            // token, not display
             // prose, and this sentence must stay free to be improved without silently changing
             // what an agent matches on there.
             return waiting(
