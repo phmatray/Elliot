@@ -1,0 +1,1726 @@
+[
+ {
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+   "protocolVersion": 1,
+   "agentCapabilities": {
+    "_meta": {
+     "claudeCode": {
+      "promptQueueing": true
+     }
+    },
+    "promptCapabilities": {
+     "image": true,
+     "embeddedContext": true
+    },
+    "mcpCapabilities": {
+     "http": true,
+     "sse": true
+    },
+    "auth": {
+     "logout": {}
+    },
+    "providers": {},
+    "loadSession": true,
+    "sessionCapabilities": {
+     "additionalDirectories": {},
+     "close": {},
+     "delete": {},
+     "fork": {},
+     "list": {},
+     "resume": {}
+    }
+   },
+   "agentInfo": {
+    "name": "@agentclientprotocol/claude-agent-acp",
+    "title": "Claude Agent",
+    "version": "0.66.0"
+   },
+   "authMethods": [],
+   "_meta": {
+    "steering": {
+     "supported": true
+    },
+    "goal": {
+     "version": 1,
+     "controlMethod": "_session/goal",
+     "actions": [
+      "set",
+      "clear"
+     ]
+    }
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "modes": {
+    "currentModeId": "default",
+    "availableModes": [
+     {
+      "id": "auto",
+      "name": "Auto",
+      "description": "Use a model classifier to approve/deny permission prompts"
+     },
+     {
+      "id": "default",
+      "name": "Manual",
+      "description": "Standard behavior, prompts for dangerous operations"
+     },
+     {
+      "id": "acceptEdits",
+      "name": "Accept Edits",
+      "description": "Auto-accept file edit operations"
+     },
+     {
+      "id": "plan",
+      "name": "Plan Mode",
+      "description": "Planning mode, no actual tool execution"
+     },
+     {
+      "id": "dontAsk",
+      "name": "Don't Ask",
+      "description": "Don't prompt for permissions, deny if not pre-approved"
+     },
+     {
+      "id": "bypassPermissions",
+      "name": "Bypass Permissions",
+      "description": "Bypass all permission checks"
+     }
+    ]
+   },
+   "configOptions": [
+    {
+     "id": "mode",
+     "name": "Mode",
+     "description": "Session permission mode",
+     "category": "mode",
+     "type": "select",
+     "currentValue": "default",
+     "options": [
+      {
+       "value": "auto",
+       "name": "Auto",
+       "description": "Use a model classifier to approve/deny permission prompts"
+      },
+      {
+       "value": "default",
+       "name": "Manual",
+       "description": "Standard behavior, prompts for dangerous operations"
+      },
+      {
+       "value": "acceptEdits",
+       "name": "Accept Edits",
+       "description": "Auto-accept file edit operations"
+      },
+      {
+       "value": "plan",
+       "name": "Plan Mode",
+       "description": "Planning mode, no actual tool execution"
+      },
+      {
+       "value": "dontAsk",
+       "name": "Don't Ask",
+       "description": "Don't prompt for permissions, deny if not pre-approved"
+      },
+      {
+       "value": "bypassPermissions",
+       "name": "Bypass Permissions",
+       "description": "Bypass all permission checks"
+      }
+     ]
+    },
+    {
+     "id": "model",
+     "name": "Model",
+     "description": "AI model to use",
+     "category": "model",
+     "type": "select",
+     "currentValue": "opus[1m]",
+     "options": [
+      {
+       "value": "default",
+       "name": "Default (recommended)",
+       "description": "Opus 5 with 1M context \u00b7 Best for everyday, complex tasks"
+      },
+      {
+       "value": "opus[1m]",
+       "name": "Opus (1M context)",
+       "description": "Opus 5 with 1M context \u00b7 Best for everyday, complex tasks"
+      },
+      {
+       "value": "claude-fable-5[1m]",
+       "name": "Fable",
+       "description": "Fable 5 \u00b7 Most capable for your hardest and longest-running tasks"
+      },
+      {
+       "value": "sonnet",
+       "name": "Sonnet",
+       "description": "Sonnet 5 \u00b7 Efficient for routine tasks"
+      },
+      {
+       "value": "haiku",
+       "name": "Haiku",
+       "description": "Haiku 4.5 \u00b7 Fastest for quick answers"
+      }
+     ]
+    },
+    {
+     "id": "effort",
+     "name": "Effort",
+     "description": "Available effort levels for this model",
+     "category": "thought_level",
+     "type": "select",
+     "currentValue": "xhigh",
+     "options": [
+      {
+       "value": "default",
+       "name": "Default"
+      },
+      {
+       "value": "low",
+       "name": "Low"
+      },
+      {
+       "value": "medium",
+       "name": "Medium"
+      },
+      {
+       "value": "high",
+       "name": "High"
+      },
+      {
+       "value": "xhigh",
+       "name": "Xhigh"
+      },
+      {
+       "value": "max",
+       "name": "Max"
+      }
+     ]
+    },
+    {
+     "id": "fast",
+     "name": "Fast mode",
+     "description": "Faster responses on supported models",
+     "category": "model_config",
+     "type": "select",
+     "currentValue": "off",
+     "options": [
+      {
+       "value": "on",
+       "name": "On"
+      },
+      {
+       "value": "off",
+       "name": "Off"
+      }
+     ]
+    },
+    {
+     "id": "agent",
+     "name": "Agent",
+     "description": "Main-thread agent persona",
+     "type": "select",
+     "currentValue": "default",
+     "options": [
+      {
+       "value": "default",
+       "name": "Default",
+       "description": "Standard Claude Code agent"
+      },
+      {
+       "value": "stripe:Company Researcher",
+       "name": "stripe:Company Researcher",
+       "description": "Research a company from its URL or description to infer Stripe Connect integration shape"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "available_commands_update",
+    "availableCommands": [
+     {
+      "name": "cua-driver-rs",
+      "description": "Drive a native GUI app (macOS, Windows, Linux) via the cua-driver CLI (default) or MCP server \u2014 snapshot its accessibility tree, click/type/scroll by element_index or pixel coords, verify via re-snapshot, all without bringing the target to the foreground. Use when the user asks you to operate, drive, automate, or perform a GUI task in a real application on the host. (user)",
+      "input": null
+     },
+     {
+      "name": "elon-review",
+      "description": "Use when the user requests a code review with technical and business recommendations. On-demand review combining Elon Musk's first-principles thinking with structured diff analysis, observability, and broader architecture assessment. Trigger this skill whenever the user asks for an \"elon review\", \"elon style\", \"musk review\", \"first principles review\", \"business value review\", or wants to know if a feature should exist, if the code could be 10x simpler, what to delete, or what the opportunity cost is. Also trigger when reviewing architecture decisions, velocity concerns, or anything where both technical rigor AND business context matter. (user)",
+      "input": null
+     },
+     {
+      "name": "jobs-review",
+      "description": "Use when the user requests a code review focused on design quality, developer experience, and product vision. On-demand Steve Jobs persona review evaluating API elegance, error messages, documentation, simplicity, and whether the product deserves to exist. Trigger this skill whenever the user asks for a \"jobs review\", \"jobs style\", \"steve jobs review\", \"design review\", \"DX review\", \"developer experience review\", or wants to know how their API feels, whether the naming is elegant, if the onboarding is smooth, or if the product has taste. Also trigger when reviewing error messages, documentation quality, or anything where the human experience of using the code matters. (user)",
+      "input": null
+     },
+     {
+      "name": "legends-review",
+      "description": "Use when the user wants a comprehensive code review from multiple perspectives, or invokes a team-based review combining business, design, and engineering viewpoints with debate and consensus. Trigger this skill whenever the user asks for a \"legends review\", \"team review\", \"full review\", \"review from all angles\", or wants business + design + engineering perspectives debated together. Also trigger when the user wants Elon, Jobs, AND Linus to review the same code, or asks for a multi-perspective review with debate and consensus. ALSO the home of the suite's shared report layer \u2014 trigger to render, regenerate, or merge existing review reports (\"regenerate the review report\", \"combine the reviews\", \"make an HTML report from this report.json\"): the schema reference and generator used by the solo elon/jobs/linus reviews are bundled here (references/report-format.md, scripts/generate_report.py). This is the flagship skill \u2014 use it when no single persona is enough. (user)",
+      "input": null
+     },
+     {
+      "name": "linus-review",
+      "description": "Use when the user requests a code review focused on engineering correctness, code quality, and technical rigor. On-demand Linus Torvalds persona review evaluating abstractions, error handling, security, logging/observability, performance, and whether the code is actually good. Trigger this skill whenever the user asks for a \"linus review\", \"linus style\", \"engineering review\", \"correctness review\", \"technical review\", deep code quality analysis, or wants to know if their code is actually correct, thread-safe, or maintainable. Also trigger when reviewing error handling, DI patterns, race conditions, or anything where rigorous engineering scrutiny is needed. (user)",
+      "input": null
+     },
+     {
+      "name": "deep-research",
+      "description": "Deep research harness \u2014 fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report. (dynamic workflow)",
+      "input": null
+     },
+     {
+      "name": "commit-commands:clean_gone",
+      "description": "(commit-commands) Cleans up all git branches marked as [gone] (branches that have been deleted on the remote but still exist locally), including removing associated worktrees.",
+      "input": null
+     },
+     {
+      "name": "commit-commands:commit-push-pr",
+      "description": "(commit-commands) Commit, push, and open a PR",
+      "input": null
+     },
+     {
+      "name": "commit-commands:commit",
+      "description": "(commit-commands) Create a git commit",
+      "input": null
+     },
+     {
+      "name": "stripe:explain-error",
+      "description": "(stripe) Explain Stripe error codes and provide solutions with code examples",
+      "input": {
+       "hint": "error_code or error_message"
+      }
+     },
+     {
+      "name": "stripe:test-cards",
+      "description": "(stripe) Display Stripe test card numbers for various testing scenarios",
+      "input": {
+       "hint": "scenario"
+      }
+     },
+     {
+      "name": "ai-migration-kit:migrate-assess",
+      "description": "(AI Migration Kit) Read-only legacy audit \u2014 inventory, diagnostics, risk map, recommended target (no code changes)",
+      "input": {
+       "hint": "path-to-solution"
+      }
+     },
+     {
+      "name": "ai-migration-kit:migrate-audit",
+      "description": "(AI Migration Kit) Read-only executive audit \u2014 costed effort, risks, recommended target; multiple apps \u2192 portfolio synthesis",
+      "input": {
+       "hint": "app-dir ..."
+      }
+     },
+     {
+      "name": "ai-migration-kit:migrate-followups",
+      "description": "(AI Migration Kit) Consolidate the migrated repos' open follow-ups (owner decisions, tasks, deferrals) and update them at the source",
+      "input": {
+       "hint": "repo-dir ..."
+      }
+     },
+     {
+      "name": "ai-migration-kit:migrate-verify",
+      "description": "(AI Migration Kit) Re-runnable final quality gate for a migrated app \u2014 clean build, tests, diagnostics vs baseline, report",
+      "input": {
+       "hint": "path-to-solution"
+      }
+     },
+     {
+      "name": "ai-migration-kit:migrate",
+      "description": "(AI Migration Kit) Run the full seven-phase legacy upgrade pipeline (assess \u2192 verified production) powered by RoselineMCP",
+      "input": {
+       "hint": "path-to-solution"
+      }
+     },
+     {
+      "name": "frontend-design:frontend-design",
+      "description": "(frontend-design) Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults.",
+      "input": null
+     },
+     {
+      "name": "skill-creator:skill-creator",
+      "description": "(skill-creator) Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.",
+      "input": null
+     },
+     {
+      "name": "superpowers:brainstorming",
+      "description": "(superpowers) You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.",
+      "input": null
+     },
+     {
+      "name": "superpowers:dispatching-parallel-agents",
+      "description": "(superpowers) Use when facing 2+ independent tasks that can be worked on without shared state or sequential dependencies",
+      "input": null
+     },
+     {
+      "name": "superpowers:executing-plans",
+      "description": "(superpowers) Use when you have a written implementation plan to execute in a separate session with review checkpoints",
+      "input": null
+     },
+     {
+      "name": "superpowers:finishing-a-development-branch",
+      "description": "(superpowers) Use when implementation is complete, all tests pass, and you need to decide how to integrate the work",
+      "input": null
+     },
+     {
+      "name": "superpowers:receiving-code-review",
+      "description": "(superpowers) Use when receiving code review feedback, before implementing suggestions, especially if feedback seems unclear or technically questionable - requires technical rigor and verification, not performative agreement or blind implementation",
+      "input": null
+     },
+     {
+      "name": "superpowers:requesting-code-review",
+      "description": "(superpowers) Use when completing tasks, implementing major features, or before merging to verify work meets requirements",
+      "input": null
+     },
+     {
+      "name": "superpowers:subagent-driven-development",
+      "description": "(superpowers) Use when executing implementation plans with independent tasks in the current session",
+      "input": null
+     },
+     {
+      "name": "superpowers:systematic-debugging",
+      "description": "(superpowers) Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes",
+      "input": null
+     },
+     {
+      "name": "superpowers:test-driven-development",
+      "description": "(superpowers) Use when implementing any feature or bugfix, before writing implementation code",
+      "input": null
+     },
+     {
+      "name": "superpowers:using-git-worktrees",
+      "description": "(superpowers) Use when starting feature work that needs isolation from current workspace or before executing implementation plans - ensures an isolated workspace exists via native tools or git worktree fallback",
+      "input": null
+     },
+     {
+      "name": "superpowers:using-superpowers",
+      "description": "(superpowers) Use when starting any conversation - establishes how to find and use skills, requiring skill invocation before ANY response including clarifying questions",
+      "input": null
+     },
+     {
+      "name": "superpowers:verification-before-completion",
+      "description": "(superpowers) Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always",
+      "input": null
+     },
+     {
+      "name": "superpowers:writing-plans",
+      "description": "(superpowers) Use when you have a spec or requirements for a multi-step task, before touching code",
+      "input": null
+     },
+     {
+      "name": "superpowers:writing-skills",
+      "description": "(superpowers) Use when creating new skills, editing existing skills, or verifying skills work before deployment",
+      "input": null
+     },
+     {
+      "name": "stripe:connect-recommend",
+      "description": "(stripe) Use this skill when the user asks about Stripe Connect configuration, charge patterns, Dashboard access, or how to get started with Connect, is building a marketplace, platform, multi-vendor store, gig platform, or subscription platform, needs to pay out sellers, vendors, or providers, mentions split payments, revenue sharing, multi-party payments, or similar payment distribution concepts, provides a company URL or business description for a recommendation, builds SaaS that routes money between parties (for example, POS, booking, invoicing \u2014 not operational SaaS without payment routing), asks about onboarding or KYC for merchants, sellers, and vendors, mentions connected account Dashboard or responsibility configurations, or asks about payment flows, white-label payments, or embedded payments.",
+      "input": null
+     },
+     {
+      "name": "stripe:stripe-apps",
+      "description": "(stripe) Use when building, modifying, or reviewing a Stripe App \u2014 or when the user describes something that implies one (e.g. \"add a panel to the customer page\", \"customize my Stripe Dashboard\", \"react to Stripe events from my app\", \"connect my service to Stripe without sharing API keys\"). Covers the full app development workflow (scaffold, preview, upload, versioning), UI extension architecture (sandboxed iframe, Stripe UI toolkit, viewports), extension types (UI extensions, backend-only, extension interfaces, embedded apps), authentication (platform keys, OAuth, restricted API keys), stripe-app.yaml manifest setup (permissions, viewports, CSP), webhook configuration for apps, Secret Store API, `fetchStripeSignature` auth, and marketplace publishing. Use when the user mentions Stripe Apps, UI extensions, @stripe/ui-extension-sdk, stripe-app.yaml, Dashboard extensions, or customizing the Stripe Dashboard.",
+      "input": null
+     },
+     {
+      "name": "stripe:stripe-best-practices",
+      "description": "(stripe) Guides Stripe integration decisions across API selection (Checkout Sessions vs PaymentIntents), Connect platform setup (Accounts v2, controller properties), billing/subscriptions, tax and registrations (Stripe Tax, automatic_tax, product tax codes), Treasury financial accounts, integration options (Checkout, Payment Element), migrating from deprecated Stripe APIs, and security best practices (API key management, restricted keys, webhooks, OAuth). Use when building, modifying, or reviewing any Stripe integration, including accepting payments, building marketplaces, integrating Stripe, processing payments, setting up subscriptions, collecting sales tax, VAT, or GST, creating connected accounts, or implementing secure key handling.",
+      "input": null
+     },
+     {
+      "name": "stripe:stripe-directory",
+      "description": "(stripe) Use when the user wants to find businesses, software, service providers, or partners for a specific industry, workflow, pain point, capability, or job to be done. Also use when the agent needs to programmatically purchase or consume a service. Use Stripe Directory to build a short relevant shortlist, even if the user does not mention Stripe Directory explicitly.",
+      "input": null
+     },
+     {
+      "name": "stripe:stripe-docs",
+      "description": "(stripe) Use when the user or agent needs to read, search, or look up Stripe documentation or API reference. Prefer this over curl or WebFetch for any docs.stripe.com content.",
+      "input": null
+     },
+     {
+      "name": "stripe:stripe-projects",
+      "description": "(stripe) Use when the user wants to provision infrastructure or third-party services using Stripe Projects. Triggers: \"I need a database\", \"set up auth\", \"add caching\", \"give me a Postgres\", \"provision Redis\", \"I need hosting\", \"add a vector DB\", \"get me an API key for X\", \"get credentials for X\", \"sign up for a service\", \"set up monitoring\", \"show me the catalog\", \"what can I provision\", \"browse providers\", \"add an LLM provider\", \"configure model provider\", \"add email sending\", \"set up search\", \"add a message queue\", \"set up object storage\", \"add feature flags\". Also trigger when the user asks how to get an API key or credentials for any third-party service \u2014 don't tell them to sign up manually; check the Projects catalog first. Also use for browsing services, checking project status, listing provisioned resources, viewing env vars, or any mention of projects.dev or adding/provisioning/connecting a cloud service.",
+      "input": null
+     },
+     {
+      "name": "stripe:upgrade-stripe",
+      "description": "(stripe) Guide for upgrading Stripe API versions and SDKs",
+      "input": null
+     },
+     {
+      "name": "arbor:arbor-agent-coordinator",
+      "description": "(arbor) Coordinator phase for Arbor: persistent ReAct loop, Idea Tree state, INIT/OBSERVE/IDEATE/SELECT/DISPATCH/DECIDE protocol, tool mapping, cycle caps, and coordinator-only behavior. Use after setup/intake and before phase-specific ideation, executor, merge, search, or report skills.",
+      "input": null
+     },
+     {
+      "name": "arbor:arbor-agent-executor",
+      "description": "(arbor) Executor-dispatch phase for Arbor. Use when implementing an Idea Tree node through RunExecutor or RunExecutorParallel semantics: isolated git worktree, executor prompt construction, eval metadata injection, RunTraining policy, smoke/full evaluation, report parsing, artifact persistence, tree update, and insight propagation.",
+      "input": null
+     },
+     {
+      "name": "arbor:arbor-agent-ideate",
+      "description": "(arbor) Strict IDEATE-stage skill for Arbor. Use immediately after TreeView(format=\"constraints\") when drafting Idea Tree nodes, enforcing the idea_drafting and first_principles_probe behavior, depth-aware idea levels, four-line TreeAddNode hypotheses, conflict checks, and self-filtering against shallow tweaks.",
+      "input": null
+     },
+     {
+      "name": "arbor:arbor-agent-merge-eval",
+      "description": "(arbor) Merge and evaluation discipline for Arbor. Use for TreeSetMeta metadata, B_dev/B_test separation, eval command templates, score parsing, GitMergeBranch behavior, protected paths, required outputs, metric_direction, trunk/test score updates, medal detection, and final evaluation before stopping.",
+      "input": null
+     },
+     {
+      "name": "arbor:arbor-agent-orchestrator",
+      "description": "(arbor) Top-level controller for recreating the open-source AutoResearch workflow as a suite of skills. Use when the user asks to run, emulate, extract, validate, or refine Arbor/AutoResearch behavior, especially when a coordinator must load phase skills for setup, ideation, executors, merge evaluation, novelty search, plugins, resume, and reports.",
+      "input": null
+     },
+     {
+      "name": "arbor:arbor-agent-plugins-hitl-budget",
+      "description": "(arbor) Domain adaptation, human-in-the-loop, and budget policy phase for Arbor. Use when a run mentions plugins, plugin profiles, mle_kaggle, eval_contract, protected_paths, required_outputs, lifecycle hooks, convergence, budget_policy, RunTraining stages, AskUser, or interaction modes auto/direction/review/collaborative.",
+      "input": null
+     },
+     {
+      "name": "arbor:arbor-agent-resume-report",
+      "description": "(arbor) Resume, checkpoint, event, dashboard, finalization, and report phase for Arbor. Use when continuing interrupted sessions, handling running-node requeue, writing checkpoints/messages, consuming events.jsonl/run_stats, recovering best submissions, generating REPORT.md, or summarizing durable artifacts.",
+      "input": null
+     },
+     {
+      "name": "arbor:arbor-agent-search",
+      "description": "(arbor) Related-work and novelty annotation phase for Arbor. Use after a node has been experimentally validated, especially before merge decisions, to emulate SearchIdeaContext/SearchIdeaContextParallel/SearchStatus, validated-node gating, background SearchAgent behavior, and structured prior-art summaries.",
+      "input": null
+     },
+     {
+      "name": "arbor:arbor-agent-setup-intake",
+      "description": "(arbor) Setup, intake, preflight, and launch-contract phase for open-source Arbor runs. Use when confirming a target project, metric, baseline, dev/test split, config/plugin settings, branch guard, session directory, or when translating a user goal into the precise contract consumed by the coordinator.",
+      "input": null
+     },
+     {
+      "name": "arbor:arbor-agent-tools",
+      "description": "(arbor) Deterministic helper layer for emulating Arbor tools in Codex or Claude Code when native TreeView, TreeAddNode, TreeSetMeta, RunExecutor, GitMergeBranch, or report tooling is unavailable. Use for local state management, eval score capture, executor prompt generation, merge checks, and skill forward tests.",
+      "input": null
+     },
+     {
+      "name": "arbor:arbor-research-agent",
+      "description": "(arbor) Public entrypoint for the Arbor skill suite. Use when a user wants to run an Arbor-style autonomous research or optimization workflow from a natural-language goal, including initial clarification of objective, target project, data, metric, evaluation, permissions, budget, run mode, and then automatic bootstrapping into arbor-agent-orchestrator and phase skills.",
+      "input": null
+     },
+     {
+      "name": "agent-skills:blazor-best-practices",
+      "description": "(Agent Skills) Performance and rendering optimization guide for Blazor .NET 10 applications. Use when reviewing or generating Blazor code for performance issues, component lifecycle, render modes, and resource disposal.",
+      "input": null
+     },
+     {
+      "name": "agent-skills:codebase-memory",
+      "description": "(Agent Skills) Use the codebase knowledge graph for structural code queries. Triggers on: explore the codebase, understand the architecture, what functions exist, show me the structure, who calls this function, what does X call, trace the call chain, find callers of, show dependencies, impact analysis, dead code, unused functions, high fan-out, refactor candidates, code quality audit, graph query syntax, Cypher query examples, edge types, how to use search_graph.",
+      "input": null
+     },
+     {
+      "name": "agent-skills:web-design-guidelines",
+      "description": "(Agent Skills) Review UI code for Web Interface Guidelines compliance. Use when asked to \"review my UI\", \"check accessibility\", \"audit design\", \"review UX\", or \"check my site against best practices\".",
+      "input": null
+     },
+     {
+      "name": "github-skills:ghs-action-fix",
+      "description": "(GitHub Skills) Fix failing GitHub Actions pipelines directly \u2014 detects broken workflows, reads run logs, diagnoses root causes, applies fixes in worktrees, and creates PRs. No prior repo scan or backlog required. Use this skill whenever the user wants to fix CI, repair a pipeline, debug Actions failures, or says things like \"fix my pipeline\", \"fix CI\", \"my actions are failing\", \"fix my workflows\", \"repair my build\", \"CI is broken\", \"fix GitHub Actions\", \"debug my workflow\", \"why is my build failing\", or \"action fix\". Do NOT use for scanning repos (use ghs-repo-scan), applying backlog items (use ghs-backlog-fix), or merging PRs (use ghs-merge-prs).",
+      "input": {
+       "hint": "[owner/repo] [--workflow <name>]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-backlog-board",
+      "description": "(GitHub Skills) Shows a dashboard of all backlog items across all audited repositories \u2014 health scores, open issues, progress, and what to work on next. Use this skill whenever the user wants to see backlog status, check progress across repos, find the next item to fix, or asks things like \"show backlog\", \"what's left to fix\", \"backlog status\", \"dashboard\", \"show all repos\", \"remaining items\", \"how are my repos doing\", or \"progress report\". Also trigger when the user says \"list backlog\", \"show findings\", \"show issues\", or just \"backlog\". Do NOT use for scanning new repos (use ghs-repo-scan), applying fixes (use ghs-backlog-fix), or reviewing code. For quick \"what should I work on next?\" queries, prefer ghs-backlog-next instead.",
+      "input": {
+       "hint": "[--sort score|progress|name]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-backlog-fix",
+      "description": "(GitHub Skills) Applies backlog item fixes to a GitHub repository using parallel worktree-based agents \u2014 clones the repo once, creates git worktrees for each fix, launches agents simultaneously, verifies acceptance criteria, and creates PRs. Uses dependency-aware wave execution to prevent conflicts between related items and recalculates health scores after each wave for incremental progress. Persists session state for multi-session continuity. Use this skill whenever the user wants to apply, fix, or resolve a backlog item, references a project item, or says things like \"apply this backlog item\", \"fix this issue\", \"resolve this finding\", \"work on this backlog item\", \"apply tier-1--license\", or references an item in a GitHub Project. Also trigger when the user says \"apply all backlog items\", \"fix all findings\", \"resolve all tier 1 items\", or \"apply all for {repo}\". Do NOT use for scanning repos (use ghs-repo-scan), viewing backlog status (use ghs-backlog-board), or general code review.",
+      "input": {
+       "hint": "[owner/repo] [--item <slug>] [--tier 1|2|3] [--all] [--dry-run]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-backlog-next",
+      "description": "(GitHub Skills) Recommends the highest-impact next backlog item to fix across all audited repositories. Use this skill whenever the user wants a quick recommendation, asks \"what should I work on next\", \"next item\", \"what's the most important fix\", \"highest impact item\", \"what to fix next\", \"priority item\", \"next action\", or \"recommend something to fix\". Also trigger for \"what's next\" or just \"next\" in the context of backlog work. Do NOT use for full dashboards (use ghs-backlog-board), scanning repos (use ghs-repo-scan), or applying fixes directly (use ghs-backlog-fix).",
+      "input": {
+       "hint": "[owner/repo]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-backlog-score",
+      "description": "(GitHub Skills) Calculates and displays the health score for a repository from its backlog items. Use this skill whenever the user wants to see a repo's health score, check their score, recalculate after fixes, or says things like \"what's my score\", \"show score for {repo}\", \"health score\", \"recalculate score\", \"how healthy is my repo\", \"score check\", or \"points breakdown\". Do NOT use for full dashboards with issue lists (use ghs-backlog-board), scanning repos (use ghs-repo-scan), or applying fixes (use ghs-backlog-fix).",
+      "input": {
+       "hint": "[owner/repo]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-backlog-sync",
+      "description": "(GitHub Skills) Promotes draft health items in a GitHub Project to real GitHub Issues for team visibility. Creates issues from draft items in the Todo column with Source = Health Check, replaces drafts with linked issues in the project, and copies custom field values. Use this skill whenever the user wants to sync health findings to GitHub Issues, promote draft project items to real issues, create issues from health checks, push findings to GitHub, publish health items for the team, or says things like \"sync backlog\", \"create issues from health checks\", \"push findings to GitHub\", \"publish backlog\", \"sync health items\", \"sync findings to issues\", \"promote drafts\", or \"create GitHub issues from scan\". Do NOT use for scanning repos (use ghs-repo-scan), applying fixes (use ghs-backlog-fix), or viewing backlog (use ghs-backlog-board).",
+      "input": {
+       "hint": "[owner/repo] [--dry-run]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-dev-loop",
+      "description": "(GitHub Skills) Act as an autonomous developer for a repository \u2014 monitor for new/triaged issues, process them through the full development lifecycle (triage, analyze, implement, review, merge), handle health maintenance, dependency updates, and optional releases. Operates in cycles with human checkpoints for safety. Use this skill whenever the user wants a full developer loop, says things like \"dev loop\", \"be my developer\", \"autonomous developer\", \"work on my repo\", \"process all issues\", \"developer mode\", \"full dev loop\", \"maintain this repo\", \"handle everything\", \"automate development\", \"dev cycle\", \"work through issues\", \"run a dev cycle\", \"be my dev\", or \"take over this repo\". Do NOT use for single-skill operations \u2014 use the individual skill directly. Do NOT use for multi-repo pipelines \u2014 use ghs-orchestrate instead.",
+      "input": {
+       "hint": "[owner/repo] [--budget <N>] [--cycle single|continuous] [--include-health] [--include-deps]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-issue-analyze",
+      "description": "(GitHub Skills) Deep-analyze a GitHub issue by inspecting the codebase and post a structured analysis comment with feasibility, complexity, affected files, suggested approach, and effort estimate. Use this skill whenever the user wants to analyze an issue, understand an issue before implementing it, get a complexity estimate, or says things like \"analyze issue #42\", \"what would it take to fix #42\", \"assess this issue\", \"investigate issue #42\", \"how complex is issue #42\", \"issue analysis\", \"deep dive on issue #42\", or \"break down issue #42\". Do NOT use for triaging/labeling issues (use ghs-issue-triage), implementing issues (use ghs-issue-implement), or scanning repo health (use ghs-repo-scan).",
+      "input": {
+       "hint": "<owner/repo#number> | <issue-url>"
+      }
+     },
+     {
+      "name": "github-skills:ghs-issue-implement",
+      "description": "(GitHub Skills) Implement a GitHub issue using worktree-based agents, then create a PR. Clones the repo, creates a worktree, spawns an agent to implement the fix/feature, verifies the result, and opens a PR with auto-close references. For complex issues (High/Very High complexity from ghs-issue-analyze), automatically uses GSD framework for multi-phase planning and execution with wave-based parallelization, fresh context per task, and automated verification. Use this skill whenever the user wants to implement an issue, fix a bug from an issue, build a feature from an issue, or says things like \"implement issue #42\", \"fix issue #42\", \"implement #42\", \"build feature from issue #15\", \"implement all triaged issues\", \"implement all bugs\", \"work on issue #42\", \"code issue #42\", or describes work with no issue number like \"owner/repo refresh readme\" or \"owner/repo fix the broken badge\". Do NOT use for triaging/labeling issues (use ghs-issue-triage), analyzing issues (use ghs-issue-analyze), applying backlog health items (use ghs-backlog-fix), or scanning repos (use ghs-repo-scan).",
+      "input": {
+       "hint": "<owner/repo> <#number | free-form description> [--all-triaged] [--all-bugs]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-issue-triage",
+      "description": "(GitHub Skills) Verify and apply proper labels (type, priority, status) to GitHub issues \u2014 ensures a consistent label taxonomy exists on the repo, then classifies issues by type and priority. Use this skill whenever the user wants to label issues, triage issues, classify issues, organize issue labels, or says things like \"triage my issues\", \"label all issues\", \"triage issue #42\", \"classify open issues\", \"add labels to issues\", \"auto-triage\", \"triage all --auto\", or \"set up issue labels\". Do NOT use for analyzing issue implementation (use ghs-issue-analyze), implementing issues (use ghs-issue-implement), or scanning repo health (use ghs-repo-scan).",
+      "input": {
+       "hint": "[owner/repo] [--issue <number>] [--all] [--auto]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-merge-prs",
+      "description": "(GitHub Skills) Merges pull requests on a GitHub repository \u2014 your own PRs, Renovate/bot PRs, or all eligible PRs at once. Use this skill whenever the user wants to merge PRs, asks to \"merge my PRs\", \"merge renovate PRs\", \"merge all PRs\", \"merge PR #42\", \"clean up my pull requests\", \"merge and delete branches\", \"batch merge\", \"merge bot PRs\", \"merge dependency updates\", or anything related to merging open pull requests. Also trigger for \"merge all for {repo}\", \"squash merge renovate\", \"merge passing PRs\", or just \"merge\" in the context of pull request work. Do NOT use for creating PRs (use ghs-backlog-fix), reviewing code, or scanning repos (use ghs-repo-scan).",
+      "input": {
+       "hint": "[owner/repo] [--pr <number>] [--mine] [--renovate] [--all] [--dry-run]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-orchestrate",
+      "description": "(GitHub Skills) Run a full maintenance pipeline across repositories \u2014 update, scan, fix, review, merge, sync, and optionally release. Chains existing ghs-skills in sequence with human checkpoints before destructive stages, state issue-based resume, and dry-run mode. Use this skill whenever the user wants to orchestrate a pipeline, maintain repos end-to-end, or says things like \"orchestrate\", \"run pipeline\", \"maintain my repos\", \"full pipeline\", \"scan and fix all repos\", \"process all repos\", \"pipeline for {repo}\", \"run all skills\", \"maintenance run\", \"end-to-end maintenance\", or \"run the full workflow\". Do NOT use for single skill invocations \u2014 use the individual skill directly.",
+      "input": {
+       "hint": "[owner/repo...] [--stages pull,scan,fix,review,merge,sync,release] [--dry-run] [--resume]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-profile",
+      "description": "(GitHub Skills) Display a full 360-degree profile view of a GitHub user \u2014 profile info, repository portfolio, pinned repos, contribution stats, open work, organization memberships, and recent activity. Defaults to the authenticated user when no username is given. Use this skill whenever the user wants to see a GitHub profile, review their own activity, check someone's GitHub presence, or says things like \"show my profile\", \"github profile\", \"who is {user}\", \"show @me\", \"my github stats\", \"what repos does {user} have\", \"contribution summary\", \"profile overview\", \"show github activity for {user}\", \"360 view\", \"user summary\", or \"profile report\". Do NOT use for scanning repository health (use ghs-repo-scan), managing issues (use ghs-issue-triage), or fixing code (use ghs-backlog-fix).",
+      "input": {
+       "hint": "[username]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-project-init",
+      "description": "(GitHub Skills) Scaffold a new GitHub repository with all quality essentials to achieve a 100% health score from ghs-repo-scan. Creates the repo via `gh repo create`, generates all Tier 1/2/3 files tailored to the detected tech stack, configures repo settings via API, and verifies the result. For complex scaffolding (custom CI pipelines, monorepo setups), uses GSD framework for multi-phase execution. Use this skill whenever the user wants to create a new repo, scaffold a project, initialize a repository, bootstrap a project, or says things like \"init project\", \"create repo\", \"scaffold repository\", \"new project\", \"project init\", \"initialize repo\", \"set up new repo\", \"bootstrap project\", \"create a 100% repo\", \"start a new project\", or \"create a perfect repo\". Do NOT use for scanning existing repos (use ghs-repo-scan), fixing existing repos (use ghs-backlog-fix), or implementing issues (use ghs-issue-implement).",
+      "input": {
+       "hint": "<name> [--template <stack>] [--private] [--description <desc>]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-release",
+      "description": "(GitHub Skills) Create a GitHub Release with auto-generated changelog from merged PRs and conventional commits since the last release. Detects current version, determines the next semver bump, groups changes by type, and creates a tagged release with structured notes. Use this skill whenever the user wants to create a release, prepare a changelog, check what the next release would look like, or says things like \"create release\", \"release v1.2.0\", \"patch release\", \"what would the next release look like\", \"changelog\", \"prepare release\", \"draft release\", \"pre-release\", \"cut a release\", \"tag a release\", \"ship it\", or \"what changed since last release\". Do NOT use for merging PRs (use ghs-merge-prs), fixing backlog items (use ghs-backlog-fix), scanning repo health (use ghs-repo-scan), or managing GitHub Actions (use ghs-action-fix).",
+      "input": {
+       "hint": "[owner/repo] [--bump major|minor|patch] [--pre-release] [--dry-run]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-repo-scan",
+      "description": "(GitHub Skills) Scans a GitHub repository for quality essentials and open issues, produces a scored report, and saves all findings as items in a GitHub Project. Use this skill whenever the user wants to check repository quality, audit a repo's setup, see open issues organized as backlog, verify best practices are followed, or asks about missing files like README, LICENSE, CODEOWNERS, CI/CD, branch protection, templates, security policies, .editorconfig, or failing CI workflows. Also trigger when users say things like \"scan my repo\", \"is my repo set up properly\", \"what's missing from my project\", \"repo audit\", \"repo scan\", \"repository checklist\", \"health check\", \"what issues are open\", \"organize my issues\", \"save health report\", \"export audit results\", or \"create backlog from audit\". Do NOT use for managing GitHub Actions workflows, reviewing pull requests, creating repositories, or modifying code.",
+      "input": {
+       "hint": "[owner/repo]"
+      }
+     },
+     {
+      "name": "github-skills:ghs-repos-pull",
+      "description": "(GitHub Skills) Pull (update) all locally cloned repositories in the repos/ directory. Trigger: \"pull all repos\", \"update all repos\", \"git pull repos\", \"refresh repos\", \"sync repos\"",
+      "input": {
+       "hint": "(no arguments)"
+      }
+     },
+     {
+      "name": "github-skills:ghs-review-pr",
+      "description": "(GitHub Skills) Review a GitHub pull request by fetching the diff, analyzing code changes against the codebase, and posting a structured review comment with findings by severity. Use this skill whenever the user wants to review a PR, check code quality, or says things like \"review PR #42\", \"review my PRs\", \"code review\", \"check PR #42\", \"review all open PRs\", \"review PRs by renovate\", \"what does PR #42 change\", \"is PR #42 safe to merge\", \"review draft PRs\", or \"review ready PRs\". Do NOT use for merging PRs (use ghs-merge-prs), implementing issues (use ghs-issue-implement), or scanning repo health (use ghs-repo-scan).",
+      "input": {
+       "hint": "[owner/repo] [--pr <number>] [--all] [--author <name>]"
+      }
+     },
+     {
+      "name": "ai-migration-kit:create-issue",
+      "description": "(AI Migration Kit) Create a fully-seeded GitHub issue \u2014 don't settle for a bare `gh issue create`. Files a template-compliant issue whose DESCRIPTION carries a brainstorm \u2192 spec \u2192 implementation-plan trail (via the superpowers skills), turning a one-line idea into something a contributor can pick up cold. ALWAYS reach for this whenever the user wants to open, file, add, raise, create, log, or track a NEW issue / feature request / idea / ticket / backlog item \u2014 including loose phrasings like \"track this idea\", \"add an issue for X\", \"make a ticket\", \u00ab ouvre une issue pour X \u00bb, \u00ab cr\u00e9e un ticket pour \u00e7a \u00bb, and batches of several ideas at once. Use it even though you could file the issue yourself with `gh` \u2014 the whole point is the seeded brainstorm/spec/plan. Does NOT apply to managing EXISTING issues (commenting, closing, listing), or to standalone brainstorming/planning when there's no issue to file.",
+      "input": null
+     },
+     {
+      "name": "ai-migration-kit:followups",
+      "description": "(AI Migration Kit) Consolide et met \u00e0 jour les suivis ouverts des migrations (next_steps/deferred des migration/report.json + backlog du kit). Use whenever the user asks what remains open, wants a status of pending decisions or follow-ups across migrated repos, says a follow-up item is done, or decides to close/abandon one \u2014 triggers on \u00ab fais le point \u00bb, \u00ab qu'est-ce qui reste \u00bb, \u00ab suivis \u00bb, \u00ab c'est fait, coche-le \u00bb, \u00ab on ne le fera pas \u00bb, \"what's still open\", \"status of the follow-ups\", \"next steps\", \"mark it done\", \"we won't do that one\", /migrate-followups. Also run it at the end of every migration (phase 7) so the open tail stays current.",
+      "input": null
+     },
+     {
+      "name": "ai-migration-kit:get-repo-profile",
+      "description": "(AI Migration Kit) Generate or load the per-repo profile (`.claude/skills/repo-profile.md`) that the issue/PR lifecycle skills \u2014 `create-issue`, `implement-issue`, `merge-pr` \u2014 read for the repo-specific facts they would otherwise hardcode: commit identity, build/test/format commands, label taxonomy, merge style, conflict hot-spots, issue templates, architecture grain. Use when no profile exists yet, to PORT the lifecycle skills to a new repository, or to refresh after the toolchain, labels or CI changed \u2014 \"set up the repo profile\", \"make these skills work in my other repo\", \"regenerate the profile\", \u00ab configure le profil du repo \u00bb, \u00ab fais marcher create-issue dans ce repo \u00bb. First call inspects the repo (build system, CI, labels, templates, merge style) and writes the profile; later calls just read it back. Does NOT file issues, implement code, or merge PRs \u2014 it only produces the config those skills consume.",
+      "input": null
+     },
+     {
+      "name": "ai-migration-kit:implement-issue",
+      "description": "(AI Migration Kit) Do the actual coding for an existing GitHub issue and turn it into a finished pull request \u2014 the \"go build it\" counterpart to `create-issue`. Use whenever an issue carries an implementation plan (a `\ud83d\udee0\ufe0f Implementation plan` checklist) and the user wants it BUILT: isolated worktree, draft PR, then task-by-task implement \u2192 verify green \u2192 commit \u2192 tick the checkbox on the live issue, code review, sync with `main`, ready-flip. Triggers: \"implement issue 47\", \"knock out the tasks on issue 71\", \"execute the plan and mark the PR ready\", \"resume issue #X\", \u00ab impl\u00e9mente l'issue 47 \u00bb, \u00ab ex\u00e9cute le plan de l'issue \u00bb, or a bare issue link with \"go build it\" \u2014 including keeping the in-flight PR mergeable (sync/conflicts with `main`) while it is still being built. Does NOT apply to creating or planning a NEW issue (create-issue), to landing a finished PR (merge-pr), or to ad-hoc coding with no issue plan to drive it.",
+      "input": null
+     },
+     {
+      "name": "ai-migration-kit:legacy-upgrade",
+      "description": "(AI Migration Kit) Use when upgrading, migrating, or modernizing a legacy application \u2014 outdated target framework, out-of-support runtime, obsolete APIs, old packages, or legacy idioms. Triggers on \"upgrade this app\", \"migrate to .NET 10\", \"modernize this codebase\", \"this project targets an old framework\", \u00ab mets \u00e0 niveau cette app \u00bb, \u00ab migre vers .NET 10 \u00bb, \u00ab modernise ce code legacy \u00bb, /migrate, /migrate-assess, /migrate-verify. Drives a seven-phase, gate-verified pipeline \u2014 assessment through verified production \u2014 where RoselineMCP performs all C# analysis and code transformation.",
+      "input": null
+     },
+     {
+      "name": "ai-migration-kit:merge-pr",
+      "description": "(AI Migration Kit) Land an open GitHub pull request the way a careful maintainer would \u2014 the \"ship it\" counterpart to `implement-issue`. Use whenever the user wants to MERGE, land, ship, or close out an open PR: waits for CI, then applies corrections until mergeable \u2014 fixes red checks, merges the latest `main` and resolves conflicts, addresses unresolved review \u2014 squash-merges, triages follow-up work (inline `--follow-up \"\u2026\"` args plus ones discovered in the PR) by folding symptoms into the root issue that owns them and filing the rest via `create-issue`, and tears down the branch and worktree. Triggers: \"merge PR 279\", \"land #281\", \"ship this PR\", \"get that PR merged once CI's green\", \"wrap up 279 and open follow-ups\", \u00ab merge la PR 279 \u00bb, \u00ab fais atterrir la 281 \u00bb, or a bare PR link with \"merge it\". Does NOT apply to opening or implementing a PR, to syncing one still being built (implement-issue), to reviewing without merging (code-review), or to filing a standalone issue (create-issue).",
+      "input": null
+     },
+     {
+      "name": "elliot:elliot",
+      "description": "(Elliot \u2014 intendant du portefeuille) Elliot, l'intendant du portefeuille de d\u00e9p\u00f4ts GitHub de Philippe (comptes phmatray et Atypical-Consulting, ~343 d\u00e9p\u00f4ts, 251 clones locaux). Utilise cette skill d\u00e8s que le travail porte sur le portefeuille plut\u00f4t que sur un d\u00e9p\u00f4t isol\u00e9 \u2014 harmoniser plusieurs d\u00e9p\u00f4ts, industrialiser un process (release NuGet, CI, garde-fous, presets), lancer ou \u00e9crire un sweep, faire tomber un compteur, vider la file du board, ou d\u00e9cider quoi faire ensuite. D\u00e9clenche aussi d\u00e8s que Philippe dit \u00ab Elliot \u00bb, \u00ab prends ton poste \u00bb, \u00ab qu'est-ce qu'on fait maintenant \u00bb, \u00ab harmonise \u00bb, \u00ab industrialise \u00bb, \u00ab tous les d\u00e9p\u00f4ts qui\u2026 \u00bb, ou quand une session s'appr\u00eate \u00e0 toucher plusieurs d\u00e9p\u00f4ts \u00e0 la fois ou \u00e0 \u00e9crire un outil dans repo-audit. Elliot mesure avant d'agir, agit par PR sous oracle de build, et consigne son journal dans le board \u00e0 la fin de chaque t\u00e2che \u2014 y compris quand la t\u00e2che n'a rien produit.",
+      "input": null
+     },
+     {
+      "name": "last30days:last30days",
+      "description": "(last30days) Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web. Includes a doctor health check to diagnose broken or missing sources.",
+      "input": {
+       "hint": "last30days nvidia earnings reaction | last30days AI video tools | last30days what users want in react"
+      }
+     },
+     {
+      "name": "design-sync",
+      "description": "Push a React design system to claude.ai/design. This runs a converter that bundles the real component code (from Storybook or a bare package) and uploads it. Use when the user runs /design-sync or says \"sync my design system to Claude Design\".",
+      "input": {
+       "hint": "[<project hint, e.g. \"Acme DS\">]"
+      }
+     },
+     {
+      "name": "dataviz",
+      "description": "Use this skill whenever you are about to create ANY chart, graph, plot, dashboard, or data visualization, in ANY output medium \u2014 an HTML or React artifact, inline SVG, plotting code in any library (matplotlib, plotly, d3, Recharts, \u2026), an image/PNG you will render and upload, or a chart shared into Slack. Read it BEFORE writing the first line of chart code, choosing chart colors, building a stat tile / meter / KPI row, or laying out a dashboard. Produces visualizations that read as one system \u2014 elegant, accessible, consistent in light and dark \u2014 using a brand-neutral placeholder palette you swap for your own. Teaches a design-system-agnostic method: a form heuristic, a color formula with a runnable validator, mark specs, and interaction rules. A validated default palette is documented in `references/palette.md` \u2014 swap that file's values for your brand's. Triggers on: \"chart\", \"graph\", \"plot\", \"data viz\", \"visualization\", \"dashboard\", \"analytics\", \"visualize data\", \"categorical colors\", \"sequential / diverging palette\", \"stat tile\", \"sparkline\", \"heatmap\", \"legend\", \"axis\", \"tooltip\", \"chart colors\", \"color by series\".",
+      "input": null
+     },
+     {
+      "name": "update-config",
+      "description": "Use this skill to configure the Claude Code harness via settings.json. Automated behaviors (\"from now on when X\", \"each time X\", \"whenever X\", \"before/after X\") require hooks configured in settings.json - the harness executes these, not Claude, so memory/preferences cannot fulfill them. Also use for: permissions (\"allow X\", \"add permission\", \"move permission to\"), env vars (\"set X=Y\"), hook troubleshooting, or any changes to settings.json/settings.local.json files. Examples: \"allow npm commands\", \"add bq permission to global settings\", \"move permission to user settings\", \"set DEBUG=true\", \"when claude stops show X\". For simple settings like theme/model, suggest the /config command.",
+      "input": null
+     },
+     {
+      "name": "verify",
+      "description": "Verify that a code change actually does what it's supposed to by exercising it end-to-end and observing behavior \u2014 drive the affected flow, not just tests or typecheck. Run before committing nontrivial changes; bootstraps this repo's project verify skill if none exists yet. Don't invoke it on a diff that only touches tests, docs, or other code with no runtime surface to drive (a change to product source always has one) \u2014 there's nothing to observe.",
+      "input": null
+     },
+     {
+      "name": "debug",
+      "description": "Enable debug logging for this session and help diagnose issues",
+      "input": {
+       "hint": "[issue description]"
+      }
+     },
+     {
+      "name": "code-review",
+      "description": "Review the current diff for correctness bugs and reuse/simplification/efficiency cleanups at the given effort level (low/medium: fewer, high-confidence findings; high\u2192max: broader coverage, may include uncertain findings; ultra: deep multi-agent review in the cloud). Pass --comment to post findings as inline PR comments, or --fix to apply the findings to the working tree after the review.",
+      "input": {
+       "hint": "[low|medium|high|xhigh|max|ultra] [--fix] [--comment] [<target>]"
+      }
+     },
+     {
+      "name": "simplify",
+      "description": "Review the changed code for reuse, simplification, efficiency, and altitude cleanups, then apply the fixes. Quality only \u2014 it does not hunt for bugs; use /code-review for that.",
+      "input": {
+       "hint": "[<target>]"
+      }
+     },
+     {
+      "name": "batch",
+      "description": "Research and plan a large-scale change, then execute it in parallel across 5\u201330 isolated worktree agents that each open a PR.",
+      "input": {
+       "hint": "<instruction>"
+      }
+     },
+     {
+      "name": "fewer-permission-prompts",
+      "description": "Scan your transcripts for common read-only Bash and MCP tool calls, then add a prioritized allowlist to project .claude/settings.json to reduce permission prompts.",
+      "input": null
+     },
+     {
+      "name": "doctor",
+      "description": "Health-check the user's Claude Code setup and fix issues: diagnose installation health \u2014 what the `claude doctor` terminal diagnostics cover \u2014 from local data (duplicate or leftover installs, PATH, unparseable settings files, broken or colliding agent definitions); find unused skills, MCP servers, and plugins versus their context cost and disable dead weight; deduplicate local CLAUDE.md files against checked-in ones; trim checked-in CLAUDE.md files by cutting content a session could derive from the codebase (directory layouts, tech-stack lists, architecture overviews) while keeping gotchas, rationale, and non-standard conventions; migrate always-loaded CLAUDE.md guidance into lazy skills and nested CLAUDE.md files; flag slow hooks and context-heavy extensions; check the installed version is current; make auto mode the default permission mode; and pre-approve frequently denied read-only commands. Use when the user asks for a doctor run, checkup, audit, tune-up, or cleanup of their Claude Code setup or configuration.",
+      "input": null
+     },
+     {
+      "name": "loop",
+      "description": "Run a prompt or slash command on a recurring interval (e.g. /loop 5m /foo). Omit the interval to let the model self-pace.",
+      "input": {
+       "hint": "[interval] [prompt]"
+      }
+     },
+     {
+      "name": "schedule",
+      "description": "Create, update, list, or run scheduled cloud agents (routines) that execute on a cron schedule.",
+      "input": null
+     },
+     {
+      "name": "claude-api",
+      "description": "Reference for the Claude API / Anthropic SDK \u2014 model ids, pricing, params, streaming, tool use, MCP, agents, caching, token counting, model migration.\nTRIGGER \u2014 read BEFORE opening the target file; don't skip because it \"looks like a one-liner\" \u2014 whenever: the prompt names Claude/Anthropic in any form (Claude, Anthropic, Fable, Opus, Sonnet, Haiku, `anthropic`, `@anthropic-ai`, `claude-*`, `us.anthropic.*`, `[1m]`); the user asks about an LLM (pricing/model choice/limits/caching) \u2014 never answer from memory; OR the task is LLM-shaped with provider unstated (agent/MCP/tool-definition/multi-agent/RAG/LLM-judge/computer-use; generate/summarize/extract/classify/rewrite/converse over NL; debugging refusals/cutoffs/streaming/tool-calls/tokens).\nSKIP only when another provider is being worked on (overrides all triggers): OpenAI/GPT/Gemini/Llama/Mistral/Cohere/Ollama named in the query; OR `grep -rE 'openai|langchain_openai|google.generativeai|genai|mistralai|cohere|ollama'` over the project hits (run this grep FIRST if no provider named \u2014 don't Read the file).",
+      "input": null
+     },
+     {
+      "name": "run",
+      "description": "Launch and drive this project's app to see a change working. Use when asked to run, start, or screenshot the app, or to confirm a change works in the real app (not just tests). First looks for a project skill that already covers launching the app; otherwise falls back to built-in patterns per project type (CLI, server, TUI, Electron, browser-driven, library).",
+      "input": null
+     },
+     {
+      "name": "run-skill-generator",
+      "description": "Author or improve the run-<unit> skill \u2014 a per-project skill that tells agents how to build, launch, and drive this project's app. Use when the user asks to set up the project, get it running, write run instructions, or verify build/run steps work from a clean environment.",
+      "input": null
+     },
+     {
+      "name": "agents",
+      "description": "(removed) Ask Claude to create/manage subagents, or edit .claude/agents/",
+      "input": null
+     },
+     {
+      "name": "color",
+      "description": "Set the prompt bar color for this session",
+      "input": {
+       "hint": "[red|blue|green|yellow|purple|orange|pink|cyan|default]"
+      }
+     },
+     {
+      "name": "compact",
+      "description": "Free up context by summarizing the conversation so far",
+      "input": {
+       "hint": "<optional custom summarization instructions>"
+      }
+     },
+     {
+      "name": "config",
+      "description": "Set a setting by key",
+      "input": {
+       "hint": "key=value"
+      }
+     },
+     {
+      "name": "context",
+      "description": "Show current context usage",
+      "input": null
+     },
+     {
+      "name": "effort",
+      "description": "Set effort level for model usage",
+      "input": {
+       "hint": "<low|medium|high|xhigh|max|ultracode|auto>"
+      }
+     },
+     {
+      "name": "fast",
+      "description": "Toggle fast mode (Opus 5)",
+      "input": {
+       "hint": "[on|off]"
+      }
+     },
+     {
+      "name": "heapdump",
+      "description": "Dump the JS heap to ~/Desktop",
+      "input": null
+     },
+     {
+      "name": "init",
+      "description": "Initialize a new CLAUDE.md file with codebase documentation",
+      "input": null
+     },
+     {
+      "name": "mcp",
+      "description": "Manage MCP servers",
+      "input": {
+       "hint": "[reconnect|enable|disable [<server>|all]]"
+      }
+     },
+     {
+      "name": "import",
+      "description": "Import config from another AI coding agent",
+      "input": null
+     },
+     {
+      "name": "model",
+      "description": "Set the AI model for Claude Code",
+      "input": {
+       "hint": "<model>"
+      }
+     },
+     {
+      "name": "__remote-workflow",
+      "description": "Run the workflow script delivered in this session environment (server-launched sessions only)",
+      "input": null
+     },
+     {
+      "name": "workflow-launch-exec",
+      "description": "Execute a server-launched workflow handoff (workflow_launch event sessions only)",
+      "input": null
+     },
+     {
+      "name": "reload-skills",
+      "description": "Pick up skills added or changed on disk during this session",
+      "input": null
+     },
+     {
+      "name": "rename",
+      "description": "Rename the current conversation",
+      "input": {
+       "hint": "[name]"
+      }
+     },
+     {
+      "name": "review",
+      "description": "Review a GitHub pull request; for your working diff use /code-review",
+      "input": {
+       "hint": "[pr number]"
+      }
+     },
+     {
+      "name": "ultrareview",
+      "description": "Start a cloud agent that finds and verifies bugs in your branch (~5-10 min, $5-$25 USD) \u00b7 Runs in Claude Code on the web. See https://code.claude.com/docs/en/claude-code-on-the-web",
+      "input": null
+     },
+     {
+      "name": "security-review",
+      "description": "Complete a security review of the pending changes on the current branch",
+      "input": null
+     },
+     {
+      "name": "usage-credits",
+      "description": "Configure usage credits or request them from your admin when you hit a limit",
+      "input": null
+     },
+     {
+      "name": "extra-usage",
+      "description": "Renamed to /usage-credits",
+      "input": null
+     },
+     {
+      "name": "usage",
+      "description": "Show session cost, plan usage, and what's contributing to your limits",
+      "input": null
+     },
+     {
+      "name": "insights",
+      "description": "Generate a report analyzing your Claude Code sessions",
+      "input": null
+     },
+     {
+      "name": "recap",
+      "description": "Generate a one-line session recap now",
+      "input": null
+     },
+     {
+      "name": "goal",
+      "description": "Set a goal \u2014 keep working until the condition is met",
+      "input": null
+     },
+     {
+      "name": "design",
+      "description": "Grant or revoke Claude agent access to your Design projects",
+      "input": {
+       "hint": "consent | revoke"
+      }
+     },
+     {
+      "name": "design-consent",
+      "description": "Grant Claude agent access to your Design projects",
+      "input": null
+     },
+     {
+      "name": "design-revoke",
+      "description": "Revoke Claude agent access to your Design projects",
+      "input": null
+     },
+     {
+      "name": "team-onboarding",
+      "description": "Help teammates ramp on Claude Code with a guide from your usage",
+      "input": null
+     }
+    ]
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "current_mode_update",
+    "currentModeId": "bypassPermissions"
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+   "configOptions": [
+    {
+     "id": "mode",
+     "name": "Mode",
+     "description": "Session permission mode",
+     "category": "mode",
+     "type": "select",
+     "currentValue": "bypassPermissions",
+     "options": [
+      {
+       "value": "auto",
+       "name": "Auto",
+       "description": "Use a model classifier to approve/deny permission prompts"
+      },
+      {
+       "value": "default",
+       "name": "Manual",
+       "description": "Standard behavior, prompts for dangerous operations"
+      },
+      {
+       "value": "acceptEdits",
+       "name": "Accept Edits",
+       "description": "Auto-accept file edit operations"
+      },
+      {
+       "value": "plan",
+       "name": "Plan Mode",
+       "description": "Planning mode, no actual tool execution"
+      },
+      {
+       "value": "dontAsk",
+       "name": "Don't Ask",
+       "description": "Don't prompt for permissions, deny if not pre-approved"
+      },
+      {
+       "value": "bypassPermissions",
+       "name": "Bypass Permissions",
+       "description": "Bypass all permission checks"
+      }
+     ]
+    },
+    {
+     "id": "model",
+     "name": "Model",
+     "description": "AI model to use",
+     "category": "model",
+     "type": "select",
+     "currentValue": "opus[1m]",
+     "options": [
+      {
+       "value": "default",
+       "name": "Default (recommended)",
+       "description": "Opus 5 with 1M context \u00b7 Best for everyday, complex tasks"
+      },
+      {
+       "value": "opus[1m]",
+       "name": "Opus (1M context)",
+       "description": "Opus 5 with 1M context \u00b7 Best for everyday, complex tasks"
+      },
+      {
+       "value": "claude-fable-5[1m]",
+       "name": "Fable",
+       "description": "Fable 5 \u00b7 Most capable for your hardest and longest-running tasks"
+      },
+      {
+       "value": "sonnet",
+       "name": "Sonnet",
+       "description": "Sonnet 5 \u00b7 Efficient for routine tasks"
+      },
+      {
+       "value": "haiku",
+       "name": "Haiku",
+       "description": "Haiku 4.5 \u00b7 Fastest for quick answers"
+      }
+     ]
+    },
+    {
+     "id": "effort",
+     "name": "Effort",
+     "description": "Available effort levels for this model",
+     "category": "thought_level",
+     "type": "select",
+     "currentValue": "xhigh",
+     "options": [
+      {
+       "value": "default",
+       "name": "Default"
+      },
+      {
+       "value": "low",
+       "name": "Low"
+      },
+      {
+       "value": "medium",
+       "name": "Medium"
+      },
+      {
+       "value": "high",
+       "name": "High"
+      },
+      {
+       "value": "xhigh",
+       "name": "Xhigh"
+      },
+      {
+       "value": "max",
+       "name": "Max"
+      }
+     ]
+    },
+    {
+     "id": "fast",
+     "name": "Fast mode",
+     "description": "Faster responses on supported models",
+     "category": "model_config",
+     "type": "select",
+     "currentValue": "off",
+     "options": [
+      {
+       "value": "on",
+       "name": "On"
+      },
+      {
+       "value": "off",
+       "name": "Off"
+      }
+     ]
+    },
+    {
+     "id": "agent",
+     "name": "Agent",
+     "description": "Main-thread agent persona",
+     "type": "select",
+     "currentValue": "default",
+     "options": [
+      {
+       "value": "default",
+       "name": "Default",
+       "description": "Standard Claude Code agent"
+      },
+      {
+       "value": "stripe:Company Researcher",
+       "name": "stripe:Company Researcher",
+       "description": "Research a company from its URL or description to infer Stripe Connect integration shape"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "usage_update",
+    "used": 32896,
+    "size": 1000000
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Read"
+     }
+    },
+    "toolCallId": "toolu_01MpsoxH2UEZLTTWhKwu73vk",
+    "sessionUpdate": "tool_call",
+    "rawInput": {},
+    "status": "pending",
+    "title": "Read File",
+    "kind": "read",
+    "locations": [],
+    "content": []
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Read"
+     }
+    },
+    "toolCallId": "toolu_01MpsoxH2UEZLTTWhKwu73vk",
+    "sessionUpdate": "tool_call_update",
+    "rawInput": {
+     "file_path": "/private/tmp/elliot-acp-sandbox/notes.txt"
+    },
+    "title": "Read /private/tmp/elliot-acp-sandbox/notes.txt",
+    "kind": "read",
+    "locations": [
+     {
+      "path": "/private/tmp/elliot-acp-sandbox/notes.txt",
+      "line": 1
+     }
+    ],
+    "content": []
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolResponse": {
+       "type": "text",
+       "file": {
+        "filePath": "/private/tmp/elliot-acp-sandbox/notes.txt",
+        "content": "line one\nline two\nline three\n",
+        "numLines": 4,
+        "startLine": 1,
+        "totalLines": 4
+       }
+      },
+      "toolName": "Read"
+     }
+    },
+    "toolCallId": "toolu_01MpsoxH2UEZLTTWhKwu73vk",
+    "sessionUpdate": "tool_call_update"
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Read"
+     }
+    },
+    "toolCallId": "toolu_01MpsoxH2UEZLTTWhKwu73vk",
+    "sessionUpdate": "tool_call_update",
+    "status": "completed",
+    "rawOutput": "1\tline one\n2\tline two\n3\tline three\n4\t",
+    "content": [
+     {
+      "type": "content",
+      "content": {
+       "type": "text",
+       "text": "```\n1\tline one\n2\tline two\n3\tline three\n```"
+      }
+     }
+    ]
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "usage_update",
+    "used": 33021,
+    "size": 1000000
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "usage_update",
+    "used": 33021,
+    "size": 1000000,
+    "_meta": {
+     "_claude/rateLimit": {
+      "status": "allowed",
+      "resetsAt": 1786558800,
+      "rateLimitType": "five_hour",
+      "overageStatus": "rejected",
+      "overageDisabledReason": "org_level_disabled",
+      "isUsingOverage": false
+     }
+    }
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "usage_update",
+    "used": 33045,
+    "size": 1000000
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Edit"
+     }
+    },
+    "toolCallId": "toolu_01Lf1nZmGFgp68y1sbgi8fpb",
+    "sessionUpdate": "tool_call",
+    "rawInput": {},
+    "status": "pending",
+    "title": "Edit",
+    "kind": "edit",
+    "content": [],
+    "locations": []
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Edit"
+     }
+    },
+    "toolCallId": "toolu_01Lf1nZmGFgp68y1sbgi8fpb",
+    "sessionUpdate": "tool_call_update",
+    "rawInput": {
+     "file_path": "/private/tmp/elliot-acp-sandbox/notes.txt"
+    },
+    "title": "Edit /private/tmp/elliot-acp-sandbox/notes.txt",
+    "kind": "edit",
+    "locations": [
+     {
+      "path": "/private/tmp/elliot-acp-sandbox/notes.txt"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Edit"
+     }
+    },
+    "toolCallId": "toolu_01Lf1nZmGFgp68y1sbgi8fpb",
+    "sessionUpdate": "tool_call_update",
+    "rawInput": {
+     "file_path": "/private/tmp/elliot-acp-sandbox/notes.txt",
+     "old_string": "line three\n"
+    },
+    "title": "Edit /private/tmp/elliot-acp-sandbox/notes.txt",
+    "kind": "edit",
+    "locations": [
+     {
+      "path": "/private/tmp/elliot-acp-sandbox/notes.txt"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Edit"
+     }
+    },
+    "toolCallId": "toolu_01Lf1nZmGFgp68y1sbgi8fpb",
+    "sessionUpdate": "tool_call_update",
+    "rawInput": {
+     "replace_all": false,
+     "file_path": "/private/tmp/elliot-acp-sandbox/notes.txt",
+     "old_string": "line three\n",
+     "new_string": "line three\nline four\n"
+    },
+    "title": "Edit /private/tmp/elliot-acp-sandbox/notes.txt",
+    "kind": "edit",
+    "content": [
+     {
+      "type": "diff",
+      "path": "/private/tmp/elliot-acp-sandbox/notes.txt",
+      "oldText": "line three\n",
+      "newText": "line three\nline four\n"
+     }
+    ],
+    "locations": [
+     {
+      "path": "/private/tmp/elliot-acp-sandbox/notes.txt"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolResponse": {
+       "filePath": "/private/tmp/elliot-acp-sandbox/notes.txt",
+       "oldString": "line three\n",
+       "newString": "line three\nline four\n",
+       "originalFile": "line one\nline two\nline three\n",
+       "structuredPatch": [
+        {
+         "oldStart": 1,
+         "oldLines": 3,
+         "newStart": 1,
+         "newLines": 4,
+         "lines": [
+          " line one",
+          " line two",
+          " line three",
+          "+line four"
+         ]
+        }
+       ],
+       "userModified": false,
+       "replaceAll": false
+      },
+      "toolName": "Edit"
+     }
+    },
+    "toolCallId": "toolu_01Lf1nZmGFgp68y1sbgi8fpb",
+    "sessionUpdate": "tool_call_update",
+    "content": [
+     {
+      "type": "diff",
+      "path": "/private/tmp/elliot-acp-sandbox/notes.txt",
+      "oldText": "line one\nline two\nline three",
+      "newText": "line one\nline two\nline three\nline four"
+     }
+    ],
+    "locations": [
+     {
+      "path": "/private/tmp/elliot-acp-sandbox/notes.txt",
+      "line": 1
+     }
+    ]
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Edit"
+     }
+    },
+    "toolCallId": "toolu_01Lf1nZmGFgp68y1sbgi8fpb",
+    "sessionUpdate": "tool_call_update",
+    "status": "completed",
+    "rawOutput": "The file /private/tmp/elliot-acp-sandbox/notes.txt has been updated successfully. (file state is current in your context \u2014 no need to Read it back)"
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "usage_update",
+    "used": 33192,
+    "size": 1000000
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "usage_update",
+    "used": 37229,
+    "size": 1000000
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Bash"
+     }
+    },
+    "toolCallId": "toolu_01BJyX91H1cWgzWgmVgdJ6dk",
+    "sessionUpdate": "tool_call",
+    "rawInput": {},
+    "status": "pending",
+    "title": "Terminal",
+    "kind": "execute",
+    "content": []
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Bash"
+     }
+    },
+    "toolCallId": "toolu_01BJyX91H1cWgzWgmVgdJ6dk",
+    "sessionUpdate": "tool_call_update",
+    "rawInput": {
+     "command": "wc -l /private/tmp/elliot-acp-sandbox/notes.txt"
+    },
+    "title": "wc -l /private/tmp/elliot-acp-sandbox/notes.txt",
+    "kind": "execute"
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Bash",
+      "title": "Count lines in notes.txt"
+     }
+    },
+    "toolCallId": "toolu_01BJyX91H1cWgzWgmVgdJ6dk",
+    "sessionUpdate": "tool_call_update",
+    "rawInput": {
+     "command": "wc -l /private/tmp/elliot-acp-sandbox/notes.txt",
+     "description": "Count lines in notes.txt"
+    },
+    "title": "wc -l /private/tmp/elliot-acp-sandbox/notes.txt",
+    "kind": "execute",
+    "content": [
+     {
+      "type": "content",
+      "content": {
+       "type": "text",
+       "text": "Count lines in notes.txt"
+      }
+     }
+    ]
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "usage_update",
+    "used": 37316,
+    "size": 1000000
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolResponse": {
+       "stdout": "       4 /private/tmp/elliot-acp-sandbox/notes.txt",
+       "stderr": "",
+       "interrupted": false,
+       "isImage": false,
+       "noOutputExpected": false
+      },
+      "toolName": "Bash"
+     }
+    },
+    "toolCallId": "toolu_01BJyX91H1cWgzWgmVgdJ6dk",
+    "sessionUpdate": "tool_call_update"
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "_meta": {
+     "claudeCode": {
+      "toolName": "Bash"
+     }
+    },
+    "toolCallId": "toolu_01BJyX91H1cWgzWgmVgdJ6dk",
+    "sessionUpdate": "tool_call_update",
+    "status": "completed",
+    "rawOutput": "       4 /private/tmp/elliot-acp-sandbox/notes.txt",
+    "content": [
+     {
+      "type": "content",
+      "content": {
+       "type": "text",
+       "text": "```console\n       4 /private/tmp/elliot-acp-sandbox/notes.txt\n```"
+      }
+     }
+    ]
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "usage_update",
+    "used": 37349,
+    "size": 1000000
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "agent_message_chunk",
+    "content": {
+     "type": "text",
+     "text": "4"
+    },
+    "messageId": "msg_011CdyD514sNdtmMqsRj9ptq"
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "agent_message_chunk",
+    "content": {
+     "type": "text",
+     "text": " lines."
+    },
+    "messageId": "msg_011CdyD514sNdtmMqsRj9ptq"
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "usage_update",
+    "used": 37355,
+    "size": 1000000
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "usage_update",
+    "used": 37355,
+    "size": 1000000,
+    "cost": {
+     "amount": 0.2855775,
+     "currency": "USD"
+    },
+    "_meta": {
+     "_claude/origin": {
+      "kind": "human"
+     }
+    }
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+   "stopReason": "end_turn",
+   "usage": {
+    "inputTokens": 8,
+    "outputTokens": 387,
+    "cachedReadTokens": 118845,
+    "cachedWriteTokens": 21644,
+    "totalTokens": 140884
+   }
+  }
+ },
+ {
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+   "sessionId": "1401310e-142a-45f0-a86b-b6dba23c08c0",
+   "update": {
+    "sessionUpdate": "session_info_update",
+    "title": "Append a fourth line saying \"line four\" to notes.txt, then run `wc -l notes.txt` and tell me the count. Keep it brief.",
+    "updatedAt": "2026-08-12T16:58:01.867Z"
+   }
+  }
+ }
+]
