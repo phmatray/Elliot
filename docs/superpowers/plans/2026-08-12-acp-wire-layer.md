@@ -454,6 +454,28 @@ struct OneSpawnerTests {
         return walker.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
     }
 
+    /// Files sanctioned to construct a `Process()` directly, each with its reason.
+    ///
+    /// Permanent, unlike `knownRemaining` below. ⛔ The rule this guard enforces is narrower than
+    /// the slogan "`ChildProcess` is the only thing that starts a child" — which has in fact been
+    /// false since 2026-08-04. It is: **anything whose output we read, or whose exit we await, goes
+    /// through `ChildProcess`.** A launcher that produces no output and whose exit status means
+    /// nothing is not that.
+    ///
+    /// Adding an entry is a deliberate act with a stated reason, which is the point: a spawner that
+    /// simply appears is what #146 cost three defects.
+    static let sanctionedSpawners: [String: String] = [
+        "ChildProcess.swift": """
+            The one spawner: drains both pipes under a single lock and publishes the exit.
+            """,
+        "IPCClient.swift": """
+            `open -g -j -b <bundle>` to launch the app. Fire-and-forget: no pipes, and `open` exits \
+            as soon as it has handed the launch to the system, so its status says nothing. Predates \
+            this guard and already declines `waitUntilExit()` in its own comment, for exactly the \
+            cooperative-thread reason this guard's second test exists.
+            """,
+    ]
+
     /// The three files Task 5 removes, once `Client` no longer references them.
     ///
     /// They are one dependency chain — `Client` → `ProcessManager` → `ShellEnvironment` — so none
@@ -471,14 +493,22 @@ struct OneSpawnerTests {
         var offenders: [String] = []
         for file in Self.swiftFiles(under: "Sources") + Self.swiftFiles(under: "Vendor") {
             let name = file.lastPathComponent
-            guard name != "ChildProcess.swift", !Self.knownRemaining.contains(name) else { continue }
+            guard Self.sanctionedSpawners[name] == nil,
+                  !Self.knownRemaining.contains(name)
+            else { continue }
             let text = try String(contentsOf: file, encoding: .utf8)
             if text.contains("Process()") { offenders.append(name) }
         }
+        // ⛔ One string literal, not `"a" + "b"`. `Testing.Comment` is `ExpressibleByStringLiteral`,
+        // which applies to *literals*: concatenating with `+` produces a `String`, which does not
+        // convert to the `Comment?` this parameter takes, and the build fails.
         #expect(
             offenders.isEmpty,
-            "a second spawner appeared in \(offenders.joined(separator: ", ")) — ChildProcess is the "
-                + "only thing allowed to start a child (see #146)"
+            """
+            \(offenders.joined(separator: ", ")) spawns a child directly. Route it through \
+            ChildProcess, or add it to `sanctionedSpawners` with the reason it does not need to be \
+            (see #146).
+            """
         )
     }
 
@@ -493,10 +523,13 @@ struct OneSpawnerTests {
             // the match must be a call rather than a mention.
             if text.contains(".waitUntilExit()") { offenders.append(name) }
         }
+        // Same literal rule as above — no `+`.
         #expect(
             offenders.isEmpty,
-            "\(offenders.joined(separator: ", ")) waits on waitUntilExit(), which spins a run loop "
-                + "on a cooperative thread the runtime may park and reuse (3b1c226/#18)"
+            """
+            \(offenders.joined(separator: ", ")) waits on waitUntilExit(), which spins a run loop \
+            on a cooperative thread the runtime may park and reuse (3b1c226/#18).
+            """
         )
     }
 }
@@ -511,10 +544,23 @@ cd ElliotKit && swift test --filter OneSpawnerTests
 Measured on the vendored tree before any deletion — 5 files construct a `Process()`, 3 call
 `.waitUntilExit()`:
 
-| Guard | Fails naming | Excused by `knownRemaining` |
+| Guard | Fails naming | Excused |
 |---|---|---|
-| `onlyOneSpawner` | `StdioTransport.swift`, `TerminalDelegate.swift` | `ProcessManager`, `ProcessRegistry`, `ShellEnvironment` |
-| `nothingBlocksOnWaitUntilExit` | `TerminalDelegate.swift` | `ProcessRegistry`, `ShellEnvironment` |
+| `onlyOneSpawner` | `StdioTransport.swift`, `TerminalDelegate.swift` | `sanctionedSpawners`: `ChildProcess`, `IPCClient` · `knownRemaining`: `ProcessManager`, `ProcessRegistry`, `ShellEnvironment` |
+| `nothingBlocksOnWaitUntilExit` | `TerminalDelegate.swift` | `knownRemaining`: `ProcessRegistry`, `ShellEnvironment` |
+
+⛔ **`ElliotKit/Sources/ElliotIPC/IPCClient.swift:69` constructs a `Process()` and always has** —
+since 2026-08-04, a week before any of this. It runs `open -g -j -b <bundle>` to launch the app:
+fire-and-forget, no pipes, and `open` exits as soon as the system takes the launch, so its status
+says nothing. It is **sanctioned**, not excused-pending-deletion, and it must not go in
+`knownRemaining` — Task 5 empties that set and the guard would go red there for a reason nobody
+could reconstruct.
+
+⚠️ This means the project's own slogan — *"`ChildProcess` is the only thing that starts a child"*,
+as `CLAUDE.md` states it — **has been false since 2026-08-04**. The narrower rule the guard actually
+encodes is the true one: *anything whose output we read, or whose exit we await, goes through
+`ChildProcess`.* Found by Task 2's implementer; my own "five files" figure was measured over
+`Vendor/` alone and never scanned `Sources/`.
 
 **Both must FAIL here**, and both must pass after Step 3 deletes `StdioTransport.swift` and
 `TerminalDelegate.swift`.
