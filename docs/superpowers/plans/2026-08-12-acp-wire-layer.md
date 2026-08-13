@@ -2,9 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Put a vendored, Swift-6-clean ACP client into ElliotKit, speaking to a real
-`claude-agent-acp` over Elliot's own `ChildProcess` — without changing one line of `ElliotModel`,
-`ElliotEngine`, `ElliotStore`, `ElliotIPC`, `ElliotMCPKit` or `ElliotAppKit`.
+**Goal:** Put a vendored, Swift-6-clean ACP client into ElliotKit, driven end to end over Elliot's
+own `ChildProcess` against a Python double (`Scripts/fake-acp.py`) whose reply shapes are copied
+verbatim from real `claude-agent-acp` transcripts — without changing one line of `ElliotModel`,
+`ElliotEngine`, `ElliotStore`, `ElliotIPC`, `ElliotMCPKit` or `ElliotAppKit`. **No Swift code ever
+speaks to the real adapter** — it is driven only from the Python probes (`Scripts/probe/`) — so the
+join between `ACPTransport`/`Client` and the live adapter's actual bytes is unproven; see "What
+Stage 0 deliberately does not do" below.
 
 **Architecture:** `wiedymi/swift-acp` is vendored under `ElliotKit/Vendor/swift-acp/` as two targets
 (`ACPModel`, `ACP`) keeping their upstream module names so the tree stays diffable against upstream.
@@ -62,6 +66,35 @@ Task 9 writes this correction back into the spec.
 and `ProcessManager`, all three of which this plan deletes. ⚠️ **But not all at the same time** —
 `ProcessManager` outlives the other two, so `ShellEnvironment` is deleted in **Task 5**, not Task 2.
 An earlier draft cut it in Task 2 and would have gone red; see the ⛔ in Task 2's Step 3.
+
+---
+
+## Corrections found during execution
+
+The task bodies below are a record of what was asked, left unedited even where execution proved a
+sketch wrong — that is deliberate, per this repository's own convention for a durable plan. Where
+the two differ, **the committed source is authoritative**, not this file. The corrections that
+matter most:
+
+- **Task 7's `ACPSessionTests` snippet (lines ~1690–1890) is superseded.** It shows
+  `withTimeout(.seconds(20)) { try await client.sendPrompt(...) }` and
+  `withTimeout(.seconds(10)) { await updates.value }`, with no `armKiller` anywhere. That is exactly
+  the shape that hung `swift test` for 10m51s and held the SwiftPM build lock behind it for 600s
+  during Task 7's own execution — `withTimeout` cannot bound either wait; see
+  `Tests/TestSupport/AsyncTimeout.swift`'s doc comment. The committed test arms a concurrently-running
+  deadline (`armKiller`) that ends the transport instead, and — per the final whole-branch review —
+  arms it immediately after `Client` is constructed, so it covers every request the test makes, not
+  only `sendPrompt` and the notification collector.
+- **The comment "this is the test that would not let that ship" (near line 1770) is false**, and was
+  proven false during Task 7's own review: `grep -rn "toolCallId\|ToolCallUpdate"
+  ElliotKit/Sources/` returns nothing — no fold exists anywhere in the product, so a replacing fold
+  written tomorrow would ship green past this test. It was removed from the real test; it remains
+  here only as part of the historical snippet.
+
+If a future plan is re-executed from this file rather than resumed from the branch, treat every code
+snippet in a **completed** task as a starting sketch to re-verify against `ElliotKit/`, not as
+ground truth — the two are expected to have drifted, and this plan does not update its own task
+bodies to match.
 
 ---
 
@@ -187,7 +220,7 @@ and buries the two changes that actually matter, listed below.
 ## What was removed, and why
 
 See `docs/superpowers/specs/2026-08-12-elliot-acp-design.md` §3.3. In short: the library contained
-three separate places that spawn a process, and `ChildProcess` is the only thing in this repository
+five separate places that spawn a process, and `ChildProcess` is the only thing in this repository
 allowed to do that.
 
 | Removed | Replaced by |
@@ -214,7 +247,7 @@ In `ElliotKit/Package.swift`, in the `targets:` array, immediately **before** th
 
 ```swift
         // Vendored: wiedymi/swift-acp @ 9498537, MIT. See Vendor/swift-acp/VENDORED.md for the
-        // origin, the licence, and the list of what was deleted — chiefly three process spawners,
+        // origin, the licence, and the list of what was deleted — chiefly five process spawners,
         // because ChildProcess is the only thing here allowed to start a child.
         //
         // Upstream module names are kept so this tree stays diffable against upstream.
@@ -2035,3 +2068,11 @@ Named so a reviewer does not look for them, and so the next plan knows what it i
 - **No Preflight rows.** Node and `npx` discovery arrive with the runner that needs them.
 - **The permission responder is not written**, only measured (Task 8). At `bypassPermissions` it was
   measured never to be called; the policy that stands behind that belongs to the next plan.
+- **No Swift code ever spoke to a real `claude-agent-acp`.** Every Swift test drives `/bin/cat`,
+  `/bin/sh` or `Scripts/fake-acp.py`; the real adapter was driven only from `Scripts/probe/`, in
+  Python. The double's reply shapes are copied verbatim from those probes' transcripts, so the
+  *adapter's* wire behaviour is measured — but whether `ACPTransport` + `Client` survive contact
+  with the real adapter's actual bytes is not. That join is the next plan's first task, and the
+  cheapest partial answer already sits on disk unread: `Fixtures/acp/{turn-edit-bash,
+  session-new-commands,turn-refusal,turn-skill-invocation,turn-ordinary-failure}.json` are ~7 500
+  lines of real captured adapter output that no `swift test` decodes yet.

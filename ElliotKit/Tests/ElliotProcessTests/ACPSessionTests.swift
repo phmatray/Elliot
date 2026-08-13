@@ -40,22 +40,25 @@ struct ACPSessionTests {
         terminal: false
     )
 
-    /// Arms a deadline that ends `transport` unless cancelled first — the one mechanism able to
-    /// bound the two waits below `initialize`/`newSession`/`setConfigOption`: `sendPrompt` and the
-    /// notification collector's `.value`.
+    /// Arms a deadline that ends `transport` unless cancelled first — armed right after `client`
+    /// exists, so it is the one mechanism able to bound *every* wait that follows: `initialize`,
+    /// `newSession` and `setConfigOption` reach the identical unguarded `sendRequest(...,
+    /// timeout: nil)` that `sendPrompt` does, so they need this exactly as much. See
+    /// `AsyncTimeout.swift`'s doc comment for why `withTimeout` cannot bound any of them on its
+    /// own — this exists because that guarantee does not hold.
     ///
-    /// Neither of those waits can be bounded the ways that look obvious:
-    /// - `sendPrompt` reaches `sendRequest(..., timeout: nil)`, which suspends on a bare
-    ///   `withCheckedThrowingContinuation` — nothing about it observes cancellation. Wrapping it in
-    ///   `withTimeout` does not help: `withThrowingTaskGroup` is a structured-concurrency scope, and
-    ///   a scope cannot exit while a child task is still running, cancelled or not —
-    ///   `group.cancelAll()` asks, it does not evict.
+    /// None of those waits can be bounded the ways that look obvious:
+    /// - Every `Client` request above reaches `sendRequest(..., timeout: nil)`, which suspends on
+    ///   a bare `withCheckedThrowingContinuation` — nothing about it observes cancellation.
+    ///   Wrapping one in `withTimeout` does not help: `withThrowingTaskGroup` is a
+    ///   structured-concurrency scope, and a scope cannot exit while a child task is still
+    ///   running, cancelled or not — `group.cancelAll()` asks, it does not evict.
     /// - The notification collector below is a plain `Task<[T], Never>` — non-throwing, so
     ///   `.value` is `get async`, not `get async throws`, and cannot even signal cancellation.
     ///   `withTimeout` around `await updates.value` is exactly as broken as around `sendPrompt`,
     ///   for the identical reason, and was the second Critical this file shipped with once.
     ///
-    /// The only thing that actually ends either wait is ending the *agent*: `terminate()`
+    /// The only thing that actually ends any of them is ending the *agent*: `terminate()`
     /// (`ACPTransport.swift:141`, its first caller anywhere in this package) kills the child, which
     /// closes its stdout, which finishes `transport.messages`, which ends `Client`'s read loop,
     /// which fails every still-pending request through `handleTermination()` **and** finishes the
@@ -112,6 +115,12 @@ struct ACPSessionTests {
     func fullTurn() async throws {
         let transport = try ACPTransport(Self.agent())
         let client = Client(transport: transport)
+        // Armed here so it covers every wait below, including `initialize`/`newSession`/
+        // `setConfigOption` — see `armKiller`'s doc comment. Cancelled only once every wait it
+        // guards has actually finished, so the kill fires for any one of them running long, and
+        // never on a successful run.
+        let (killer, killerFired) = armKiller(transport)
+        defer { killer.cancel() }
         defer { transport.terminate() }
 
         let updates = Task {
@@ -145,13 +154,6 @@ struct ACPSessionTests {
                 value: SessionConfigValueId("bypassPermissions")
             )
         }
-
-        // From here on, both waits below need `killer`: see its doc comment. Armed once, covering
-        // `sendPrompt` and the notification collection together, and cancelled only once both have
-        // actually finished — so the kill fires for either one running long, and never on a
-        // successful run.
-        let (killer, killerFired) = armKiller(transport)
-        defer { killer.cancel() }
 
         let prompt = try await client.sendPrompt(
             sessionId: session.sessionId, content: [.text(TextContent(text: "go"))]
@@ -208,6 +210,10 @@ struct ACPSessionTests {
     func toolCallPatchesArrivePartial() async throws {
         let transport = try ACPTransport(Self.agent())
         let client = Client(transport: transport)
+        // Armed here so it covers every wait below, including `initialize`/`newSession` — see
+        // `armKiller`'s doc comment.
+        let (killer, killerFired) = armKiller(transport)
+        defer { killer.cancel() }
         defer { transport.terminate() }
 
         let frames = Task { () -> [ToolCallFrame] in
@@ -245,10 +251,6 @@ struct ACPSessionTests {
         let session = try await withTimeout(.seconds(10)) {
             try await client.newSession(workingDirectory: "/tmp", mcpServers: [])
         }
-
-        // See `armKiller`'s doc comment: covers `sendPrompt` and the frame collection together.
-        let (killer, killerFired) = armKiller(transport)
-        defer { killer.cancel() }
 
         _ = try await client.sendPrompt(
             sessionId: session.sessionId, content: [.text(TextContent(text: "go"))]

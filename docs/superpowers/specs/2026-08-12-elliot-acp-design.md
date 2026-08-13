@@ -221,7 +221,11 @@ Nested objects, arrays, the permission request's copy, and a full encode/decode 
 
 ### 3.3 ⛔ What must be cut, and why it is not optional
 
-The library contains **three** places that spawn a process:
+The library contains **five** places that spawn a process (measured directly against the vendored
+tree as it landed, `git grep -l "Process()" 664d4cf -- ElliotKit/Vendor/swift-acp`; the table below
+names the three whose duplication is worth spelling out, `ProcessRegistry.swift` and
+`TerminalDelegate.swift` fold into the rows for `ProcessManager.swift` and the deleted delegates
+respectively):
 
 | File | What it duplicates |
 |---|---|
@@ -549,16 +553,152 @@ parity window, and it is accepted deliberately.
 
 But one stage **is** separable, and it should be built and merged before any Elliot type is touched:
 
-> **Stage 0 — the wire layer, proven against the live adapter.** Vendor the library per §3.4, put the
-> transport on `ChildProcess`, fix the ~32 concurrency diagnostics, and drive a real
-> `claude-agent-acp` from Swift: `initialize` → `session/new` → `session/set_config_option` →
-> `session/prompt` → collect `session/update` → `stopReason`. Nothing in `ElliotEngine`,
+> **Stage 0 — the wire layer, proven against a double built from the live adapter's own bytes.**
+> Vendor the library per §3.4, put the transport on `ChildProcess`, fix the ~32 concurrency
+> diagnostics, and drive the sequence end to end from Swift: `initialize` → `session/new` →
+> `session/set_config_option` → `session/prompt` → collect `session/update` → `stopReason` —
+> against `Scripts/fake-acp.py`, whose reply shapes are copied verbatim from real
+> `claude-agent-acp` transcripts. **No Swift code speaks to the live adapter itself**; that join is
+> driven only from the Python probes (§10) and is Stage 1's to prove. Nothing in `ElliotEngine`,
 > `ElliotModel` or `ElliotAppKit` changes. It is verifiable on its own, it retires the largest
-> remaining uncertainty, and it is where the two open probes belong — skill invocation end
-> to end (§2.2) and what a real refusal looks like under `bypassPermissions` (§5.4).
+> uncertainty that a double *can* retire, and it is where the two open probes belong — skill
+> invocation end to end (§2.2) and what a real refusal looks like under `bypassPermissions` (§5.4).
 
 If Stage 0 fails, nothing else was built on top of it. If it succeeds, the rest is a rewrite with a
 known target.
+
+---
+
+## Inherited by Stage 1
+
+Carried forward from the final whole-branch review (2026-08-13) so it survives the deletion of
+`.superpowers/` — that directory is gitignored and removed when the SDD plan finishes, and this
+carry-forward set (23 deferred minors, 2 routed Importants, 1 known-unknown, Task 6's cannot-express
+list) would otherwise be rediscovered from zero. Two of these are load-bearing for Stage 1's first
+task.
+
+### The two routed Importants
+
+**1. `Client.terminate()` closes stdin only, and the gap is structural, not a missing call site.**
+The vendored `Transport` protocol (`ACP/Transport/Transport.swift`) declares `send`, `messages`,
+`close`, `isConnected` — and no `terminate`. `Client` holds `any Transport`, so it cannot escalate
+through the abstraction it was given: an agent that ignores its stdin closing survives. Fixing this
+is a protocol change, not a one-liner. It is no longer undemonstrated: `armKiller` in
+`ACPSessionTests.swift` gives `ACPTransport.terminate(hardKillAfter:)` its first caller anywhere in
+the package, and shows from the outside exactly why closing stdin is not enough — killing the child
+is what closes stdout, finishes `messages`, ends the read loop and fails every pending request.
+
+**2. The read loop retains the transport strongly, and nothing has a `deinit`.** Trace:
+`Client` → `readLoop` (a `Task`) → `transport` (captured strongly at `Client.swift:99`, deliberately,
+so the loop does not retain `self`) → `ChildProcess` → `Process`. The loop suspends on
+`for await message in transport.messages`, which never finishes while the child lives, and nothing
+cancels it. So a dropped `Client` leaks the task, the transport **and a running agent** — and Elliot
+spawns agents at `bypassPermissions` inside real checkouts, so a leaked one keeps running with a live
+tool budget. This compounds with #1: there is no `deinit`, no `terminate` on the protocol, and
+`close()` only asks. The only thing that can end an agent is an explicit `ACPTransport.terminate()`
+from an owner that does not exist yet — that owner is Stage 1's first task, not its last.
+
+A third, related deferred minor belongs with these two: `Client.terminate()` calls
+`transport.close()` and then `readLoop?.cancel()` in the next statement, discarding precisely the
+post-close flush that `ACPTransport.close()`'s own doc comment says closing exists to permit ("a
+well-behaved agent exits when its stdin closes, having flushed whatever it still owed"). Settle all
+three together.
+
+### Known-unknown: `defaultStdinIsWiredToDevNull`'s flake
+
+Signature (searchable): `fd 0 rdev 0,0 != /dev/null rdev 3,2`. Rate: 1 failure / 155 runs (~0.65%),
+measured across the implementer's 75 and the controller's 80 (40 parallel + 40 serial). The test's
+own 26-line doc comment (`ChildProcessTests.swift`) is the right home for the evidence and states it
+both ways — before treating a lone red run as a regression, and before dismissing one as noise — and
+the decision not to add a retry is correct: two fix rounds were spent making this test capable of
+failing at all, and a retry would undo exactly that.
+
+Two things the ledger tracked but never closed out:
+
+- **It needs an issue, not only a comment.** `ci.yml` runs `swift test` on every pull request, so at
+  this rate it reddens roughly one run in 150 with a message that reads exactly like a real
+  regression. Nothing currently routes that surprise to a person who has the doc comment's context.
+- **The instruction to watch for a second data point during Task 4 ("where concurrent ACP spawning
+  begins") was never answered in writing.** No second occurrence was reported either way during
+  Task 4 or after. Record that as silence, not as absence — the question was asked and nobody
+  measured an answer, which is a different fact than "it did not recur."
+
+### Task 6's cannot-express list
+
+The honest shape of what a green `ACPSessionTests` does not cover, carried forward from the test
+double's own author so Stage 1 does not mistake a passing suite for full coverage:
+
+- Answer-dependent permission behaviour beyond allow/deny
+- Unsolicited notifications, e.g. `available_commands_update`
+- A turn erroring mid-stream while the process survives for the next prompt
+- Real streaming/timing gaps (the double's replies are effectively instantaneous)
+- Prompt queueing
+- The auth-required path
+- `session/cancel` actually changing a turn's outcome (currently a no-op notification)
+- Multiple concurrent sessions
+- More than one outstanding request at a time
+
+### 23 deferred minors, compressed
+
+Three of these were fixed in the final review's own fix pass and are marked so below; the rest are
+unfixed and belong to whoever picks up Stage 1.
+
+**Task 1** (vendoring):
+- ~~unused `import ACP` in `ACPModelDecodingTests`~~ — cosmetic, ship as is
+- ~~`ElliotProcessTests` imports `ACP`/`ACPModel` undeclared in `Package.swift`~~ — **fixed**, now
+  declared explicitly
+- ~~`VENDORED.md` said "three places that spawn a process"; measured five~~ — **fixed**, corrected
+  at all sites
+- `writeMessageWithDebug`'s signature split differs from its neighbour — cosmetic, correct as is
+
+**Task 2** (`OneSpawnerTests`):
+- `sanctionedSpawners`' `String` value is never asserted on — documentation-by-construction, correct
+  as designed
+- the `waitUntilExit` guard's failure message states the danger but names no remedy
+- both guards substring-match source **text**, not an AST — false negatives
+  (`Process.launchedProcess`, multi-line calls, typealiases), false positives (any type named
+  `*Process()`) — now documented in the file's own "What this test does not see" section
+
+**Task 3** (`.pipe` stdin):
+- `writesReachTheChild` lacks `defer { terminate() }` — a failure orphans a blocked `/bin/cat` for
+  the rest of `swift test`
+- new comments wrap at 96–100 cols vs. the file's existing 72–80
+- stdin cleanup on spawn failure is correct but unstated, where both sibling cases are explained
+- no `deinit` backstop — a dropped `.pipe` child stays blocked (folds into Stage 1's item #2 above)
+- (nit) a new case on a public enum is source-breaking for out-of-module exhaustive switches —
+  single unpublished package, noted not acted on
+
+**Task 4** (`ACPTransport`):
+- ~~`OneSpawnerTests` could adopt `DrainDuplicationTests`' `isCode()`~~ — **fixed**, adopted with a
+  blind-spot section and break-tested
+- `sanctionedShapes` is a membership test, not a count — any number of `CheckedContinuation`s now
+  pass, including a second exit-waiter with a different payload (arbitrated: correct as designed,
+  narrowing would reopen the #146 failure a different way)
+- `send`/`sendRaw` called outside `withTimeout` in tests — moot per this review's C2: wrapping them
+  would not have helped, since neither observes cancellation
+- no `deinit` backstop — a dropped `ACPTransport` orphans the agent (the other half of Stage 1's
+  item #2 above)
+- `LineBuffer` silently truncates past 32 MB and keeps the count in `truncatedLineCount`, which
+  `ACPTransport` never reads — an oversized frame is **corrupted**, not dropped, weakening the
+  "`.unbounded` drops nothing" claim in `messages`' own doc comment
+- (nit) `SIGPIPEMeasurementTests.swift:89` is 121 columns
+
+**Task 5** (single-owner `Client`):
+- `terminate()`-before-`startReadLoop()` race
+- `readLoop?.cancel()` discards the post-close flush `close()` exists to permit (see the routed
+  Important above)
+- the one-request test cannot distinguish correlate-by-id from resume-the-only-pending (partly
+  closed: `fullTurn` now issues four requests)
+- no test anywhere exercised teardown (partly closed: `closingEndsTheStream` and `armKiller`'s
+  break-test now cover some of it)
+- `MessagesSingleConsumerTests` misses a bare `messages` reference inside `ACPTransport.swift`
+  itself — documented as blind spot 5 in the file's own header, not acted on
+
+**Task 6** (the double):
+- `session/set_mode` and `session/set_model` unimplemented — deliberate, correct restraint: they
+  return `-32601`, which is the right answer for a double that should not be more helpful than the
+  real adapter
+- `session/cancel` is a no-op notification — same deliberate restraint
 
 ---
 

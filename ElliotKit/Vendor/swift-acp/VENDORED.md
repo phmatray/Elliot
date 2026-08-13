@@ -33,7 +33,7 @@ and buries the changes that actually matter, listed below.
 ## What was removed, and why
 
 See `docs/superpowers/specs/2026-08-12-elliot-acp-design.md` §3.3. In short: the library contained
-three separate places that spawn a process, and `ChildProcess` is the only thing in this repository
+five separate places that spawn a process, and `ChildProcess` is the only thing in this repository
 allowed to do that.
 
 **As of Task 5, this table is the tree's actual contents, not just its policy.** `Client` →

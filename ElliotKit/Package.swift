@@ -142,7 +142,7 @@ let package = Package(
             dependencies: ["ElliotModel", .product(name: "GRDB", package: "GRDB.swift")]
         ),
         // Vendored: wiedymi/swift-acp @ 9498537, MIT. See Vendor/swift-acp/VENDORED.md for the
-        // origin, the licence, and the list of what was deleted — chiefly three process spawners,
+        // origin, the licence, and the list of what was deleted — chiefly five process spawners,
         // because ChildProcess is the only thing here allowed to start a child.
         //
         // Upstream module names are kept so this tree stays diffable against upstream.
@@ -186,7 +186,14 @@ let package = Package(
         // Fixtures and the fake `claude` live at the repository root, not in a
         // resource bundle: the same files are used by hand from a terminal when
         // reproducing a run.
-        .testTarget(name: "ElliotProcessTests", dependencies: ["ElliotProcess", "TestSupport"]),
+        // "ACP", "ACPModel" are declared explicitly, not left to resolve transitively through
+        // ElliotProcess: ACPSessionTests imports both directly, and without this an explicit
+        // module build fails as "No such module 'ACP'" — a toolchain-shaped mystery for what is
+        // actually a manifest gap (#116's shape).
+        .testTarget(
+            name: "ElliotProcessTests",
+            dependencies: ["ElliotProcess", "TestSupport", "ACP", "ACPModel"]
+        ),
         // `ElliotMCPKit` here is a **test**-target edge and nothing more: this is
         // the only target that can see both halves of the wire's read path, so
         // it is the only place `OfflineParityTests` can drive one seeded board
