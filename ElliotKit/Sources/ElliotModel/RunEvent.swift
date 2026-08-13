@@ -19,7 +19,7 @@ import Foundation
 /// decode in `do`/`catch` and yields `.unreadable(raw:error:)` rather than dropping the line.
 /// Without that `catch` this case is dead code and this comment is a claim nothing implements.
 public enum RunEvent: Sendable, Hashable {
-    case session(SessionInfo)
+    case session(RunSessionInfo)
     case agentText(String)
     /// NEW. Discarded entirely today.
     case agentThought(String)
@@ -39,7 +39,17 @@ public enum RunEvent: Sendable, Hashable {
 /// rather than invented**: the adapter advertises neither at `session/new`. Advertised slash
 /// commands arrive later, as their own notification, and are Preflight's business rather than
 /// the log's.
-public struct SessionInfo: Sendable, Hashable, Codable {
+///
+/// Named `RunSessionInfo` rather than `SessionInfo` for the same reason `RunUsage` below is not
+/// `Usage`: `RunEventMapper.swift` (Task 4) imports both this module and `ACPModel`, and
+/// `ACPModel.SessionInfo` (`Vendor/swift-acp/ACPModel/Session.swift:160`) already exists — a
+/// session-**listing** entry (`sessionId`, `cwd`, `additionalDirectories`, `title`,
+/// `updatedAt`), which is a different thing from this handshake summary. Measured rather than
+/// assumed: a file in `ElliotProcess` importing both and writing `SessionInfo` unqualified
+/// fails to build with `'SessionInfo' is ambiguous for type lookup in this context`. That is a
+/// loud failure rather than a silent one, but it is a `public` name Tasks 3, 4, 7 and 12
+/// consume, so it costs one line here and a fan-out of qualifications later.
+public struct RunSessionInfo: Sendable, Hashable, Codable {
     /// The id the **agent** chose, returned by `session/new`. Not `SkillRun.id`: under
     /// `claude -p` Elliot passed `--session-id` and the two were one value; under ACP the agent
     /// names its own session, which is why `SkillRun.agentSessionID` exists (Task 12).

@@ -71,6 +71,14 @@ struct RunEventFoldTests {
     func unrecognisedKindsRoundTrip() throws {
         let kind = NonExecutionKind("brand-new")
         let data = try JSONEncoder().encode(kind)
+        // ⛔ The bare string is the assertion that matters, and round-trip identity alone does
+        // not make it. Measured: delete `NonExecutionKind.init(from:)`/`encode(to:)` and this
+        // suite still reports `6 tests in 1 suite passed`, because Swift's synthesized enum
+        // `Codable` round-trips just as faithfully — into `{"unrecognised":{"_0":"brand-new"}}`.
+        // The wire the adapter writes and every persisted log holds is `"brand-new"`, so this
+        // line is what keeps the custom `Codable` load-bearing against a future "the synthesized
+        // one is fine here" simplification.
+        #expect(String(decoding: data, as: UTF8.self) == "\"brand-new\"")
         #expect(try JSONDecoder().decode(NonExecutionKind.self, from: data) == kind)
     }
 
@@ -79,6 +87,8 @@ struct RunEventFoldTests {
         let kind = ToolCallKind(rawValue: "teleport")
         #expect(kind == .unrecognised("teleport"))
         let data = try JSONEncoder().encode(kind)
+        // Same reasoning as above, and the same measured weakness: identity holds either way.
+        #expect(String(decoding: data, as: UTF8.self) == "\"teleport\"")
         #expect(try JSONDecoder().decode(ToolCallKind.self, from: data) == kind)
     }
 }
