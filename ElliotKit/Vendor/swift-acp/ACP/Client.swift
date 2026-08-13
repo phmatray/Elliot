@@ -44,6 +44,27 @@ public actor Client {
     /// `transport.messages`, and nothing else may consume it.
     private var readLoop: Task<Void, Never>?
 
+    /// Set by `terminate()`. Read by `startReadLoop()`, which `init` defers into a `Task` and
+    /// which can therefore run *after* a caller has already terminated — vendored fix (#381,
+    /// criterion 4). Without it the loop starts on a dead transport and parks on a `messages`
+    /// stream that will never yield.
+    private var isTerminated = false
+
+    /// How long a closed agent is given to flush before it is signalled.
+    ///
+    /// Two seconds, not fifteen: this is the window for a process that has been told to stop
+    /// and has only bytes left to write.
+    public static let defaultFlushGrace: Duration = .seconds(2)
+
+    /// SIGTERM→SIGKILL grace, mirroring `ElliotProcess.ProcessTermination.hardKillGrace`
+    /// (`.seconds(15)`). Restated rather than imported: `ACP` does not depend on
+    /// `ElliotProcess`, and adding that edge to pick up one constant would invert the module
+    /// order the whole vendoring rests on.
+    public static let defaultEscalationGrace: Duration = .seconds(15)
+
+    private let flushGrace: Duration
+    private let escalationGrace: Duration
+
     private var pendingRequests: [RequestId: CheckedContinuation<JSONRPCResponse, Error>] = [:]
     private var nextRequestId: Int = 1
 
@@ -64,8 +85,14 @@ public actor Client {
 
     // MARK: - Initialization
 
-    public init(transport: any Transport) {
+    public init(
+        transport: any Transport,
+        flushGrace: Duration = Client.defaultFlushGrace,
+        escalationGrace: Duration = Client.defaultEscalationGrace
+    ) {
         self.transport = transport
+        self.flushGrace = flushGrace
+        self.escalationGrace = escalationGrace
 
         decoder = JSONDecoder()
         encoder = JSONEncoder()
@@ -95,6 +122,7 @@ public actor Client {
     /// Drains `transport.messages` into `handleMessage`, storing the `Task` in `readLoop` so
     /// `terminate()` can cancel it. Split out of `init` for the isolation reason explained there.
     private func startReadLoop() {
+        guard !isTerminated else { return }
         // Captured locally rather than read as `self.transport` inside the closure below, so the
         // loop does not hold `self` alive on its own — only the `[weak self]` calls it makes.
         let transport = self.transport
@@ -999,8 +1027,49 @@ public actor Client {
     }
 
     public func terminate() async {
+        isTerminated = true
+
+        // ⛔ The escalation is ARMED BEFORE the wait, and disarmed by the wait succeeding —
+        // never raced against it inside a task group.
+        //
+        // The obvious shape is `withTaskGroup { await readLoop.value } vs { sleep(flushGrace) }`
+        // and it is a **deadlock in exactly the case this method exists for**. `withTaskGroup`
+        // cannot return until every child has completed; `group.cancelAll()` asks and does not
+        // evict; and `Task<Void, Never>.value` observes no cancellation at all. So for an agent
+        // that ignores its stdin closing and keeps stdout open — the deaf agent, the only
+        // reason there is an escalation — `messages` never finishes, `readLoop` never ends, the
+        // group never returns, and `transport.terminate(...)` on the line after it is never
+        // reached. `terminate()` hangs for ever instead of killing anything.
+        //
+        // `armKiller`'s doc comment (`ACPSessionTests.swift:50-56`) states the same three facts
+        // about `withTimeout`, one layer up. This is the same trap wearing a task group.
+        let deadline = Task { [transport, escalationGrace, flushGrace] in
+            do { try await Task.sleep(for: flushGrace) } catch { return }
+            // `do`/`catch`, never `try?`: `try?` swallows `CancellationError` and falls through,
+            // which is how #380's killer fired instead of standing down.
+            transport.terminate(hardKillAfter: escalationGrace)
+        }
+
+        // 1. Ask. A well-behaved agent exits when its stdin closes, having flushed whatever it
+        //    still owed — `ACPTransport.close()`'s own doc comment says that is what closing
+        //    exists to permit.
         await transport.close()
+
+        // 2. Let the flush arrive. Upstream called `readLoop?.cancel()` in the very next
+        //    statement and threw away exactly that flush (#381, criterion 2). The loop ends on
+        //    its own when `messages` finishes, which is when the child's stdout closes, which
+        //    is when the child exits — and when it does, the deadline above stands down.
+        if let readLoop {
+            await readLoop.value
+            deadline.cancel()
+        } else {
+            // No loop ever started, so nothing can observe the close: escalate now rather than
+            // wait out a grace window for a flush nobody is reading.
+            deadline.cancel()
+            transport.terminate(hardKillAfter: escalationGrace)
+        }
         readLoop?.cancel()
+        readLoop = nil
 
         for (_, continuation) in pendingRequests {
             continuation.resume(throwing: ClientError.processNotRunning)

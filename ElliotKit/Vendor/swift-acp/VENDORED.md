@@ -54,7 +54,7 @@ own guard read against those three names — is empty.
 
 ## What was changed in place
 
-Four files, corrected 2026-08-12 (the "20 sites" this line previously claimed was Step 5's
+Five files as of #381 — four until then, corrected 2026-08-12 (the "20 sites" this line previously claimed was Step 5's
 *diagnostic* count — 5 source sites × 4 reporting passes — not a count of edits; there is one):
 
 - `Client.swift:909`: the one generic parameter the build named at Step 6 —
@@ -75,6 +75,24 @@ Four files, corrected 2026-08-12 (the "20 sites" this line previously claimed wa
 - `Utilities/ShellEnvironment.swift:19-20`: `cachedEnvironment`/`isLoading` made
   `nonisolated(unsafe) static var` — arbitrated 2026-08-12; see the comment at the site for
   exactly what synchronisation this does and does not rely on.
+- `Transport/Transport.swift`: the `Transport` protocol gains
+  `func terminate(hardKillAfter grace: Duration)` — #381. Upstream declared `send`, `messages`,
+  `close` and `isConnected` and no way to end a child, so `Client`, which holds `any Transport`,
+  could only ever *ask* an agent to stop by closing its stdin. An agent that ignores that survives
+  the client that owned it. Deliberately not `async` and deliberately without a protocol-extension
+  default: the caller that most needs it is a `deinit`, and a default would silently disarm the
+  escalation for the next conformer that forgot to write one.
+- `Client.swift:1001`: `terminate()` — #381. Upstream closed the transport and cancelled the read
+  loop in the very next statement, throwing away the flush that closing exists to permit, and had
+  no escalation at all. It now arms a flush deadline *before* the wait (armed-then-disarmed, never
+  raced inside a task group — see the comment at the site for why the group shape deadlocks
+  precisely for the agent this exists for), awaits the read loop, and escalates through
+  `transport.terminate(hardKillAfter:)` when the flush window expires or no loop ever started.
+- `Client.swift:38-90`: `isTerminated`, `defaultFlushGrace`, `defaultEscalationGrace`, the two
+  stored graces, and the two new defaulted `init` parameters — #381. `init` defers
+  `startReadLoop()` into a `Task`, so the loop can start *after* a caller has already terminated;
+  `startReadLoop()` now returns early when it has. The graces are injectable so tests need not
+  wait out two and fifteen seconds per case.
 
 **Task 5 (`refactor(vendor): the client speaks through the Transport it already declared`) made the
 replacement above true.** `Client.swift` no longer names `ACPProcessManager` anywhere except in a
