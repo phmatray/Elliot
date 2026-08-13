@@ -222,10 +222,10 @@ Nested objects, arrays, the permission request's copy, and a full encode/decode 
 ### 3.3 ⛔ What must be cut, and why it is not optional
 
 The library contains **five** places that spawn a process (measured directly against the vendored
-tree as it landed, `git grep -l "Process()" 664d4cf -- ElliotKit/Vendor/swift-acp`; the table below
-names the three whose duplication is worth spelling out, `ProcessRegistry.swift` and
-`TerminalDelegate.swift` fold into the rows for `ProcessManager.swift` and the deleted delegates
-respectively):
+tree as it landed, `git grep -l "Process()" 664d4cf -- ElliotKit/Vendor/swift-acp`). The table below
+names the three whose duplication is worth spelling out; the other two —
+`ACP/Internal/ProcessRegistry.swift` and `ACP/TerminalDelegate.swift` — are cut for the same reason
+and appear in §3.4's manifest rather than here:
 
 | File | What it duplicates |
 |---|---|
@@ -573,7 +573,7 @@ known target.
 
 Carried forward from the final whole-branch review (2026-08-13) so it survives the deletion of
 `.superpowers/` — that directory is gitignored and removed when the SDD plan finishes, and this
-carry-forward set (23 deferred minors, 2 routed Importants, 1 known-unknown, Task 6's cannot-express
+carry-forward set (25 deferred minors, 2 routed Importants, 1 known-unknown, Task 6's cannot-express
 list) would otherwise be rediscovered from zero. Two of these are load-bearing for Stage 1's first
 task.
 
@@ -638,7 +638,7 @@ double's own author so Stage 1 does not mistake a passing suite for full coverag
 - Multiple concurrent sessions
 - More than one outstanding request at a time
 
-### 23 deferred minors, compressed
+### 25 deferred minors, compressed
 
 Three of these were fixed in the final review's own fix pass and are marked so below; the rest are
 unfixed and belong to whoever picks up Stage 1.
