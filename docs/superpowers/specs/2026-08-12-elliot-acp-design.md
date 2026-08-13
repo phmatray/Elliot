@@ -62,15 +62,42 @@ stopReason: "end_turn"   ·   turn wall-clock: 9.1s
 arrived. ⚠️ One turn, one adapter version, one machine — this is evidence, not a guarantee, and #585
 remains open.
 
-### 2.2 The plugin skills are advertised
+### 2.2 The plugin skills are advertised — and one was driven end to end [M] 2026-08-13
 
 `ai-migration-kit:create-issue`, `implement-issue` and `merge-pr` all appear in
-`available_commands_update` [M]. Issue #580 (*"Any Plan when to support `/plugin` slash command"*,
-opened 2026-04-21, zero replies) concerns plugin **management**, not plugin **skills**.
+`available_commands_update`, alongside all 11 `ai-migration-kit:*` commands (123 commands total)
+[M]. Issue #580 (*"Any Plan when to support `/plugin` slash command"*, opened 2026-04-21, zero
+replies) concerns plugin **management**, not plugin **skills**.
 
-⚠️ **Advertised is not invoked.** No probe sent `/ai-migration-kit:create-issue` as a prompt, because
-doing so files a real GitHub issue. Whether the skill runs end to end over ACP is **UNMEASURED** and
-is the first item of §7.
+**Advertised is not invoked, so it was driven.** `create-issue` files a real GitHub issue and
+`implement-issue` writes code and opens a PR, so neither is safe to fire blind; `get-repo-profile`
+reads the repository and writes `.claude/skills/repo-profile.md`, which costs nothing in a scratch
+checkout. `Scripts/probe/acp_turn.py` sent `/ai-migration-kit:get-repo-profile` as the prompt, at
+`bypassPermissions`, against a throwaway `git init` checkout with no `origin` (`/tmp/elliot-acp-skill`,
+one commit). Transcript: `Fixtures/acp/turn-skill-invocation.json`.
+
+```
+stopReason: "end_turn"   ·   turn wall-clock: 78.5s   ·   permission requests: 0
+11 tool_call (30 Bash / 12 Read / 6 Edit / 5 Write tool_call_update frames by _meta.claudeCode.toolName)
+```
+
+`.claude/skills/repo-profile.md` exists afterwards, 6.0 KB, and its content is not boilerplate — it
+is a real read of the scratch repo (correctly reports no remote, no build system, no CI, the
+`probe <probe@local>` commit identity mismatch) with `<!-- TODO -->` markers exactly where the skill's
+own discipline says to leave one rather than guess. `rawInput.command` on the first `tool_call_update`
+names the skill's own script by its plugin-cache path —
+`bash "…/plugins/cache/ai-migration-kit-marketplace/ai-migration-kit/1.10.0/skills/get-repo-profile/scripts/repo-profile.sh" show` —
+so this is the skill's code running, not the model improvising the same shape from memory. **The
+skill ran end to end over ACP.** [M]
+
+⚠️ **No `tool_call` in this transcript ever carries `_meta.claudeCode.toolName == "Skill"`.** A
+plugin skill invoked as a `/name` slash command does not surface as a distinct "Skill" tool call on
+the wire — Claude Code expands the slash command into instructions and the model then acts through
+ordinary `Bash`/`Read`/`Write`/`Edit` calls. So the brief's original litmus test (grep for
+`toolName == "Skill"`) would have reported a false negative on a skill that plainly ran; the working
+signal is the file it was supposed to write, corroborated by the tool calls' own content — the same
+"gh is the fact, the agent's prose is a hint" discipline this project already applies everywhere
+else, extended to ACP tool-call frames.
 
 ### 2.3 Cost and token accounting are richer than the spec promises
 
@@ -291,22 +318,55 @@ public struct ToolCallPatch: Sendable, Hashable {
 - **Two tiers of truth.** `gh` is the fact, the agent's prose is hearsay rendered in demoted italic.
   `Verifier` does not change by one line.
 
-### 5.4 ⚠️ What this loses
+### 5.4 A refused tool call is distinguishable — by an adapter field the spec does not define [M] 2026-08-13
 
 Today a run is clean only when `is_error == false` **and** `permission_denials` is empty — a run
 refused a tool often finishes `success` having worked around the gap. Under ACP at
-`bypassPermissions`, zero permission requests arrive [M], so Elliot's refusal ledger would always be
-empty and `RunState.completedWithDenials` becomes **unreachable**.
+`bypassPermissions`, zero permission requests arrive [M] (§2.1), so Elliot's refusal ledger would
+always be empty on that signal alone and `RunState.completedWithDenials` needs a different source.
 
-The ACP-native replacement is `tool_call_update status: failed` plus `stopReason: "refusal"`. ⛔ But
-it does not say the same thing: today Elliot distinguishes `toolResult(isError:)` — a tool error —
-from a `permissionDenial`. Under ACP both would arrive through one field, so a `grep` that finds
-nothing would read like a refusal.
+**Provoked with a real refusal**, not inferred: a `PreToolUse` hook in the scratch checkout's
+`.claude/settings.json` blocked every `Bash` call (`"decision":"block"`), then
+`Scripts/probe/acp_turn.py` sent a prompt that forces one — *"Run `echo hello` with the Bash tool and
+tell me what it printed."* Transcript: `Fixtures/acp/turn-refusal.json`.
 
-**Decision: probe before freezing.** `RunState.completedWithDenials` and the ledger stay in the
-design. A dedicated probe provokes a real refusal under `bypassPermissions` (a hook that denies, or a
-tool outside `allowedTools`) and observes the wire. `RunScheduler.state(for:)` — the judge of every
-run on the board — is frozen only after that measurement.
+```
+permission requests: 0   ·   stopReason: "end_turn"   ·   turn wall-clock: 9.0s
+```
+
+⛔ **The design's own guess — `stopReason: "refusal"` — did not happen.** `refusal` is a real case of
+the vendored `StopReason` enum (`ElliotKit/Vendor/swift-acp/ACPModel/Session.swift:68`), but this
+turn ended `end_turn`: the model accepted the block and answered the user instead of the turn itself
+being refused. So `stopReason` cannot be the signal `RunState.completedWithDenials` reads.
+
+**The Bash call's final `tool_call_update` is the signal**, and it is unambiguous:
+
+```json
+{
+  "sessionUpdate": "tool_call_update", "status": "failed",
+  "rawOutput": "probe: denied on purpose",
+  "_meta": {"claudeCode": {"nonExecutionKind": "permission-rule"}},
+  "content": [{"type": "content", "content": {"type": "text", "text": "```\nprobe: denied on purpose\n```"}}]
+}
+```
+
+`nonExecutionKind` does distinguish a refusal from an ordinary tool failure — but it lives entirely
+in `_meta.claudeCode`, not in the protocol. Reading the adapter's own source
+(`@agentclientprotocol/claude-agent-acp@0.66.0/dist/acp-agent.js`) rather than the wire alone: it is
+forwarded verbatim from a `tool_result_meta` sidecar the Claude Code CLI (≥ 2.1.216) emits on its
+`user` message and the adapter's own comment calls it an **open, untyped set** — *"'user-rejected',
+'permission-rule', 'interrupted', 'cancelled', … (open set: new kinds ship on the wire ahead of
+schema updates, so no enum check)"* — and notes the field is *"absent from sdk.d.ts, hence
+unknown-typed"*. So this is decision 2's `_meta` survival (§3.2) doing real work, and also its
+sharper edge: the exact string set is not contractual, and a future CLI could add a kind Elliot has
+never seen without any version bump on the ACP side.
+
+**Decision, now frozen:** `RunScheduler.state(for:)` reads `tool_call_update` frames with
+`status == "failed"` **and** `_meta.claudeCode.nonExecutionKind` present as denials, folding the
+`nonExecutionKind` value and `rawOutput`/`content` text into `RunState.completedWithDenials` — never
+`stopReason`, which this measurement shows does not carry the distinction. An unrecognized
+`nonExecutionKind` string still counts as a denial (the open-set warning above), so the fold must
+branch on *presence*, not on a closed enum of known values.
 
 ---
 
@@ -391,8 +451,11 @@ Direct replacement was chosen over a measured parity window. The risks that buys
 4. **`fs/*` and `terminal/*` are v1-only** and removed in the v2 draft [S], where the sanctioned route
    is a client-provided MCP server. This design does not use them, which limits the exposure, but the
    protocol under it is moving.
-5. **Skill invocation end to end is unmeasured** (§2.2). This is the first thing the plan must
-   establish, because if it fails the board does nothing.
+5. ~~**Skill invocation end to end is unmeasured.**~~ Resolved [M] 2026-08-13 (§2.2):
+   `get-repo-profile` ran end to end over ACP in a scratch checkout. One skill, one machine — not a
+   guarantee for `create-issue`/`implement-issue`/`merge-pr`, which are unprobed because their
+   failure mode is not harmless, but the mechanism (slash command → ordinary tool calls, no distinct
+   `Skill` tool-call marker) is now established rather than assumed.
 
 ---
 
