@@ -21,7 +21,11 @@ anything else (`deny`, `cancelled`, an error reply) skips the fixture entirely a
 refusal path, which is the only reason this mode exists. If the client's stdin feed closes before
 an answer arrives, the permission request (and the `session/prompt` it came from) is simply never
 answered: a genuine hang, the same shape as MODE=hang, so a client's own timeout is what is
-actually under test rather than a canned delay.
+actually under test rather than a canned delay. This double answers one outstanding request at a
+time; anything else received while waiting for that one answer is dropped rather than queued or
+handled — and the drop is announced on stderr (never stdout, which stays clean JSON-RPC), naming
+what was dropped and which id it was waiting for, so a client that sends a second request mid-wait
+sees a diagnosable line instead of silence.
 
 `session/prompt` is refused (a JSON-RPC error, never an empty-looking success) for any
 `sessionId` that was never returned by a `session/new` on this connection — including one sent
@@ -187,17 +191,34 @@ def is_response(message):
     return message.get("method") is None and "id" in message
 
 
+def describe(message):
+    """Name a dropped message for the stderr line below — the shape a reader needs to tell a
+    stray notification from a request from an answer to the wrong id, without dumping the whole
+    frame."""
+    method, mid = message.get("method"), message.get("id")
+    if method is not None:
+        return f"{'notification' if mid is None else 'request'} {method!r} (id={mid!r})"
+    return f"response for id={mid!r}"
+
+
 def wait_for_response(stdin_iter, expected_id):
     """Block until a response to `expected_id` arrives, or stdin closes. Anything else received
-    while waiting — a stray notification, a response to some other id — is dropped and the wait
-    continues: this double never has more than one outstanding request at a time, so nothing else
-    legitimate can arrive here. Returns None if stdin closed before a matching answer showed up."""
+    while waiting — a stray notification, a second request, a response to some other id — is
+    dropped rather than answered, queued or handled: this double never has more than one
+    outstanding request at a time, and inventing concurrency support here would be exactly the
+    kind of too-helpful fake this branch keeps paying for. The drop is announced on stderr, so a
+    client that sends a second request mid-wait sees a diagnosable line instead of silence, rather
+    than looking like this double is broken. Returns None if stdin closed before a matching answer
+    showed up."""
     while True:
         message = read_message(stdin_iter)
         if message is None:
             return None
         if is_response(message) and message.get("id") == expected_id:
             return message
+        print(f"fake-acp: dropped {describe(message)} while blocked waiting for the response to "
+              f"id {expected_id!r} — this double answers one outstanding request at a time",
+              file=sys.stderr, flush=True)
 
 
 def handle(message, stdin_iter):
