@@ -78,26 +78,56 @@ one commit). Transcript: `Fixtures/acp/turn-skill-invocation.json`.
 
 ```
 stopReason: "end_turn"   ·   turn wall-clock: 78.5s   ·   permission requests: 0
-11 tool_call (30 Bash / 12 Read / 6 Edit / 5 Write tool_call_update frames by _meta.claudeCode.toolName)
+11 tool_call creations (6 Bash / 3 Read / 1 Write / 1 Edit)
+42 tool_call_update frames on those same 11 ids (24 Bash / 9 Read / 5 Edit / 4 Write)
 ```
 
 `.claude/skills/repo-profile.md` exists afterwards, 6.0 KB, and its content is not boilerplate — it
 is a real read of the scratch repo (correctly reports no remote, no build system, no CI, the
 `probe <probe@local>` commit identity mismatch) with `<!-- TODO -->` markers exactly where the skill's
-own discipline says to leave one rather than guess. `rawInput.command` on the first `tool_call_update`
-names the skill's own script by its plugin-cache path —
-`bash "…/plugins/cache/ai-migration-kit-marketplace/ai-migration-kit/1.10.0/skills/get-repo-profile/scripts/repo-profile.sh" show` —
-so this is the skill's code running, not the model improvising the same shape from memory. **The
+own discipline says to leave one rather than guess.
+
+**A plausible file is not proof by itself — the improvisation hypothesis has to be built and then
+broken.** The model knows `get-repo-profile`'s *name and description* from `available_commands_update`
+whether or not the skill's body ever loaded, and that description already states the output path.
+A guessed cache path is likewise not far-fetched from a model that has this plugin in its training
+data. What is not guessable is the skill's own **private control flow**, and the transcript's six
+Bash/three Read calls reproduce it exactly, in the documented order, first try, with SKILL.md
+(`~/.claude/plugins/cache/ai-migration-kit-marketplace/ai-migration-kit/1.10.0/skills/get-repo-profile/SKILL.md`)
+never once Read:
+
+| step | SKILL.md says | transcript shows |
+|---|---|---|
+| 1 | run `repo-profile.sh show` | `bash ".../repo-profile.sh" show; echo "EXIT=$?"` → `rawOutput: "NO_PROFILE\nEXIT=3"` |
+| 2 | on exit 3 (`NO_PROFILE`), Read `references/generating.md` | Read `.../get-repo-profile/references/generating.md` |
+| 3 | run `repo-profile.sh detect` | `bash ".../repo-profile.sh" detect; echo "EXIT=$?"` |
+| 4 | fill `references/profile-template.md` | Read `.../get-repo-profile/references/profile-template.md` |
+| 5 | write `.claude/skills/repo-profile.md` | `Write /private/tmp/elliot-acp-skill/.claude/skills/repo-profile.md` |
+| — | *(not documented, but consistent with "report what you wrote")* | re-runs `repo-profile.sh show` to confirm readback, then one `Edit` on the same file |
+
+`NO_PROFILE` and the exit-3 sentinel belong to `repo-profile.sh` alone — nowhere in its own
+description, and not part of the two `references/*.md` filenames or the branch that reads them on
+that exact code. Reproducing four private names and a private exit code, in the documented sequence,
+without ever reading the instructions that name them, is not the shape of an improvisation. **The
 skill ran end to end over ACP.** [M]
 
-⚠️ **No `tool_call` in this transcript ever carries `_meta.claudeCode.toolName == "Skill"`.** A
-plugin skill invoked as a `/name` slash command does not surface as a distinct "Skill" tool call on
-the wire — Claude Code expands the slash command into instructions and the model then acts through
-ordinary `Bash`/`Read`/`Write`/`Edit` calls. So the brief's original litmus test (grep for
-`toolName == "Skill"`) would have reported a false negative on a skill that plainly ran; the working
-signal is the file it was supposed to write, corroborated by the tool calls' own content — the same
-"gh is the fact, the agent's prose is a hint" discipline this project already applies everywhere
-else, extended to ACP tool-call frames.
+⚠️ **No `tool_call` in this transcript ever carries `_meta.claudeCode.toolName == "Skill"`.** So the
+brief's original litmus test (grep for `toolName == "Skill"`) would have reported a false negative on
+a skill that plainly ran. Reading the adapter's own source rather than the wire alone (the same move
+§5.4 makes below): `shouldEmitToolCall(toolName)` in `acp-agent.js` only ever suppresses `TodoWrite`
+and the four `Task*` tools — there is no `"Skill"` case anywhere in the adapter, so the adapter is not
+filtering one out. The absence is therefore a fact about the Claude Code CLI's own handling of a
+`/plugin:skill` slash command, not about ACP: the CLI appears to expand the command into ordinary
+context before the model's turn starts, rather than emitting a `Skill`-named `tool_use` the SDK would
+carry through. **Why** is inferred from source, not measured on the wire — the working evidence for
+"the skill ran" is the control-flow table above and the file it produced, never the absence of a
+tool-call name.
+
+⚠️ `acp_turn.py` dumps only messages **received** from the adapter; the outgoing `session/prompt` is
+not in either transcript. So the committed artefact alone cannot distinguish "sent `/name` as a slash
+command" from "sent natural language that happened to auto-load the same skill" — that distinction is
+known only from the probe's own source (`ACP_PROMPT='/ai-migration-kit:get-repo-profile'`), not from
+`Fixtures/acp/turn-skill-invocation.json` in isolation.
 
 ### 2.3 Cost and token accounting are richer than the spec promises
 
@@ -326,9 +356,10 @@ refused a tool often finishes `success` having worked around the gap. Under ACP 
 always be empty on that signal alone and `RunState.completedWithDenials` needs a different source.
 
 **Provoked with a real refusal**, not inferred: a `PreToolUse` hook in the scratch checkout's
-`.claude/settings.json` blocked every `Bash` call (`"decision":"block"`), then
-`Scripts/probe/acp_turn.py` sent a prompt that forces one — *"Run `echo hello` with the Bash tool and
-tell me what it printed."* Transcript: `Fixtures/acp/turn-refusal.json`.
+`.claude/settings.json` (committed at `Fixtures/acp/refusal-hook-settings.json`) blocked every `Bash`
+call (`"decision":"block"`), then `Scripts/probe/acp_turn.py` sent a prompt that forces one — *"Run
+`echo hello` with the Bash tool and tell me what it printed."* Transcript:
+`Fixtures/acp/turn-refusal.json`.
 
 ```
 permission requests: 0   ·   stopReason: "end_turn"   ·   turn wall-clock: 9.0s
@@ -361,12 +392,53 @@ unknown-typed"*. So this is decision 2's `_meta` survival (§3.2) doing real wor
 sharper edge: the exact string set is not contractual, and a future CLI could add a kind Elliot has
 never seen without any version bump on the ACP side.
 
-**Decision, now frozen:** `RunScheduler.state(for:)` reads `tool_call_update` frames with
-`status == "failed"` **and** `_meta.claudeCode.nonExecutionKind` present as denials, folding the
-`nonExecutionKind` value and `rawOutput`/`content` text into `RunState.completedWithDenials` — never
-`stopReason`, which this measurement shows does not carry the distinction. An unrecognized
-`nonExecutionKind` string still counts as a denial (the open-set warning above), so the fold must
-branch on *presence*, not on a closed enum of known values.
+**The contrast case was checked, not left vacuous.** Across the transcripts committed for this
+design there is exactly one `status: "failed"` frame that carries a `permission-rule` refusal — so
+"no ordinary tool failure carries `nonExecutionKind`" would otherwise be true only because no
+ordinary failure existed anywhere to check. A second, targeted probe closes that: same scratch
+checkout, no hook, prompt *"Use the Read tool to read the file
+`/tmp/elliot-acp-failure/definitely-does-not-exist-abc123.txt`…"*, a genuine tool error rather than a
+policy block. Transcript: `Fixtures/acp/turn-ordinary-failure.json`.
+
+```json
+{
+  "sessionUpdate": "tool_call_update", "status": "failed",
+  "rawOutput": "File does not exist. Note: your current working directory is /private/tmp/elliot-acp-failure.",
+  "content": [{"type": "content", "content": {"type": "text", "text": "```\nFile does not exist. …\n```"}}]
+}
+```
+
+No `_meta.claudeCode.nonExecutionKind` at all — `stopReason: "end_turn"`, 8.5s. [M] Both failure
+shapes now measured, on the one axis that matters for the fold: `status == "failed"` alone does not
+imply a refusal; `nonExecutionKind`'s *presence* is what a genuine execution error never carries.
+
+⛔ **But the frozen rule as first written was wrong, and the evidence against it is quoted three
+paragraphs up.** *"Presence of `nonExecutionKind`, not a closed enum"* folds `interrupted` and
+`cancelled` into denials too — and those are exactly what a **cancelled run** produces on its
+in-flight tool calls, which is Elliot's most common deliberate action (SIGTERM today,
+`session/cancel` under ACP, §6). The rule as first frozen would have marked every cancelled run as
+one that *"was refused a tool and quietly worked around the gap,"* destroying precisely the
+distinction `RunState.completedWithDenials` exists to draw. `user-rejected` is a third
+non-denial — a human declining interactively, not a policy refusing an unattended agent.
+
+**Decision, corrected:** `RunScheduler.state(for:)` records every `nonExecutionKind` value it sees
+(for the log and the card, never discarded), and folds by *value*, not by bare presence:
+
+- `"permission-rule"` → `RunState.completedWithDenials` — the one shape actually provoked and
+  measured [M] against the actual mechanism Elliot ships (`PreToolUse` hooks; `allowedTools`/mode
+  denials are the same policy layer, unmeasured but not a new mechanism).
+- `"interrupted"` / `"cancelled"` → **not** a denial; these correlate with the run's own
+  `stopReason: "cancelled"` (§6) and are attributed there.
+- `"user-rejected"` → **not** a denial in Elliot's unattended flow (no interactive human is present
+  to reject); recorded, not folded.
+- any other string, including one not in the adapter's own list → **UNMEASURED**. Do not default it
+  to denial: the adapter's list already contains three values for which that default is provably
+  wrong, so an unknown fourth value is a call for a fact, not a place to guess one.
+
+⚠️ **Only one refusal shape was exercised — a third-party `PreToolUse` hook block.** Elliot will also
+meet a tool outside `allowedTools`, a non-`bypassPermissions` mode denying outright, `session/cancel`
+arriving mid-tool-call, and an MCP tool refusing — none of these were provoked, and whether each
+produces `nonExecutionKind: "permission-rule"` or a different value is **UNMEASURED**.
 
 ---
 
@@ -456,6 +528,15 @@ Direct replacement was chosen over a measured parity window. The risks that buys
    guarantee for `create-issue`/`implement-issue`/`merge-pr`, which are unprobed because their
    failure mode is not harmless, but the mechanism (slash command → ordinary tool calls, no distinct
    `Skill` tool-call marker) is now established rather than assumed.
+6. **The refusal discriminator is an unversioned adapter convention, not a protocol field.** §5.4's
+   `_meta.claudeCode.nonExecutionKind` is forwarded verbatim from a Claude Code CLI sidecar the
+   adapter's own source calls an *"open set"* with *"no enum check."* Elliot's fold
+   (`RunScheduler.state(for:)`) reads adapter behaviour that could gain a new value on a CLI upgrade
+   with no ACP version bump to signal it, and only one shape of refusal
+   (`PreToolUse` hook block) has been provoked. An unrecognized value is defined to read as
+   UNMEASURED rather than default to denial, but that only bounds the failure mode — it does not
+   remove the dependency on an interface neither Anthropic's ACP spec nor the SDK's own `.d.ts`
+   documents.
 
 ---
 
@@ -500,6 +581,39 @@ ACP_CWD=/tmp/elliot-acp-sandbox ACP_MODE=bypassPermissions \
   ACP_DUMP=/tmp/acp-turn.json \
   ACP_PROMPT='Append a fourth line saying "line four" to notes.txt, then run `wc -l notes.txt` and tell me the count. Keep it brief.' \
   python3 Scripts/probe/acp_turn.py
+```
+
+**§2.2 and §5.4's three recipes** (2026-08-13), each against its own throwaway `git init` checkout
+with no `origin`, none reused across recipes because measurement 2's hook must not contaminate the
+other two:
+
+```bash
+# §2.2 — a plugin skill driven end to end             → Fixtures/acp/turn-skill-invocation.json
+rm -rf /tmp/elliot-acp-skill && mkdir -p /tmp/elliot-acp-skill
+cd /tmp/elliot-acp-skill && git init -q && echo '# scratch' > README.md
+git add -A && git -c user.email=probe@local -c user.name=probe commit -qm init
+ACP_CWD=/tmp/elliot-acp-skill ACP_MODE=bypassPermissions \
+  ACP_PROMPT='/ai-migration-kit:get-repo-profile' \
+  ACP_DUMP=/tmp/acp-skill.json ACP_TURN_WAIT=900 \
+  python3 Scripts/probe/acp_turn.py
+test -f /tmp/elliot-acp-skill/.claude/skills/repo-profile.md && echo "SKILL RAN" || echo "SKILL DID NOT RUN"
+
+# §5.4 — a real refusal, provoked by a PreToolUse hook → Fixtures/acp/turn-refusal.json
+rm -rf /tmp/elliot-acp-skill2 && mkdir -p /tmp/elliot-acp-skill2/.claude
+cd /tmp/elliot-acp-skill2 && git init -q && echo '# scratch' > README.md
+git add -A && git -c user.email=probe@local -c user.name=probe commit -qm init
+cp Fixtures/acp/refusal-hook-settings.json .claude/settings.json
+ACP_CWD=/tmp/elliot-acp-skill2 ACP_MODE=bypassPermissions \
+  ACP_PROMPT='Run `echo hello` with the Bash tool and tell me what it printed.' \
+  ACP_DUMP=/tmp/acp-refusal.json python3 Scripts/probe/acp_turn.py
+
+# §5.4 — the contrast case: a genuine tool failure, no hook → Fixtures/acp/turn-ordinary-failure.json
+rm -rf /tmp/elliot-acp-failure && mkdir -p /tmp/elliot-acp-failure
+cd /tmp/elliot-acp-failure && git init -q && echo '# scratch' > README.md
+git add -A && git -c user.email=probe@local -c user.name=probe commit -qm init
+ACP_CWD=/tmp/elliot-acp-failure ACP_MODE=bypassPermissions \
+  ACP_PROMPT='Use the Read tool to read the file /tmp/elliot-acp-failure/definitely-does-not-exist-abc123.txt and tell me exactly what happened.' \
+  ACP_DUMP=/tmp/acp-failure.json python3 Scripts/probe/acp_turn.py
 ```
 
 The two Swift measurements are not committed — they build throwaway packages against a clone. To
