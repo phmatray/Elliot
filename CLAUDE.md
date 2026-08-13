@@ -153,6 +153,8 @@ The dependency graph *is* the layer order (`ElliotKit/Package.swift`). Touch the
 ElliotModel     no dependencies    value types, rule engine, prompt builder, stream-json decoder,
                                    PRMatcher, reconciler — pure: no I/O, no clock, no randomness
 ElliotStore     GRDB               schema, migrations, the one atomic move
+ACPModel        vendored           vendored ACP JSON-RPC types (Vendor/swift-acp/)
+ACP             ACPModel           vendored ACP client (Vendor/swift-acp/), declares the Transport protocol
 ElliotProcess   —                  tool discovery, login-shell env capture, spawning, line splitting,
                                    gh/git clients
 ElliotIPC       —                  wire protocol, unix socket server and client
@@ -176,9 +178,13 @@ write path for `column`.
 transition matrix. `rankNextSteps` (what `board_next` answers) decides by *calling* `evaluateMove`, so
 the board predicts its own behaviour instead of holding a second copy of the rules.
 
-**One spawn.** `ChildProcess` (`ElliotProcess/ChildProcess.swift`) is the only thing that starts a
-child, drains its pipes and publishes its exit. `ProcessRunner` and `StreamingProcess` are wrappers
-over it that differ *only* in what they do with the bytes, expressed as a `ChildOutputSink` — and the
+**One spawn.** `ChildProcess` (`ElliotProcess/ChildProcess.swift`) drains a child's pipes and
+publishes its exit. The rule is narrower than "the only thing that starts a child": **anything whose
+output we read, or whose exit we await, goes through `ChildProcess`.** `IPCClient.swift` is the one
+sanctioned exception — `open -g -j -b <bundle>` to launch the app, fire-and-forget, no pipes read and
+no exit awaited — and `OneSpawnerTests.sanctionedSpawners` is where that exception is named and kept
+honest. `ProcessRunner` and `StreamingProcess` are wrappers over `ChildProcess` that differ *only* in
+what they do with the bytes, expressed as a `ChildOutputSink` — and the
 sink's methods are called **while the drain lock is held**, because under the lock is the whole
 invariant. A sink handed a chunk to deal with later can append to a result already returned or yield
 into a stream already finished, which is the tail-dropping bug restored.
