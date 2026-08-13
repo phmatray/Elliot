@@ -80,12 +80,12 @@ public actor Client {
         requestRouter = ACPRequestRouter(encoder: encoder, decoder: decoder)
         errorHandler = ErrorHandler(encoder: encoder)
 
-        // A synchronous actor initializer is never isolated — there is no executor to hop onto
-        // before the actor exists — so `readLoop` cannot be assigned directly here; by this point
-        // every non-defaulted property is already set, so `self` reads as fully initialized and any
-        // further touch of actor state needs isolation. `startReadLoop()` has it, being an ordinary
-        // (isolated) actor method reached through `await`; deferring the loop's start by one hop
-        // loses nothing, since `transport.messages` is `.unbounded`-buffered and holds whatever
+        // Assigning `readLoop` directly here does not compile: the compiler rejects it with
+        // "cannot access property 'readLoop' here in nonisolated initializer" at this point in this
+        // initializer's body. `startReadLoop()` does not hit it — it is an ordinary actor method,
+        // isolated by default — so the fix is to defer into it rather than to pin down exactly which
+        // part of this initializer's shape trips the diagnostic. Deferring the loop's start by one
+        // hop loses nothing, since `transport.messages` is `.unbounded`-buffered and holds whatever
         // arrives before a consumer starts pulling.
         Task { [weak self] in
             await self?.startReadLoop()
@@ -103,11 +103,10 @@ public actor Client {
                 await self?.handleMessage(data: message)
             }
             // The stream finishing is the agent going away. `handleTermination` is what fails every
-            // in-flight request, so a caller is never left awaiting a reply that cannot come.
-            // ⚠️ The exit code is not knowable from here — the transport owns the child. Zero is a
-            // placeholder the caller must not read as "exited cleanly"; whoever built the
-            // `ACPTransport` has `waitForExit()` and the real number.
-            await self?.handleTermination(exitCode: 0)
+            // in-flight request, so a caller is never left awaiting a reply that cannot come — see
+            // its own doc comment for why that failure is `.connectionClosed` and not an invented
+            // exit code.
+            await self?.handleTermination()
         }
     }
 
@@ -1117,11 +1116,19 @@ public actor Client {
         try await writeMessageWithDebug(errorResponse, method: nil)
     }
 
-    private func handleTermination(exitCode: Int32) async {
-        logger.info("Agent process terminated with code: \(exitCode)")
+    /// Fails every pending request and closes the notification stream, because the connection to
+    /// the agent is gone — `transport.messages` finished, whether the agent exited or the transport
+    /// was closed out from under a live request. No real exit code reaches this layer (the
+    /// transport owns the child, and `.messages` finishing carries no payload saying why), so this
+    /// resumes with `ClientError.connectionClosed` rather than inventing one: `.processFailed` and
+    /// its `Int32` would report a fabricated "exit code 0" through `LocalizedError`, reading as a
+    /// clean exit for an agent that may have crashed. The real code, when there is a child at all,
+    /// reaches whoever owns the transport through `ACPTransport.waitForExit()`.
+    private func handleTermination() async {
+        logger.info("Agent connection closed")
 
         for (_, continuation) in pendingRequests {
-            continuation.resume(throwing: ClientError.processFailed(exitCode))
+            continuation.resume(throwing: ClientError.connectionClosed)
         }
         pendingRequests.removeAll()
 
