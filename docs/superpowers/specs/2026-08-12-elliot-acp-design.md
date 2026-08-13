@@ -221,7 +221,7 @@ Source tree: 10 648 lines, 45 files, 4 modules.
 | `ACP` protocol layer — `Client`, `RequestRouter`, `Message`, `Requests`, `Responses`, `Updates`, `Permission`, `Tool`, `Content`, `Session`, `Capabilities`, `Errors` | ✅ | Request/response correlation and notification dispatch. |
 | `ACP/Internal/ProcessManager`, `ProcessRegistry`, `Transport/StdioTransport` | ⛔ | Replaced by a `Transport` sitting on `ChildProcess`. |
 | `ACP/Utilities/ShellEnvironment` | ⛔ | `LoginShellEnvironment`. See §3.3. |
-| `ACP/Utilities/Logger` | ⛔ | A second logging story under subsystem `com.acp`. |
+| `ACP/Utilities/Logger` | ✅ **keep, repointed** | Measured after this document was first written: `Client.swift` references it, so cutting it breaks the file this whole stage is about. Its statics are made immutable and its subsystem moves from `com.acp` to `dev.phmatray.elliot`, which serves the stated intent — one logging story — at no cost. |
 | `ACP/Agent/` (2 files) | ⛔ | We are a client, not an agent. |
 | `ACPHTTP` (2), `ACPRegistry` (3) | ⛔ | WebSocket transport and agent discovery — out of scope. |
 
