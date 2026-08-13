@@ -44,6 +44,15 @@ public actor Client {
     /// `transport.messages`, and nothing else may consume it.
     private var readLoop: Task<Void, Never>?
 
+    /// Whether a read loop is currently running.
+    ///
+    /// Vendored addition (#381). `internal`, and its only reader is
+    /// `ClientTerminationTests.startReadLoopAfterTerminateIsANoOp`, which is the deterministic pin
+    /// on the guard below: post-`terminate()` this must stay `false`. A test cannot read
+    /// `readLoop` itself — it is `private` and staying that way, because widening it would also
+    /// let a test *write* the one piece of state `terminate()`'s two branches are chosen by.
+    var hasReadLoop: Bool { readLoop != nil }
+
     /// Set by `terminate()`. Read by `startReadLoop()`, which `init` defers into a `Task` and
     /// which can therefore run *after* a caller has already terminated — vendored fix (#381,
     /// criterion 4). Without it the loop starts on a dead transport and parks on a `messages`
@@ -121,7 +130,17 @@ public actor Client {
 
     /// Drains `transport.messages` into `handleMessage`, storing the `Task` in `readLoop` so
     /// `terminate()` can cancel it. Split out of `init` for the isolation reason explained there.
-    private func startReadLoop() {
+    ///
+    /// `internal` rather than `private` — vendored change (#381). `init` is still the only
+    /// production caller; the second one is a test, and it exists because the `isTerminated` guard
+    /// below is otherwise **unreachable on purpose**. In production that guard fires only when
+    /// `init`'s deferred `Task` lands after a caller has already terminated, which no test can
+    /// arrange from outside: both hops go to this actor's serial executor and which arrives first
+    /// is a race. Measured on this branch by deleting the guard — the whole suite stayed green,
+    /// 8 filtered runs out of 8 and one full run of 2 798 tests. Calling this method directly
+    /// after `terminate()` reproduces exactly the ordering the guard is written for, and nothing
+    /// else does.
+    func startReadLoop() {
         guard !isTerminated else { return }
         // Captured locally rather than read as `self.transport` inside the closure below, so the
         // loop does not hold `self` alive on its own — only the `[weak self]` calls it makes.

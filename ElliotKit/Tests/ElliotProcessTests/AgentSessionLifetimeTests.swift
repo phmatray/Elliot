@@ -2,7 +2,6 @@ import ACP
 import ACPModel
 import Foundation
 import Testing
-import TestSupport
 
 @testable import ElliotProcess
 
@@ -54,6 +53,53 @@ struct AgentSessionLifetimeTests {
 
     static func isAlive(_ pid: Int32) -> Bool { kill(pid, 0) == 0 }
 
+    /// Arms a deadline that ends `transport` unless cancelled first — `ACPSessionTests.armKiller`'s
+    /// shape, here for the same reason it exists there.
+    ///
+    /// ⛔ **Without this, a regression in the escalation makes `swift test` hang rather than
+    /// fail.** Every wait below is `await session.end()` or `await session.client.terminate()`,
+    /// both of which reach `Client.terminate()`'s `await readLoop.value`; `Task<Void, Never>.value`
+    /// observes no cancellation, so `withTimeout` cannot bound any of them — `AsyncTimeout.swift`'s
+    /// doc comment sets out why, and `armKiller`'s repeats it. The only thing that ends that wait
+    /// is the child's stdout closing, which is the child dying, which is the very behaviour under
+    /// test: the liveness of this suite would otherwise rest entirely on the code it is judging.
+    ///
+    /// Measured both ways, on this branch, with `Client.terminate()`'s two `transport.terminate`
+    /// calls deleted — the regression this guards against:
+    ///
+    /// | deadline | what `swift test --filter AgentSessionLifetimeTests` did |
+    /// |---|---|
+    /// | pushed past the watchdog | `Build complete! (2.84s)`, then **zero test lines** for 150 s |
+    /// | as shipped | 4 red in **24 s**, `terminateEndsADeafAgent` naming `killerFired → true` |
+    ///
+    /// That is also why `import TestSupport` is **not** in this file: an import suggesting
+    /// `withTimeout` guards these waits would be a claim the module cannot keep.
+    ///
+    /// ⛔ `do`/`catch`, never `try? await Task.sleep(...)`: `try?` swallows `CancellationError` and
+    /// falls straight through to the kill, which is how #380's killer fired instead of standing
+    /// down. `fired` is the proof that this one does not — read only after `await killer.value`,
+    /// since `.cancel()` alone proves nothing about a task not yet scheduled to observe it.
+    ///
+    /// Twenty seconds is comfortably above the healthy path, which is `flushGrace` (200 ms) plus
+    /// at most `hardKillAfter` (1 s). The kill itself is impolite on purpose: by the time it runs,
+    /// the tree is already broken and the only job left is to leave a red line rather than a
+    /// wedged build lock.
+    static func armKiller(_ transport: ACPTransport, deadline: Duration = .seconds(20)) -> (
+        killer: Task<Void, Never>, fired: Locked<Bool>
+    ) {
+        let fired = Locked(false)
+        let killer = Task {
+            do {
+                try await Task.sleep(for: deadline)
+            } catch {
+                return  // cancelled — the agent died on its own, which is the whole claim
+            }
+            fired.withLock { $0 = true }
+            transport.terminate(hardKillAfter: .milliseconds(100))
+        }
+        return (killer, fired)
+    }
+
     /// Polls rather than sleeping a fixed interval: killing a process is asynchronous
     /// (SIGTERM → the child's handler → the kernel reaping it → `Process`'s termination
     /// handler), so a single read straight after `terminate()` is its own race — the same one
@@ -71,9 +117,14 @@ struct AgentSessionLifetimeTests {
     @Test("terminating the session ends an agent that ignores its stdin closing")
     func terminateEndsADeafAgent() async throws {
         let session = try Self.session(Self.deafAgent())
+        let (killer, killerFired) = Self.armKiller(session.transport)
+        defer { killer.cancel() }
         let pid = session.processIdentifier
         #expect(Self.isAlive(pid))
         await session.end()
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
         #expect(await Self.waitUntilGone(pid))
     }
 
@@ -84,9 +135,14 @@ struct AgentSessionLifetimeTests {
     @Test("terminating ends an agent that ignores SIGTERM too")
     func terminateEndsAStubbornAgent() async throws {
         let session = try Self.session(Self.stubbornAgent())
+        let (killer, killerFired) = Self.armKiller(session.transport)
+        defer { killer.cancel() }
         let pid = session.processIdentifier
         #expect(Self.isAlive(pid))
         await session.end()
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
         #expect(await Self.waitUntilGone(pid, within: .seconds(20)))
     }
 
@@ -95,6 +151,12 @@ struct AgentSessionLifetimeTests {
         // ⚠️ `var` + `= nil` rather than a `do { }` scope: ARC gives no guarantee that a `let`
         // is released at the end of its scope, so a scope-based test is a coin toss dressed as
         // an assertion.
+        //
+        // The only test here with no killer armed, and deliberately: it holds no unbounded wait.
+        // Nothing below awaits the read loop — `waitUntilGone` carries its own deadline and
+        // returns a `Bool` — so a regression fails this test rather than hanging it. Arming one
+        // anyway would mean holding `transport` in a local across the drop, which is a second
+        // strong reference into the object graph whose unwinding is the whole subject.
         var session: AgentSession? = try Self.session(Self.deafAgent())
         let pid = session!.processIdentifier
         #expect(Self.isAlive(pid))
@@ -102,15 +164,31 @@ struct AgentSessionLifetimeTests {
         #expect(await Self.waitUntilGone(pid))
     }
 
+    /// ⚠️ **This test does not pin the branch its name describes, and nothing it could do would.**
+    /// `Client.init` defers `startReadLoop()` into a `Task`, so this *aims* at the window where
+    /// `readLoop` is still nil — but both that task's hop and `end()`'s hop go to the same actor's
+    /// serial executor, and which arrives first is a race decided by the scheduler. Measured on
+    /// this branch by deleting the escalation the nil branch performs: 11 filtered runs out of 12
+    /// went red, 1 went green. A pin that reports the truth 11 times in 12 is not a pin.
+    ///
+    /// ⛔ An earlier version of this comment blamed the race on *"reading `processIdentifier` is
+    /// an actor hop"*. It is not: `AgentSession.processIdentifier` is `nonisolated` (deliberately —
+    /// Task 7's `AgentRun.processIdentifier` is synchronous and reads it), so it suspends nothing
+    /// and the window it described does not exist. The only suspension before `end()` is `end()`.
+    ///
+    /// What this test is worth is the end-to-end claim: **whichever branch ran, the child is
+    /// gone.** The two branches themselves are pinned deterministically, one each, by
+    /// `ClientTerminationTests`.
     @Test("terminating before the read loop has started is safe")
     func terminateBeforeReadLoopIsSafe() async throws {
         let session = try Self.session(Self.deafAgent())
+        let (killer, killerFired) = Self.armKiller(session.transport)
+        defer { killer.cancel() }
         let pid = session.processIdentifier
-        // ⚠️ `Client.init` defers `startReadLoop()` into a `Task`, so this *aims* at the window
-        // where `readLoop` is still nil — but reading `processIdentifier` is an actor hop, so
-        // which branch runs is a race and not a guarantee. Both branches must be safe; this
-        // test asserts that whichever one ran, the child is gone.
         await session.end()
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
         #expect(await Self.waitUntilGone(pid))
         // Idempotent at the `AgentSession` level — which is `ended`, not `Client.terminate()`.
         await session.end()
@@ -118,12 +196,24 @@ struct AgentSessionLifetimeTests {
 
     /// `Client.terminate()`'s **own** idempotency, which `AgentSession.end()`'s `ended` flag
     /// hides. Called twice directly, it must not trap, hang, or resume a continuation twice.
+    ///
+    /// ⚠️ The second call is guaranteed to take the `readLoop == nil` branch — `terminate()` nils
+    /// the field before returning — but it reaches it against a child that is **already dead**, so
+    /// the escalation it performs is a no-op and deleting that escalation leaves this test green.
+    /// It says the second call is *harmless*, never that the nil branch *works*; the branch is
+    /// pinned by `ClientTerminationTests.terminateWithoutAReadLoopEscalates`, against a transport
+    /// that records the call.
     @Test("Client.terminate is itself safe to call twice")
     func clientTerminateIsIdempotent() async throws {
         let session = try Self.session(Self.deafAgent())
+        let (killer, killerFired) = Self.armKiller(session.transport)
+        defer { killer.cancel() }
         let pid = session.processIdentifier
         await session.client.terminate()
         await session.client.terminate()
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
         #expect(await Self.waitUntilGone(pid))
     }
 }

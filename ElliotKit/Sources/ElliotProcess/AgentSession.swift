@@ -16,7 +16,27 @@ import Foundation
 /// both the scheduler's cancel path and the run's own completion reach it.
 public actor AgentSession {
     public let client: Client
-    private let transport: ACPTransport
+
+    /// `internal` rather than `private`, the way `ACPTransport.sendRaw` is — production has
+    /// `end()` and needs nothing else. The one other reader is `AgentSessionLifetimeTests`, which
+    /// arms a deadline able to end this agent from outside the actor.
+    ///
+    /// It needs one because **every wait in that suite is unbounded and `withTimeout` cannot bound
+    /// it**: `end()` reaches `Client.terminate()`, which reaches `await readLoop.value`, and
+    /// `Task<Void, Never>.value` observes no cancellation — the three facts `armKiller`'s doc
+    /// comment (`ACPSessionTests.swift`) sets out one layer up. The only thing that ends that wait
+    /// is the child dying, which is the very behaviour under test, so without a killer a
+    /// regression in the escalation makes `swift test` **hang** instead of fail. Measured with
+    /// `Client.terminate()`'s two `transport.terminate` calls deleted: killerless, the filtered
+    /// suite printed `Build complete! (2.84s)` and then no test line at all for 150 s; with the
+    /// killer armed, the same break reported 4 red tests in 24 s.
+    ///
+    /// `nonisolated` for the same reason `processIdentifier` is: an actor's `let` is implicitly
+    /// nonisolated only *within* its own module, so without this a test in `ElliotProcessTests`
+    /// gets `actor-isolated property 'transport' cannot be accessed from outside of the actor`.
+    /// `ACPTransport` is `Sendable`, so nothing is given up by saying so.
+    nonisolated let transport: ACPTransport
+
     private let killer: Killer
     private var ended = false
 
