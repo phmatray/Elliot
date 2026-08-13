@@ -1,0 +1,18 @@
+[
+  {"sessionUpdate": "current_mode_update", "currentModeId": "bypassPermissions"},
+  {"sessionUpdate": "agent_message_chunk",
+   "content": {"type": "text", "text": "Reading the file."},
+   "messageId": "msg_fake_1"},
+  {"sessionUpdate": "tool_call", "toolCallId": "tc-1", "title": "Edit",
+   "kind": "edit", "status": "pending", "content": [],
+   "_meta": {"claudeCode": {"toolName": "Edit"}}},
+  {"sessionUpdate": "tool_call_update", "toolCallId": "tc-1",
+   "title": "Edit /tmp/notes.txt", "kind": "edit",
+   "locations": [{"path": "/tmp/notes.txt", "line": 3}]},
+  {"sessionUpdate": "tool_call_update", "toolCallId": "tc-1",
+   "content": [{"type": "diff", "path": "/tmp/notes.txt",
+                "oldText": "line three", "newText": "line three\nline four"}]},
+  {"sessionUpdate": "tool_call_update", "toolCallId": "tc-1", "status": "completed"},
+  {"sessionUpdate": "usage_update", "used": 37355, "size": 1000000,
+   "cost": {"amount": 0.2855775, "currency": "USD"}}
+]

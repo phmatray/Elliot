@@ -68,11 +68,39 @@ final class ChildProcess<Sink: ChildOutputSink>: Sendable {
         var waiter: CheckedContinuation<ChildTermination, Never>?
     }
 
+    /// What the child's stdin is connected to.
+    ///
+    /// `.null` is the default and stays the default: a child that inherits the app's stdin blocks
+    /// waiting on it, which is what the single line here always prevented.
+    ///
+    /// `.pipe` exists for one kind of caller — an agent spoken to over JSON-RPC, which is written
+    /// to rather than only read from. ⛔ Its writer never closes the handle: a helper whose stdin
+    /// closes exits having written nothing, which reads exactly like a helper that failed to start.
+    /// Only `closeStdin()` closes it, and only at teardown.
+    enum StandardInput: Sendable {
+        case null
+        case pipe
+    }
+
+    /// Tri-state rather than `FileHandle?`, which cannot distinguish "never piped" from "piped,
+    /// then closed" — the same two-valued answer to a three-valued question this project has
+    /// already paid for once, in `PreflightState.notChecked`. `writeStdin` answers each state on
+    /// its own, so its error never describes a state the caller has already left.
+    private enum StdinState: Sendable {
+        case notPiped
+        case open(FileHandle)
+        case closed
+    }
+
+    /// Boxed because the write, the close and the drain can each land on a different isolation.
+    private let stdinState: Locked<StdinState>
+
     init(
         executable: String,
         arguments: [String],
         cwd: String?,
         environment: [String: String],
+        stdin: StandardInput = .null,
         sink: Sink
     ) throws {
         guard FileManager.default.isExecutableFile(atPath: executable) else {
@@ -84,8 +112,38 @@ final class ChildProcess<Sink: ChildOutputSink>: Sendable {
         process.arguments = arguments
         process.environment = environment
         if let cwd { process.currentDirectoryURL = URL(fileURLWithPath: cwd) }
-        // Never let a child inherit the app's stdin and block waiting on it.
-        process.standardInput = FileHandle.nullDevice
+        switch stdin {
+        case .null:
+            // Never let a child inherit the app's stdin and block waiting on it.
+            process.standardInput = FileHandle.nullDevice
+            stdinState = Locked(.notPiped)
+        case .pipe:
+            let inPipe = Pipe()
+            process.standardInput = inPipe
+
+            // Measured 2026-08-12 (Task 4, `SIGPIPEMeasurementTests`): writing to this pipe's
+            // write end after the child has already exited and closed its read end raises
+            // SIGPIPE, whose default disposition **terminates the process** — reproduced 3/3
+            // runs (signal 13), with no thrown error and no failing test: the whole `swift test`
+            // process simply went away mid-test. `ACPTransport.send` calls `writeStdin` from an
+            // `async` context that has no way to know the agent it is talking to exited moments
+            // earlier, so "the child is already gone" is an ordinary race here, not an edge case.
+            //
+            // `F_SETNOSIGPIPE` disables that **for this one file descriptor**, never process-wide:
+            // a write past a closed reader on it now returns -1/EPIPE instead of raising the
+            // signal. Deliberately not `signal(SIGPIPE, SIG_IGN)`, which is process-global and not
+            // a library's to set — it would silently change every other write in the app, not just
+            // this pipe.
+            let writeHandle = inPipe.fileHandleForWriting
+            guard fcntl(writeHandle.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+                // A pipe that can still kill the process on write is not a child worth having.
+                // Failing loudly here, rather than swallowing a nonzero return, is the whole
+                // point — a silently-failed fcntl would hand back exactly the fatal behaviour
+                // this guard exists to remove, with nothing pointing at why.
+                throw ProcessError.stdinSigPipeGuardFailed(errno)
+            }
+            stdinState = Locked(.open(writeHandle))
+        }
 
         let outPipe = Pipe(), errPipe = Pipe()
         process.standardOutput = outPipe
@@ -220,6 +278,43 @@ final class ChildProcess<Sink: ChildOutputSink>: Sendable {
     /// does with it can run inside the drain.
     func withSink<T: Sendable>(_ body: (Sink) -> T) -> T {
         state.withLock { body($0.sink) }
+    }
+
+    /// Writes to the child's stdin.
+    ///
+    /// Synchronous and under a lock, so two callers cannot interleave halves of a JSON-RPC line.
+    /// A write blocks if the child is not reading; the messages this carries are single lines, and
+    /// an agent that has stopped reading is one `terminate()` is about to reach anyway.
+    ///
+    /// ⛔ Never call this from a `ChildOutputSink` method. Those run with the drain lock held, and a
+    /// blocking write from inside one can deadlock: the write waits for the child to read its stdin,
+    /// the child is blocked writing to its own full stdout pipe, and stdout only drains through the
+    /// sink method that is now stuck making this call. Nothing inverts a lock — the same lock simply
+    /// never lets go.
+    func writeStdin(_ data: Data) throws {
+        try stdinState.withLock { state in
+            switch state {
+            case .open(let handle):
+                try handle.write(contentsOf: data)
+            case .notPiped:
+                throw ProcessError.stdinNotPiped
+            case .closed:
+                throw ProcessError.stdinClosed
+            }
+        }
+    }
+
+    /// Closes the child's stdin, which is how a well-behaved agent learns to exit.
+    ///
+    /// Separate from `terminate()` on purpose: closing is a request the child may take its time
+    /// over, and `terminate()` is the escalation. Safe to call twice, and a no-op on a child that
+    /// was never piped.
+    func closeStdin() {
+        stdinState.withLock { state in
+            guard case .open(let handle) = state else { return }
+            try? handle.close()
+            state = .closed
+        }
     }
 
     /// Asks the child to stop, escalating only if it ignores the request.

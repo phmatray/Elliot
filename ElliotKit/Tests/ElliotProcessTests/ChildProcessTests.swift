@@ -77,11 +77,10 @@ struct ChildProcessTests {
         let bulk = 65_536
         try await withTimeout(.seconds(120)) {
             for attempt in 0..<30 {
-                // `withTimeout` cannot interrupt a `wait()` already in flight —
-                // it parks in a `withCheckedContinuation`, which no cancellation
-                // reaches — so without this check one wedged iteration would be
-                // followed by 29 more and the "bounded" test would sit on the
-                // build lock far past its 120 s.
+                // `withTimeout` cannot interrupt a `wait()` already in flight — see
+                // `AsyncTimeout.swift`'s doc comment for why — so without this check one
+                // wedged iteration would be followed by 29 more and the "bounded" test
+                // would sit on the build lock far past its 120 s.
                 try Task.checkCancellation()
                 let child = try Self.spawn(
                     "yes abcdefghij | head -c \(bulk); printf 'LAST-LINE\\n'"
