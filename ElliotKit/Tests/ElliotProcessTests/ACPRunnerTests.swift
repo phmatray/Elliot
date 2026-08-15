@@ -138,6 +138,22 @@ struct ACPRunnerTests {
         #expect(outcome?.summary?.stopReason == "end_turn")
         #expect(outcome?.agentSessionID == "sess-fake-0001")
 
+        // ⛔ These three are what the consumer barrier in `AgentRun.start` buys, and they are the
+        // reason the terminal line is assembled after it rather than on the prompt response. Every
+        // one of them is folded by the notification consumer — a separate task — and the fixture's
+        // `usage_update` is the frame immediately BEFORE the reply, so assembling at the response
+        // reads whatever that task happened to have drained. Measured with the barrier removed:
+        // `usage` came back nil on 5 of 5 runs and `text` on 4 of 5.
+        #expect(outcome?.summary?.text == "Reading the file.")
+        #expect(outcome?.summary?.usage?.used == 37355)
+        #expect(outcome?.summary?.usage?.costUSD == 0.2855775)
+
+        // And the file says the same thing the caller was handed — the whole point of writing it.
+        let terminal = try #require(objects.last)
+        let params = try #require(terminal["params"] as? [String: Any])
+        #expect(params["stopReason"] as? String == "end_turn")
+        #expect(params["text"] as? String == "Reading the file.")
+
         // Proof, not prose, that `killer` did not fire — see `armKiller`'s doc comment for why the
         // flag rather than `transport.isConnected` is the check.
         killer.cancel()
