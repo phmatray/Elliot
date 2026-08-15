@@ -35,10 +35,27 @@ public struct AgentInvocation: Sendable {
     /// the default.
     ///
     /// ⚠️ **A brake, not a guarantee — say so wherever this is read.** `RunUsage.costUSD` is
-    /// intermittent: measured, absent from the first nine `usage_update` frames of a turn and
-    /// present on the tenth. So this can only fire on a frame that reports a cost, and the spend
-    /// between reports is unbounded — a run that crosses the ceiling mid-silence keeps spending
-    /// until the next cost-bearing frame arrives to say so.
+    /// intermittent, and re-deriving that from the recordings rather than repeating it made it
+    /// worse than "intermittent": across the four transcripts in `Fixtures/acp/turn-*.json`, cost
+    /// is reported **exactly once per turn, on the last `usage_update` before the `session/prompt`
+    /// response** — 4 cost-bearing frames out of 42, at element 31 of 34, 17 of 20, 18 of 21 and
+    /// 99 of 102, each one immediately preceding the reply. This comment said "absent from the
+    /// first nine frames and present on the tenth", which was `turn-edit-bash.json` alone and read
+    /// as *late in the turn* where the recording says *as the turn ends*.
+    ///
+    /// ⛔ **So on the evidence that exists this cannot stop a turn in flight, and must not be
+    /// written up as if it could.** The spend between reports is unbounded and the one report
+    /// arrives when there is nothing left to stop. What the ceiling buys is the **verdict** —
+    /// `AgentRun.maxBudgetStopReason` and `isError`, which Task 15 folds to `.failed` — so a run
+    /// that overspent is marked as such instead of reading as a success. The `session/cancel` it
+    /// sends is real, and `theBrakeAsksTheAgentToStop` pins that Elliot sends it; it is simply
+    /// unlikely, on these four recordings, to arrive before the turn has ended on its own. That is
+    /// also the honest reading of the 13-of-15 empty-stderr measurement recorded on that test:
+    /// `fake-acp.py` replying in the same breath as the cost frame is not an artefact of the
+    /// double, it is the recorded ordering.
+    ///
+    /// ⚠️ **Unmeasured**: whether a turn longer or costlier than these four reports cost mid-flight.
+    /// Four recordings of one adapter version is what exists, and a fifth could change this.
     public var maxBudgetUSD: Double?
     /// The **agent's** session id to fork from, not a `SkillRun.id`.
     ///
@@ -772,10 +789,19 @@ public final class AgentRun: Sendable {
     private struct TurnState: Sendable {
         var text = ""
         var lastUsage: RunUsage?
-        /// The last cost anyone reported, which is **not** the last frame's: cost is intermittent
-        /// — measured, absent from nine `usage_update` frames of a turn and present on the tenth —
-        /// so taking the last frame's would report `nil` for a turn that really did cost money.
+        /// The last cost anyone reported, which is **not** the last frame's: cost is intermittent,
+        /// so taking the last frame's could report `nil` for a turn that really did cost money.
         /// `TurnSummary.usage` states the rule; this is the half that observes it.
+        ///
+        /// ⚠️ **Defensive, not load-bearing — corrected after re-deriving the measurement it used
+        /// to cite.** This said "absent from nine frames and present on the tenth, so taking the
+        /// last frame's *would* report nil". In all four recorded transcripts the cost-bearing
+        /// frame **is** the last `usage_update` of the turn (`AgentInvocation.maxBudgetUSD` carries
+        /// the indices), so that failure has never been observed and this fallback is inert on
+        /// every recording we hold. Kept anyway: nothing in the protocol orders those frames, one
+        /// `usage_update` after the cost frame would lose the figure, and the cost is what a person
+        /// reads. ⛔ But it is not evidence of an ordering anybody has seen, and citing it as such
+        /// is what this edit is undoing.
         var lastCostUSD: Double?
         /// Every tool call, every frame of it already merged, plus the order they were first seen
         /// in — because `denials` is a list a person reads, and dictionary order is not an order.

@@ -760,10 +760,11 @@ struct ACPRunnerTests {
         #expect(!killerFired.value)
     }
 
-    /// Measured (`AgentInvocation.maxBudgetUSD`'s doc comment): nine of ten frames of a real turn
-    /// carried no `cost` at all. A brake reading that absence as `0.0` would be correct by
-    /// accident against a ceiling like `0.10` and wrong the moment a ceiling is compared the
-    /// other way — so this drives a ceiling of exactly `0.0` against
+    /// Measured (`AgentInvocation.maxBudgetUSD`'s doc comment, where the per-transcript indices
+    /// are): **38 of the 42 recorded `usage_update` frames carry no `cost` at all**, so a costless
+    /// frame is the ordinary case and not the corner. A brake reading that absence as `0.0` would
+    /// be correct by accident against a ceiling like `0.10` and wrong the moment a ceiling is
+    /// compared the other way — so this drives a ceiling of exactly `0.0` against
     /// `Fixtures/acp/usage-no-cost.json`, whose one `usage_update` frame reports `used`/`size` and
     /// no `cost` at all: `0.0 >= 0.0` would fire the brake on the very first frame if absence read
     /// as zero spend.
