@@ -43,7 +43,8 @@ struct ACPRunnerTests {
     static func invocation(
         cwd: String = "/tmp",
         permissionMode: PermissionMode = .bypassPermissions,
-        extraAllowedTools: [String] = []
+        extraAllowedTools: [String] = [],
+        maxBudgetUSD: Double? = nil
     ) -> AgentInvocation {
         AgentInvocation(
             runID: UUID(),
@@ -52,7 +53,7 @@ struct ACPRunnerTests {
             permissionMode: permissionMode,
             extraAllowedTools: extraAllowedTools,
             extraDirectories: [],
-            maxBudgetUSD: nil,
+            maxBudgetUSD: maxBudgetUSD,
             resumeFromAgentSession: nil
         )
     }
@@ -587,5 +588,121 @@ struct ACPRunnerTests {
                 logURL: home.appendingPathComponent("spawned.jsonl")
             )
         }
+    }
+
+    /// Task 11: `--max-budget-usd` went with the CLI, and the per-run spend ceiling is rebuilt on
+    /// live `usage_update` + `session/cancel`. `Fixtures/acp/usage-over-budget.json` carries one
+    /// `usage_update` frame reporting `cost: 0.2855775` — the same recorded figure
+    /// `aTurnStreamsAndLogs` pins on `fake-simple-turn.json` — against a ceiling of `0.10`.
+    ///
+    /// ⚠️ **Sampled five times, not once.** `fake-acp.py` writes every fixture frame and then
+    /// immediately replies to `session/prompt` in the same breath (`Scripts/fake-acp.py:283-284`),
+    /// so the brake's decision (made asynchronously, off the notification consumer) and the
+    /// response already in flight race by construction — a single green run would prove nothing
+    /// about which one the summary reflected. It is the `braked` override in `AgentRun.summary`
+    /// that makes the answer stable regardless of who wins that race; this is the test that would
+    /// otherwise be intermittent rather than wrong-answered.
+    @Test("a run that crosses its ceiling is cancelled, and says which ceiling")
+    func theBudgetBrakeFires() async throws {
+        for _ in 0..<5 {
+            let logURL = try Self.logURL("acp-brake-fires")
+            let run = try AgentRun.start(
+                invocation: Self.invocation(maxBudgetUSD: 0.10),
+                agent: Self.agent(fixture: "usage-over-budget.json"),
+                logURL: logURL
+            )
+            let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+            defer { killer.cancel() }
+
+            let (_, outcome) = await Self.drain(run)
+
+            #expect(outcome?.summary?.stopReason == AgentRun.maxBudgetStopReason)
+            #expect(outcome?.summary?.isError == true)
+
+            killer.cancel()
+            await killer.value
+            #expect(!killerFired.value)
+        }
+    }
+
+    /// The other collision Task 11 has to win, and it is not hypothetical either: `brake()` calls
+    /// the Task 10 cancel path, which sends `session/cancel`, which a real agent answers with
+    /// `stopReason: "cancelled"` — Elliot's own spend ceiling reported as a user cancellation, on
+    /// a card whose run cost more than it was allowed to. `FAKE_ACP_STOP_REASON=cancelled` makes
+    /// `fake-acp.py` answer that way regardless, so both answers are genuinely available and the
+    /// brake's must win.
+    @Test("a braked run does not report the cancellation it used to stop itself")
+    func theBrakeOutranksTheCancel() async throws {
+        let logURL = try Self.logURL("acp-brake-outranks-cancel")
+        let run = try AgentRun.start(
+            invocation: Self.invocation(maxBudgetUSD: 0.10),
+            agent: Self.agent(
+                fixture: "usage-over-budget.json",
+                environment: ["FAKE_ACP_STOP_REASON": "cancelled"]
+            ),
+            logURL: logURL
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let (_, outcome) = await Self.drain(run)
+
+        #expect(outcome?.summary?.stopReason == AgentRun.maxBudgetStopReason)
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
+    }
+
+    /// `maxBudgetUSD: nil` is "no ceiling — the default"
+    /// (`AgentInvocation.maxBudgetUSD`'s doc comment), so the same over-ceiling fixture must run
+    /// to its ordinary end.
+    @Test("a run with no ceiling is never braked")
+    func noCeilingNeverBrakes() async throws {
+        let logURL = try Self.logURL("acp-brake-no-ceiling")
+        let run = try AgentRun.start(
+            invocation: Self.invocation(maxBudgetUSD: nil),
+            agent: Self.agent(fixture: "usage-over-budget.json"),
+            logURL: logURL
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let (_, outcome) = await Self.drain(run)
+
+        #expect(outcome?.summary?.stopReason == "end_turn")
+        #expect(outcome?.summary?.isError == false)
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
+    }
+
+    /// Measured (`AgentInvocation.maxBudgetUSD`'s doc comment): nine of ten frames of a real turn
+    /// carried no `cost` at all. A brake reading that absence as `0.0` would be correct by
+    /// accident against a ceiling like `0.10` and wrong the moment a ceiling is compared the
+    /// other way — so this drives a ceiling of exactly `0.0` against
+    /// `Fixtures/acp/usage-no-cost.json`, whose one `usage_update` frame reports `used`/`size` and
+    /// no `cost` at all: `0.0 >= 0.0` would fire the brake on the very first frame if absence read
+    /// as zero spend.
+    @Test("a usage frame with no cost does not read as zero spend")
+    func absentCostIsNotZero() async throws {
+        let logURL = try Self.logURL("acp-brake-absent-cost")
+        let run = try AgentRun.start(
+            invocation: Self.invocation(maxBudgetUSD: 0.0),
+            agent: Self.agent(fixture: "usage-no-cost.json"),
+            logURL: logURL
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let (_, outcome) = await Self.drain(run)
+
+        #expect(outcome?.summary?.stopReason == "end_turn")
+        #expect(outcome?.summary?.isError == false)
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
     }
 }

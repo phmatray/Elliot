@@ -30,8 +30,15 @@ public struct AgentInvocation: Sendable {
     /// before a drag rather than after.
     public var extraAllowedTools: [String]
     public var extraDirectories: [String]
-    /// `--max-budget-usd` is gone with the CLI, and the ceiling is rebuilt on live `usage_update` +
-    /// `session/cancel` (Task 11). `nil` means no ceiling — the default.
+    /// `--max-budget-usd` is gone with the CLI; the ceiling is rebuilt on live `usage_update` +
+    /// `session/cancel`, in `AgentRun.start`'s notification consumer. `nil` means no ceiling —
+    /// the default.
+    ///
+    /// ⚠️ **A brake, not a guarantee — say so wherever this is read.** `RunUsage.costUSD` is
+    /// intermittent: measured, absent from the first nine `usage_update` frames of a turn and
+    /// present on the tenth. So this can only fire on a frame that reports a cost, and the spend
+    /// between reports is unbounded — a run that crosses the ceiling mid-silence keeps spending
+    /// until the next cost-bearing frame arrives to say so.
     public var maxBudgetUSD: Double?
     /// The **agent's** session id to fork from, not a `SkillRun.id`.
     ///
@@ -299,10 +306,24 @@ public final class AgentRun: Sendable {
     ///
     /// Fire-and-forget, because `RunScheduler.cancel` is: it writes `.cancelling` and calls this,
     /// and the terminal update is what finishes the job. Making this `async` would change that
-    /// call site's shape for nothing, so both phases live in the `Task` below. Safe to call after
-    /// the run has already finished — `end()` is idempotent.
+    /// call site's shape for nothing, so both phases live in `requestCancel`, below. Safe to call
+    /// after the run has already finished — `end()` is idempotent.
+    ///
+    /// The mechanism is `requestCancel(session:cancelGrace:cancelState:)`, a `static` free
+    /// function rather than a second body on this method: the spend brake in `start`'s `Task`
+    /// needs to reach it before an `AgentRun` exists to call it on — `session`, `cancelGrace` and
+    /// `cancelState` are locals there long before the value this method lives on is constructed
+    /// and returned. One mechanism, two callers, rather than the brake growing its own copy of a
+    /// sequence this file already spends a paragraph explaining how not to get wrong.
     public func cancel() {
-        let session = self.session
+        Self.requestCancel(session: session, cancelGrace: cancelGrace, cancelState: cancelState)
+    }
+
+    /// The two-phase ask-then-kill sequence `cancel()` performs — see its doc comment for why
+    /// this is a free function and not inlined there.
+    private static func requestCancel(
+        session: AgentSession, cancelGrace: Duration, cancelState: Locked<CancelState>
+    ) {
         let client = session.client
         let grace = cancelGrace
         let sessionId = cancelState.withLock { $0.sessionId }
@@ -377,6 +398,14 @@ public final class AgentRun: Sendable {
     /// for a live turn, since `merge-pr` waiting hours on CI is legitimate. This window only opens
     /// once somebody has asked the run to stop.
     public static let cancelGrace: Duration = .seconds(10)
+
+    /// The stop reason Elliot writes over the agent's own when `AgentInvocation.maxBudgetUSD` is
+    /// crossed. Deliberately not a case of `ACPModel.StopReason` — that type is vendored and
+    /// describes what the *agent* can say; this is what *Elliot* decided, and `TurnSummary
+    /// .stopReason`'s doc comment already allows for "or an unrecognised string" so a brake needs
+    /// no case of its own. A named constant rather than the literal repeated at every reader —
+    /// Task 15's `state(for:)` is the next one.
+    public static let maxBudgetStopReason = "elliot/max_budget"
 
     public static func start(
         invocation: AgentInvocation,
@@ -473,6 +502,29 @@ public final class AgentRun: Sendable {
             var agentSessionID: String?
             var response: SessionPromptResponse?
 
+            // The per-run spend ceiling (Task 11): written only from the notification consumer
+            // below, and read again after `await consumer?.value` has returned, to decide the
+            // summary. That barrier is what makes the later read safe in spirit as well as in
+            // the lock — by the time anyone reads it for the summary, the only writer has
+            // finished.
+            let brakedByElliot = Locked(false)
+
+            // `maxBudgetUSD`'s doc comment carries the caveat this keeps: a brake, not a
+            // guarantee, because `RunUsage.costUSD` is intermittent and this can only fire on a
+            // frame that reports one. Idempotent on the flag rather than on `requestCancel`
+            // itself — a second crossing must not re-ask an agent that has already been asked to
+            // stop, which would arm a second grace deadline that silently replaces the first in
+            // `cancelState`.
+            func brake() {
+                let already = brakedByElliot.withLock { flag -> Bool in
+                    let was = flag
+                    flag = true
+                    return was
+                }
+                guard !already else { return }
+                Self.requestCancel(session: session, cancelGrace: cancelGrace, cancelState: cancelState)
+            }
+
             do {
                 // Set before the handshake even starts — well ahead of the one requirement,
                 // "before `sendPrompt`" — so no byte has gone to the child when it returns.
@@ -561,6 +613,16 @@ public final class AgentRun: Sendable {
                         }
                         for event in events {
                             seen.withLock { $0.fold(event) }
+                            // Task 11's brake: `if let ceiling …, let spent …, spent >= ceiling`,
+                            // stated once here rather than inside `brake()` itself, because the
+                            // condition is what varies per event and the action is what does not.
+                            if case .usage(let usage) = event,
+                                let ceiling = invocation.maxBudgetUSD,
+                                let spent = usage.costUSD,
+                                spent >= ceiling
+                            {
+                                brake()
+                            }
                             updateContinuation.yield(.event(event))
                         }
                     }
@@ -648,7 +710,8 @@ public final class AgentRun: Sendable {
                 let assembled = Self.summary(
                     response: response,
                     seen: seen.value,
-                    truncationEvents: transport.truncationEvents()
+                    truncationEvents: transport.truncationEvents(),
+                    braked: brakedByElliot.value
                 )
                 writer.record(AgentLog.terminalLine(assembled))
                 summary = assembled
@@ -747,7 +810,7 @@ public final class AgentRun: Sendable {
     }
 
     private static func summary(
-        response: SessionPromptResponse, seen: TurnState, truncationEvents: Int
+        response: SessionPromptResponse, seen: TurnState, truncationEvents: Int, braked: Bool
     ) -> TurnSummary {
         var usage = seen.lastUsage
         // `used`/`size` from the last frame, because a stale context figure is simply wrong;
@@ -767,7 +830,17 @@ public final class AgentRun: Sendable {
         }
 
         return TurnSummary(
-            stopReason: response.stopReason.rawValue,
+            // ⛔ **`braked` overrides both fields, whatever the response said — Task 11's whole
+            // point.** Two real collisions, not a hypothetical: `brake()` itself calls
+            // `requestCancel`, which sends `session/cancel` and can make a real agent answer
+            // `stopReason: "cancelled"` — Elliot's own spend ceiling misreported as a user
+            // cancellation, on a card whose run cost more than it was allowed to. And
+            // `fake-acp.py` (like a real adapter can) writes every fixture frame and then
+            // immediately replies, so `end_turn` can arrive after the brake has already decided.
+            // Without the override here, which stopReason a test observes depends on which of
+            // those two racing writes the notification consumer happened to have processed first
+            // — intermittent, not merely wrong.
+            stopReason: braked ? Self.maxBudgetStopReason : response.stopReason.rawValue,
             text: seen.text.isEmpty ? nil : seen.text,
             usage: usage,
             // ⚠️ Not the protocol's: ACP defines no per-turn token accounting at all, and the
@@ -779,7 +852,7 @@ public final class AgentRun: Sendable {
             denials: denials,
             nonExecutionKinds: seen.nonExecutionKinds,
             truncationEvents: truncationEvents,
-            isError: response.stopReason == .refusal
+            isError: braked ? true : response.stopReason == .refusal
         )
     }
 
