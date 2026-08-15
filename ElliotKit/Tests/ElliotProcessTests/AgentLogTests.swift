@@ -51,6 +51,10 @@ struct AgentLogTests {
     /// not reliably the last thing that mattered. A scan that read the last line rather than the
     /// last *matching* one would miss the summary entirely and answer `nil`, which is
     /// indistinguishable from a run that died mid-turn.
+    ///
+    /// Break-tested by scanning `.reversed().prefix(1)` — the last line rather than the last
+    /// matching one: red here on the `#require`, and red one test down on `sessionInfo`, which is
+    /// the same defect seen from the other end of the file.
     @Test("the terminal summary is recovered from the log, not from memory")
     func summaryComesBackOffDisk() throws {
         let url = try Self.log(
@@ -116,6 +120,11 @@ struct AgentLogTests {
     /// `session/update` — so its `params` are byte-identical to a genuine summary and decode
     /// perfectly. A scan that decoded first and asked about the method afterwards, or never asked,
     /// would return it. Only the method check can tell these two lines apart.
+    ///
+    /// Break-tested by relaxing the scan's `envelope.method == method` to `envelope.method != nil`
+    /// — i.e. "any line of ours" rather than "this record of ours": red here, and **nowhere else in
+    /// 2 857 tests**, which is the measurement that says this assertion is the only thing holding
+    /// the namespace guarantee up.
     @Test("an adapter frame can never be mistaken for Elliot's own record")
     func theNamespaceIsTheGuarantee() throws {
         let real = Self.text(AgentLog.terminalLine(Self.summary))
@@ -145,6 +154,13 @@ struct AgentLogTests {
     /// The fact the whole design rests on: a run that died mid-turn is **distinguishable** from one
     /// that ended. `FAKE_ACP_MODE=crash` exits 9 inside `session/prompt`, so no response ever comes
     /// back, no terminal line is written, and the absence is the record.
+    ///
+    /// ⛔ Break-tested by giving the `if let response` an `else` that writes
+    /// `TurnSummary(stopReason: "end_turn", isError: false)` — a guess, which is precisely what
+    /// this design refuses. Red on both assertions here, in memory **and** on disk, and green
+    /// everywhere else: a run that crashed inside `session/prompt` was reported as a clean turn,
+    /// and nothing else in the suite could see it. That is the whole reason this test exists rather
+    /// than a comment saying the absence is deliberate.
     @Test("a run whose response never arrived is distinguishable from one that ended")
     func aDiedMidTurnRunHasNoSummary() async throws {
         let logURL = try ACPRunnerTests.logURL("agentlog-crash")
@@ -190,6 +206,13 @@ struct AgentLogTests {
     /// `FAKE_ACP_EXIT_AFTER_REPLY` is what makes the window wide instead of theoretical: the double
     /// flushes the `session/prompt` response and exits in the same breath, so the child is gone
     /// before Elliot has written a byte of its own record.
+    ///
+    /// Break-tested by adding `writer.close()` immediately after `await transport.waitForExit()` —
+    /// the close driven by the child's exit. Red here on both assertions, and red on three
+    /// pre-existing tests that pin the same rule (`aTurnStreamsAndLogs`, and both of
+    /// `PermissionPolicyTests`' log assertions). ⚠️ Note which assertion stayed **green**:
+    /// `outcome?.summary?.stopReason`. The caller still had the verdict in memory while the file
+    /// had nothing — the silent half, and the only half that survives a crash.
     @Test("the terminal line survives an agent that exits the moment it answers")
     func theTerminalLineIsNotLostToTheExit() async throws {
         let logURL = try ACPRunnerTests.logURL("agentlog-exit-race")
