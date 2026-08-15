@@ -95,6 +95,30 @@ struct ACPRunnerTests {
         return (events, outcome)
     }
 
+    /// Drains a run keeping **only** the silence notices, in the order they arrived.
+    ///
+    /// The counterpart of `drain`, which swallows exactly these two cases — a separate collector
+    /// rather than a flag on that one, because everything else in this suite asserts on the log
+    /// and nothing else here has any use for `.stalled`/`.resumed`. `ClaudeRunnerTests`
+    /// (`collectSilences`) states the same shape one runner over; the two are the same eight lines
+    /// because they are one question asked of two enums, and this one outlives the other when
+    /// Task 18 deletes `ClaudeRunner.swift`.
+    static func silences(_ run: AgentRun, timeout: Duration = .seconds(30)) async throws
+        -> [RunSilence]
+    {
+        try await withTimeout(timeout) {
+            var notices: [RunSilence] = []
+            for await update in run.updates {
+                switch update {
+                case .stalled: notices.append(.wentQuiet)
+                case .resumed: notices.append(.startedTalkingAgain)
+                case .started, .event, .finished: break
+                }
+            }
+            return notices
+        }
+    }
+
     @Test("a turn streams its events and writes every raw line to the log")
     func aTurnStreamsAndLogs() async throws {
         let logURL = try Self.logURL("acp-runner")
@@ -270,6 +294,71 @@ struct ACPRunnerTests {
         #expect(params["agentSessionID"] as? String == "sess-fake-0001")
         #expect(params["agentName"] as? String == "fake-acp")
         #expect(params["agentVersion"] as? String == "0.0.1")
+        // ⛔ The sixth field, and the only one that exercises a branch rather than a copy.
+        // `AgentRun.model(in:)` prefers `NewSessionResponse.models?.currentModelId` and falls back
+        // to the `configOptions` entry with id `model` — because the real adapter sends **no**
+        // `models` at `session/new` and carries the model in `configOptions` instead
+        // (`Fixtures/acp/session-new-commands.json`, the 0.66.0 recording the double's literals are
+        // copied from). The double reproduces exactly that, so this assertion can only pass through
+        // the fallback. Without it the whole function is dead weight the suite cannot see: measured
+        // by inserting `if true { return nil }` as its first statement — the entire suite stayed
+        // green — and again after this line existed, which failed here by name. A later
+        // "simplification" to just `response.models?.currentModelId` would otherwise empty `model`
+        // from the first line of every run log in silence.
+        #expect(params["model"] as? String == "opus[1m]")
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
+    }
+
+    /// The whole silence path, against a real child — the mirror's `sawOutput`, the idle poll's
+    /// `tick`, and both `AgentUpdate.announcing` sites.
+    ///
+    /// ⛔ **Without this test that path is unreachable from the suite and could be deleted
+    /// outright without a single failure.** Two independent reasons, both measured: no other call
+    /// site anywhere passes `idleTimeout:`, so `IdleWatch.tick` was only ever asked about a
+    /// twenty-minute window inside a four-second suite; and `drain` — the sole consumer of
+    /// `run.updates` — discards `.stalled` and `.resumed` (`case .started, .stalled, .resumed:
+    /// break`). That matters more here than it reads: `RunSilence`'s own doc comment gives the
+    /// reason, which is that there is deliberately no wall-clock kill, so silence is the *only*
+    /// signal a wedged run gives, and a notice that is never withdrawn makes the signal mean
+    /// nothing. `ClaudeRun`'s equivalent has been pinned since #309; this runner is its successor
+    /// and inherited the wiring without the test.
+    ///
+    /// ⛔ Nothing here measures a duration. The double's own pace makes the silences
+    /// (`FAKE_ACP_DELAY_MS` pauses before every line it writes, so a twelve-message conversation
+    /// gives eleven gaps, each followed by more output), the window is short so the watchdog polls
+    /// inside them — `min(idleTimeout, .seconds(30))` is what makes a twenty-millisecond window
+    /// polled at twenty milliseconds rather than thirty seconds — and every assertion is about the
+    /// *order* of what arrived.
+    @Test("a run that goes quiet and talks again announces both, alternating")
+    func silenceAndRecoveryAlternate() async throws {
+        let logURL = try Self.logURL("acp-silence")
+        let run = try AgentRun.start(
+            invocation: Self.invocation(),
+            agent: Self.agent(environment: ["FAKE_ACP_DELAY_MS": "60"]),
+            logURL: logURL,
+            idleTimeout: .milliseconds(20)
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let notices = try await Self.silences(run)
+
+        #expect(!notices.isEmpty, "the watchdog never looked inside a gap")
+        // The half that a latch set in one place and cleared in another loses first: without the
+        // mirror's `sawOutput` announcing, this list is all `.wentQuiet` and a run that talked
+        // again keeps its mark until it exits.
+        #expect(
+            notices.contains(.startedTalkingAgain),
+            Comment(rawValue: "a run that talked again announced only \(notices)")
+        )
+        // A silence is announced once and withdrawn once. Only the watchdog sets the latch, so a
+        // recovery cannot come first; two of either in a row is a latch that stopped latching.
+        #expect(notices.first == .wentQuiet, "a recovery cannot precede a silence")
+        let alternates = zip(notices, notices.dropFirst()).allSatisfy { $0 != $1 }
+        #expect(alternates, Comment(rawValue: "notices did not alternate: \(notices)"))
 
         killer.cancel()
         await killer.value

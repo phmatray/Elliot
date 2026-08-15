@@ -11,6 +11,16 @@ Env:
   FAKE_ACP_READY        path touched once trap-protected
   FAKE_ACP_ARGV_OUT     path to write argv to, one element per line
   FAKE_ACP_STOP_REASON  default: end_turn
+  FAKE_ACP_DELAY_MS     pause before every line written                (default: 0, no pause)
+
+FAKE_ACP_DELAY_MS is what lets a test reach a client's idle watchdog, and it is the counterpart
+of `fake-claude.sh`'s FAKE_CLAUDE_DELAY_MS — the knob `ClaudeRunnerTests.silenceAndRecoveryAlternate`
+rides on. A client that announces a silence and then withdraws it can only be exercised by a turn
+that genuinely goes quiet and genuinely talks again, and this double otherwise writes its whole
+conversation as fast as the pipe takes it. ⚠️ It is a pause per *line*, not a total: the gaps are
+what a test needs, so the pause is what is configured, and no test may assert on how long the run
+took.
+
 
 MODE=permission genuinely gates on the client's answer: it fires `session/request_permission`
 and then BLOCKS on stdin for the matching response before doing anything else — a double that
@@ -37,9 +47,11 @@ import json
 import os
 import signal
 import sys
+import time
 
 MODE = os.environ.get("FAKE_ACP_MODE", "ok")
 STOP_REASON = os.environ.get("FAKE_ACP_STOP_REASON", "end_turn")
+DELAY_MS = int(os.environ.get("FAKE_ACP_DELAY_MS", "0"))
 SESSION_ID = "sess-fake-0001"
 
 # Trap first, before anything else can fail: a child that outlives its parent holding the
@@ -56,6 +68,11 @@ if path := os.environ.get("FAKE_ACP_READY"):
 
 
 def write(message):
+    # Before the write, not after: what a client's watchdog measures is the gap since the last
+    # byte it saw, so the pause has to be on this side of the flush to become one. Zero by
+    # default, which is every other test in the tree — this costs them a comparison.
+    if DELAY_MS:
+        time.sleep(DELAY_MS / 1000)
     sys.stdout.write(json.dumps(message) + "\n")
     sys.stdout.flush()
 
