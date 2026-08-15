@@ -322,11 +322,15 @@ public final class AgentRun: Sendable {
             if let sessionId {
                 // ⚠️ **Swallowed deliberately, and this is not a missing error path.**
                 // `sendCancelNotification` is `async throws` and its first statement is
-                // `guard await transport.isConnected else { throw .processNotRunning }`, so on the
-                // common cancel path — the agent has already gone — it throws. There is nothing to
-                // report: the phase below kills the child either way, and a cancel that could not
-                // be delivered to a dead agent is not a failure of cancellation. Handling this
-                // would turn a successful cancel into a failed one.
+                // `guard await transport.isConnected else { throw .processNotRunning }` — and
+                // `ACPTransport.isConnected` is `child.isRunning`, so it throws exactly when the
+                // agent has already gone: a cancel racing a turn that just ended, or an adapter
+                // that crashed. On the live path — the one an operator cancelling an in-flight
+                // run takes — it is delivered, which is what `cancelIsTwoPhase`'s stderr receipt
+                // pins. Nothing is reported either way: the phase below kills the child
+                // regardless, and a cancel that could not be delivered to a dead agent is not a
+                // failure of cancellation. Handling this would turn a successful cancel into a
+                // failed one.
                 try? await client.sendCancelNotification(sessionId: sessionId)
 
                 // ⛔ `do`/`catch`, never `try? await Task.sleep(…)`: `try?` swallows
