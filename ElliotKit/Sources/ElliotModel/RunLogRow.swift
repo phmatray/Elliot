@@ -33,10 +33,21 @@ public struct TurnSummary: Sendable, Hashable, Codable {
     /// ⛔ Two rules were written down here and they contradicted each other. This is the third,
     /// and it is the only one that is right in both directions: `used`/`size` come from the last
     /// frame, because a stale context figure is simply wrong; `costUSD` is the last **non-nil**
-    /// one, because cost is intermittent — measured, absent from nine frames of a turn and
-    /// present on the tenth — and taking the last frame's would report `nil` for a turn that
-    /// really did cost money, which `RunScheduler.finish` then writes into
-    /// `SkillRun.totalCostUSD`. Absence still means "nobody reported one", never zero.
+    /// one, so that a turn which really did cost money cannot report `nil` into
+    /// `RunScheduler.finish` and on into `SkillRun.totalCostUSD`. Absence still means "nobody
+    /// reported one", never zero.
+    ///
+    /// ⚠️ **That fallback is defensive, and the measurement this comment used to cite does not
+    /// support it.** It said cost was "absent from nine frames of a turn and present on the
+    /// tenth", which was one recording read as *late in the turn*. Re-derived across all four of
+    /// `Fixtures/acp/turn-*.json`: cost appears on **4 of 42 `usage_update` frames — exactly once
+    /// per turn, and every time on the turn's last one**, immediately before the `session/prompt`
+    /// response (elements 31 of 34, 17 of 20, 18 of 21, 99 of 102). So on every recording we hold
+    /// the last non-nil cost *is* the last frame's, and no recording shows the ordering this rule
+    /// defends against. Kept anyway — nothing in the protocol orders those frames, and one
+    /// `usage_update` arriving after the cost frame would lose the figure a person reads — but it
+    /// is not evidence of an ordering anybody has seen. `AgentInvocation.maxBudgetUSD` carries the
+    /// same re-derivation and what it costs the spend brake.
     public var usage: RunUsage?
     /// The `usage` field on the `session/prompt` response — a per-turn token report the ACP
     /// spec does not define and the adapter provides anyway [M].

@@ -247,9 +247,12 @@ public struct PlanStep: Sendable, Hashable, Codable {
 
 /// Live context usage and, intermittently, spend.
 ///
-/// ⚠️ `costUSD` is **not** on every frame: measured, it was absent from the first nine
-/// `usage_update` frames of a turn and present on the last. Anything reading it must treat
-/// absence as "not reported yet", never as zero.
+/// ⚠️ `costUSD` is **not** on every frame. Measured across the four `Fixtures/acp/turn-*.json`
+/// recordings: it appears on **4 of 42 `usage_update` frames — once per turn, on that turn's last
+/// one**, immediately before the `session/prompt` response. Anything reading it must treat absence
+/// as "not reported yet", never as zero. (This said "absent from the first nine frames and present
+/// on the last", which was one of the four recordings generalised to "a turn"; the instruction was
+/// unaffected, the figure was not. `AgentInvocation.maxBudgetUSD` carries the full re-derivation.)
 ///
 /// Named `RunUsage` rather than `Usage` because `RunEventMapper.swift` imports both this module
 /// and `ACPModel`, whose `Usage` is the per-turn token report on the prompt response — a
