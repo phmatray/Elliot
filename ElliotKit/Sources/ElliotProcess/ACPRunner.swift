@@ -528,8 +528,13 @@ public final class AgentRun: Sendable {
             // `ClaudeRun`.** That runner had a single writer under the drain lock and closed once
             // `waitForExit()` had returned; this one also writes `elliot/terminal`, the line the
             // whole of Task 9 exists to guarantee. A close that won the race against it would
-            // leave `AgentLog.lastSummary` answering `nil` with nothing saying why, and
-            // `RunScheduler.finish` degrading on **every** run rather than only a crashed one.
+            // leave `AgentLog.lastSummary` answering `nil` with nothing saying why — and **the
+            // caller would never notice**, because `summary` above comes from memory, so the
+            // outcome yielded below would carry the verdict the file had just lost. That silence
+            // is the whole hazard: what breaks is the archive, the one reader that has no memory
+            // to fall back on. (An earlier draft said `RunScheduler.finish` would degrade on every
+            // run; it reads the outcome, not the log — `AgentLog.lastSummary`'s doc comment
+            // records why the two are deliberately not the same value.)
             // So: after the terminal record has been written (or deliberately not written, above)
             // **and** after `waitForExit()` has returned. Nothing else closes it.
             writer.close()

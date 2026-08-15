@@ -13,8 +13,11 @@ import Foundation
 /// decodes it out of `elliot/terminal` lines written by **earlier builds**, and
 /// `ArtifactRetention` keeps those for 14 days and 512 MB. Swift's synthesised decoder emits
 /// `decode(_:forKey:)` and ignores default values, so a new non-optional field throws
-/// `keyNotFound` on every log written before it — silently degrading `RunScheduler.finish` on
-/// exactly the runs a reader is trying to understand. It is the `openReadOnly` trap that this
+/// `keyNotFound` on every log written before it — and that scan answers `nil`, which is the same
+/// answer it gives for a run that died mid-turn, on exactly the runs a reader is trying to
+/// understand. (This said "silently degrading `RunScheduler.finish`"; `finish` reads the run's
+/// outcome, not its log — `AgentLog.lastSummary`'s doc comment records why the two are
+/// deliberately different values.) It is the `openReadOnly` trap that this
 /// plan already carries for the database (Task 12), pointed at `runs/*.jsonl`, where **no
 /// migration test would catch it** because there is no migration.
 public struct TurnSummary: Sendable, Hashable, Codable {

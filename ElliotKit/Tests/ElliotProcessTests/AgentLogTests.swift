@@ -12,9 +12,10 @@ import TestSupport
 /// self-sufficient for free and `ClaudeRun.lastResult(inLogAt:)` could recover the verdict of a run
 /// whose decoder had crashed. Under ACP the `stopReason` comes back as the **response** to
 /// `session/prompt`: it is never a notification, so it never enters the notification stream and
-/// never reaches the log unless Elliot writes it there. Two tests below are about the scan and
-/// three are about the writing, because a scan with nothing to find is the same defect wearing a
-/// different face.
+/// never reaches the log unless Elliot writes it there. Some of the tests below are about the scan
+/// and the rest are about the writing, because a scan with nothing to find is the same defect
+/// wearing a different face. (They were counted here, wrongly, until the count was replaced by a
+/// sentence that cannot go stale — a tally in prose is a claim like any other.)
 @Suite("Agent log")
 struct AgentLogTests {
     /// A scratch `.jsonl` holding exactly these lines.
@@ -110,9 +111,44 @@ struct AgentLogTests {
         )
 
         #expect(AgentLog.lastSummary(inLogAt: url) == nil)
-        // A missing file is the same answer as a file that never said, and for the same reason:
-        // there is nothing to report, so nothing is reported.
+        // A missing file is the same answer as a file that never said — and the sameness is the
+        // finding, not the reassurance it reads as. The test below this one is the third cause
+        // that arrives as this same `nil`.
         #expect(AgentLog.lastSummary(inLogAt: url.appendingPathExtension("gone")) == nil)
+    }
+
+    /// ⚠️ **The third fact that comes back as `nil`, measured rather than argued about.**
+    /// `TurnSummary`'s doc comment (`RunLogRow.swift:11-19`) warns that a field added without
+    /// `Optional` or `@DefaultsToEmpty` makes every log an earlier build wrote undecodable at once;
+    /// this test is what that costs at the scan, and the answer is byte-identical to the answer for
+    /// a run that crashed inside `session/prompt`.
+    ///
+    /// The line is a real `elliot/terminal` frame carrying only `stopReason` — the shape a build
+    /// that had not yet grown `denials`, `nonExecutionKinds`, `truncationEvents` and `isError`
+    /// would have written. Swift's synthesised decoder emits `decode(_:forKey:)` for each of those
+    /// four and ignores their defaults, so the record throws `keyNotFound` and the scan walks past
+    /// a line that says, in plain text, that the turn ended.
+    ///
+    /// ⛔ It is pinned rather than fixed because the plan fixes the return type at `TurnSummary?`,
+    /// which has no room to say which of the three happened. What this test buys is that the
+    /// conflation is a **recorded** property with a witness, instead of prose asserting that
+    /// "nothing here guesses" over code that cannot tell a crashed run from an unreadable one.
+    @Test("a terminal record this build cannot decode answers exactly like a run that never ended")
+    func anUndecodableRecordIsIndistinguishableFromNone() throws {
+        let older =
+            #"{"jsonrpc":"2.0","method":"elliot\/terminal","params":{"stopReason":"end_turn"}}"#
+        let url = try Self.log([older], label: "agentlog-undecodable")
+        #expect(AgentLog.lastSummary(inLogAt: url) == nil)
+
+        // Two witnesses, because a scan that always answered nil would pass the assertion above.
+        // The method really is Elliot's — so the nil is the params failing, not the namespace
+        // check — and the same method with every required field present *is* read.
+        let envelope = try #require(
+            try JSONSerialization.jsonObject(with: Data(older.utf8)) as? [String: Any])
+        #expect(envelope["method"] as? String == AgentLog.terminalMethod)
+        let complete = try Self.log(
+            [Self.text(AgentLog.terminalLine(Self.summary))], label: "agentlog-complete")
+        #expect(AgentLog.lastSummary(inLogAt: complete)?.stopReason == "end_turn")
     }
 
     /// ⛔ **The namespace is the guarantee, and this test is built so that nothing else can be.**
@@ -200,8 +236,11 @@ struct AgentLogTests {
     /// child exited" happens first. `ClaudeRun` never had to think about it — it had one writer and
     /// closed after `waitForExit()` — and that argument does not transfer, because `AgentRun` writes
     /// `elliot/terminal` after `waitForExit()` has already returned. If the close wins,
-    /// `AgentLog.lastSummary` answers `nil` with nothing anywhere saying why, and
-    /// `RunScheduler.finish` degrades on every run rather than only a crashed one.
+    /// `AgentLog.lastSummary` answers `nil` with nothing anywhere saying why, **and the caller never
+    /// finds out**: `AgentRunOutcome.summary` comes from memory, so the run reports a clean verdict
+    /// off a log that no longer carries one. The reader that pays is the archive, which has no
+    /// memory to fall back on. (This comment used to say `RunScheduler.finish` degrades on every
+    /// run; it reads the outcome, not the log — see `AgentLog.lastSummary`'s doc comment.)
     ///
     /// `FAKE_ACP_EXIT_AFTER_REPLY` is what makes the window wide instead of theoretical: the double
     /// flushes the `session/prompt` response and exits in the same breath, so the child is gone
@@ -210,9 +249,12 @@ struct AgentLogTests {
     /// Break-tested by adding `writer.close()` immediately after `await transport.waitForExit()` —
     /// the close driven by the child's exit. Red here on both assertions, and red on three
     /// pre-existing tests that pin the same rule (`aTurnStreamsAndLogs`, and both of
-    /// `PermissionPolicyTests`' log assertions). ⚠️ Note which assertion stayed **green**:
-    /// `outcome?.summary?.stopReason`. The caller still had the verdict in memory while the file
-    /// had nothing — the silent half, and the only half that survives a crash.
+    /// `PermissionPolicyTests`' log assertions). ⚠️ Note which assertion stayed **green** in that
+    /// run: the one on `outcome?.summary?.stopReason`. The caller still had the verdict in memory
+    /// while the file had nothing — the silent half, and the only half that survives a crash. That
+    /// measurement is why the last assertion now compares the **whole** values rather than one
+    /// field: memory and disk are two copies here, and the only thing that keeps them from drifting
+    /// is a test that would say so.
     @Test("the terminal line survives an agent that exits the moment it answers")
     func theTerminalLineIsNotLostToTheExit() async throws {
         let logURL = try ACPRunnerTests.logURL("agentlog-exit-race")
@@ -233,8 +275,20 @@ struct AgentLogTests {
         let found = try #require(AgentLog.lastSummary(inLogAt: logURL))
         #expect(found.stopReason == "end_turn")
         #expect(found.text == "Reading the file.")
-        // The caller was handed the same thing the file kept.
-        #expect(outcome?.summary?.stopReason == "end_turn")
+        // The equality below has teeth only if the value has content. `fake-simple-turn.json`'s
+        // last frame is a `usage_update` carrying `used`, `size` and a fractional cost, so what is
+        // being compared is a nested object and a `Double` that had to survive a JSON round-trip —
+        // not two structs of defaults agreeing about nothing.
+        #expect(found.usage?.used == 37355)
+        #expect(found.usage?.costUSD != nil)
+
+        // ⛔ **The whole value, not one field of it.** `AgentRunOutcome.summary` is assembled in
+        // memory and the log line is Elliot's transcription of it, so these are two copies with
+        // nothing in the type system holding them together. This is the assertion that does: a
+        // `TurnSummary` field that stopped round-tripping through `Codable` — the hazard
+        // `RunLogRow.swift:11-19` warns about, pointed the other way — would show up here rather
+        // than as a card and an archive quietly disagreeing months later.
+        #expect(outcome?.summary == found)
 
         killer.cancel()
         await killer.value

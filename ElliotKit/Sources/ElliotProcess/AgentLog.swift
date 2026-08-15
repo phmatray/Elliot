@@ -76,14 +76,41 @@ public enum AgentLog {
     /// ⛔ Elliot writes this line itself, and that is not a convenience. Under `claude -p` the
     /// terminal `result` was a stream-json line like any other, so the log was self-sufficient for
     /// free. Under ACP the `stopReason` comes back as the **response** to `session/prompt` — it is
-    /// never a notification, so it never reaches the log unless we put it there.
-    /// `RunScheduler.finish` reads what this scan finds, on **every** run and not only a crashed
-    /// one. `Reconciler` does not read the log at all: its launch sweep hardcodes `.failed` for a
-    /// run that died with the app (`Reconciler.swift:41-58`), because a run that never came back
-    /// produced no outcome to read.
+    /// never a notification, so it never reaches the log unless we put it there. `Reconciler` does
+    /// not read the log at all: its launch sweep hardcodes `.failed` for a run that died with the
+    /// app (`Reconciler.swift:41-58`), because a run that never came back produced no outcome to
+    /// read.
     ///
-    /// ⚠️ `nil` is a fact, not a failure: a run that died mid-turn wrote no terminal line, and that
-    /// absence is exactly what tells it apart from a run that ended. Nothing here guesses.
+    /// ⚠️ **Nothing in production calls this yet, and the sentence that stood here claimed
+    /// otherwise.** It said `RunScheduler.finish` reads what this scan finds on every run — true of
+    /// `ClaudeRun`, which really does recover its outcome from the log
+    /// (`ClaudeRunner.swift:301-310`), and not true of `AgentRun`, which hands
+    /// `AgentRunOutcome.summary` straight from the value it assembled and wrote
+    /// (`ACPRunner.swift:516-525`). That difference is deliberate rather than an omission: under
+    /// `claude -p` the log carried the agent's **own** bytes, so it was the source; here it carries
+    /// Elliot's transcription of a response it already holds, so reading the transcription back
+    /// would let a failed write report itself as a fact about the agent — *this run died mid-turn*
+    /// — which is this repository's most expensive recurring mistake, a measurement taken against a
+    /// rendering. The two are pinned to agree instead:
+    /// `AgentLogTests.theTerminalLineIsNotLostToTheExit` asserts the whole value the caller was
+    /// handed equals the whole value the file kept, so a transcription that stopped round-tripping
+    /// would fail rather than diverge in silence.
+    ///
+    /// The readers this exists for are the ones with no memory to consult: the archive render —
+    /// `RunLog.rows(from:denials:summary:)` takes exactly the `summary` this returns — and any
+    /// session that did not run the turn. Until one of them lands, this function is guarded only by
+    /// its own tests.
+    ///
+    /// ⚠️ **`nil` is three different facts and this signature cannot tell them apart.** The plan
+    /// fixes the return type, so the honest thing is to name them rather than let one absence read
+    /// as one cause. `nil` means: no `elliot/terminal` line was ever written — the run died
+    /// mid-turn, the fact this whole design exists to preserve; **or** the log could not be read at
+    /// all; **or** the line is there and this build cannot decode its params, which
+    /// `TurnSummary`'s own doc comment describes as a live consequence of adding a field without
+    /// `Optional` or `@DefaultsToEmpty`, and which
+    /// `AgentLogTests.anUndecodableRecordIsIndistinguishableFromNone` measures. A caller must
+    /// therefore not read `nil` as "the run died mid-turn" on this evidence alone — pair it with
+    /// the exit code, which `AgentRunOutcome` carries for that reason.
     public static func lastSummary(inLogAt url: URL) -> TurnSummary? {
         last(TurnSummary.self, method: terminalMethod, inLogAt: url)
     }
@@ -120,11 +147,22 @@ public enum AgentLog {
 
     /// The one scan, so `lastSummary` and `sessionInfo` cannot drift apart.
     ///
-    /// ⚠️ A line that names the right method and whose params will not decode is **skipped**, not
-    /// treated as the end of the search. That is the tolerant direction on purpose:
-    /// `TurnSummary`'s own doc comment records that these lines are persisted and read back by
-    /// later builds, so a record this build cannot make sense of should leave the scan looking
-    /// rather than assert that the run never ended.
+    /// ⚠️ A line that names the right method and whose params will not decode is **skipped**, and
+    /// the reason first written here was wrong. It said the skip "leaves the scan looking rather
+    /// than assert that the run never ended" — but a run writes exactly one `elliot/session` and
+    /// exactly one `elliot/terminal` (`ACPRunner.swift:416` and `:523`), so on every log this
+    /// package produces there is nothing further to look at, and skipping the only record there is
+    /// **is** answering `nil`: the same answer as a run that died mid-turn. `lastSummary`'s doc
+    /// comment names all three facts that arrive as that one `nil`, because this signature cannot.
+    ///
+    /// The skip stays, on the reason that survives measurement rather than the one that did not:
+    /// `continue` and `break` are indistinguishable on a one-record log, so the tolerant arm costs
+    /// nothing, and on a log that somehow carried two — a concatenation, a resumed session — it
+    /// returns the older record instead of nothing. That is more information, though not
+    /// *newer* information, and the caller cannot tell which it got. `TurnSummary`'s own doc
+    /// comment is where the undecodable case stops being hypothetical: these lines are persisted
+    /// and read back by later builds, and one field added without `Optional` or `@DefaultsToEmpty`
+    /// makes every log written before it undecodable at once.
     private static func last<Params: Decodable>(
         _ type: Params.Type, method: String, inLogAt url: URL
     ) -> Params? {
