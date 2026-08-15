@@ -135,6 +135,13 @@ struct ACPAgentLocatorTests {
         #expect(agent.arguments == ["--yes", ACPAgentLocator.adapterPackage])
         // The pin is part of the argv, not a comment about it (decision 10).
         #expect(ACPAgentLocator.adapterPackage.hasSuffix("@\(ACPAgentLocator.adapterVersion)"))
+        // ⛔ …and the pin has to be a version. The line above is a tautology when
+        // `adapterVersion` is empty — `"…/claude-agent-acp@".hasSuffix("@")` is true — so a
+        // break-test that emptied the pin left the suite green while the argv had become
+        // `…claude-agent-acp@`, whose meaning to npm is unmeasured. Whatever npm does with it,
+        // it is not the pin decision 10 requires, so the shape is asserted here rather than
+        // inferred from the registry.
+        #expect(ACPAgentLocator.adapterVersion.first?.isNumber == true)
         #expect(agent.cwd == "/tmp")
     }
 
