@@ -729,8 +729,8 @@ struct DiffLinesView: View {
     /// be half present — and a whole-file `.diff` is precisely the frame this
     /// view expects to be handed. `maxSplits` keeps the split's own array
     /// bounded too: past the budget the remainder arrives as one trailing
-    /// piece, which `prefix` drops. The total is counted over UTF-8, which
-    /// allocates nothing.
+    /// piece, which `prefix` drops. The total is counted by walking the text,
+    /// which allocates nothing.
     ///
     /// The budget is shared: 30 lines removed leaves room for 10 added, because
     /// what the cap bounds is rows on screen and both kinds are rows.
@@ -741,14 +741,23 @@ struct DiffLinesView: View {
         var total = 0
 
         func take(_ text: String, marker: String, isRemoval: Bool) {
-            // `split(omittingEmptySubsequences: false)` yields one piece per
-            // newline plus one, and this counts the same way — an empty text is
-            // one empty line, which is what it draws as.
-            total += 1 + text.utf8.count { $0 == UInt8(ascii: "\n") }
+            // ⛔ The count and the split must use ONE notion of a line, and they
+            // now share it by construction rather than by assertion: both ask
+            // `Character.isNewline`. Counting `\n` *bytes* while splitting on the
+            // *Character* `"\n"` was two notions wearing one name — `\r\n` is a
+            // single grapheme cluster and is not equal to `Character("\n")`, so
+            // CRLF text counted as N lines and split into exactly one. It drew the
+            // whole file as one unreadable row under a footer announcing lines
+            // withheld that were not. The comment that stood here asserted the two
+            // agreed, and asserting it is what let them drift apart.
+            // `isNewline` also consumes the `\r`, so no carriage return reaches a
+            // row to draw as a stray glyph. `PanelTruncationTests` pins all of it.
+            // An empty text is one empty line, which is what it draws as.
+            total += 1 + text.count { $0.isNewline }
             let room = limit - rows.count
             guard room > 0 else { return }
             let pieces = text.split(
-                separator: "\n", maxSplits: room, omittingEmptySubsequences: false)
+                maxSplits: room, omittingEmptySubsequences: false, whereSeparator: { $0.isNewline })
             for line in pieces.prefix(room) {
                 rows.append(DiffLine(marker: marker, text: String(line), isRemoval: isRemoval))
             }

@@ -151,6 +151,41 @@ struct PanelTruncationTests {
         #expect(diff.rows.count + (diff.total - diff.rows.count) == 4_030)
     }
 
+    /// ⛔ The counter and the splitter must share **one** notion of a line, and a
+    /// `Character` is not it. `\r\n` is a single grapheme cluster, so
+    /// `Character("\r\n") != Character("\n")` and a `split(separator: "\n")` over
+    /// Characters finds no separator anywhere in CRLF text — while a counter
+    /// reading UTF-8 bytes finds every one of them.
+    ///
+    /// What that costs is not a miscount, it is a sentence on screen that is false
+    /// in **both** directions: one unreadable row holding the entire file, beneath
+    /// a footer reporting lines withheld that were never withheld. Measured before
+    /// the fix, on the 100-line input below: `rows.count == 1`, `total == 100`,
+    /// footer *"… 99 more line(s) not shown"* — with nothing whatsoever withheld.
+    ///
+    /// A diff is a file the agent edited, and a file edited on Windows has CRLF,
+    /// so this is an ordinary input rather than a hostile one. The comment that
+    /// used to sit over `take` asserted the two counters agreed; asserting it is
+    /// what let them disagree.
+    @Test("A CRLF diff splits the way it counts, and draws no carriage returns")
+    func aCRLFDiffIsNotOneUnreadableRow() {
+        let crlf = (0..<100).map { "line \($0)" }.joined(separator: "\r\n")
+
+        let diff = DiffLinesView.lines(oldText: nil, newText: crlf)
+
+        #expect(diff.total == 100)
+        #expect(diff.rows.count == DiffLinesView.lineLimit)
+        // The terminator is not content: a stray CR draws as a glyph in the row.
+        // ⚠️ Over **scalars**, deliberately. `text.contains("\r")` searches by
+        // Character and a CR fused into a `\r\n` cluster is not a Character equal
+        // to `"\r"` — so that spelling passed against the very input this test
+        // exists for. Measured while writing it: the pre-fix run reported two
+        // failures, and this was not one of them. The trap under test bit the
+        // assertion written to catch it.
+        #expect(diff.rows.allSatisfy { !$0.text.unicodeScalars.contains("\r") })
+        #expect(diff.rows.first?.text == "line 0")
+    }
+
     // MARK: - The run window
 
     /// The count drawn beside "Runs" is what `store.runs(cardID:limit:)`
