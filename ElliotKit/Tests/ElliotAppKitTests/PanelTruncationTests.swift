@@ -95,6 +95,62 @@ struct PanelTruncationTests {
         #expect(outcome?.preview == "Build complete!")
     }
 
+    // MARK: - The diff window
+
+    /// ⚠️ What these pin is the **contract**, not the allocation. `swift test`
+    /// cannot see how much was built and thrown away, any more than it can see
+    /// layout — a reimplementation that materialised every line of the file and
+    /// then took `.prefix(40)` would keep all three green. What goes red is the
+    /// signature: `lines` returns the capped rows *and* the true total, so a
+    /// caller cannot report "40 lines" for a file of 4 000 the way one that
+    /// returns a bare array invites.
+    @Test("A diff shorter than the cap is whole, and its total is its length")
+    func aShortDiffIsWhole() {
+        let diff = DiffLinesView.lines(oldText: "a\nb\nc", newText: "a\nB\nc")
+
+        #expect(diff.rows.count == 6)
+        #expect(diff.total == 6)
+        // Removals first, then additions — the order the gutter is read in.
+        #expect(diff.rows.prefix(3).count { $0.isRemoval } == 3)
+        #expect(diff.rows.suffix(3).count { $0.isRemoval } == 0)
+    }
+
+    /// The reassuring answer must not be the one the boundary falls into — the
+    /// same `>=` / `>` care `MoveHistory.isCapped` takes above.
+    @Test("Exactly at the cap the footer stays silent; one past it, it counts")
+    func theDiffBoundaryIsNotOffByOne() {
+        let atLimit = (0..<40).map { "line \($0)" }.joined(separator: "\n")
+        let capped = DiffLinesView.lines(oldText: nil, newText: atLimit)
+        #expect(capped.rows.count == 40)
+        #expect(capped.total == 40)
+
+        let onePast = atLimit + "\nline 40"
+        let over = DiffLinesView.lines(oldText: nil, newText: onePast)
+        #expect(over.rows.count == 40)
+        #expect(over.total == 41)
+        // The footer's arithmetic, which is the whole claim it makes on screen.
+        #expect(over.total - over.rows.count == 1)
+    }
+
+    /// A whole-file `.diff` is the frame this view expects to be handed — the
+    /// one `TurnSummary.truncationEvents` warns about — so the interesting case
+    /// is not 41 lines but 4 000, and the budget is one budget: removals eat
+    /// into what is left for additions, because both are rows on screen.
+    @Test("A whole-file edit draws its budget once, shared between both sides")
+    func theCapIsSharedBetweenRemovalsAndAdditions() {
+        let old = (0..<30).map { "old \($0)" }.joined(separator: "\n")
+        let new = (0..<4_000).map { "new \($0)" }.joined(separator: "\n")
+
+        let diff = DiffLinesView.lines(oldText: old, newText: new)
+
+        #expect(diff.rows.count == DiffLinesView.lineLimit)
+        #expect(diff.total == 4_030)
+        #expect(diff.rows.count { $0.isRemoval } == 30)
+        #expect(diff.rows.count { !$0.isRemoval } == 10)
+        // Every line is either drawn or counted, and none is invented.
+        #expect(diff.rows.count + (diff.total - diff.rows.count) == 4_030)
+    }
+
     // MARK: - The run window
 
     /// The count drawn beside "Runs" is what `store.runs(cardID:limit:)`

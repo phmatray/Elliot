@@ -92,4 +92,23 @@ struct RunEventRowsTests {
         guard case .toolCall(let call) = errors[0] else { Issue.record("wrong row"); return }
         #expect(call.id == "tc-2")
     }
+
+    /// ⛔ The Tools arm had nothing behind it: deleting `case .toolCall` from
+    /// `RunLog.filter` left the whole suite green, so an ACP run's calls could stop reaching
+    /// the Tools tab without one test noticing. Naming the cases there rather than writing
+    /// `default:` stops a *fourteenth* case being dropped in silence; this stops the case
+    /// that already exists being dropped.
+    @Test("tools filter keeps a tool call, and nothing that is not a tool")
+    func toolsFilterKeepsACall() {
+        let rows = RunLog.rows(from: [
+            Self.patch("tc-1", title: "Bash", kind: .execute, status: .completed),
+            .agentThought("thinking"),
+            .plan([PlanStep(content: "step one", status: .pending)]),
+            .modeChanged("acceptEdits"),
+        ], summary: TurnSummary(stopReason: "end_turn", isError: false))
+        let tools = RunLog.filter(rows, by: .tools)
+        #expect(tools.count == 1)
+        guard case .toolCall(let call) = tools[0] else { Issue.record("wrong row"); return }
+        #expect(call.id == "tc-1")
+    }
 }

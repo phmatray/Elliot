@@ -632,7 +632,12 @@ private struct ToolContentView: View {
 }
 
 /// One line of a rendered edit.
-private struct DiffLine: Hashable {
+///
+/// Internal rather than private because `DiffLinesView.lines` returns it and
+/// `PanelTruncationTests` reads that answer — the cap and the true total are a
+/// choice, and this project's rule is that a choice a view makes lives in a
+/// pure function a test can call.
+struct DiffLine: Hashable {
     var marker: String
     var text: String
     var isRemoval: Bool
@@ -657,8 +662,10 @@ private struct DiffLine: Hashable {
 /// as additions and nothing else.
 ///
 /// ⚠️ Its layout is unverified — `swift test` cannot see one — and the
-/// on-screen pass is Task 17's.
-private struct DiffLinesView: View {
+/// on-screen pass is Task 17's. What a test *can* see is the cap, which is why
+/// `lines(oldText:newText:limit:)` is a pure static and why this view is
+/// internal rather than private.
+struct DiffLinesView: View {
     var path: String
     var oldText: String?
     var newText: String
@@ -666,15 +673,23 @@ private struct DiffLinesView: View {
     /// Past this a row stops being a row. A whole-file `.diff` is exactly the
     /// frame `TurnSummary.truncationEvents` warns about, so drawing every line
     /// of one would bury the log the panel exists to read.
-    static let lineLimit = 40
-
-    private var lines: [DiffLine] { Self.lines(oldText: oldText, newText: newText) }
+    ///
+    /// `nonisolated` because `lines` is: a `View` is `@MainActor`, so its
+    /// statics are too, and a main-actor default value in a nonisolated
+    /// signature does not compile.
+    nonisolated static let lineLimit = 40
 
     var body: some View {
+        // Read once. This was a computed property, and `body` reads it three
+        // times — the `ForEach`, then both halves of the footer — so a
+        // whole-file diff was split three times over on every re-evaluation of
+        // a panel that re-renders as rows stream in.
+        let diff = Self.lines(oldText: oldText, newText: newText)
+
         VStack(alignment: .leading, spacing: 1) {
             Fact(text: SessionRow.abbreviated(path), tint: Palette.quiet, small: true)
 
-            ForEach(Array(lines.prefix(Self.lineLimit).enumerated()), id: \.offset) { item in
+            ForEach(Array(diff.rows.enumerated()), id: \.offset) { item in
                 HStack(alignment: .top, spacing: 4) {
                     Text(item.element.marker)
                         .font(Type.factSmall)
@@ -689,9 +704,9 @@ private struct DiffLinesView: View {
                 }
             }
 
-            if lines.count > Self.lineLimit {
+            if diff.total > diff.rows.count {
                 Fact(
-                    text: "… \(lines.count - Self.lineLimit) more line(s) not shown",
+                    text: "… \(diff.total - diff.rows.count) more line(s) not shown",
                     tint: Palette.quiet, small: true
                 )
             }
@@ -703,19 +718,47 @@ private struct DiffLinesView: View {
         .clipShape(RoundedRectangle(cornerRadius: Metric.nestedRadius, style: .continuous))
     }
 
-    /// Removals then additions, each whole. See the ⚠️ above for why this is
-    /// not a diff algorithm.
-    nonisolated static func lines(oldText: String?, newText: String) -> [DiffLine] {
-        var out: [DiffLine] = []
-        if let oldText, !oldText.isEmpty {
-            for line in oldText.split(separator: "\n", omittingEmptySubsequences: false) {
-                out.append(DiffLine(marker: "-", text: String(line), isRemoval: true))
+    /// Removals then additions, each whole — at most `limit` of them, plus how
+    /// many lines there really were. See the ⚠️ above for why this is not a
+    /// diff algorithm.
+    ///
+    /// ⛔ **The cap is applied while building, never after.** `.prefix(40)` over
+    /// a materialised array bounds what is *drawn* and not what is *computed*:
+    /// it splits both texts in full and allocates a `DiffLine` and a `String`
+    /// per line of the file first, so the protection the ⚠️ above claims would
+    /// be half present — and a whole-file `.diff` is precisely the frame this
+    /// view expects to be handed. `maxSplits` keeps the split's own array
+    /// bounded too: past the budget the remainder arrives as one trailing
+    /// piece, which `prefix` drops. The total is counted over UTF-8, which
+    /// allocates nothing.
+    ///
+    /// The budget is shared: 30 lines removed leaves room for 10 added, because
+    /// what the cap bounds is rows on screen and both kinds are rows.
+    nonisolated static func lines(
+        oldText: String?, newText: String, limit: Int = lineLimit
+    ) -> (rows: [DiffLine], total: Int) {
+        var rows: [DiffLine] = []
+        var total = 0
+
+        func take(_ text: String, marker: String, isRemoval: Bool) {
+            // `split(omittingEmptySubsequences: false)` yields one piece per
+            // newline plus one, and this counts the same way — an empty text is
+            // one empty line, which is what it draws as.
+            total += 1 + text.utf8.count { $0 == UInt8(ascii: "\n") }
+            let room = limit - rows.count
+            guard room > 0 else { return }
+            let pieces = text.split(
+                separator: "\n", maxSplits: room, omittingEmptySubsequences: false)
+            for line in pieces.prefix(room) {
+                rows.append(DiffLine(marker: marker, text: String(line), isRemoval: isRemoval))
             }
         }
-        for line in newText.split(separator: "\n", omittingEmptySubsequences: false) {
-            out.append(DiffLine(marker: "+", text: String(line), isRemoval: false))
+
+        if let oldText, !oldText.isEmpty {
+            take(oldText, marker: "-", isRemoval: true)
         }
-        return out
+        take(newText, marker: "+", isRemoval: false)
+        return (rows, total)
     }
 }
 

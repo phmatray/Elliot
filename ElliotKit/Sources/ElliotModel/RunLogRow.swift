@@ -328,11 +328,17 @@ public enum RunLog {
             return rows
 
         case .tools:
+            // ⛔ No `default:` here, for the same reason `.errors` below has none: a fourteenth
+            // row case must break the build at this switch rather than be silently dropped from
+            // the Tools filter. A `default` is the one way this file can acquire a new case
+            // without deciding about it — which is exactly how the six ACP cases would have
+            // arrived, had this arm been written that way before they landed.
             return rows.filter {
                 switch $0 {
-                case .toolUse: return true
-                case .toolCall: return true
-                default: return false
+                case .toolUse, .toolCall: return true
+                case .session, .agentText, .denial, .orphanResult, .terminal, .unreadable,
+                    .agentSession, .thought, .plan, .modeChanged, .turnEnded:
+                    return false
                 }
             }
 
@@ -346,7 +352,7 @@ public enum RunLog {
                 case .toolCall(let call): return call.status == .failed
                 case .turnEnded(let summary): return !summary.isClean
                 case .session, .agentText, .unreadable,
-                     .agentSession, .thought, .plan, .modeChanged:
+                    .agentSession, .thought, .plan, .modeChanged:
                     return false
                 }
             }
