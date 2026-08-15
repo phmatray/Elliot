@@ -32,6 +32,14 @@ public final class PermissionPolicy: ClientDelegate, Sendable {
     /// something the design says should not happen at all under `bypassPermissions`. Its value is
     /// that if #585 ever does reproduce here, the log names it instead of the run merely looking
     /// slow.
+    ///
+    /// ⛔ **That last sentence is a claim about a caller, so here is the caller: `AgentRun.start`
+    /// reads this once the turn's transport has exited and writes any non-empty result as an
+    /// `elliot/refusals` line (`AgentLog.refusalsLine`).** It shipped for one commit with no
+    /// reader at all — appended to, then released with the policy when the turn's `Task` closure
+    /// ended — while this comment already promised the log named it. A ledger with no reader is a
+    /// counter nobody reads; a ledger with no reader *under a comment saying otherwise* also stops
+    /// the next person looking for the diagnostic that is not there.
     public func refusals() -> [String] {
         declined.value
     }

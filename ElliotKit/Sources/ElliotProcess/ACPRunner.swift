@@ -482,6 +482,26 @@ public final class AgentRun: Sendable {
             await consumer?.value
             idleTask.cancel()
 
+            // ⛔ **The reader that makes `PermissionPolicy.refusals()` worth recording.** Without
+            // this the ledger was appended to and then released with the policy when this closure
+            // ended — a counter nobody reads, under a doc comment promising that "the log names
+            // it". Read here rather than during the turn because the transport has exited and the
+            // session is ended, so no further request can arrive to change it.
+            //
+            // Written **before** the terminal line, not after: `elliot/terminal` is what a
+            // backwards scan looks for (`AgentLog.lastSummary`, Task 9) and what
+            // `aTurnStreamsAndLogs` pins as the log's last method, so appending after it would put
+            // a line between that scan and the summary it is hunting.
+            //
+            // Written independently of `response`, unlike the terminal line: a turn that died
+            // mid-flight still refused whatever it refused, and that path writes no terminal line
+            // at all — which is precisely the run where "the agent just looked slow" needs an
+            // answer.
+            let refused = policy.refusals()
+            if !refused.isEmpty {
+                writer.record(AgentLog.refusalsLine(refused))
+            }
+
             var summary: TurnSummary?
             if let response {
                 let assembled = Self.summary(

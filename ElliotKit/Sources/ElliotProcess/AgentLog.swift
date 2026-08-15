@@ -1,7 +1,7 @@
 import ElliotModel
 import Foundation
 
-/// The run log's two Elliot-authored line shapes, and the single writer that keeps them from
+/// The run log's three Elliot-authored line shapes, and the single writer that keeps them from
 /// interleaving with the adapter's own bytes.
 ///
 /// A run log is one JSON object per line — decision 5 — and everything downstream rests on it:
@@ -15,6 +15,7 @@ public enum AgentLog {
     /// namespaced `elliot/`, and nothing ever will be.
     public static let sessionMethod = "elliot/session"
     public static let terminalMethod = "elliot/terminal"
+    public static let refusalsMethod = "elliot/refusals"
 
     /// What the handshake established, as a line the log can carry.
     ///
@@ -34,6 +35,30 @@ public enum AgentLog {
         line(method: terminalMethod, params: summary)
     }
 
+    /// What this run's `PermissionPolicy` refused, as a line the log can carry.
+    ///
+    /// ⛔ **Written only when the list is non-empty, and that is the point rather than tidiness.**
+    /// Every skill run spawns at `bypassPermissions`, where the design says no
+    /// `session/request_permission` should arrive at all — and measured, none does. A line here is
+    /// therefore evidence that #585 reproduced, not a routine record; a `"toolNames": []` written
+    /// on every clean turn would bury the one turn that mattered among thousands that did not.
+    ///
+    /// ⚠️ **Deliberately not `TurnSummary.denials`, and not foldable into it.** That list comes
+    /// from `nonExecutionKind` — the *agent's* account of a tool call that did not run. This is
+    /// *Elliot's* account of a request it refused, and the two are independent records that can
+    /// disagree: whether the adapter mirrors a client-side rejection back into a `tool_call` frame
+    /// is unmeasured, so on an adapter that does not, this line is the only place the refusal is
+    /// named at all.
+    public static func refusalsLine(_ toolNames: [String]) -> Data {
+        line(method: refusalsMethod, params: Refusals(toolNames: toolNames))
+    }
+
+    /// An object rather than a bare `[String]`, so this line has the same shape as the other two —
+    /// a named field can gain a sibling later; a top-level array cannot without changing type.
+    private struct Refusals: Encodable {
+        let toolNames: [String]
+    }
+
     private struct Line<Params: Encodable>: Encodable {
         let jsonrpc = "2.0"
         let method: String
@@ -41,9 +66,9 @@ public enum AgentLog {
     }
 
     /// ⚠️ Non-throwing, and the fallback is unreachable by construction rather than by hope.
-    /// `RunSessionInfo` and `TurnSummary` are `String`/`Int`/`Bool`/array/`Double?` all the way
-    /// down, and the only way `JSONEncoder` can fail on that shape is a non-finite `Double` — the
-    /// single candidate being `RunUsage.costUSD`, which arrives through `JSONDecoder` off the
+    /// `RunSessionInfo`, `TurnSummary` and `Refusals` are `String`/`Int`/`Bool`/array/`Double?` all
+    /// the way down, and the only way `JSONEncoder` can fail on that shape is a non-finite `Double`
+    /// — the single candidate being `RunUsage.costUSD`, which arrives through `JSONDecoder` off the
     /// wire, and `JSONDecoder` rejects `nan`/`inf` before it ever gets here. The fallback exists
     /// anyway because the alternative is a `try!` in the one place whose whole job is that the log
     /// stays parseable: a `params: null` line is still one JSON object, so decision 5 survives

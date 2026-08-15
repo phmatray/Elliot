@@ -147,21 +147,185 @@ struct PermissionPolicyTests {
         #expect(!killerFired.value)
     }
 
-    @Test("a request whose options contain no allow choice is declined, not guessed at")
-    func unknownOptionSetDeclines() async throws {
-        let policy = PermissionPolicy(mode: .bypassPermissions)
-        let request = RequestPermissionRequest(
-            options: [],
+    /// A permission request carrying whatever options a case wants to offer, otherwise shaped like
+    /// the one `Scripts/fake-acp.py` sends.
+    static func request(options: [PermissionOption]) -> RequestPermissionRequest {
+        RequestPermissionRequest(
+            options: options,
             sessionId: SessionId("sess-fake-0001"),
             toolCall: ToolCallUpdate(toolCallId: "tc-1", title: "Bash")
         )
+    }
 
-        let response = try await policy.handlePermissionRequest(request: request)
+    @Test("a request whose options contain no allow choice is declined, not guessed at")
+    func unknownOptionSetDeclines() async throws {
+        let policy = PermissionPolicy(mode: .bypassPermissions)
+
+        let response = try await policy.handlePermissionRequest(request: Self.request(options: []))
 
         // `PermissionOutcome(cancelled: true)` — never an option this policy was not actually
         // offered, and never "the first option" just because one existed.
         #expect(response.outcome.outcome == "cancelled")
         #expect(response.outcome.optionId == nil)
         #expect(policy.refusals() == ["Bash"])
+    }
+
+    // MARK: - Never "the first option"
+    //
+    // ⛔ The three below exist because `unknownOptionSetDeclines` **cannot fail** for the defect
+    // the class header calls its central safety claim: "it never falls back to 'the first option',
+    // which is how a policy would silently allow something it was never actually asked about."
+    // Measured — replacing the option lookup with `first(where: …) ?? request.options.first`,
+    // literally guessing, leaves all three of this suite's original tests green
+    // (`Test run with 3 tests in 1 suite passed`). `options: []` is the degenerate case where
+    // `first(where:)` and `first` are both `nil`, so declining and guessing are indistinguishable
+    // there. Each case below offers exactly one option **of the wrong kind**, which is where the
+    // two answers part.
+
+    @Test("offered only a reject option, bypassPermissions declines rather than selecting it")
+    func bypassNeverSelectsARejectOption() async throws {
+        let policy = PermissionPolicy(mode: .bypassPermissions)
+        let response = try await policy.handlePermissionRequest(
+            request: Self.request(options: [
+                PermissionOption(kind: "reject_once", name: "Deny", optionId: "deny")
+            ]))
+
+        // Selecting `deny` here would be *safe* and still wrong: this policy answers by kind, and
+        // an answer it was not asked for is a guess whichever direction it points.
+        #expect(response.outcome.outcome == "cancelled")
+        #expect(response.outcome.optionId == nil)
+        #expect(policy.refusals() == ["Bash"])
+    }
+
+    @Test("offered only an allow option, a tighter mode declines rather than selecting it")
+    func tighterModeNeverSelectsAnAllowOption() async throws {
+        // The consequential direction, and the reason this mirror case is not symmetry for its own
+        // sake: `PermissionMode.appraisal(repo:)` returns `.acceptEdits` for every appraisal run,
+        // so a guess here grants a real tool call in a real checkout under the one mode whose whole
+        // purpose is that it does not.
+        let policy = PermissionPolicy(mode: .acceptEdits)
+        let response = try await policy.handlePermissionRequest(
+            request: Self.request(options: [
+                PermissionOption(kind: "allow_once", name: "Allow", optionId: "allow")
+            ]))
+
+        #expect(response.outcome.outcome == "cancelled")
+        #expect(response.outcome.optionId == nil)
+        #expect(policy.refusals() == ["Bash"])
+    }
+
+    @Test("an option kind this build has never seen is not selected either")
+    func unrecognisedKindIsNotSelected() async throws {
+        // `allow_for_session` is not one of `PermissionDecision`'s four cases. A future adapter
+        // that offers only kinds this build does not know must get a decline, not the nearest
+        // plausible-looking thing — the same instinct as `RunEvent.unreadable`, which degrades one
+        // row rather than guessing at what a schema it has not seen meant.
+        let policy = PermissionPolicy(mode: .bypassPermissions)
+        let response = try await policy.handlePermissionRequest(
+            request: Self.request(options: [
+                PermissionOption(kind: "allow_for_session", name: "Allow", optionId: "allow")
+            ]))
+
+        #expect(response.outcome.outcome == "cancelled")
+        #expect(response.outcome.optionId == nil)
+        #expect(policy.refusals() == ["Bash"])
+    }
+
+    // MARK: - What a real run does
+    //
+    // ⛔ Everything above constructs its own `Client` and calls `setDelegate` itself, so it proves
+    // `PermissionPolicy` answers correctly and proves **nothing** about `AgentRun` ever installing
+    // it. Measured — replacing `await client.setDelegate(policy)` in `AgentRun.start` with
+    // `_ = policy` left the whole suite green (`Test run with 2846 tests in 336 suites passed`),
+    // which would return every real run to the stall the class header says this policy exists to
+    // prevent. The two below drive `AgentRun.start` itself, so that line is load-bearing.
+    //
+    // ⚠️ Against this double the delegate's absence surfaces as a **refusal**, not a hang:
+    // `Client.handleIncomingRequest` catches `ClientError.delegateNotSet` and replies `-32603`
+    // (`Vendor/swift-acp/ACP/Client.swift:1161-1181`), and `fake-acp.py` treats an error reply the
+    // same as `deny` — it skips the fixture and answers `stopReason: "refusal"`. So the assertions
+    // here are on the turn's own word rather than on a timeout, and neither test depends on the
+    // hang the brief describes for a real adapter.
+    //
+    // The run/log helpers come from `ACPRunnerTests` rather than being copied: four helpers
+    // written twice is the shape #146 is about, and `logURL`/`objects`/`drain` are exactly the
+    // pieces that would drift.
+
+    @Test("a real run installs the policy, so a gated turn completes on its own word")
+    func aRunInstallsThePolicy() async throws {
+        let logURL = try ACPRunnerTests.logURL("acp-permission-allow")
+        let run = try AgentRun.start(
+            invocation: ACPRunnerTests.invocation(permissionMode: .bypassPermissions),
+            agent: Self.agent(),
+            logURL: logURL
+        )
+        // Armed for `armKiller`'s stated reason: every `Client` request this run makes reaches
+        // `sendRequest(…, timeout: nil)`, which no `withTimeout` can bound.
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let (_, outcome) = await ACPRunnerTests.drain(run)
+
+        // `end_turn` is reachable only through an `allow` answer — the double blocks on stdin for
+        // it and skips the fixture entirely on anything else.
+        #expect(outcome?.summary?.stopReason == "end_turn")
+        #expect(outcome?.summary?.isError == false)
+
+        // ⛔ Asserted on the log, never on `updates`: that stream is `bufferingNewest(512)` and
+        // deliberately lossy (#128). Eight, not seven — the double emits a `current_mode_update` of
+        // its own while answering `session/set_config_option`, on top of the fixture's seven.
+        let objects = try ACPRunnerTests.objects(inLogAt: logURL)
+        let methods = objects.compactMap { $0["method"] as? String }
+        #expect(methods.filter { $0 == "session/update" }.count == 8)
+
+        // Nothing was declined, so the log carries no refusal record at all — the empty list is
+        // deliberately not written, so its absence is the assertion.
+        #expect(!methods.contains(AgentLog.refusalsMethod))
+        #expect(methods.last == AgentLog.terminalMethod)
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
+    }
+
+    @Test("a refused request is named in the run's own log")
+    func aRefusalIsNamedInTheLog() async throws {
+        let logURL = try ACPRunnerTests.logURL("acp-permission-refuse")
+        let run = try AgentRun.start(
+            invocation: ACPRunnerTests.invocation(permissionMode: .acceptEdits),
+            agent: Self.agent(),
+            logURL: logURL
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let (_, outcome) = await ACPRunnerTests.drain(run)
+
+        #expect(outcome?.summary?.stopReason == "refusal")
+
+        let objects = try ACPRunnerTests.objects(inLogAt: logURL)
+        let methods = objects.compactMap { $0["method"] as? String }
+
+        // The point of the whole ledger: `refusals()` reached the log, naming what was refused.
+        // `fake-acp.py`'s request carries no `title` and no `_meta`, only `toolCallId: "tc-1"`, so
+        // the recorded name falls all the way to the id — the fallback rather than the common case.
+        let record = try #require(
+            objects.first { $0["method"] as? String == AgentLog.refusalsMethod })
+        let params = try #require(record["params"] as? [String: Any])
+        #expect(params["toolNames"] as? [String] == ["tc-1"])
+
+        // ⛔ The ordering the record has to respect: `elliot/terminal` stays the log's last line,
+        // because that is what `AgentLog.lastSummary`'s backwards scan (Task 9) hunts for.
+        #expect(methods.last == AgentLog.terminalMethod)
+        let refusalIndex = try #require(methods.firstIndex(of: AgentLog.refusalsMethod))
+        #expect(refusalIndex < methods.count - 1)
+
+        // The fixture never played: the only `session/update` is the double's own mode echo, so
+        // nothing the policy declined ran anyway.
+        #expect(methods.filter { $0 == "session/update" }.count == 1)
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
     }
 }
