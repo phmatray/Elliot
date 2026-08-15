@@ -39,6 +39,18 @@ struct RunEventMapperTests {
         try notifications(in: fixture).flatMap(RunEventMapper.events(from:))
     }
 
+    /// One notification from a JSON literal, for the frame kinds and content blocks that **no**
+    /// committed transcript carries.
+    ///
+    /// Hand-built in its *bytes*, never in its *values*: the literal still goes through the same
+    /// vendored `JSONDecoder` the fixtures do, so a shape this repository has guessed wrong
+    /// fails to decode here rather than passing as a model object nobody could have received.
+    /// The census that says which kinds need this is in `text(of:)`'s doc comment and in the two
+    /// silent-frame tests below.
+    static func frame(_ json: String) throws -> SessionUpdateNotification {
+        try JSONDecoder().decode(SessionUpdateNotification.self, from: Data(json.utf8))
+    }
+
     /// ⛔ THE test. The `Edit` call arrives as **six** frames on one id, and the last carries
     /// `status: "completed"` and nothing else — no title, no kind, no locations, no content.
     ///
@@ -132,12 +144,11 @@ struct RunEventMapperTests {
     /// shape of defect that ships.
     @Test("a frame that says content is empty does not erase the diff")
     func anEmptyContentArrayDoesNotClear() throws {
-        let json = Data(
+        let frame = try Self.frame(
             """
             {"sessionId":"s","update":{"sessionUpdate":"tool_call_update",
              "toolCallId":"tc-1","content":[]}}
-            """.utf8)
-        let frame = try JSONDecoder().decode(SessionUpdateNotification.self, from: json)
+            """)
         let established = ToolCallPatch(
             id: "tc-1", content: [.diff(path: "/tmp/a", oldText: "a", newText: "b")])
         let events = RunEventMapper.events(from: frame)
@@ -163,13 +174,12 @@ struct RunEventMapperTests {
     /// is a reason to write it rather than a reason to skip it.
     @Test("a frame with nothing renderable in it does not erase the diff either")
     func unrenderableContentDoesNotClear() throws {
-        let json = Data(
+        let frame = try Self.frame(
             """
             {"sessionId":"s","update":{"sessionUpdate":"tool_call_update",
              "toolCallId":"tc-1","content":[{"type":"content","content":
              {"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"}}]}}
-            """.utf8)
-        let frame = try JSONDecoder().decode(SessionUpdateNotification.self, from: json)
+            """)
         // The frame really does carry a block; it is the mapping that empties it.
         guard case .toolCallUpdate(let details) = frame.update else {
             Issue.record("not a tool call update")
@@ -188,16 +198,186 @@ struct RunEventMapperTests {
         #expect(established.merging(patch).content?.count == 1)
     }
 
-    /// Not a `default: continue`. Every arm is named, and this test is what keeps it that way.
-    @Test("the six frame kinds nothing renders map to zero events, by name")
-    func deliberatelyUnmappedFramesProduceNothing() throws {
-        // `available_commands_update` is in the session-new transcript.
-        let all = try Self.notifications(in: "session-new-commands.json")
+    // MARK: - The six arms that deliberately render nothing
+
+    /// ⛔ Six of `SessionUpdate`'s thirteen arms return `[]` **by name**, and the mapper's own
+    /// doc comment claims a test pins them. Until a review of this task that claim was false for
+    /// five of the six: this test was called *"the six frame kinds nothing renders map to zero
+    /// events"* and exercised **one**.
+    ///
+    /// Measured on a clean tree at `f0c0839`, before the fix: rewriting all five unpinned arms
+    /// at once to emit events — `user_message_chunk` rendered as `.agentText`, which is Elliot's
+    /// own prompt presented as the agent's prose and the exact harm that arm's comment names,
+    /// plus junk `.plan` and `.modeChanged` events for the other four — left the **whole suite**
+    /// green: `Test run with 2823 tests in 332 suites passed after 4.452 seconds`.
+    ///
+    /// ⚠️ And the gap was wider than "no fixture carries them", which is why the count was worth
+    /// re-taking rather than inheriting. `session_info_update` **is** carried, four times across
+    /// four transcripts, and it was unpinned too — because nothing in this file counts events,
+    /// so extra ones simply pass through every `compactMap`. A fixture exercising a line is not
+    /// a test asserting on it.
+    ///
+    /// The two kinds a transcript really carries are pinned from those bytes, here; the four it
+    /// does not are pinned from hand-built bytes, below.
+    @Test("the two silent frame kinds a transcript carries map to zero events")
+    func silentFramesWithATranscriptProduceNothing() throws {
+        let all =
+            try Self.notifications(in: "session-new-commands.json")
+            + Self.notifications(in: "turn-edit-bash.json")
+
         let commands = all.filter {
             if case .availableCommandsUpdate = $0.update { return true }
             return false
         }
-        #expect(!commands.isEmpty)  // the fixture really carries them
+        let sessionInfo = all.filter {
+            if case .sessionInfoUpdate = $0.update { return true }
+            return false
+        }
+
+        // The fixtures really carry both, so an empty filter cannot be mistaken for a pass.
+        #expect(!commands.isEmpty)
+        #expect(!sessionInfo.isEmpty)
         #expect(commands.flatMap(RunEventMapper.events(from:)).isEmpty)
+        #expect(sessionInfo.flatMap(RunEventMapper.events(from:)).isEmpty)
+    }
+
+    /// The other four, hand-built because no committed transcript carries one — censused across
+    /// all five: `available_commands_update`, `current_mode_update`, `usage_update`,
+    /// `tool_call`, `tool_call_update`, `agent_message_chunk` and `session_info_update`, and
+    /// nothing else.
+    ///
+    /// Each frame asserts which case it decoded to before asserting that the case renders
+    /// nothing. Without that, a literal that quietly decoded to a *different* arm would report
+    /// "zero events" about an arm this test never reached.
+    @Test("the four silent frame kinds no transcript carries map to zero events")
+    func silentFramesWithoutATranscriptProduceNothing() throws {
+        let userMessage = try Self.frame(
+            """
+            {"sessionId":"s","update":{"sessionUpdate":"user_message_chunk",
+             "content":{"type":"text","text":"Elliot wrote this prompt"}}}
+            """)
+        let configOption = try Self.frame(
+            """
+            {"sessionId":"s","update":{"sessionUpdate":"config_option_update","configOptions":
+             [{"id":"thinking","name":"Thinking","type":"boolean","currentValue":true}]}}
+            """)
+        let planUpdate = try Self.frame(
+            """
+            {"sessionId":"s","update":{"sessionUpdate":"plan_update","plan":
+             {"type":"markdown","planId":"plan-1","content":"# a draft"}}}
+            """)
+        let planRemoved = try Self.frame(
+            """
+            {"sessionId":"s","update":{"sessionUpdate":"plan_removed","planId":"plan-1"}}
+            """)
+
+        if case .userMessageChunk = userMessage.update {} else { Issue.record("not a user chunk") }
+        if case .configOptionUpdate = configOption.update {} else { Issue.record("not a config") }
+        if case .planUpdate = planUpdate.update {} else { Issue.record("not a plan update") }
+        if case .planRemoved = planRemoved.update {} else { Issue.record("not a plan removal") }
+
+        for frame in [userMessage, configOption, planUpdate, planRemoved] {
+            #expect(RunEventMapper.events(from: frame).isEmpty)
+        }
+    }
+
+    /// ⛔ The control the arm above needs to mean anything. `user_message_chunk` must render
+    /// nothing **because Elliot wrote it**, not because its block was unrenderable — and the
+    /// two are indistinguishable from an assertion that only ever sees zero.
+    ///
+    /// So the identical content block is sent twice, down two arms: as the user's chunk it
+    /// produces nothing, as the agent's it produces exactly one `.agentText` carrying that text.
+    /// Reverting `case .userMessageChunk` to render turns the first half red while the second
+    /// half stays green, which is the shape that says the test is measuring the arm.
+    @Test("the same block Elliot wrote renders nothing, and the agent's renders prose")
+    func onlyTheAgentsHalfOfAChunkIsRendered() throws {
+        let block = #"{"type":"text","text":"the very same words"}"#
+        let mine = try Self.frame(
+            """
+            {"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":\(block)}}
+            """)
+        let theirs = try Self.frame(
+            """
+            {"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":\(block)}}
+            """)
+
+        #expect(RunEventMapper.events(from: mine).isEmpty)
+        #expect(RunEventMapper.events(from: theirs) == [.agentText("the very same words")])
+    }
+
+    // MARK: - The five content-block kinds
+
+    /// ⛔ An embedded text resource is **prose**, and dropping it would be the silent drop this
+    /// whole model exists to end.
+    ///
+    /// `text(of:)` was `if case .text(let text) = block` — a `default:` in all but syntax — so
+    /// four of `ContentBlock`'s five cases fell through it, while its doc comment named two.
+    /// One of the four, `.resource`, wraps an `EmbeddedResourceType` whose `.text` case carries
+    /// a plain `String` (`ACPModel/Content.swift:220`): real, renderable text, discarded with no
+    /// trace and — on a message chunk, where `text(of:) ?? []` is the whole mapping — without
+    /// even an `.unreadable` row to show something had arrived.
+    ///
+    /// Hand-built: not one of the 53 content blocks across the five committed transcripts is
+    /// anything but a text block.
+    @Test("an embedded text resource is read as prose, on both the chunk and the tool arm")
+    func anEmbeddedTextResourceIsRead() throws {
+        let resource = """
+            {"type":"resource","resource":{"type":"text","uri":"file:///tmp/notes.txt",
+             "text":"what the resource actually said"}}
+            """
+
+        let chunk = try Self.frame(
+            """
+            {"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":\(resource)}}
+            """)
+        #expect(
+            RunEventMapper.events(from: chunk) == [.agentText("what the resource actually said")])
+
+        let call = try Self.frame(
+            """
+            {"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1",
+             "content":[{"type":"content","content":\(resource)}]}}
+            """)
+        guard case .toolCall(let patch) = try #require(RunEventMapper.events(from: call).first)
+        else {
+            Issue.record("not a tool call")
+            return
+        }
+        #expect(patch.content == [.text("what the resource actually said")])
+    }
+
+    /// The other side of the same switch, decided by name rather than by omission: a picture, a
+    /// sound, a link that carries no body, and a resource whose payload is base64 are all real
+    /// absences. A `resource_link` is the interesting one — it has a `uri` and a `name`, so
+    /// rendering it would mean *composing* a line out of two fields, which is a guess about an
+    /// adapter that has never been measured emitting one.
+    ///
+    /// Each is checked on the chunk arm, where an absence costs the whole event, and the block
+    /// is asserted to have decoded first so that "no event" cannot mean "no block".
+    @Test("a picture, a sound, a bare link and a blob resource render nothing, by name")
+    func theFourUnrenderableBlockKindsRenderNothing() throws {
+        let blocks = [
+            #"{"type":"image","data":"iVBORw0KGgo=","mimeType":"image/png"}"#,
+            #"{"type":"audio","data":"UklGRiQ=","mimeType":"audio/wav"}"#,
+            #"{"type":"resource_link","uri":"file:///tmp/notes.txt","name":"notes.txt"}"#,
+            """
+            {"type":"resource","resource":{"type":"blob","uri":"file:///tmp/a.bin",
+             "blob":"aGVsbG8="}}
+            """,
+        ]
+        for block in blocks {
+            let chunk = try Self.frame(
+                """
+                {"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk",
+                 "content":\(block)}}
+                """)
+            guard case .agentMessageChunk(let decoded) = chunk.update else {
+                Issue.record("not an agent chunk: \(block)")
+                continue
+            }
+            // It really is a block; it is the mapping that declines to show it.
+            if case .text = decoded { Issue.record("decoded as text: \(block)") }
+            #expect(RunEventMapper.events(from: chunk).isEmpty, "\(block)")
+        }
     }
 }

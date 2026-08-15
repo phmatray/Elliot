@@ -14,9 +14,17 @@ public enum RunEventMapper {
     /// ⛔ The `switch` is exhaustive over `SessionUpdate`'s thirteen cases with **no
     /// `default`**, and six of them map to `[]` **by name**. That is not the same act as
     /// `StreamEventDecoder.decodeMessage`'s `default: continue`, which is what silently threw
-    /// away every thinking block: an arm that returns `[]` is a decision a reader can see and a
-    /// test can pin (`deliberatelyUnmappedFramesProduceNothing`), and a fourteenth case added
-    /// upstream is a compile error here rather than a silent drop.
+    /// away every thinking block: an arm that returns `[]` is a decision a reader can see, and a
+    /// fourteenth case added upstream is a compile error here rather than a silent drop.
+    ///
+    /// ⚠️ All six are pinned — two from transcript bytes by
+    /// `silentFramesWithATranscriptProduceNothing`, four from hand-built bytes by
+    /// `silentFramesWithoutATranscriptProduceNothing`, with
+    /// `onlyTheAgentsHalfOfAChunkIsRendered` as the control that a silent arm is silent by
+    /// decision rather than by having nothing to say. This sentence claimed as much while
+    /// **one** of the six was pinned and the other five were held by the exhaustive `switch`
+    /// alone; a review measured five arms rewritten to emit events with the whole suite still
+    /// green. Naming the tests is what makes the claim checkable rather than reassuring.
     public static func events(from notification: SessionUpdateNotification) -> [RunEvent] {
         switch notification.update {
         case .agentMessageChunk(let block):
@@ -96,9 +104,11 @@ public enum RunEventMapper {
     /// One rule for both frame shapes: absent, empty, or nothing renderable in it all mean
     /// **this frame said nothing about content**.
     ///
-    /// The third case is the one that is easy to miss: `content(_:)` is a `compactMap` that
-    /// drops image and audio blocks, so a non-empty frame can still map to `[]`. Written the
-    /// same way as `locations(_:)` directly below, for the same reason.
+    /// The third case is the one that is easy to miss: `content(_:)` is a `compactMap`, and
+    /// `text(of:)` yields nothing for an image, an audio, a `resource_link` or a blob resource
+    /// block — **four** kinds, enumerated there rather than summarised here — so a non-empty
+    /// frame can still map to `[]`. Written the same way as `locations(_:)` directly below, for
+    /// the same reason.
     static func mapped(_ raw: [ToolCallContent]?) -> [ToolContent]? {
         guard let raw, !raw.isEmpty else { return nil }
         let mapped = content(raw)
@@ -138,11 +148,47 @@ public enum RunEventMapper {
         )
     }
 
-    /// Only text blocks carry anything a log row can show. An image or an audio block is a real
-    /// absence rather than an error, so it maps to `nil` and the caller drops the event.
+    /// The one place a `ContentBlock` becomes a string — for agent prose, for thinking, and for
+    /// tool content alike.
+    ///
+    /// ⛔ An exhaustive `switch` over all **five** cases of `ContentBlock`
+    /// (`ACPModel/Content.swift:37`), for the reason the `SessionUpdate` switch above is one: a
+    /// sixth case added upstream must be a compile error here rather than a silent drop. It was
+    /// `if case .text(let text) = block` until a review of this task — a `default:` in all but
+    /// syntax — and its doc comment named two of the four cases it was swallowing, which is
+    /// exactly how `.resource` went unnoticed.
+    ///
+    /// ⛔ **`.resource` is read, not dropped.** `ContentBlock.resource` wraps an
+    /// `EmbeddedResourceType`, whose `.text` case carries a plain `String`
+    /// (`Content.swift:220`) — real prose, the same shape a text block carries. Discarding it
+    /// would be the silent drop `StreamEventDecoder.decodeMessage`'s `default: continue`
+    /// performed on every thinking block, which is the harm `RunEvent`'s own header holds up as
+    /// the reason ACP was adopted; and it would be worse here than for tool content, because
+    /// `text(of:) ?? []` on a message chunk yields **no event at all**, not even `.unreadable`.
+    /// Nothing is invented: the string is read off the wire, never composed. A `.blob` resource
+    /// carries no text and yields `nil`.
+    ///
+    /// `.image`, `.audio` and `.resourceLink` are real absences rather than errors, so they map
+    /// to `nil` and the caller drops the event. A `resource_link` is named rather than rendered
+    /// on purpose: it carries a `uri` and a `name` and no body, so showing it would mean
+    /// *composing* a line out of two fields — the guess the `planUpdate` arm above declines to
+    /// make.
+    ///
+    /// ⚠️ All four of those decisions are unmeasured against this adapter. Counted across the
+    /// five committed transcripts, every one of the **53** content blocks on the wire is a text
+    /// block — 32 message chunks and 21 tool content blocks, and not one image, audio,
+    /// resource_link or resource. They are pinned by hand-built bytes for that reason, not
+    /// despite it.
     static func text(of block: ContentBlock) -> String? {
-        if case .text(let text) = block, !text.text.isEmpty { return text.text }
-        return nil
+        switch block {
+        case .text(let text):
+            return text.text.isEmpty ? nil : text.text
+        case .resource(let resource):
+            guard let text = resource.resource.text, !text.isEmpty else { return nil }
+            return text
+        case .image, .audio, .resourceLink:
+            return nil
+        }
     }
 
     /// `_meta.claudeCode.toolName`.
