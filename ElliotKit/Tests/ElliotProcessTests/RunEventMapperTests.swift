@@ -116,9 +116,18 @@ struct RunEventMapperTests {
     /// `ToolCallUpdateDetails.content` is `[ToolCallContent]?` (`ACPModel/Updates.swift:376`),
     /// so a `tool_call_update` carrying `"content": []` decodes to `[]` rather than to `nil` —
     /// and under the merge rule `next.content ?? content` an empty array **replaces** a diff
-    /// that an earlier frame established. Measured on `Fixtures/acp/turn-edit-bash.json`: no
-    /// `tool_call_update` there carries an explicit empty `content` — the Edit call's last frame
-    /// omits the key entirely (`_meta`, `rawOutput`, `sessionUpdate`, `status`, `toolCallId`) —
+    /// that an earlier frame established.
+    ///
+    /// ⚠️ An earlier wording of this comment said no `tool_call_update` in
+    /// `Fixtures/acp/turn-edit-bash.json` carries an explicit empty `content`. Re-measured over
+    /// the raw bytes: exactly one does — the **Read** call's second frame, position 2 of the
+    /// transcript's 15 tool frames — and it erases nothing, because the creation frame ahead of
+    /// it carried `[]` too, so there was never anything established to lose. The Edit call's
+    /// last frame is a different shape again: it omits the key entirely (`_meta`, `rawOutput`,
+    /// `sessionUpdate`, `status`, `toolCallId`).
+    ///
+    /// The conclusion is the one that matters and it survived the correction. Folding all five
+    /// committed transcripts under both rules produces **identical** content on every tool call,
     /// so `editKeepsItsTitleAndKind` passes whether or not this is handled. That is exactly the
     /// shape of defect that ships.
     @Test("a frame that says content is empty does not erase the diff")
@@ -147,6 +156,11 @@ struct RunEventMapperTests {
     /// ⚠️ The array here is **not** empty on the wire — it carries one `ToolCallContent` that
     /// really decoded — so the `!raw.isEmpty` guard alone does not save it. Only checking what
     /// the mapping *produced* does, which is why `mapped(_:)` looks at both ends.
+    ///
+    /// Hand-built because there is nothing to build it from: counted across all five committed
+    /// transcripts, every block on the wire is either a text block or a diff — **26 in total,
+    /// 21 text and 5 diff, and not one image or audio block**. This case has no witness, which
+    /// is a reason to write it rather than a reason to skip it.
     @Test("a frame with nothing renderable in it does not erase the diff either")
     func unrenderableContentDoesNotClear() throws {
         let json = Data(
