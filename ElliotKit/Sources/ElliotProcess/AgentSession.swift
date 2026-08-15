@@ -56,12 +56,18 @@ public actor AgentSession {
         deinit { transport.terminate(hardKillAfter: grace) }
     }
 
+    /// `stdoutMirror` is handed straight to the transport, which calls it under the drain lock —
+    /// see `ACPTransport.MessageSink.mirror`. It is a parameter here rather than something
+    /// `AgentRun` wires up afterwards because there is no afterwards: the child is running from
+    /// the moment `ACPTransport` is constructed, so a mirror installed one statement later would
+    /// miss whatever the adapter had already written.
     public init(
         _ agent: ACPAgentProcess,
+        stdoutMirror: (@Sendable (Data) -> Void)? = nil,
         flushGrace: Duration = Client.defaultFlushGrace,
         hardKillAfter: Duration = ProcessTermination.hardKillGrace
     ) throws {
-        let transport = try ACPTransport(agent)
+        let transport = try ACPTransport(agent, stdoutMirror: stdoutMirror)
         self.transport = transport
         client = Client(
             transport: transport, flushGrace: flushGrace, escalationGrace: hardKillAfter)
