@@ -12,6 +12,21 @@ Env:
   FAKE_ACP_ARGV_OUT     path to write argv to, one element per line
   FAKE_ACP_STOP_REASON  default: end_turn
   FAKE_ACP_DELAY_MS     pause before every line written                (default: 0, no pause)
+  FAKE_ACP_STDERR       text to emit on stderr at start-up
+  FAKE_ACP_EXIT_AFTER_REPLY  exit 0 the instant session/prompt is answered
+
+FAKE_ACP_STDERR is the counterpart of fake-claude.sh's FAKE_CLAUDE_STDERR, and it exists for one
+path in particular: MODE=crash exits without a word, so a test asserting that a died-mid-turn run
+still carries a *reason* would be asserting on an empty string. This is where a failed `npx`
+resolution or a Node stack trace lands for real. Written before the trap and before any stdout, so
+it is present however early the double is killed.
+
+FAKE_ACP_EXIT_AFTER_REPLY makes the double flush its `session/prompt` response and exit in the same
+breath, instead of looping back to block on stdin until the client closes it. It exists to widen a
+window rather than to simulate anything: Elliot writes `elliot/terminal` **after** `waitForExit()`
+has returned, so a log writer closed from whichever of "the prompt returned" and "the child exited"
+happens first would lose that line. With this set the child is gone before Elliot has written a
+byte of its own record, so the ordering is exercised rather than reasoned about.
 
 FAKE_ACP_DELAY_MS is what lets a test reach a client's idle watchdog, and it is the counterpart
 of `fake-claude.sh`'s FAKE_CLAUDE_DELAY_MS — the knob `ClaudeRunnerTests.silenceAndRecoveryAlternate`
@@ -52,7 +67,13 @@ import time
 MODE = os.environ.get("FAKE_ACP_MODE", "ok")
 STOP_REASON = os.environ.get("FAKE_ACP_STOP_REASON", "end_turn")
 DELAY_MS = int(os.environ.get("FAKE_ACP_DELAY_MS", "0"))
+EXIT_AFTER_REPLY = bool(os.environ.get("FAKE_ACP_EXIT_AFTER_REPLY"))
 SESSION_ID = "sess-fake-0001"
+
+# Before the trap and before a single byte of stdout: a crash reason that arrives only if the
+# double survives long enough to write it is not a crash reason.
+if stderr_text := os.environ.get("FAKE_ACP_STDERR"):
+    print(stderr_text, file=sys.stderr, flush=True)
 
 # Trap first, before anything else can fail: a child that outlives its parent holding the
 # runner's stdout pipe open is how a test suite stops terminating.
@@ -299,6 +320,10 @@ def handle(message, stdin_iter):
         for update in fixture():
             notify(update)
         reply(request_id, {"stopReason": STOP_REASON})
+        if EXIT_AFTER_REPLY:
+            # `reply` already flushed, so the response is in the pipe and the client will read it
+            # before it sees EOF. What goes away is the wait for the client's own stdin close.
+            sys.exit(0)
     elif method == "session/cancel":
         pass                            # a notification; nothing to answer
     elif request_id is not None:

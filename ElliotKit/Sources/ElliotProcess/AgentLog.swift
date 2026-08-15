@@ -65,6 +65,85 @@ public enum AgentLog {
         let params: Params
     }
 
+    /// What the turn amounted to, recovered from the log rather than from memory.
+    ///
+    /// `ClaudeRun.lastResult(inLogAt:)` is the shape this is modelled on, and its two reasons carry
+    /// over unchanged. **Backwards**, because the terminal line is the last thing a finished run
+    /// wrote and a log can be long. **One yes-or-no question per line**, because a scan does not
+    /// need to render a log to find one line in it — the fold that builds rows is
+    /// `RunLog.rows(from:denials:summary:)`, and it is a different job.
+    ///
+    /// ⛔ Elliot writes this line itself, and that is not a convenience. Under `claude -p` the
+    /// terminal `result` was a stream-json line like any other, so the log was self-sufficient for
+    /// free. Under ACP the `stopReason` comes back as the **response** to `session/prompt` — it is
+    /// never a notification, so it never reaches the log unless we put it there.
+    /// `RunScheduler.finish` reads what this scan finds, on **every** run and not only a crashed
+    /// one. `Reconciler` does not read the log at all: its launch sweep hardcodes `.failed` for a
+    /// run that died with the app (`Reconciler.swift:41-58`), because a run that never came back
+    /// produced no outcome to read.
+    ///
+    /// ⚠️ `nil` is a fact, not a failure: a run that died mid-turn wrote no terminal line, and that
+    /// absence is exactly what tells it apart from a run that ended. Nothing here guesses.
+    public static func lastSummary(inLogAt url: URL) -> TurnSummary? {
+        last(TurnSummary.self, method: terminalMethod, inLogAt: url)
+    }
+
+    /// What the handshake established, recovered the same way.
+    ///
+    /// ⚠️ The plan calls this `SessionInfo`; the model type is `RunSessionInfo`, and its own doc
+    /// comment says why it is not the shorter name — `ACPModel.SessionInfo` already exists in this
+    /// module's dependencies and means a different thing (a session-**listing** entry).
+    ///
+    /// Backwards like its sibling, though the session line is the log's *first* method-bearing
+    /// record and a forward scan would find the same one: a run opens exactly one session, so
+    /// direction cannot change the answer, and sharing the scan is worth more than matching the
+    /// direction to the intuition. Where they would differ — a log that somehow carried two — the
+    /// **last** is the right reading anyway, since it is the one the run ended under.
+    public static func sessionInfo(inLogAt url: URL) -> RunSessionInfo? {
+        last(RunSessionInfo.self, method: sessionMethod, inLogAt: url)
+    }
+
+    /// Just enough of a line to answer "is this one of ours, and which".
+    ///
+    /// ⛔ **Asked first, and separately, because the namespace is the whole guarantee.** Decoding
+    /// the params and inferring the kind from whether they fit would let an adapter frame carrying
+    /// a `stopReason` be read as Elliot's own record — the exact confusion `terminalMethod`'s
+    /// `elliot/` prefix exists to make impossible. `method` is `Optional` because a *response* line
+    /// carries `id` and no `method` at all, and half the lines in a run log are responses.
+    private struct Envelope: Decodable {
+        let method: String?
+    }
+
+    private struct Record<Params: Decodable>: Decodable {
+        let params: Params
+    }
+
+    /// The one scan, so `lastSummary` and `sessionInfo` cannot drift apart.
+    ///
+    /// ⚠️ A line that names the right method and whose params will not decode is **skipped**, not
+    /// treated as the end of the search. That is the tolerant direction on purpose:
+    /// `TurnSummary`'s own doc comment records that these lines are persisted and read back by
+    /// later builds, so a record this build cannot make sense of should leave the scan looking
+    /// rather than assert that the run never ended.
+    private static func last<Params: Decodable>(
+        _ type: Params.Type, method: String, inLogAt url: URL
+    ) -> Params? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        for line in data.split(separator: 0x0A).reversed() {
+            // Re-based, because a `Data` slice keeps its parent's indices and `JSONDecoder` is
+            // not owed a zero-based one. `ClaudeRun.lastResult` does the same.
+            let line = Data(line)
+            guard
+                let envelope = try? decoder.decode(Envelope.self, from: line),
+                envelope.method == method,
+                let record = try? decoder.decode(Record<Params>.self, from: line)
+            else { continue }
+            return record.params
+        }
+        return nil
+    }
+
     /// ⚠️ Non-throwing, and the fallback is unreachable by construction rather than by hope.
     /// `RunSessionInfo`, `TurnSummary` and `Refusals` are `String`/`Int`/`Bool`/array/`Double?` all
     /// the way down, and the only way `JSONEncoder` can fail on that shape is a non-finite `Double`
