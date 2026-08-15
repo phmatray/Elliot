@@ -612,8 +612,12 @@ struct ACPRunnerTests {
     /// `theBrakeAsksTheAgentToStop`'s claim, and it needs a different agent mode to make it.
     ///
     /// ⚠️ **And do not close that gap by adding `#expect(stderr.contains("session/cancel"))` here.**
-    /// Measured, exactly that assertion in exactly this scenario: 13 of 15 samples came back with
-    /// **empty stderr**. The reason is that under `MODE=ok` the double replies to `session/prompt`
+    /// Measured twice, exactly that assertion in exactly this scenario: **13 of 15** samples came
+    /// back with empty stderr when it was first recorded, and **14 of 15** on an independent
+    /// re-measurement. (Re-measured rather than quoted, and the two figures are the same finding:
+    /// the receipt is the exception, not the rule. Neither is a constant — it is a race, and the
+    /// count is whatever the machine did that afternoon, which is the reason this must not become
+    /// an assertion.) The reason is that under `MODE=ok` the double replies to `session/prompt`
     /// in the same breath as the frame that fired the brake, so the turn task tears the session
     /// down — `session.end()` → `Client.terminate()` → `ACPTransport.close()` → `closeStdin()` —
     /// before the brake's `sendCancelNotification` has written its line, and the write throws
@@ -658,7 +662,8 @@ struct ACPRunnerTests {
     /// `try? await client.sendCancelNotification` inside the deadline task, is still on its way to
     /// the wire. The write then meets a closed stdin and throws `ProcessError.stdinClosed`, which
     /// that `try?` swallows, so the ask is never written: asserting the receipt in
-    /// `theBudgetBrakeFires` gave **13 empty-stderr failures in 15 samples**.
+    /// `theBudgetBrakeFires` gave **13 empty-stderr failures in 15 samples** when first recorded,
+    /// and **14 of 15** on an independent re-measurement.
     ///
     /// ⛔ **What is swallowed is `stdinClosed`, not a `CancellationError` — this comment claimed
     /// the latter and it does not happen.** Instrumented with a `do`/`catch` at the send site:

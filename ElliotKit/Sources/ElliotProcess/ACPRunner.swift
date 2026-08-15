@@ -50,7 +50,8 @@ public struct AgentInvocation: Sendable {
     /// that overspent is marked as such instead of reading as a success. The `session/cancel` it
     /// sends is real, and `theBrakeAsksTheAgentToStop` pins that Elliot sends it; it is simply
     /// unlikely, on these four recordings, to arrive before the turn has ended on its own. That is
-    /// also the honest reading of the 13-of-15 empty-stderr measurement recorded on that test:
+    /// also the honest reading of the empty-stderr measurement recorded on that test (13 of 15,
+    /// re-measured at 14 of 15 — the figure is quoted there, not here, so the two cannot drift):
     /// `fake-acp.py` replying in the same breath as the cost frame is not an artefact of the
     /// double, it is the recorded ordering.
     ///
