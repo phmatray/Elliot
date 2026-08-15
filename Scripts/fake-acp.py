@@ -7,7 +7,7 @@ prompt request with a stop reason.
 
 Env:
   FAKE_ACP_FIXTURE      JSON array of `update` objects to replay. Required for a useful turn.
-  FAKE_ACP_MODE         ok | hang | crash | permission          (default: ok)
+  FAKE_ACP_MODE         ok | hang | crash | permission | deaf   (default: ok)
   FAKE_ACP_READY        path touched once trap-protected
   FAKE_ACP_ARGV_OUT     path to write argv to, one element per line
   FAKE_ACP_STOP_REASON  default: end_turn
@@ -51,6 +51,23 @@ time; anything else received while waiting for that one answer is dropped rather
 handled — and the drop is announced on stderr (never stdout, which stays clean JSON-RPC), naming
 what was dropped and which id it was waiting for, so a client that sends a second request mid-wait
 sees a diagnosable line instead of silence.
+
+MODE=deaf answers the handshake normally, never answers `session/prompt` — and, the point,
+**does not exit when its stdin closes**: it blocks on a sleep instead of returning from the main
+loop. MODE=hang cannot stand in for it, and the difference is the whole reason this mode exists.
+`read_message` returns None on EOF and the main loop `break`s, so under MODE=hang closing stdin ends
+this double on its own — which means a test asserting "the child is gone after a cancel" passes with
+the SIGTERM→SIGKILL backstop deleted, because the kill was never needed. Under MODE=deaf nothing but
+that backstop ends it. The SIGTERM trap is installed before any of this, exactly as it is for every
+other mode, so the escalation's first rung is enough and no child outlives the suite.
+
+`session/cancel` stays a no-op — it is a notification and there is nothing to answer — but its
+arrival is announced on stderr, the same way a dropped message is: this double's protocol behaviour
+is unchanged, and a client that believes it sent one can tell whether it did. ⚠️ That announcement
+is the *receipt*, not the effect: this double never lets a `session/cancel` end a turn, so nothing
+here covers an agent answering its in-flight requests and coming back with `stopReason: cancelled`.
+A test wanting that stop reason asks for it with FAKE_ACP_STOP_REASON, which exercises the plumbing
+and not the agent.
 
 `session/prompt` is refused (a JSON-RPC error, never an empty-looking success) for any
 `sessionId` that was never returned by a `session/new` on this connection — including one sent
@@ -292,7 +309,7 @@ def handle(message, stdin_iter):
             # rather than answer a plausible-looking turn for a session that does not exist.
             respond_error(request_id, -32602, f"unknown sessionId: {sid!r}")
             return
-        if MODE == "hang":
+        if MODE in ("hang", "deaf"):
             return                      # never answer; the caller's timeout is the test
         if MODE == "crash":
             sys.exit(9)
@@ -325,7 +342,13 @@ def handle(message, stdin_iter):
             # before it sees EOF. What goes away is the wait for the client's own stdin close.
             sys.exit(0)
     elif method == "session/cancel":
-        pass                            # a notification; nothing to answer
+        # A notification: nothing to answer, and deliberately nothing to change either — this
+        # double never lets a cancel end a turn. Announced on stderr (never stdout, which stays
+        # clean JSON-RPC) so the *receipt* is observable: without this, a client that sent no
+        # cancel at all and one that sent a perfectly good one look identical from the outside.
+        sid = (message.get("params") or {}).get("sessionId")
+        print(f"fake-acp: session/cancel for {sid!r} — noted, and deliberately a no-op",
+              file=sys.stderr, flush=True)
     elif request_id is not None:
         respond_error(request_id, -32601, f"fake-acp does not implement {method}")
 
@@ -334,5 +357,12 @@ STDIN = iter(sys.stdin)
 while True:
     incoming = read_message(STDIN)      # ends when the client closes stdin — that is the exit
     if incoming is None:
+        if MODE == "deaf":
+            # ⛔ The one mode that does NOT take the exit above, and that is its entire point:
+            # a client's SIGTERM→SIGKILL backstop can only be tested against a child that the
+            # polite ask does not end. The trap installed at the top of this file still applies,
+            # so the first rung is enough to reap this.
+            while True:
+                time.sleep(60)
         break
     handle(incoming, STDIN)

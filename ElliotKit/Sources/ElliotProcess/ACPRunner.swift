@@ -157,9 +157,24 @@ public enum AgentInvocationError: Error, LocalizedError, Sendable {
 /// cannot name a type that does not exist. `sessionResumeFailed` is Task 13's and carries its
 /// default so that either task's call sites keep compiling across the other.
 public struct AgentRunOutcome: Sendable {
-    /// The adapter process's exit code. ⚠️ Now describes a **crash only**: under `claude -p` a
-    /// nonzero exit was the run's verdict, and under ACP the verdict is `stopReason` on the
-    /// prompt response. A clean turn from an agent that then exits nonzero is still a clean turn.
+    /// The adapter process's exit code.
+    ///
+    /// ⚠️ **A crash, and nothing else.** Under `claude -p`, 143 meant a SIGTERM Elliot had sent
+    /// and `wasTerminated` was Elliot's own flag, so cancellation was readable straight off the
+    /// process — `RunScheduler.swift:1031` is literally `if outcome.wasTerminated { return
+    /// .cancelled }`. Under ACP a cancelled run's Node child is killed **after** the protocol has
+    /// already said what happened, so `RunState.cancelled` comes from `stopReason` (Task 15) and
+    /// this number only describes a process that died. A clean turn from an agent that then exits
+    /// nonzero is still a clean turn.
+    ///
+    /// ⚠️ **The unmeasured case is the one where the backstop fires before any `stopReason`
+    /// arrives** — Elliot asked to cancel and the agent never got to answer, which is exactly what
+    /// `ACPRunnerTests.cancelIsTwoPhase` drives. `summary` is `nil` then, and Task 15 must fold
+    /// that to `.cancelled` **if Elliot asked for the cancellation** and to `.failed` otherwise.
+    /// That distinction is carried by `RunScheduler`'s own knowledge — it writes `.cancelling`
+    /// before calling `cancel()` — and **not** inferred from this number: the design's risk 1
+    /// leaves long-held connections unmeasured, and from the outside a killed adapter is
+    /// indistinguishable from a crashed one.
     public var exitCode: Int32
     /// `nil` when the response never arrived — the run died mid-turn.
     public var summary: TurnSummary?
@@ -250,31 +265,121 @@ public final class AgentRun: Sendable {
     /// Synchronous, which is the whole reason `AgentSession.processIdentifier` is `nonisolated`.
     public var processIdentifier: Int32 { session.processIdentifier }
 
-    /// Asks the run to stop. Safe to call after it has already finished — `end()` is idempotent.
+    /// This run's cancel grace. The static below is the default, exactly as `defaultIdleTimeout`
+    /// is for `idleTimeout` — a test that drives a real cancel needs a short one, and ten seconds
+    /// of sleeping would otherwise be paid on every `swift test`.
+    private let cancelGrace: Duration
+
+    /// The two things `cancel()` needs that do not exist yet when an `AgentRun` is handed back.
     ///
-    /// ⚠️ **One phase, for now.** This closes the agent's stdin and escalates to SIGTERM→SIGKILL
-    /// if it does not go, which ends the run but tells the *agent* nothing: it never gets the
-    /// `session/cancel` that would let it answer its in-flight tool calls and come back with
-    /// `stopReason: "cancelled"`. Task 10 puts that phase in front of this one.
+    /// `start` returns the moment the child is spawned; the handshake and the turn happen in a
+    /// `Task` afterwards, so neither of these can be a stored value settled in `init`. A `Locked`
+    /// rather than an actor because both writers are already inside one — the turn task and
+    /// `cancel()` — and neither needs to await the other.
+    private struct CancelState: Sendable {
+        /// Written the instant `session/new` returns, and **before** the `.session` event is
+        /// yielded, so an observer that has seen that event knows a cancel will name a session.
+        /// `nil` means the handshake never got that far, which `cancel()` treats as "nothing to
+        /// ask" rather than "ask anyway".
+        var sessionId: SessionId?
+        /// The armed backstop, held so the turn task can stand it down when the agent answers
+        /// inside the window.
+        var deadline: Task<Void, Never>?
+    }
+    private let cancelState: Locked<CancelState>
+
+    /// Asks the run to stop, then makes sure it has.
+    ///
+    /// **Two phases, and the second is not optional.** `session/cancel` asks the agent to stop: it
+    /// answers whatever client requests are in flight and ends the turn with
+    /// `stopReason: "cancelled"`, which is the word `RunState.cancelled` is read off (Task 15).
+    /// What it does **not** do is end the Node child — so `end()` still has to, and Task 1's
+    /// SIGTERM→SIGKILL escalation is what does it. Under `claude -p` cancelling was one act, a
+    /// SIGTERM; splitting it is what buys a cancelled run a verdict instead of only a corpse.
+    ///
+    /// Fire-and-forget, because `RunScheduler.cancel` is: it writes `.cancelling` and calls this,
+    /// and the terminal update is what finishes the job. Making this `async` would change that
+    /// call site's shape for nothing, so both phases live in the `Task` below. Safe to call after
+    /// the run has already finished — `end()` is idempotent.
     public func cancel() {
         let session = self.session
-        Task { await session.end() }
+        let client = session.client
+        let grace = cancelGrace
+        let sessionId = cancelState.withLock { $0.sessionId }
+
+        // ⛔ **A detached deadline, not a race.** The obvious shape — `sendPrompt` beside a sleep
+        // in a task group — cannot work, and fails in the one case this method exists for.
+        // `sendPrompt` reaches `sendRequest(…, timeout: nil)`, which suspends on a bare
+        // `withCheckedThrowingContinuation` observing no cancellation, and a structured scope
+        // cannot exit while a child of it is still running; `cancelAll()` asks and does not evict.
+        // The group would never return and the kill below would never be reached. It is the same
+        // trap `Client.terminate()` documents one layer down and `armKiller` one layer up.
+        //
+        // ⚠️ It cannot be written as a `withCheckedContinuation` here either:
+        // `DrainDuplicationTests.pipeHandlingIsNotDuplicated` refuses that shape anywhere in
+        // `Sources/ElliotProcess` outside the sanctioned `ACPTransport.swift` pair.
+        let deadline = Task {
+            if let sessionId {
+                // ⚠️ **Swallowed deliberately, and this is not a missing error path.**
+                // `sendCancelNotification` is `async throws` and its first statement is
+                // `guard await transport.isConnected else { throw .processNotRunning }`, so on the
+                // common cancel path — the agent has already gone — it throws. There is nothing to
+                // report: the phase below kills the child either way, and a cancel that could not
+                // be delivered to a dead agent is not a failure of cancellation. Handling this
+                // would turn a successful cancel into a failed one.
+                try? await client.sendCancelNotification(sessionId: sessionId)
+
+                // ⛔ `do`/`catch`, never `try? await Task.sleep(…)`: `try?` swallows
+                // `CancellationError` and falls straight through, so standing this deadline down
+                // would **trigger** the kill instead of cancelling it. That is #380's killer bug,
+                // and `armKiller`'s doc comment records that it took two wrong attempts to see.
+                do {
+                    try await Task.sleep(for: grace)
+                } catch {
+                    return  // the turn answered inside the window; its own path ends the session
+                }
+            }
+            // The backstop, and the only phase that is unconditional. Reached immediately when
+            // there is no session id: nothing has been asked, so there is nothing to wait for —
+            // and the commonest reason a run has none is a handshake that is itself wedged, which
+            // is exactly when an operator reaches for cancel.
+            await session.end()
+        }
+        cancelState.withLock { $0.deadline = deadline }
     }
 
-    private init(session: AgentSession, updates: AsyncStream<AgentUpdate>, argv: [String]) {
+    private init(
+        session: AgentSession,
+        updates: AsyncStream<AgentUpdate>,
+        argv: [String],
+        cancelGrace: Duration,
+        cancelState: Locked<CancelState>
+    ) {
         self.session = session
         self.updates = updates
         self.argv = argv
+        self.cancelGrace = cancelGrace
+        self.cancelState = cancelState
     }
 
     /// How long a run may say nothing before the silence is announced.
     public static let defaultIdleTimeout: Duration = .seconds(20 * 60)
 
+    /// How long a cancelled agent has to answer before its child is killed anyway.
+    ///
+    /// Ten seconds because the graceful phase is bookkeeping — the agent answering its in-flight
+    /// client requests and returning a stop reason — not the turn's remaining work. ⚠️ It is **not**
+    /// a second idle window and must not grow into one: there is deliberately no wall-clock kill
+    /// for a live turn, since `merge-pr` waiting hours on CI is legitimate. This window only opens
+    /// once somebody has asked the run to stop.
+    public static let cancelGrace: Duration = .seconds(10)
+
     public static func start(
         invocation: AgentInvocation,
         agent: ACPAgentProcess,
         logURL: URL,
-        idleTimeout: Duration = AgentRun.defaultIdleTimeout
+        idleTimeout: Duration = AgentRun.defaultIdleTimeout,
+        cancelGrace: Duration = AgentRun.cancelGrace
     ) throws -> AgentRun {
         // ⛔ Before anything is spawned. A refusal that started an agent and threw afterwards
         // would still have run one, at `bypassPermissions`, inside a real checkout.
@@ -290,6 +395,10 @@ public final class AgentRun: Sendable {
         // One box, not two. The clock reading and the announce latch are a single decision — "is
         // this the byte that ends an announced silence?" cannot be answered by either half alone.
         let idleWatch = Locked(IdleWatch(lastOutput: Date()))
+
+        // A local, not a stored property set later: the turn task below is created before the
+        // `AgentRun` exists, and it is one of the two writers.
+        let cancelState = Locked(CancelState())
 
         var continuation: AsyncStream<AgentUpdate>.Continuation!
         let updates = AsyncStream<AgentUpdate>(bufferingPolicy: .bufferingNewest(512)) {
@@ -397,6 +506,11 @@ public final class AgentRun: Sendable {
                     mcpServers: []
                 )
                 agentSessionID = opened.sessionId.value
+                // Before the `.session` event is yielded, and before the `set_config_option` that
+                // follows: from here on a `cancel()` can name a session to the agent rather than
+                // going straight to the backstop. An observer that has seen `.session` has
+                // therefore already seen this write.
+                cancelState.withLock { $0.sessionId = opened.sessionId }
 
                 // ⚠️ Written the instant `session/new` returns, and **before**
                 // `session/set_config_option` — so it is the first `method`-bearing line in the
@@ -473,6 +587,18 @@ public final class AgentRun: Sendable {
                 // died mid-turn be told apart from one that ended. `summary` stays nil, `exitCode`
                 // carries the adapter's, and `stderr` carries whatever it managed to say.
             }
+
+            // ⚠️ **Hygiene, not a guarantee — and measured as such.** Deleting this line leaves
+            // the whole suite green, because everything it could affect is already idempotent:
+            // a deadline left armed simply ends a session that has ended. What it buys is that the
+            // sleeping `Task` — which captures `session`, and through it the transport, the
+            // `ChildProcess` and the `Process` — is released now rather than up to `cancelGrace`
+            // later. That graph being held past its owner's life is #381's entire subject, so
+            // holding it for ten seconds after every cancel is the wrong direction even when it
+            // changes no behaviour. Do not read it as the thing that stops a double-kill; `end()`
+            // is. Nothing is lost when `cancel()` has not stored a deadline yet, for the same
+            // reason.
+            cancelState.withLock { $0.deadline }?.cancel()
 
             // The session is the owner; a path that returned without ending it is the leak #381
             // exists to close. Idempotent, so `cancel()` having got here first costs nothing.
@@ -551,7 +677,9 @@ public final class AgentRun: Sendable {
         return AgentRun(
             session: session,
             updates: updates,
-            argv: invocation.displayArgv(agent: agent)
+            argv: invocation.displayArgv(agent: agent),
+            cancelGrace: cancelGrace,
+            cancelState: cancelState
         )
     }
 

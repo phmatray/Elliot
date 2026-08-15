@@ -376,6 +376,176 @@ struct ACPRunnerTests {
         #expect(!killerFired.value)
     }
 
+    /// Cancelling is two acts and the second is not optional: `session/cancel` asks the agent to
+    /// stop, and the Node child must **still** be killed.
+    ///
+    /// ⛔ **`FAKE_ACP_MODE=hang` cannot exercise the second half, and using it here would make this
+    /// test pass without the backstop existing.** `fake-acp.py`'s main loop is
+    /// `while True: read_message(STDIN)` with a `break` on `None`, so under `hang` the stdin close
+    /// `session.end()` performs is by itself enough to end the double — the kill is never needed
+    /// and never observed. `MODE=deaf` was written for this task and for this reason: it answers
+    /// the handshake, never answers `session/prompt`, and **ignores EOF on stdin**, so nothing but
+    /// the escalation ends it. Verified by hand before this test was trusted — fed a handshake and
+    /// a prompt down a fifo, still `ALIVE` two seconds after the fifo was closed, `GONE` with exit
+    /// 143 a second after `kill -TERM`.
+    ///
+    /// ⚠️ The two halves fail for different reasons and both are needed. **Phase 1** is what failed
+    /// on the unmodified tree, watched before a line of the fix was written: `cancel()` was
+    /// `Task { await session.end() }`, so no `session/cancel` was ever sent and this went red as
+    /// `(finished.stderr → "").contains("session/cancel")`. **Phase 2** could not fail that way —
+    /// the old `cancel()` killed *immediately*, so the child assertion was green for the wrong
+    /// reason — and is pinned by break-test instead: with `await session.end()` deleted from the
+    /// deadline, the deaf child never dies, the turn never finishes, and this test went red at
+    /// 20.5 s on `killerFired → true`. ⛔ **That is the shape of the red to expect**, and it is
+    /// indirect on purpose: the run can only complete when the child does, so `armKiller` is what
+    /// converts the regression from a hung `swift test` into a named failure. Phase 1's assertion
+    /// stayed green throughout that break, which is what makes the two independent.
+    ///
+    /// The receipt is `outcome.stderr`, because the run log cannot carry it: the log mirrors the
+    /// adapter's **stdout**, and `session/cancel` goes the other way, to its stdin.
+    @Test("cancelling asks first and kills second")
+    func cancelIsTwoPhase() async throws {
+        let logURL = try Self.logURL("acp-cancel")
+        let run = try AgentRun.start(
+            invocation: Self.invocation(),
+            agent: Self.agent(mode: "deaf"),
+            logURL: logURL,
+            // Short on purpose: the shipped ten seconds would be slept on every `swift test`, and
+            // nothing here asserts how long anything took — only what happened and in what order.
+            cancelGrace: .milliseconds(200)
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+        let pid = run.processIdentifier
+
+        // Cancelled on the `.session` event rather than on `.started` or after a sleep: it is the
+        // one moment that is both deterministic and late enough for there to be a session to
+        // cancel — `session/new` has returned by the time this is yielded. One loop, so the stream
+        // keeps exactly one consumer.
+        var aliveAtCancel = false
+        var outcome: AgentRunOutcome?
+        for await update in run.updates {
+            switch update {
+            case .event(.session):
+                aliveAtCancel = AgentSessionLifetimeTests.isAlive(pid)
+                run.cancel()
+            case .finished(let finished):
+                outcome = finished
+            case .started, .event, .stalled, .resumed:
+                break
+            }
+        }
+
+        // The positive witness. Without it "the child is gone" would also hold for a child that
+        // never started — which is the shape `unmappableRunTermsRefuse` records getting wrong.
+        #expect(aliveAtCancel)
+
+        let finished = try #require(outcome)
+        // Phase 1: the agent was **asked**. Red on an unmodified tree, where nothing ever writes a
+        // `session/cancel` at all.
+        #expect(
+            finished.stderr.contains("session/cancel"),
+            Comment(rawValue: "the agent was never asked to stop; stderr was \(finished.stderr)")
+        )
+        // Phase 2: and killed anyway. `AgentSessionLifetimeTests`' poll rather than a third copy of
+        // it — killing is asynchronous, so a single read straight after would be its own race.
+        #expect(await AgentSessionLifetimeTests.waitUntilGone(pid))
+        // ⛔ And the outcome does not claim a stop reason the agent never sent. `deaf` never
+        // answers the prompt, so the turn has no verdict — `RunState.cancelled` comes from
+        // `RunScheduler`'s own knowledge here, not from anything in this value.
+        #expect(finished.summary == nil)
+        #expect(finished.summary?.stopReason == nil)
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
+    }
+
+    /// A cancel arriving before the handshake has opened a session goes straight to the backstop.
+    ///
+    /// ⛔ **Not an optimisation — the branch exists because the grace is meaningless without a
+    /// session to name.** No `session/cancel` can be sent, so sleeping the window would be pure
+    /// delay, and the commonest reason a run has no session id is a handshake that is itself
+    /// wedged: an `npx` that cannot resolve the adapter, a Node that never answers `initialize`.
+    /// That is exactly when somebody reaches for cancel, and making them wait ten seconds for
+    /// nothing is the behaviour this pins against.
+    ///
+    /// `/bin/sleep 600` is the agent because it answers **nothing** — the same child
+    /// `AgentSessionLifetimeTests.deafAgent()` uses, one rung further back: `initialize` never
+    /// returns, so `cancelState.sessionId` stays nil for the whole life of the run. The grace is a
+    /// deliberately absurd sixty seconds, so "gone within ten" can only be true if it was skipped.
+    /// Nothing measures a duration; the claim is "gone by the deadline", as everywhere else here.
+    ///
+    /// Break-tested by moving the sleep out of the `if let sessionId` — the uniform shape, which is
+    /// the tempting simplification: this test alone went red at 10.0 s on `waitUntilGone`, and the
+    /// other eight stayed green.
+    @Test("cancelling a run that never opened a session does not wait out the grace")
+    func cancelWithoutASessionSkipsTheGrace() async throws {
+        let logURL = try Self.logURL("acp-cancel-nosession")
+        let mute = ACPAgentProcess(
+            executable: "/bin/sleep", arguments: ["600"], cwd: "/tmp", environment: [:])
+        let run = try AgentRun.start(
+            invocation: Self.invocation(), agent: mute, logURL: logURL, cancelGrace: .seconds(60))
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        // Belt and braces: with the branch deleted this test goes red while the child is still
+        // alive, and the run's own teardown would not reach it for another minute.
+        defer {
+            killer.cancel()
+            run.session.transport.terminate(hardKillAfter: .milliseconds(100))
+        }
+        let pid = run.processIdentifier
+
+        #expect(AgentSessionLifetimeTests.isAlive(pid))
+        run.cancel()
+        // Ten seconds is comfortably above the healthy path — `Client.defaultFlushGrace` is two —
+        // and comfortably below the grace this run was given.
+        #expect(await AgentSessionLifetimeTests.waitUntilGone(pid, within: .seconds(10)))
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
+    }
+
+    /// A `cancelled` stop reason survives the trip from the wire to `TurnSummary` and to the log.
+    ///
+    /// ⚠️ **The plumbing, and deliberately not the agent.** `session/cancel` is on `fake-acp.py`'s
+    /// cannot-express list — it is a no-op notification there, announced on stderr and changing
+    /// nothing — so *"a `session/cancel` actually ending a turn"* is not covered by this suite and
+    /// this test must not be read as covering it. What it pins is that when an agent does answer
+    /// with `cancelled`, Elliot carries the word through rather than folding it into the failure
+    /// path: `StopReason.cancelled` decodes, `isError` stays false (only `.refusal` sets it), and
+    /// the archive can be read back for it.
+    ///
+    /// ⚠️ **It was green on an unmodified tree**, so it drove no code — it is a pin, and the only
+    /// thing that makes a pin worth its line is knowing it can fail. Break-tested by replacing
+    /// `stopReason: response.stopReason.rawValue` with the literal `"end_turn"`: red on both the
+    /// outcome and the log, and on nothing else in the suite.
+    @Test("an agent that answers a cancel reports it as the stop reason")
+    func aCancelledTurnSaysSo() async throws {
+        let logURL = try Self.logURL("acp-cancelled-stop")
+        let run = try AgentRun.start(
+            invocation: Self.invocation(),
+            agent: Self.agent(environment: ["FAKE_ACP_STOP_REASON": "cancelled"]),
+            logURL: logURL
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let (_, outcome) = await Self.drain(run)
+
+        #expect(outcome?.summary?.stopReason == "cancelled")
+        // Not an error: a turn that was asked to stop and stopped did what it was told.
+        #expect(outcome?.summary?.isError == false)
+        // And the file says the same, since that is the only copy a later reader has.
+        let terminal = try #require(try Self.objects(inLogAt: logURL).last)
+        let params = try #require(terminal["params"] as? [String: Any])
+        #expect(params["stopReason"] as? String == "cancelled")
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
+    }
+
     /// ⛔ **"The child must not exist afterwards" cannot be asserted by looking for the absence of
     /// a side effect, and the first version of this test proved it.** It armed `FAKE_ACP_READY`
     /// and asserted the file was absent after the throw. Break-tested by moving the guard to
