@@ -332,6 +332,17 @@ struct ACPRunnerTests {
     /// inside them — `min(idleTimeout, .seconds(30))` is what makes a twenty-millisecond window
     /// polled at twenty milliseconds rather than thirty seconds — and every assertion is about the
     /// *order* of what arrived.
+    ///
+    /// Break-tested three ways, one per piece of wiring, each on a committed tree:
+    /// 1. the mirror's announcement dropped, keeping the `sawOutput` call — **12 `.wentQuiet` in a
+    ///    row and not one withdrawal**, which is #309's defect verbatim, red on `contains` and on
+    ///    `alternates`;
+    /// 2. the whole `idleTask` replaced by `Task {}` — no notices at all, red on three;
+    /// 3. `min(idleTimeout, .seconds(30))` replaced by a flat thirty seconds — also no notices,
+    ///    red on the same three. That third one is worth its line: the clamp is a claim its own
+    ///    comment makes ("stops a shorter window being announced up to thirty seconds after it was
+    ///    crossed") and no test could see it, so a tidy-up removing it would have left a watchdog
+    ///    that is *present, correct and useless* on every window shorter than its poll.
     @Test("a run that goes quiet and talks again announces both, alternating")
     func silenceAndRecoveryAlternate() async throws {
         let logURL = try Self.logURL("acp-silence")
