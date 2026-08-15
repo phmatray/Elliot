@@ -142,13 +142,20 @@ struct ACPRunnerTests {
         // reason the terminal line is assembled after it rather than on the prompt response. Every
         // one of them is folded by the notification consumer — a separate task — and the fixture's
         // `usage_update` is the frame immediately BEFORE the reply, so assembling at the response
-        // reads whatever that task happened to have drained. Measured with the barrier removed:
-        // `usage` came back nil on 5 of 5 runs and `text` on 4 of 5.
+        // reads whatever that task happened to have drained. Break-tested by assembling the
+        // summary on the response instead: `usage?.used` and `usage?.costUSD` both came back
+        // **nil on 5 of 5 runs**. `text` survived all five, which is the point rather than a
+        // consolation — the same defect is loud in one field and silent in another, and only the
+        // loud one would ever have been noticed.
         #expect(outcome?.summary?.text == "Reading the file.")
         #expect(outcome?.summary?.usage?.used == 37355)
         #expect(outcome?.summary?.usage?.costUSD == 0.2855775)
 
         // And the file says the same thing the caller was handed — the whole point of writing it.
+        // Break-tested by closing the writer before the terminal record is written, which is the
+        // race `AgentRun`'s one-close rule exists to lose: `methods.last` came back
+        // `"session/update"` and the params `#require` went red, i.e. exactly the state in which
+        // `AgentLog.lastSummary` answers nil with nothing anywhere saying why.
         let terminal = try #require(objects.last)
         let params = try #require(terminal["params"] as? [String: Any])
         #expect(params["stopReason"] as? String == "end_turn")
@@ -169,6 +176,11 @@ struct ACPRunnerTests {
     /// A unit test rather than a driven turn on purpose: the interleaving is a **timing**
     /// condition — `elliot/session` is written while the adapter is mid-stream — and a test that
     /// waited for the race to happen would be the kind that passes for the wrong reason.
+    ///
+    /// Break-tested by making `mirror` write the whole chunk: two of the three lines came back
+    /// unparseable (`[nil, nil, "elliot/terminal"]`). ⚠️ Note which assertion did **not** catch
+    /// it — `objects.count == 3` still passed, because a split frame is still two lines. Counting
+    /// lines is not reading them.
     @Test("an Elliot record written mid-chunk does not split an adapter frame")
     func recordsLandOnLineBoundaries() throws {
         let url = try Self.logURL("acp-writer")
@@ -200,6 +212,11 @@ struct ACPRunnerTests {
     /// A `session/update` carrying a `sessionUpdate` string this build has never heard of.
     /// `ACPModel.SessionUpdate.init(from:)` **throws** on it, so without a `do`/`catch` in the
     /// consumer the line is dropped and `RunEvent.unreadable` is dead code.
+    ///
+    /// Break-tested by replacing the `catch`'s body with `events = []`: both assertions on the
+    /// degraded row went red, and the two `agent_message_chunk` frames either side of it kept
+    /// arriving — which is exactly the shape of the silent loss, a stream that looks healthy
+    /// while one frame has gone.
     @Test("a frame this build cannot decode becomes one unreadable row, not a dropped line")
     func anUnknownFrameDegradesToOneRow() async throws {
         let logURL = try Self.logURL("acp-unknown")
@@ -259,36 +276,46 @@ struct ACPRunnerTests {
         #expect(!killerFired.value)
     }
 
+    /// ⛔ **"The child must not exist afterwards" cannot be asserted by looking for the absence of
+    /// a side effect, and the first version of this test proved it.** It armed `FAKE_ACP_READY`
+    /// and asserted the file was absent after the throw. Break-tested by moving the guard to
+    /// *after* `AgentSession` was constructed — i.e. with an agent genuinely spawned — and the
+    /// test **passed anyway**: `#expect` runs microseconds after `start` returns, long before
+    /// python has reached its first statement, so the evidence had not had time to arrive. An
+    /// absent file is what a build that never spawned and a build that spawned a moment ago both
+    /// look like. Waiting for it would trade the race for a wall-clock assertion, which this
+    /// suite's rules forbid for the same reason.
+    ///
+    /// So the refusal is measured **synchronously, against the spawn's own first check**:
+    /// `ChildProcess.init` refuses a non-existent executable with `ProcessError.notExecutable`
+    /// before it constructs a `Process` at all. Point the agent at a path that does not exist and
+    /// the two orderings give two different errors, deterministically and with nothing to wait
+    /// for. The control below is what makes that discriminating rather than merely true.
     @Test("extra allowed tools are refused before the agent is spawned")
-    func unmappableRunTermsRefuse() async throws {
-        let refused = TestHome.scratch("acp-refusal")
-        try FileManager.default.createDirectory(at: refused, withIntermediateDirectories: true)
-        let refusedReady = refused.appendingPathComponent("ready").path
+    func unmappableRunTermsRefuse() throws {
+        let home = TestHome.scratch("acp-refusal")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        var ghost = Self.agent()
+        ghost.executable = "/usr/bin/definitely-not-here-9f3a"
 
         #expect(throws: AgentInvocationError.self) {
             _ = try AgentRun.start(
                 invocation: Self.invocation(extraAllowedTools: ["Bash(git push:*)"]),
-                agent: Self.agent(environment: ["FAKE_ACP_READY": refusedReady]),
-                logURL: refused.appendingPathComponent("never.jsonl")
+                agent: ghost,
+                logURL: home.appendingPathComponent("never.jsonl")
             )
         }
-        #expect(!FileManager.default.fileExists(atPath: refusedReady))
 
-        // ⚠️ The positive witness for that negative. `FAKE_ACP_READY` proves nothing on its own —
-        // an absent file is also what a broken harness produces — so the same mechanism is driven
-        // once through a start that IS allowed, and the file must appear.
-        let allowed = TestHome.scratch("acp-refusal-control")
-        try FileManager.default.createDirectory(at: allowed, withIntermediateDirectories: true)
-        let allowedReady = allowed.appendingPathComponent("ready").path
-        let run = try AgentRun.start(
-            invocation: Self.invocation(),
-            agent: Self.agent(environment: ["FAKE_ACP_READY": allowedReady]),
-            logURL: allowed.appendingPathComponent("run.jsonl")
-        )
-        let (killer, _) = armKiller { run.session.transport.terminate() }
-        defer { killer.cancel() }
-        _ = await Self.drain(run)
-        #expect(FileManager.default.fileExists(atPath: allowedReady))
-        killer.cancel()
+        // ⚠️ The positive witness. Without it the assertion above would also pass for a `start`
+        // that threw the refusal for some other reason, or that never reached the spawn at all
+        // because the whole path was broken: this shows that the spawn IS reached and DOES refuse
+        // that executable, so the only thing separating the two cases is which check ran first.
+        #expect(throws: ProcessError.self) {
+            _ = try AgentRun.start(
+                invocation: Self.invocation(),
+                agent: ghost,
+                logURL: home.appendingPathComponent("spawned.jsonl")
+            )
+        }
     }
 }
