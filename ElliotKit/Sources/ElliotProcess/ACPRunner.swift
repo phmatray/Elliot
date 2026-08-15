@@ -327,6 +327,14 @@ public final class AgentRun: Sendable {
         let client = session.client
         let transport = session.transport
 
+        // Unattended stays unattended (#381's first bounding decision): there is no answering UI,
+        // so this is the only answer any `session/request_permission` gets. Declared here, outside
+        // the `Task` below, and captured by it for the run's whole lifetime — `Client.delegate` is
+        // held `weak` (`Client.swift:59`), so a policy that were only a local *inside* that closure
+        // would still work, but declaring it here matches every other per-run value this function
+        // hands the closure (`writer`, `idleWatch`) rather than being the one exception.
+        let policy = PermissionPolicy(mode: invocation.permissionMode)
+
         Task {
             // What the notification consumer has folded, read once that consumer has finished.
             let seen = Locked(TurnState())
@@ -353,6 +361,10 @@ public final class AgentRun: Sendable {
             var response: SessionPromptResponse?
 
             do {
+                // Set before the handshake even starts — well ahead of the one requirement,
+                // "before `sendPrompt`" — so nothing this run does to the adapter can race it.
+                await client.setDelegate(policy)
+
                 // `fs`/`terminal` are declared **false**: they are v1-only, removed in the v2
                 // draft, and this design uses neither.
                 let hello = try await client.initialize(
