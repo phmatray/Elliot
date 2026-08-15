@@ -6,10 +6,23 @@ import ElliotModel
 /// stays unattended. Elliot answers permissions by policy; there is **no** answering UI in this
 /// scope." Measured, `bypassPermissions` sends zero `session/request_permission` across a full
 /// turn — but that is one turn, one adapter version, one machine: evidence, not a guarantee, and
-/// #585 remains open. A client with no delegate falls into `ClientDelegate`'s default, which
-/// throws `ClientError.invalidResponse`, so an unanswered request would hang the turn until the
-/// idle window and then read as a stalled agent rather than what it actually was. This exists so
-/// a conformant adapter that DOES ask gets a real answer instead of a hang.
+/// #585 remains open. This exists so a conformant adapter that DOES ask gets a real answer.
+///
+/// ⚠️ **What a client with no delegate actually does, measured — because the sentence that stood
+/// here was wrong twice over and it was wrong about the consequence.** It said the request "falls
+/// into `ClientDelegate`'s default, which throws `ClientError.invalidResponse`, so an unanswered
+/// request would hang the turn until the idle window". But `handlePermissionRequest` has **no**
+/// default implementation — `ClientDelegate`'s extension supplies one for every fs, terminal, MCP
+/// and elicitation method and deliberately not this one — and the no-delegate path is
+/// `ClientError.delegateNotSet`, thrown by the router's own guard
+/// (`Vendor/swift-acp/ACP/Internal/RequestRouter.swift:236-238`). `Client.handleIncomingRequest`
+/// catches it and **replies** `-32603` (`Client.swift:1161-1181`), so the request is answered, not
+/// abandoned. Break-tested by dropping `setDelegate` from `AgentRun.start`: against
+/// `Scripts/fake-acp.py` the turn came back `stopReason: "refusal"` in 0.06 s — never a hang.
+///
+/// ⚠️ What a **real** adapter does with that error reply is unmeasured; it may refuse the turn,
+/// retry, or stall. The claim worth keeping is the narrow one: a missing delegate does not leave
+/// the request silently unanswered, so "the run looked slow" is the wrong first hypothesis.
 public final class PermissionPolicy: ClientDelegate, Sendable {
     private let mode: PermissionMode
 

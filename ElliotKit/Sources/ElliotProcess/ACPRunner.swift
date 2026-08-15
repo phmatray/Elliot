@@ -362,7 +362,18 @@ public final class AgentRun: Sendable {
 
             do {
                 // Set before the handshake even starts — well ahead of the one requirement,
-                // "before `sendPrompt`" — so nothing this run does to the adapter can race it.
+                // "before `sendPrompt`" — so no byte has gone to the child when it returns.
+                //
+                // ⚠️ That is the honest bound, and it is weaker than "nothing can race it", which
+                // is what this comment said until review. `Client.setDelegate` assigns its own
+                // `weak var delegate` synchronously but forwards to `requestRouter` inside an
+                // unstructured `Task` (`Vendor/swift-acp/ACP/Client.swift:192-196`) — and the
+                // router's copy is the one that actually dispatches `session/request_permission`
+                // (`RequestRouter.swift:235-247`). So the ordering rests on that `Task` running
+                // before the first inbound request, which needs a full round trip through a
+                // spawned child and several awaits. **Unmeasured, not guaranteed**: no losing case
+                // has been constructed, and the code is vendored and untouched here. Naming it
+                // beats leaving a guarantee nothing enforces.
                 await client.setDelegate(policy)
 
                 // `fs`/`terminal` are declared **false**: they are v1-only, removed in the v2
