@@ -1060,8 +1060,8 @@ public actor Client {
         // group never returns, and `transport.terminate(...)` on the line after it is never
         // reached. `terminate()` hangs for ever instead of killing anything.
         //
-        // `armKiller`'s doc comment (`ACPSessionTests.swift:50-56`) states the same three facts
-        // about `withTimeout`, one layer up. This is the same trap wearing a task group.
+        // `armKiller`'s doc comment (`Tests/TestSupport/ArmedKiller.swift`) states the same three
+        // facts about `withTimeout`, one layer up. This is the same trap wearing a task group.
         let deadline = Task { [transport, escalationGrace, flushGrace] in
             do { try await Task.sleep(for: flushGrace) } catch { return }
             // `do`/`catch`, never `try?`: `try?` swallows `CancellationError` and falls through,

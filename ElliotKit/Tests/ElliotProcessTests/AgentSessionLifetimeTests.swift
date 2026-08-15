@@ -53,8 +53,19 @@ struct AgentSessionLifetimeTests {
 
     static func isAlive(_ pid: Int32) -> Bool { kill(pid, 0) == 0 }
 
-    /// Arms a deadline that ends `transport` unless cancelled first — `ACPSessionTests.armKiller`'s
-    /// shape, here for the same reason it exists there.
+    /// Arms a deadline that ends `transport` unless cancelled first — `TestSupport`'s `armKiller`
+    /// (`Tests/TestSupport/ArmedKiller.swift`, where Task 7 lifted `ACPSessionTests`' copy so two
+    /// suites could share one), here for the same reason it exists there.
+    ///
+    /// ⚠️ **This is a third copy of a mechanism that is now shared, and it is left as one
+    /// deliberately rather than overlooked.** Folding it in needs `import TestSupport` in this
+    /// file, which the paragraph below declines on the grounds that the import would *suggest*
+    /// `withTimeout` guards these waits. That reason is weaker now than when it was written —
+    /// `TestSupport` holds `armKiller` itself, so the import would carry the guard that does work
+    /// — but it is a decision this file's own task took, not one to reverse in passing. The
+    /// behavioural difference is real and would become a parameter: the kill here is impolite
+    /// (`hardKillAfter: .milliseconds(100)`) because the tree is already broken by the time it
+    /// runs.
     ///
     /// ⛔ **Without this, a regression in the escalation makes `swift test` hang rather than
     /// fail.** Every wait below is `await session.end()` or `await session.client.terminate()`,

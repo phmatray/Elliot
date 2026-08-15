@@ -40,86 +40,15 @@ struct ACPSessionTests {
         terminal: false
     )
 
-    /// Arms a deadline that ends `transport` unless cancelled first — armed right after `client`
-    /// exists, so it is the one mechanism able to bound *every* wait that follows: `initialize`,
-    /// `newSession` and `setConfigOption` reach the identical unguarded `sendRequest(...,
-    /// timeout: nil)` that `sendPrompt` does, so they need this exactly as much. See
-    /// `AsyncTimeout.swift`'s doc comment for why `withTimeout` cannot bound any of them on its
-    /// own — this exists because that guarantee does not hold.
-    ///
-    /// None of those waits can be bounded the ways that look obvious:
-    /// - Every `Client` request above reaches `sendRequest(..., timeout: nil)`, which suspends on
-    ///   a bare `withCheckedThrowingContinuation` — nothing about it observes cancellation.
-    ///   Wrapping one in `withTimeout` does not help: `withThrowingTaskGroup` is a
-    ///   structured-concurrency scope, and a scope cannot exit while a child task is still
-    ///   running, cancelled or not — `group.cancelAll()` asks, it does not evict.
-    /// - The notification collector below is a plain `Task<[T], Never>` — non-throwing, so
-    ///   `.value` is `get async`, not `get async throws`, and cannot even signal cancellation.
-    ///   `withTimeout` around `await updates.value` is exactly as broken as around `sendPrompt`,
-    ///   for the identical reason, and was the second Critical this file shipped with once.
-    ///
-    /// The only thing that actually ends any of them is ending the *agent*: `terminate()`
-    /// (`ACPTransport.swift:141`, its first caller anywhere in this package) kills the child, which
-    /// closes its stdout, which finishes `transport.messages`, which ends `Client`'s read loop,
-    /// which fails every still-pending request through `handleTermination()` **and** finishes the
-    /// notification stream — so a stuck `sendPrompt` throws, and a short-of-N collector returns
-    /// with fewer than it wanted, instead of either one hanging. Break-tested: pointed a copy of
-    /// `fullTurn` at a 2-frame fixture (short of the 8 the collector wants) with a 3 s deadline —
-    /// it **failed** at 3.06 s on `collected.count == 8`, not a hang, which is what this whole
-    /// mechanism exists to guarantee for the notification-collection half.
-    ///
-    /// ⛔ The sleep below is deliberately **not** `try? await Task.sleep(...)` followed by an
-    /// unconditional `transport.terminate()`. That was this file's first Critical: `try?` swallows
-    /// `Task.sleep`'s `CancellationError` and execution falls straight through to `terminate()`
-    /// regardless of *why* the sleep ended — so `killer.cancel()` did not disarm the kill, it
-    /// **triggered** it, within milliseconds of every successful call (reviewer's own standalone
-    /// probe: cancel at 0.05 s, `terminate()` at 0.06 s). Both tests still passed, correctly by
-    /// accident — the double writes every `session/update` line before its `session/prompt`
-    /// reply, so a collector reading an already-finished stream still drains a full buffer.
-    ///
-    /// `fired` is the proof that this version does not repeat that, and it is read-only outside
-    /// this file — production has no need of it. ⚠️ It does **not** read `transport.isConnected`
-    /// for the proof, and getting to that took two wrong attempts, both measured directly against
-    /// the reintroduced buggy body above:
-    /// 1. `#expect(await transport.isConnected)` placed where `defer { killer.cancel() }` was the
-    ///    only cancellation — passed even with the bug present, because the check ran before the
-    ///    function returned, i.e. before `defer` had cancelled anything at all. Not a race, simply
-    ///    the wrong order.
-    /// 2. `killer.cancel(); await killer.value; #expect(await transport.isConnected)` — still
-    ///    passed with the bug present. Killing a process is inherently asynchronous (SIGTERM → the
-    ///    child's own handler → the kernel reaping it → `Process`'s termination handler updating
-    ///    `isRunning`), so `isConnected` read immediately after `terminate()` was *called* is its
-    ///    own race, one layer below the Swift-cancellation race this helper exists to close — the
-    ///    child had not finished dying yet by the time the check ran.
-    ///
-    /// `fired` closes both gaps: it is set synchronously, in the same task whose completion the
-    /// caller already awaits, so there is nothing left to race. Reintroducing the buggy body a
-    /// third time, with this check, failed both tests immediately and correctly.
-    private func armKiller(_ transport: ACPTransport, deadline: Duration = .seconds(20)) -> (
-        killer: Task<Void, Never>, fired: Locked<Bool>
-    ) {
-        let fired = Locked(false)
-        let killer = Task {
-            do {
-                try await Task.sleep(for: deadline)
-            } catch {
-                return  // cancelled — a real reply or a full collection arrived first
-            }
-            fired.withLock { $0 = true }
-            transport.terminate()
-        }
-        return (killer, fired)
-    }
-
     @Test("a full turn: initialize, new session, set the mode, prompt, collect updates")
     func fullTurn() async throws {
         let transport = try ACPTransport(Self.agent())
         let client = Client(transport: transport)
         // Armed here so it covers every wait below, including `initialize`/`newSession`/
-        // `setConfigOption` — see `armKiller`'s doc comment. Cancelled only once every wait it
-        // guards has actually finished, so the kill fires for any one of them running long, and
-        // never on a successful run.
-        let (killer, killerFired) = armKiller(transport)
+        // `setConfigOption` — see `armKiller`'s doc comment (`TestSupport/ArmedKiller.swift`).
+        // Cancelled only once every wait it guards has actually finished, so the kill fires for
+        // any one of them running long, and never on a successful run.
+        let (killer, killerFired) = armKiller { transport.terminate() }
         defer { killer.cancel() }
         defer { transport.terminate() }
 
@@ -211,8 +140,8 @@ struct ACPSessionTests {
         let transport = try ACPTransport(Self.agent())
         let client = Client(transport: transport)
         // Armed here so it covers every wait below, including `initialize`/`newSession` — see
-        // `armKiller`'s doc comment.
-        let (killer, killerFired) = armKiller(transport)
+        // `armKiller`'s doc comment (`TestSupport/ArmedKiller.swift`).
+        let (killer, killerFired) = armKiller { transport.terminate() }
         defer { killer.cancel() }
         defer { transport.terminate() }
 

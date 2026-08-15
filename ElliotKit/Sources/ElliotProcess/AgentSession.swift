@@ -24,12 +24,12 @@ public actor AgentSession {
     /// It needs one because **every wait in that suite is unbounded and `withTimeout` cannot bound
     /// it**: `end()` reaches `Client.terminate()`, which reaches `await readLoop.value`, and
     /// `Task<Void, Never>.value` observes no cancellation — the three facts `armKiller`'s doc
-    /// comment (`ACPSessionTests.swift`) sets out one layer up. The only thing that ends that wait
-    /// is the child dying, which is the very behaviour under test, so without a killer a
-    /// regression in the escalation makes `swift test` **hang** instead of fail. Measured with
-    /// `Client.terminate()`'s two `transport.terminate` calls deleted: killerless, the filtered
-    /// suite printed `Build complete! (2.84s)` and then no test line at all for 150 s; with the
-    /// killer armed, the same break reported 4 red tests in 24 s.
+    /// comment (`Tests/TestSupport/ArmedKiller.swift`) sets out one layer up. The only thing that
+    /// ends that wait is the child dying, which is the very behaviour under test, so without a
+    /// killer a regression in the escalation makes `swift test` **hang** instead of fail.
+    /// Measured with `Client.terminate()`'s two `transport.terminate` calls deleted: killerless,
+    /// the filtered suite printed `Build complete! (2.84s)` and then no test line at all for
+    /// 150 s; with the killer armed, the same break reported 4 red tests in 24 s.
     ///
     /// `nonisolated` for the same reason `processIdentifier` is: an actor's `let` is implicitly
     /// nonisolated only *within* its own module, so without this a test in `ElliotProcessTests`
