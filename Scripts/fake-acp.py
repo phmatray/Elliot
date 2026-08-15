@@ -7,7 +7,7 @@ prompt request with a stop reason.
 
 Env:
   FAKE_ACP_FIXTURE      JSON array of `update` objects to replay. Required for a useful turn.
-  FAKE_ACP_MODE         ok | hang | crash | permission | deaf   (default: ok)
+  FAKE_ACP_MODE         ok | hang | crash | permission | deaf | deaf-after-fixture  (default: ok)
   FAKE_ACP_READY        path touched once trap-protected
   FAKE_ACP_ARGV_OUT     path to write argv to, one element per line
   FAKE_ACP_STOP_REASON  default: end_turn
@@ -60,6 +60,22 @@ this double on its own — which means a test asserting "the child is gone after
 the SIGTERM→SIGKILL backstop deleted, because the kill was never needed. Under MODE=deaf nothing but
 that backstop ends it. The SIGTERM trap is installed before any of this, exactly as it is for every
 other mode, so the escalation's first rung is enough and no child outlives the suite.
+
+MODE=deaf-after-fixture replays the fixture and *then* goes deaf: every `session/update` frame is
+written and `session/prompt` is never answered. Neither of the two modes above can stand in for it,
+and the gap is the reason it exists. MODE=deaf returns *before* `for update in fixture()`, so a
+client whose behaviour is driven by a frame — the spend brake, which can only fire on a
+`usage_update` reporting a cost — has nothing to fire on under it. MODE=ok does emit the frame, but
+replies to `session/prompt` in the same breath, so whatever the client does in response is racing
+that client's own teardown: measured, a `session/cancel` sent from Elliot's brake under MODE=ok
+reached this double in 2 of 15 runs, because Elliot's turn task stands its own cancel deadline down
+the instant the prompt returns. Here the frame lands and the turn stays open, so the only thing that
+can end the turn is the client, and what the client did is observable rather than intermittent.
+
+⚠️ Unlike MODE=deaf this one DOES take the EOF exit in the main loop. Nothing that uses it tests a
+SIGTERM backstop, so sleeping through stdin closing would only give this double a way to outlive a
+wedged test — the property MODE=deaf holds deliberately is a liability here rather than a stricter
+version of the same thing.
 
 `session/cancel` stays a no-op — it is a notification and there is nothing to answer — but its
 arrival is announced on stderr, the same way a dropped message is: this double's protocol behaviour
@@ -336,6 +352,11 @@ def handle(message, stdin_iter):
                 return
         for update in fixture():
             notify(update)
+        if MODE == "deaf-after-fixture":
+            # The fixture is spoken and the turn is left open on purpose: from here only the client
+            # can end it, so what the client does about a frame is observable instead of racing the
+            # reply below. See the module docstring for the measurement that made this necessary.
+            return
         reply(request_id, {"stopReason": STOP_REASON})
         if EXIT_AFTER_REPLY:
             # `reply` already flushed, so the response is in the pipe and the client will read it

@@ -515,6 +515,21 @@ public final class AgentRun: Sendable {
             // itself — a second crossing must not re-ask an agent that has already been asked to
             // stop, which would arm a second grace deadline that silently replaces the first in
             // `cancelState`.
+            //
+            // ⚠️ **A third caveat, measured while pinning this: the ask can be stood down by the
+            // turn's own end.** `requestCancel`'s phase 1 — `sendCancelNotification` — lives
+            // *inside* the deadline task, and the hygiene line below (`cancelState.withLock {
+            // $0.deadline }?.cancel()`) cancels that task the instant `sendPrompt` returns; `try?`
+            // then swallows the `CancellationError` and no `session/cancel` is written at all.
+            // Measured against a double that replies in the same breath as the crossing frame:
+            // the ask reached the agent in 2 of 15 runs. It is **benign** — that shape is a turn
+            // that had already ended, and cancelling an ended turn buys nothing — but it is why
+            // `theBrakeAsksTheAgentToStop` pins the ask under `MODE=deaf-after-fixture`, where the
+            // turn stays open, rather than under a scenario where the absence would look like
+            // flakiness. ⛔ Do not "fix" it by hoisting phase 1 out of the deadline task without
+            // re-reading `requestCancel`'s own ⛔: the two phases are one sequence, and the
+            // structured shape that would let them be awaited separately is the trap that comment
+            // exists to refuse.
             func brake() {
                 let already = brakedByElliot.withLock { flag -> Bool in
                     let was = flag

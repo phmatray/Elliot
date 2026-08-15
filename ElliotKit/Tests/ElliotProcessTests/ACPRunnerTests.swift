@@ -602,7 +602,22 @@ struct ACPRunnerTests {
     /// about which one the summary reflected. It is the `braked` override in `AgentRun.summary`
     /// that makes the answer stable regardless of who wins that race; this is the test that would
     /// otherwise be intermittent rather than wrong-answered.
-    @Test("a run that crosses its ceiling is cancelled, and says which ceiling")
+    ///
+    /// ⛔ **This test must not be read as covering the cancellation itself.** It was named *"a run
+    /// that crosses its ceiling is cancelled, and says which ceiling"* until code review, and the
+    /// first half of that was a claim no assertion here could see: deleting `Self.requestCancel(…)`
+    /// from `brake()` left the whole suite green — 2865 tests, measured — which is the ceiling
+    /// ceasing to stop anything while these two assertions still pass. What is asserted below is
+    /// what the summary *says*; that Elliot actually asked the agent to stop is
+    /// `theBrakeAsksTheAgentToStop`'s claim, and it needs a different agent mode to make it.
+    ///
+    /// ⚠️ **And do not close that gap by adding `#expect(stderr.contains("session/cancel"))` here.**
+    /// Measured, exactly that assertion in exactly this scenario: 13 of 15 samples came back with
+    /// **empty stderr**, because the ask is `try? await client.sendCancelNotification` *inside* the
+    /// deadline task, and the turn task cancels that task the instant `sendPrompt` returns — which
+    /// under `MODE=ok` is the same breath as the frame that fired the brake. The failure is in the
+    /// scenario, not in the brake.
+    @Test("a run that crosses its ceiling says which ceiling stopped it")
     func theBudgetBrakeFires() async throws {
         for _ in 0..<5 {
             let logURL = try Self.logURL("acp-brake-fires")
@@ -623,6 +638,73 @@ struct ACPRunnerTests {
             await killer.value
             #expect(!killerFired.value)
         }
+    }
+
+    /// ⛔ **The half of the brake that actually stops a run, pinned where it can be seen.** The
+    /// test above pins what the summary *says*; nothing pinned the `session/cancel` the brake
+    /// sends, and the difference is not academic — with `Self.requestCancel(…)` deleted from
+    /// `brake()` the suite stayed green at 2865 tests while `stopReason` still read
+    /// `elliot/max_budget` and `isError` still read `true`. That summary tells a human Elliot
+    /// stopped a run for spending too much, about a run Elliot did not stop.
+    ///
+    /// ⚠️ **It needs `MODE=deaf-after-fixture`, and the reason is measured rather than stylistic.**
+    /// Under `MODE=ok` the double replies to `session/prompt` in the same breath as the fixture's
+    /// last frame, so the turn task resumes and reaches
+    /// `cancelState.withLock { $0.deadline }?.cancel()` while phase 1 — the
+    /// `try? await client.sendCancelNotification` living *inside* that deadline task — is still in
+    /// flight. `try?` swallows the resulting `CancellationError` and the ask is never written:
+    /// asserting the receipt in `theBudgetBrakeFires` gave **13 empty-stderr failures in 15
+    /// samples**. `MODE=deaf` cannot serve either, one rung the other way — it returns before
+    /// `for update in fixture()`, so no `usage_update` is ever emitted and the brake has nothing to
+    /// fire on. The new mode emits the frame and then leaves the turn open, so nothing stands the
+    /// deadline down and the brake's ask is the only thing that can end the run.
+    ///
+    /// ⛔ **The red to expect from a regression is indirect**, exactly as `cancelIsTwoPhase`
+    /// records: with the ask gone, nothing ever ends this turn, so `armKiller` is what turns a hung
+    /// `swift test` into a named failure on `killerFired`.
+    ///
+    /// The receipt is `outcome.stderr` for that test's reason too — the log mirrors the adapter's
+    /// **stdout**, and `session/cancel` goes the other way, to its stdin.
+    ///
+    /// ⚠️ **What is still not covered is an agent honouring it.** `session/cancel` is on
+    /// `fake-acp.py`'s cannot-express list — a deliberate no-op announced on stderr — so what ends
+    /// this child is phase 2, the backstop kill. This pins that Elliot **asked**, never that an
+    /// adapter obeyed, and no test in this suite covers the latter.
+    @Test("crossing the ceiling asks the agent to stop")
+    func theBrakeAsksTheAgentToStop() async throws {
+        let logURL = try Self.logURL("acp-brake-asks")
+        let run = try AgentRun.start(
+            invocation: Self.invocation(maxBudgetUSD: 0.10),
+            agent: Self.agent(mode: "deaf-after-fixture", fixture: "usage-over-budget.json"),
+            logURL: logURL,
+            // Short on purpose, as in `cancelIsTwoPhase`: the shipped ten seconds would be slept on
+            // every `swift test`, and nothing here asserts how long anything took — only what
+            // happened.
+            cancelGrace: .milliseconds(200)
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let (events, outcome) = await Self.drain(run)
+
+        // The positive witness. Without it an empty fixture, or one whose frame carried no cost,
+        // would look exactly like a brake that fired and asked — the shape
+        // `unmappableRunTermsRefuse` records getting wrong.
+        #expect(events.contains { if case .usage = $0 { true } else { false } })
+
+        let finished = try #require(outcome)
+        #expect(
+            finished.stderr.contains("session/cancel"),
+            Comment(rawValue: "the agent was never asked to stop; stderr was \(finished.stderr)")
+        )
+        // ⛔ And no summary, which is the honest consequence of the mode rather than an omission:
+        // the prompt was never answered, so there is no response for `braked` to override. The
+        // stop reason is the test above's claim; this one's is the ask.
+        #expect(finished.summary == nil)
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
     }
 
     /// The other collision Task 11 has to win, and it is not hypothetical either: `brake()` calls
