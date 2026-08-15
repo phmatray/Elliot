@@ -133,6 +133,12 @@ struct AgentLogTests {
     /// which has no room to say which of the three happened. What this test buys is that the
     /// conflation is a **recorded** property with a witness, instead of prose asserting that
     /// "nothing here guesses" over code that cannot tell a crashed run from an unreadable one.
+    ///
+    /// Break-tested by giving `TurnSummary` a hand-written `init(from:)` that `decodeIfPresent`s
+    /// all four required fields — the type made tolerant of exactly the line below. Red here, on
+    /// the first assertion, and **nowhere else in 2 858 tests**: nothing in the suite otherwise
+    /// notices `TurnSummary` acquiring a tolerant decoder, which makes this the only witness that
+    /// `RunLogRow.swift`'s ⛔ about persisted fields describes a live property and not an intention.
     @Test("a terminal record this build cannot decode answers exactly like a run that never ended")
     func anUndecodableRecordIsIndistinguishableFromNone() throws {
         let older =
@@ -288,6 +294,13 @@ struct AgentLogTests {
         // `TurnSummary` field that stopped round-tripping through `Codable` — the hazard
         // `RunLogRow.swift:11-19` warns about, pointed the other way — would show up here rather
         // than as a card and an archive quietly disagreeing months later.
+        //
+        // Break-tested by writing the terminal line and then handing the caller a mutated copy
+        // (`drifted.text = assembled.text + "!"`), which is memory and disk disagreeing about one
+        // field: red here, and red on `aTurnStreamsAndLogs`' text assertion, which checks memory
+        // alone and would have stayed green for any drift that spared `text`. ⚠️ The assertion
+        // this one replaced — `outcome?.summary?.stopReason == "end_turn"` — stayed **green**, on
+        // both sides, in that same run.
         #expect(outcome?.summary == found)
 
         killer.cancel()
