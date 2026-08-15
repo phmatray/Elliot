@@ -613,10 +613,14 @@ struct ACPRunnerTests {
     ///
     /// ⚠️ **And do not close that gap by adding `#expect(stderr.contains("session/cancel"))` here.**
     /// Measured, exactly that assertion in exactly this scenario: 13 of 15 samples came back with
-    /// **empty stderr**, because the ask is `try? await client.sendCancelNotification` *inside* the
-    /// deadline task, and the turn task cancels that task the instant `sendPrompt` returns — which
-    /// under `MODE=ok` is the same breath as the frame that fired the brake. The failure is in the
-    /// scenario, not in the brake.
+    /// **empty stderr**. The reason is that under `MODE=ok` the double replies to `session/prompt`
+    /// in the same breath as the frame that fired the brake, so the turn task tears the session
+    /// down — `session.end()` → `Client.terminate()` → `ACPTransport.close()` → `closeStdin()` —
+    /// before the brake's `sendCancelNotification` has written its line, and the write throws
+    /// `ProcessError.stdinClosed` into phase 1's `try?`. The failure is in the scenario, not in
+    /// the brake. (This said "the turn task cancels that task" and blamed a swallowed
+    /// `CancellationError`; instrumented at the send site, 19 of 20 `MODE=ok` samples threw
+    /// `stdinClosed` and `Task.isCancelled` was false in 19 of 20. `brake()`'s ⚠️ carries it.)
     @Test("a run that crosses its ceiling says which ceiling stopped it")
     func theBudgetBrakeFires() async throws {
         for _ in 0..<5 {
@@ -649,15 +653,25 @@ struct ACPRunnerTests {
     ///
     /// ⚠️ **It needs `MODE=deaf-after-fixture`, and the reason is measured rather than stylistic.**
     /// Under `MODE=ok` the double replies to `session/prompt` in the same breath as the fixture's
-    /// last frame, so the turn task resumes and reaches
-    /// `cancelState.withLock { $0.deadline }?.cancel()` while phase 1 — the
-    /// `try? await client.sendCancelNotification` living *inside* that deadline task — is still in
-    /// flight. `try?` swallows the resulting `CancellationError` and the ask is never written:
-    /// asserting the receipt in `theBudgetBrakeFires` gave **13 empty-stderr failures in 15
-    /// samples**. `MODE=deaf` cannot serve either, one rung the other way — it returns before
+    /// last frame, so the turn task resumes and tears the session down — `await session.end()` →
+    /// `Client.terminate()` → `ACPTransport.close()` → `closeStdin()` — while phase 1, the
+    /// `try? await client.sendCancelNotification` inside the deadline task, is still on its way to
+    /// the wire. The write then meets a closed stdin and throws `ProcessError.stdinClosed`, which
+    /// that `try?` swallows, so the ask is never written: asserting the receipt in
+    /// `theBudgetBrakeFires` gave **13 empty-stderr failures in 15 samples**.
+    ///
+    /// ⛔ **What is swallowed is `stdinClosed`, not a `CancellationError` — this comment claimed
+    /// the latter and it does not happen.** Instrumented with a `do`/`catch` at the send site:
+    /// under `MODE=ok`, 19 of 20 samples threw `ProcessError.stdinClosed` and `Task.isCancelled`
+    /// read **false in 19 of 20** immediately before the send, the one cancelled sample throwing
+    /// `stdinClosed` too. Under this mode, 5 of 5 sent successfully. Nothing between the deadline
+    /// task and the write observes cancellation, so the deadline being cancelled cannot be what
+    /// loses the ask.
+    ///
+    /// `MODE=deaf` cannot serve either, one rung the other way — it returns before
     /// `for update in fixture()`, so no `usage_update` is ever emitted and the brake has nothing to
-    /// fire on. The new mode emits the frame and then leaves the turn open, so nothing stands the
-    /// deadline down and the brake's ask is the only thing that can end the run.
+    /// fire on. The new mode emits the frame and then leaves the turn open, so nothing tears the
+    /// transport down and the brake's ask is the only thing that can end the run.
     ///
     /// ⛔ **The red to expect from a regression is indirect**, exactly as `cancelIsTwoPhase`
     /// records: with the ask gone, nothing ever ends this turn, so `armKiller` is what turns a hung

@@ -359,15 +359,29 @@ public final class AgentRun: Sendable {
         let deadline = Task {
             if let sessionId {
                 // ⚠️ **Swallowed deliberately, and this is not a missing error path.**
-                // `sendCancelNotification` is `async throws` and its first statement is
-                // `guard await transport.isConnected else { throw .processNotRunning }` — and
-                // `ACPTransport.isConnected` is `child.isRunning`, so it throws exactly when the
-                // agent has already gone: a cancel racing a turn that just ended, or an adapter
-                // that crashed. On the live path — the one an operator cancelling an in-flight
-                // run takes — it is delivered, which is what `cancelIsTwoPhase`'s stderr receipt
-                // pins. Nothing is reported either way: the phase below kills the child
-                // regardless, and a cancel that could not be delivered to a dead agent is not a
-                // failure of cancellation. Handling this would turn a successful cancel into a
+                // `sendCancelNotification` is `async throws` and can fail two ways, both of them
+                // "the agent is already beyond asking":
+                //
+                // 1. `ProcessError.stdinClosed`, from the write itself — `ACPTransport.send` →
+                //    `ChildProcess.writeStdin` on a stdin that `ACPTransport.close()` has already
+                //    closed. **This is the common one on the brake's path**, and it is what this
+                //    comment used to miss: measured with a `do`/`catch` at this site, 19 of 20
+                //    `MODE=ok` samples threw it while the child was still running.
+                // 2. `ClientError.processNotRunning`, from its first statement — `guard await
+                //    transport.isConnected`, and `ACPTransport.isConnected` is `child.isRunning`,
+                //    so this is the agent having actually exited or crashed. Not once in those 20
+                //    samples; `stdinClosed` gets there first, because closing stdin precedes the
+                //    child noticing.
+                //
+                // ⛔ It is **not** `CancellationError`, however this task is cancelled: nothing
+                // between here and the write observes cancellation. `brake()`'s ⚠️ carries that
+                // measurement and the correction it replaced.
+                //
+                // On the live path — the one an operator cancelling an in-flight run takes — the
+                // notification is delivered, which is what `cancelIsTwoPhase`'s stderr receipt
+                // pins. Nothing is reported on any of these paths: the phase below kills the child
+                // regardless, and a cancel that could not be delivered to an agent already gone is
+                // not a failure of cancellation. Handling it would turn a successful cancel into a
                 // failed one.
                 try? await client.sendCancelNotification(sessionId: sessionId)
 
@@ -533,20 +547,41 @@ public final class AgentRun: Sendable {
             // stop, which would arm a second grace deadline that silently replaces the first in
             // `cancelState`.
             //
-            // ⚠️ **A third caveat, measured while pinning this: the ask can be stood down by the
-            // turn's own end.** `requestCancel`'s phase 1 — `sendCancelNotification` — lives
-            // *inside* the deadline task, and the hygiene line below (`cancelState.withLock {
-            // $0.deadline }?.cancel()`) cancels that task the instant `sendPrompt` returns; `try?`
-            // then swallows the `CancellationError` and no `session/cancel` is written at all.
-            // Measured against a double that replies in the same breath as the crossing frame:
-            // the ask reached the agent in 2 of 15 runs. It is **benign** — that shape is a turn
-            // that had already ended, and cancelling an ended turn buys nothing — but it is why
-            // `theBrakeAsksTheAgentToStop` pins the ask under `MODE=deaf-after-fixture`, where the
-            // turn stays open, rather than under a scenario where the absence would look like
-            // flakiness. ⛔ Do not "fix" it by hoisting phase 1 out of the deadline task without
-            // re-reading `requestCancel`'s own ⛔: the two phases are one sequence, and the
-            // structured shape that would let them be awaited separately is the trap that comment
-            // exists to refuse.
+            // ⚠️ **A third caveat: on a turn that ends in the same breath, the ask is written
+            // into a pipe the turn's own teardown has already closed.** `requestCancel`'s phase 1
+            // — `sendCancelNotification` — reaches `ACPTransport.send` →
+            // `ChildProcess.writeStdin`, and the turn task below runs `await session.end()` →
+            // `Client.terminate()` → `ACPTransport.close()` → `closeStdin()` as soon as
+            // `sendPrompt` returns. The write then finds `stdinState == .closed` and throws
+            // `ProcessError.stdinClosed`, which phase 1's `try?` swallows: no `session/cancel` is
+            // written and nothing reports that none was.
+            //
+            // ⛔ **It is not a `CancellationError`, and this comment said it was.** The hygiene
+            // line below does cancel the deadline task, but nothing on the path from there to the
+            // write observes cancellation — `Client` is an actor, `sendCancelNotification` awaits
+            // only actor hops plus `transport.send`, and that bottoms out in a bare
+            // `withCheckedThrowingContinuation`. Instrumented with a `do`/`catch` and a
+            // `Task.isCancelled` reading at this exact site: under `MODE=ok`, **19 of 20 samples
+            // threw `ProcessError.stdinClosed`** and 1 sent successfully; `Task.isCancelled` was
+            // **false in 19 of 20**, and the single sample where it was *true* still threw
+            // `stdinClosed` rather than `CancellationError`. Under `MODE=deaf-after-fixture`, 5 of
+            // 5 sent successfully, never cancelled. The throw is not `processNotRunning` either:
+            // `sendCancelNotification`'s own `guard await transport.isConnected` passed every
+            // time, because the child is still alive — it is only its stdin that has gone.
+            //
+            // The loss is **benign** — that shape is a turn that had already ended, and cancelling
+            // an ended turn buys nothing — but it is why `theBrakeAsksTheAgentToStop` pins the ask
+            // under `MODE=deaf-after-fixture`, where the turn stays open, rather than under a
+            // scenario where the absence would look like flakiness.
+            //
+            // ⛔ Hoisting phase 1 out of the deadline task does **not** recover it, and the
+            // corrected mechanism is why: what beats the write is stdin closing, not the task
+            // being cancelled, so the same write would meet the same closed pipe wherever it was
+            // issued from. Recovering the ask would mean ordering it *ahead of* teardown — a
+            // synchronisation between two tasks that nothing here builds and nothing has measured.
+            // And read `requestCancel`'s own ⛔ before restructuring anyway: that objection is
+            // structural (the task-group shape deadlocks) and stands on its own evidence,
+            // independent of this one.
             func brake() {
                 let already = brakedByElliot.withLock { flag -> Bool in
                     let was = flag

@@ -68,9 +68,14 @@ client whose behaviour is driven by a frame — the spend brake, which can only 
 `usage_update` reporting a cost — has nothing to fire on under it. MODE=ok does emit the frame, but
 replies to `session/prompt` in the same breath, so whatever the client does in response is racing
 that client's own teardown: measured, a `session/cancel` sent from Elliot's brake under MODE=ok
-reached this double in 2 of 15 runs, because Elliot's turn task stands its own cancel deadline down
-the instant the prompt returns. Here the frame lands and the turn stays open, so the only thing that
-can end the turn is the client, and what the client did is observable rather than intermittent.
+reached this double in 2 of 15 runs. The reason is that answering the prompt lets Elliot's turn task
+close this double's stdin (its `session.end()` → transport `close()`), so the brake's notification is
+written into a pipe that has already gone and the write fails — instrumented at Elliot's send site,
+19 of 20 MODE=ok samples threw `stdinClosed` while this process was still very much alive. (It is
+NOT Elliot standing its own cancel deadline down, which is what this paragraph used to say: measured
+at the same site, that task was not even cancelled in 19 of those 20 samples.) Here the frame lands
+and the turn stays open, so stdin stays open, the only thing that can end the turn is the client,
+and what the client did is observable rather than intermittent.
 
 ⚠️ Unlike MODE=deaf this one DOES take the EOF exit in the main loop. Nothing that uses it tests a
 SIGTERM backstop, so sleeping through stdin closing would only give this double a way to outlive a
