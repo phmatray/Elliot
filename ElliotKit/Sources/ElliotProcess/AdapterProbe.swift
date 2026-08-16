@@ -4,29 +4,63 @@ import Foundation
 
 /// What one handshake with the ACP adapter established — and, just as carefully, what it did not.
 ///
-/// Every field is separately absent, because the three questions Preflight asks are separately
-/// answerable: *did anything spawn*, *what does it call itself*, *what does it offer*. An adapter
-/// that answers `initialize` and then dies still told Elliot its version, and a row that threw that
-/// away because the next call failed would be reporting less than was measured.
+/// Every field is separately absent, because the questions Preflight asks are separately
+/// answerable: *did anything spawn*, *did a session open*, *what does it call itself*, *what does
+/// it offer*. An adapter that answers `initialize` and then dies still told Elliot its version, and
+/// a row that threw that away because the next call failed would be reporting less than was
+/// measured.
+///
+/// ⛔ **Four, not three, and the fourth was the missing one.** *Did a session open* was inferred
+/// from *did it name itself* until a measurement showed the two coming apart on a perfectly legal
+/// adapter — see `sessionOpened`. Inferring one of these from another is how this type stops being
+/// a record of what was established.
 ///
 /// ⛔ `commands` is `nil` for *never established* and `[]` for *the adapter advertises none*, and
 /// the two must not be collapsed. `PreflightService` renders the first as a `.warn` naming the
 /// cause and the second as a finding — the two-valued answer to a three-valued question is this
 /// codebase's most-catalogued defect shape, and `isBlocking([])` is the instance it cost the most.
 public struct AdapterProbe: Sendable, Hashable {
-    /// `initialize`'s `agentInfo.name`, nil when it never answered.
+    /// `initialize`'s `agentInfo.name`, nil when the adapter did not name itself — which is not the
+    /// same as nil because it never answered. See `namedItself`.
     public var agentName: String?
     public var agentVersion: String?
     /// The slash commands the adapter advertised, in the order it named them.
     public var commands: [String]?
-    /// Why the probe stopped where it did. `nil` means everything it set out to read arrived.
+    /// Whether `session/new` returned — the adapter spawned, answered `initialize` **and** opened
+    /// a session.
+    ///
+    /// ⛔ **This, not `namedItself`, is what settles *would a run work*.** `agentInfo` is optional
+    /// on the wire (`InitializeResponse.agentInfo` is `AgentInfo?`), so a healthy adapter may answer
+    /// everything asked of it and never name itself. Reading that absence as *the adapter is broken*
+    /// is how the identity row came to render a failing verdict, under a hint saying nothing would
+    /// run, for an adapter that had just proved the opposite two round trips earlier.
+    public var sessionOpened: Bool
+    /// Why the probe stopped where it did — **what the adapter or the system said**, never Elliot's
+    /// own account of its own patience on some other question. `nil` means everything it set out to
+    /// read arrived.
     public var failure: Failure?
+    /// How long Elliot waited for `available_commands_update` before giving up, when a session was
+    /// open and nothing arrived. `nil` whenever the window is not what ended the wait — including
+    /// the case where the stream simply finished first, which is a different silence.
+    ///
+    /// ⛔ **Deliberately not a `Failure`, and the separation is the whole point.** This is a fact
+    /// about the *commands* question and about Elliot's own patience; `failure` is what the adapter
+    /// or the system said about the *adapter*, and `PreflightService.adapterCheck` prints that
+    /// verbatim. Carrying this there made `agent.adapter` render *"The adapter opened a session and
+    /// advertised no commands within 2 seconds"* as a **failure**, hinted with *"Nothing will run
+    /// until it does"* — a finding about the wrong subject, and both halves false.
+    public var quietCommands: Duration?
 
     /// ⚠️ Two cases, because they are two different verdicts on screen. A deadline that expired is
     /// a `.warn` — *"the adapter did not answer within N seconds"* is a true statement about
     /// Elliot's patience, not a finding about the adapter. A refusal or a crash is a `.fail`, and
     /// its text is the agent's or the system's own, verbatim: Elliot paraphrasing a JSON-RPC error
     /// is Elliot inventing one.
+    ///
+    /// ⛔ **So `.error` takes nothing Elliot wrote.** It is printed as the adapter's own verdict on
+    /// itself, and the moment a sentence of Elliot's is smuggled in it is printed that way too —
+    /// which is precisely what happened to the commands window, and is why that now lives on
+    /// `quietCommands` instead.
     public enum Failure: Sendable, Hashable {
         case silent(Duration)
         case error(String)
@@ -36,17 +70,26 @@ public struct AdapterProbe: Sendable, Hashable {
         agentName: String? = nil,
         agentVersion: String? = nil,
         commands: [String]? = nil,
-        failure: Failure? = nil
+        sessionOpened: Bool = false,
+        failure: Failure? = nil,
+        quietCommands: Duration? = nil
     ) {
         self.agentName = agentName
         self.agentVersion = agentVersion
         self.commands = commands
+        self.sessionOpened = sessionOpened
         self.failure = failure
+        self.quietCommands = quietCommands
     }
 
-    /// Whether `initialize` answered at all — the one question `agentName` alone cannot settle,
-    /// since `agentInfo` is optional on the wire and an adapter may answer without naming itself.
-    public var answered: Bool { agentName != nil || agentVersion != nil }
+    /// Whether the adapter named itself, and **nothing more than that**.
+    ///
+    /// ⛔ It was called `answered`, and the name is what did the damage: `agentInfo` is optional on
+    /// the wire, so an adapter can answer `initialize` in full, open a session and leave this
+    /// false — at which point a reader of `!answered` concludes the adapter never spoke. *Did
+    /// anything work* is `sessionOpened`. This only ever says whether there is an identity to check
+    /// against the pin.
+    public var namedItself: Bool { agentName != nil || agentVersion != nil }
 }
 
 /// Spawns the ACP adapter, asks it who it is and what it offers, and ends it.
@@ -134,6 +177,11 @@ public enum AdapterHandshake {
         // the deadline throws `connectionClosed`, and reporting that as the adapter's own error
         // would blame it for Elliot's impatience.
         let expired = Locked(false)
+        // Whether the *commands* window is what ended the wait, as opposed to the notification
+        // stream finishing on its own — an adapter that opened a session and then died says
+        // nothing within no time at all, and "advertised nothing within 2 seconds" would put a
+        // wait Elliot never made into a sentence a reader is meant to believe.
+        let windowClosed = Locked(false)
         let killer = Task {
             do {
                 try await Task.sleep(for: deadline)
@@ -185,6 +233,10 @@ public enum AdapterHandshake {
             // directory, at whatever permission mode — on the screen whose job is to look.
             _ = try await client.newSession(
                 workingDirectory: agent.cwd, additionalDirectories: [], mcpServers: [])
+            // ⛔ Recorded the moment it is true, and never re-derived from the fields below. This
+            // is the only evidence that the adapter *works*, and it is what stops the identity row
+            // reporting a healthy anonymous adapter as a dead one.
+            probe.sessionOpened = true
             // Armed only now: before a session exists there is nothing that could advertise
             // anything, so the window would be measuring the wrong silence.
             quiet = Task {
@@ -193,6 +245,7 @@ public enum AdapterHandshake {
                 } catch {
                     return  // the notification arrived, or the outer deadline got there first
                 }
+                windowClosed.withLock { $0 = true }
                 await session.end()
             }
             await consumer.value
@@ -213,12 +266,16 @@ public enum AdapterHandshake {
             // Whatever the failing call said, the cause was Elliot ending the agent. Overwrites an
             // `.error` deliberately: `connectionClosed` describes the symptom, this names the cause.
             probe.failure = .silent(deadline)
-        } else if probe.failure == nil, probe.commands == nil {
-            // The session opened and the window closed with nothing in it. Not the deadline, and
-            // not an error anyone reported — so it is said plainly rather than dressed as either.
-            probe.failure = .error(
-                "The adapter opened a session and advertised no commands within "
-                    + "\(commandsWindow.components.seconds) seconds.")
+        } else if probe.commands == nil, windowClosed.value {
+            // The session opened and the window closed with nothing in it.
+            //
+            // ⛔ **Recorded on its own field, never on `failure`.** It is a fact about the commands
+            // question, and `failure` is what `adapterCheck` prints verbatim as the *adapter's*
+            // verdict — so writing it there made an anonymous-but-healthy adapter render as
+            // `.fail`, with a sentence about commands and a hint saying nothing would run. It is
+            // not a failure of anything: an adapter that advertises no commands is a legal adapter
+            // Elliot happens to have nothing to dispatch through.
+            probe.quietCommands = commandsWindow
         }
         return probe
     }

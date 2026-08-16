@@ -484,9 +484,31 @@ public struct PreflightService: Sendable {
     /// N seconds"* is a true statement about Elliot's patience, not a finding about the adapter.
     /// Only an adapter that answered *something wrong* — a spawn error, a JSON-RPC error — fails,
     /// and its own words are what the row shows.
+    ///
+    /// ⛔ **An adapter that opened a session cannot fail this row, whatever else it did or did not
+    /// say.** `agentInfo` is optional on the wire, so *no identity* and *no adapter* are different
+    /// facts, and this row is the one that must not confuse them: it renders the single verdict
+    /// this screen reserves for *cards cannot be dragged*. The defect it is written against is
+    /// measured — `AdapterProbe.quietCommands` used to be an `AdapterProbe.Failure.error`, so an
+    /// adapter that spawned, answered and opened a session came out as
+    /// `.fail  "The adapter opened a session and advertised no commands within 2 seconds."` under
+    /// *"Nothing will run until it does."* Both halves false, on the screen whose job is to be
+    /// believed, in exactly the case this row exists for: an adapter that is not the pinned one.
     public static func adapterCheck(_ probe: AdapterProbe) -> CheckResult {
         let pinned = ACPAgentLocator.adapterVersion
-        guard probe.answered else {
+        guard probe.namedItself else {
+            // Checked ahead of `failure`, because it outranks it: two successful round trips are
+            // evidence about the adapter, and the commands question is answered one row down.
+            if probe.sessionOpened {
+                return CheckResult(
+                    id: "agent.adapter", title: "ACP adapter", status: .warn,
+                    detail: "The adapter answered and opened a session, and named neither itself "
+                        + "nor a version. agentInfo is optional in the protocol, so this is a legal "
+                        + "answer — but Elliot has no identity to check against its pin of "
+                        + "\(pinned).",
+                    command: "npx --yes \(ACPAgentLocator.adapterPackage)"
+                )
+            }
             switch probe.failure {
             case .silent(let deadline):
                 return CheckResult(
@@ -505,9 +527,10 @@ public struct PreflightService: Sendable {
                     fixHint: "Every card that moves spawns this. Nothing will run until it does."
                 )
             case nil:
-                // Unreachable by construction — `probe` sets a failure whenever nothing answered —
-                // and said out loud rather than folded into one of the arms above, which would put
-                // a sentence about a cause nobody established on the screen that must be believed.
+                // Unreachable by construction: `probe` leaves `failure` nil only once it has
+                // reached `session/new`, which the guard above has already caught. Said out loud
+                // rather than folded into one of the arms — inventing a cause nobody established
+                // is the failure mode this whole row is written against.
                 return CheckResult(
                     id: "agent.adapter", title: "ACP adapter", status: .warn,
                     detail: "Could not be established: the handshake reported neither an identity "
@@ -554,7 +577,7 @@ public struct PreflightService: Sendable {
         guard let advertised = probe.commands else {
             return CheckResult(
                 id: "agent.commands", title: "Agent commands", status: .warn,
-                detail: "Could not be established: \(Self.sentence(probe.failure)) So Elliot cannot "
+                detail: "Could not be established: \(Self.sentence(probe)) So Elliot cannot "
                     + "say whether the commands it dispatches are offered.",
                 command: "python3 Scripts/probe/acp_probe.py"
             )
@@ -594,16 +617,27 @@ public struct PreflightService: Sendable {
         return found.sorted()
     }
 
-    /// One sentence for a failure, so `commandsCheck` explains an absence rather than asserting a
-    /// finding. `nil` is a real case: the session opened and the stream simply ended.
-    private static func sentence(_ failure: AdapterProbe.Failure?) -> String {
-        switch failure {
+    /// One sentence for why the commands are unknown, so `commandsCheck` explains an absence rather
+    /// than asserting a finding.
+    ///
+    /// ⚠️ **Four reasons, not three, and the two silent ones are genuinely different.** The window
+    /// closing on an open session is Elliot's patience running out — a wait it really made, so the
+    /// number is quotable. The notification stream finishing first is the adapter having gone away
+    /// after `session/new`, where Elliot waited no measurable time at all: quoting the window there
+    /// would put a wait that never happened into a sentence a reader is meant to believe.
+    private static func sentence(_ probe: AdapterProbe) -> String {
+        switch probe.failure {
         case .silent(let deadline):
             "the adapter did not answer within \(Self.seconds(deadline)) seconds."
         case .error(let message):
             message.hasSuffix(".") ? message : message + "."
         case nil:
-            "the adapter advertised nothing and gave no reason."
+            if let window = probe.quietCommands {
+                "the adapter opened a session and advertised nothing within "
+                    + "\(Self.seconds(window)) seconds."
+            } else {
+                "the adapter opened a session and then advertised nothing, without saying why."
+            }
         }
     }
 

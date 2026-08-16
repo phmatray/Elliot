@@ -24,6 +24,15 @@ Env:
   FAKE_ACP_FORK_DIES    exit at session/fork without answering it at all (see below)
   FAKE_ACP_COMMANDS     JSON file of AvailableCommand objects to advertise after session/new
   FAKE_ACP_AGENT_VERSION  what initialize reports as agentInfo.version    (default: 0.0.1)
+  FAKE_ACP_NO_AGENT_INFO  omit agentInfo from initialize entirely (see below)
+
+FAKE_ACP_NO_AGENT_INFO makes this double answer `initialize` with NO `agentInfo` at all — which is
+legal, not malformed: `InitializeResponse.agentInfo` is declared `AgentInfo?` in ACPModel, so an
+adapter may answer perfectly and never name itself. It exists because a client that reads "no
+identity" as "no adapter" renders a healthy, anonymous adapter as a failure — measured, and it was
+Preflight's `agent.adapter` row printing a sentence about *commands* under a hint saying nothing
+would run, for an adapter that had just spawned, answered and opened a session. Every other knob
+here leaves agentInfo in place, so that case had no witness.
 
 FAKE_ACP_AGENT_VERSION exists for exactly one judgement: Preflight's `agent.adapter` row is a
 `.warn` when the version the adapter reports differs from the pin and a `.pass` when it matches
@@ -459,16 +468,21 @@ def handle(message, stdin_iter):
     method, request_id = message.get("method"), message.get("id")
 
     if method == "initialize":
-        reply(request_id, {
+        answer = {
             "protocolVersion": 1,
             "agentCapabilities": AGENT_CAPABILITIES,
-            "agentInfo": {
-                "name": "fake-acp",
-                "version": os.environ.get("FAKE_ACP_AGENT_VERSION", "0.0.1"),
-            },
             "authMethods": [],
             "_meta": INITIALIZE_META,
-        })
+        }
+        # Omitted, never sent as null: the field is absent on the wire for an adapter that does not
+        # name itself, and a client decoding `null` and a client decoding a missing key are not
+        # guaranteed to take the same path.
+        if not os.environ.get("FAKE_ACP_NO_AGENT_INFO"):
+            answer["agentInfo"] = {
+                "name": "fake-acp",
+                "version": os.environ.get("FAKE_ACP_AGENT_VERSION", "0.0.1"),
+            }
+        reply(request_id, answer)
     elif method == "session/new":
         # The whole params object, not just the directories: `cwd` is the other half of what
         # `--add-dir` used to make visible, and a test asserting on one usually wants the other in

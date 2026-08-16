@@ -431,6 +431,66 @@ struct PreflightTests {
         #expect(adapter.detail.contains("pinned at"))
     }
 
+    /// ⛔ **An adapter that does not name itself is not a broken adapter, and the row must not say
+    /// it is.** `InitializeResponse.agentInfo` is `AgentInfo?` — absent is legal — so `answered`
+    /// can be false for an adapter that spawned, answered `initialize` and opened a session. This
+    /// double does exactly that, and advertises nothing, which is the pair of facts that used to
+    /// collide: the *commands* window's expiry was written into `AdapterProbe.failure`, the field
+    /// `adapterCheck` prints verbatim, so `agent.adapter` rendered
+    /// `status=.fail  detail="The adapter opened a session and advertised no commands within 2
+    /// seconds."  hint="Every card that moves spawns this. Nothing will run until it does."` —
+    /// a failure about the wrong question, under a hint that is false, for a working adapter.
+    @Test("an anonymous adapter that opened a session is not reported as a failed adapter")
+    func anAnonymousAdapterIsNotAFailedAdapter() async {
+        let results = await adapterService(childEnvironment: ["FAKE_ACP_NO_AGENT_INFO": "1"])
+            .globalChecks(packs: PreflightService.packsInUse([]))
+        guard let adapter = results.first(where: { $0.id == "agent.adapter" }) else {
+            Issue.record("expected an agent.adapter row")
+            return
+        }
+        // It spawned, answered and opened a session — so runs would work, and the one verdict this
+        // screen reserves for "cards cannot be dragged" is the wrong one.
+        #expect(adapter.status != .fail)
+        // The commands question belongs to the other row, and its answer must not appear here at
+        // all — neither as the detail nor as the reason.
+        #expect(!adapter.detail.lowercased().contains("command"))
+        #expect(adapter.fixHint?.contains("Nothing will run") != true)
+        // And the row still has to say what it *did* establish: no identity to check against a pin.
+        #expect(adapter.detail.lowercased().contains("agentinfo"))
+
+        // The commands row is where the silence is reported, unchanged and still a warning.
+        guard let advertised = results.first(where: { $0.id == "agent.commands" }) else {
+            Issue.record("expected an agent.commands row")
+            return
+        }
+        #expect(advertised.status == .warn)
+        #expect(advertised.detail.lowercased().contains("could not be established"))
+    }
+
+    /// The same judgement as the test above, asserted on the value rather than through a child —
+    /// so a future probe that reassembles these fields differently still cannot make this row fail
+    /// on an adapter that opened a session.
+    @Test("a session that opened outranks every other reason the adapter row could fail")
+    func anOpenedSessionOutranksEveryFailure() {
+        for failure: AdapterProbe.Failure? in [
+            nil, .silent(.seconds(30)), .error("Resource not found: 9f3a"),
+        ] {
+            let row = PreflightService.adapterCheck(AdapterProbe(
+                sessionOpened: true, failure: failure,
+                quietCommands: AdapterHandshake.commandsWindow))
+            #expect(row.status != .fail)
+            #expect(row.fixHint?.contains("Nothing will run") != true)
+        }
+        // ⛔ And with no session, the two verdicts stay exactly as decision 10 set them: a spawn or
+        // JSON-RPC error is a `.fail` in the adapter's own words, a deadline is only a `.warn`.
+        let spawnFailed = PreflightService.adapterCheck(
+            AdapterProbe(failure: .error("posix_spawn(2) failed: No such file or directory")))
+        #expect(spawnFailed.status == .fail)
+        #expect(spawnFailed.detail == "posix_spawn(2) failed: No such file or directory")
+        #expect(PreflightService.adapterCheck(
+            AdapterProbe(failure: .silent(.seconds(30)))).status == .warn)
+    }
+
     @Test("Node below 22 fails by name and says the number it found")
     func oldNodeFails() async throws {
         let (env, _, remove) = try scratchToolchain(nodeBody: "echo \"v20.11.1\"")
