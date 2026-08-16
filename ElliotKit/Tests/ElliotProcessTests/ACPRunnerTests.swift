@@ -761,6 +761,66 @@ struct ACPRunnerTests {
     /// to its ordinary end.
     // MARK: - Resuming
 
+    /// ⛔ **The narrowing this task calls "the whole point", pinned — because for one commit it
+    /// was pinned by nothing.** The decision used to be spelled as two constructs at the catch
+    /// site, `catch let error as ClientError` plus an inner `guard case .agentError`, and only the
+    /// outer one was reachable: `FAKE_ACP_FORK_UNREADABLE` makes `Client.forkSession` throw a bare
+    /// `DecodingError` (it calls `decoder.decode` directly rather than wrapping), which the type
+    /// filter already rejects. Measured: deleting the inner guard left the **entire suite green**,
+    /// 2874 tests in 337 suites. So `.requestTimeout`, `.connectionClosed`, `.invalidResponse` and
+    /// `.decodingError` were routed to "the agent refused" by a line no test could fail on.
+    ///
+    /// `isForkRefusal` exists so the decision has a name a test can call, and this is that test:
+    /// every case the vendored `ClientError` declares, plus the two non-`ClientError` throws this
+    /// call site can actually meet.
+    ///
+    /// ⚠️ **Listed by hand, because it cannot be enumerated.** `ClientError`'s associated values
+    /// bar `CaseIterable`, so a thirteenth case added to the vendored enum would not fail here —
+    /// it would simply go unmeasured, and the default answer for anything unlisted is `false`, the
+    /// safe one. The count assertion below is the tripwire for that: it fails if this list stops
+    /// matching the enum's arity.
+    @Test("only an answer from the agent counts as a refused fork")
+    func onlyAnAgentAnswerIsARefusal() {
+        let refused = JSONRPCError(
+            code: -32002, message: "Resource not found: sess-that-never-was", data: nil)
+        // Every case `ACPModel/Errors.swift` declares, in declaration order.
+        let clientErrors: [(ClientError, Bool)] = [
+            (.processNotRunning, false),
+            (.processFailed(1), false),
+            (.invalidResponse, false),
+            (.requestTimeout, false),
+            (.encodingError, false),
+            (.decodingError(DecodingError.valueNotFound(String.self, .init(
+                codingPath: [], debugDescription: "no sessionId"))), false),
+            (.agentError(refused), true),
+            (.delegateNotSet, false),
+            (.fileNotFound("/tmp/nope"), false),
+            (.fileOperationFailed("/tmp/nope"), false),
+            (.transportError("pipe closed"), false),
+            (.connectionClosed, false),
+        ]
+        #expect(clientErrors.count == 12, "ClientError gained or lost a case; extend this list")
+        for (error, expected) in clientErrors {
+            #expect(
+                AgentRun.isForkRefusal(error) == expected,
+                Comment(rawValue: "\(error) should \(expected ? "" : "not ")be a refusal")
+            )
+        }
+
+        // ⛔ The one that is reachable today, and the reason the parameter is `Error` and not
+        // `ClientError`: `Client.forkSession` lets a decode failure escape unwrapped.
+        #expect(!AgentRun.isForkRefusal(DecodingError.keyNotFound(
+            ForkKey.sessionId,
+            .init(codingPath: [], debugDescription: "no sessionId"))))
+        // A turn cancelled out from under the handshake establishes nothing about the transcript
+        // either — and unlike the rest, this one arrives without any agent involvement at all.
+        #expect(!AgentRun.isForkRefusal(CancellationError()))
+    }
+
+    /// Only so the `DecodingError.keyNotFound` above has a `CodingKey` to name; the real one is
+    /// `ForkSessionResponse`'s, which is synthesised and private.
+    private enum ForkKey: String, CodingKey { case sessionId }
+
     /// Task 13: a resumed run asks for `session/fork`, and adopts **the id the agent answered
     /// with** rather than the one it asked about.
     ///
@@ -860,7 +920,12 @@ struct ACPRunnerTests {
         // happened to this run", and the archive has only the file to read it off.
         let summary = try #require(finished.summary)
         #expect(summary.isError)
-        #expect(summary.stopReason == nil)
+        // ⛔ Named, not nil. With `stopReason: nil` — the brief's literal value, and what this
+        // shipped as for one commit — `LogRows.summary` draws this run as a bare "Finished with
+        // issues", because it appends a reason only when there is one. That is the single failure
+        // a relaunch can fix, rendered as an unexplained one, with `SkillRun.stopReason` storing
+        // nothing. Same namespace and same precedent as `maxBudgetStopReason`.
+        #expect(summary.stopReason == AgentRun.sessionForkRefusedStopReason)
         let objects = try Self.objects(inLogAt: logURL)
         #expect(objects.last?["method"] as? String == AgentLog.terminalMethod)
         // The file and the value handed to the caller are the same value, which is the invariant
@@ -913,6 +978,50 @@ struct ACPRunnerTests {
         #expect(ResumeVerdict.of(
             resumedFrom: UUID(), sessionResumeFailed: finished.sessionResumeFailed) == .ran)
         // The died-mid-turn shape, whose whole meaning is the ABSENCE of a terminal line.
+        #expect(finished.summary == nil)
+        #expect(finished.agentSessionID == nil)
+        #expect(AgentLog.lastSummary(inLogAt: logURL) == nil)
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
+    }
+
+    /// The other half of the narrowing, end to end: a `ClientError` that is **not**
+    /// `.agentError`. `anUnreadableForkAnswerIsNotARefusal` above drives an error that is not a
+    /// `ClientError` at all, so between them they cover both of `isForkRefusal`'s tests — and
+    /// until this test existed, the inner one was reachable from no test in the suite.
+    ///
+    /// `FAKE_ACP_FORK_DIES` exits the double at `session/fork` without answering, so the client's
+    /// read loop finishes and `handleTermination` fails the pending request with
+    /// `ClientError.connectionClosed`. The agent went away mid-question; nobody established
+    /// anything about the transcript, so `sessionResumeFailed` stays false and the run takes the
+    /// ordinary died-mid-turn shape — **no terminal line at all**, which is the fact.
+    @Test("a fork the agent died during is not a refusal")
+    func aForkTheAgentDiedDuringIsNotARefusal() async throws {
+        let logURL = try Self.logURL("acp-fork-died")
+        let run = try AgentRun.start(
+            invocation: Self.invocation(resumeFromAgentSession: "sess-parent-0001"),
+            agent: Self.agent(environment: [
+                "FAKE_ACP_FORKABLE": "sess-parent-0001",
+                "FAKE_ACP_FORK_DIES": "1",
+            ]),
+            logURL: logURL
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let (_, outcome) = await Self.drain(run)
+
+        let finished = try #require(outcome)
+        // The positive witness: the agent really was asked, and died holding the question.
+        #expect(
+            finished.stderr.contains("session/fork for 'sess-parent-0001'"),
+            Comment(rawValue: "the agent was never asked to fork; stderr was \(finished.stderr)")
+        )
+        #expect(finished.sessionResumeFailed == false)
+        #expect(ResumeVerdict.of(
+            resumedFrom: UUID(), sessionResumeFailed: finished.sessionResumeFailed) == .ran)
         #expect(finished.summary == nil)
         #expect(finished.agentSessionID == nil)
         #expect(AgentLog.lastSummary(inLogAt: logURL) == nil)

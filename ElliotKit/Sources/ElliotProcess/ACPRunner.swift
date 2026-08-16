@@ -60,8 +60,13 @@ public struct AgentInvocation: Sendable {
     public var maxBudgetUSD: Double?
     /// The **agent's** session id to fork from, not a `SkillRun.id`.
     ///
-    /// A `String`, not a `UUID`: it is the id the previous run's **agent** chose. `RunScheduler`
-    /// reads it off the predecessor row's `agentSessionID` (Task 13).
+    /// A `String`, not a `UUID`: it is the id the previous run's **agent** chose.
+    ///
+    /// ⚠️ **Nothing in production writes this yet.** `RunScheduler` will read it off the
+    /// predecessor row's `agentSessionID` — that is **Task 15**'s `invocation(for:repo:perRunUSD:
+    /// resumingAgentSession:)`, not Task 13's, which built the fork path this field feeds and left
+    /// it fed only by tests and by `Scripts/probe/acp_fork.py`. This said "(Task 13)" while Task 13
+    /// was delivered and no writer existed, which reads as wiring that is already there.
     public var resumeFromAgentSession: String?
 
     public init(
@@ -212,11 +217,16 @@ public struct AgentRunOutcome: Sendable {
     /// pointed at is not there, and nothing was attempted.
     ///
     /// ⚠️ **Narrower than "the fork did not work", deliberately.** `AgentRun.start` sets this only
-    /// for `ClientError.agentError`. A transport that died, a reply that would not decode, a
-    /// handshake that never reached the fork — none of them set it, because none of them
-    /// establishes anything about the transcript. `ResumeVerdict.of(resumedFrom:sessionResumeFailed:)`
-    /// is the one reader, and it turns this into `.sessionGone`; everything else is `.ran`, which
-    /// that type documents as "everything else, including we do not know".
+    /// when `AgentRun.isForkRefusal` says the agent answered — today, `ClientError.agentError`. A
+    /// transport that died, a reply that would not decode, a handshake that never reached the fork
+    /// — none of them set it, because none of them establishes anything about the transcript.
+    ///
+    /// ⚠️ **Its intended reader is `ResumeVerdict.of(resumedFrom:sessionResumeFailed:)`, which
+    /// turns this into `.sessionGone`; everything else is `.ran`, which that type documents as
+    /// "everything else, including we do not know". Nothing in production reads it yet** — that
+    /// overload's caller is Task 15's rewrite of `RunScheduler.finish`, which still calls the
+    /// stream-json `of(resumedFrom:result:)` (`RunScheduler.swift:878`). This said "is the one
+    /// reader" in the present tense while there was no reader at all.
     ///
     /// Defaulted in the initialiser below so call sites that predate this field keep compiling.
     public var sessionResumeFailed: Bool
@@ -450,6 +460,65 @@ public final class AgentRun: Sendable {
     /// Task 15's `state(for:)` is the next one.
     public static let maxBudgetStopReason = "elliot/max_budget"
 
+    /// Elliot's own stop reason for a run whose `session/fork` the agent refused.
+    ///
+    /// Same shape and same namespace as `maxBudgetStopReason` above, and for the same reason:
+    /// `TurnSummary.stopReason` documents "or an unrecognised string", and `SkillRun.stopReason`
+    /// names `elliot/max_budget` in its own doc comment as the precedent for a value Elliot
+    /// authored rather than the agent.
+    ///
+    /// ⚠️ **This was `nil` as first written, which the brief dictated and which cost the archive
+    /// the one thing this task exists to establish.** With `stopReason: nil` the whole on-screen
+    /// record of a refused fork is `LogRows.summary`'s bare *"Finished with issues"* — measured on
+    /// the log `aRefusedForkEndsTheRun` writes — because that function appends a reason only when
+    /// there is one. So the single failure a relaunch can fix was drawn as an unexplained one, and
+    /// `SkillRun.stopReason` stored nothing, leaving `AgentRunOutcome.sessionResumeFailed` — an
+    /// in-memory `Bool` — as the only witness. The brief's argument for nil was that
+    /// `TurnSummary.stopReason` documents nil as "the response never arrived", which is true of
+    /// this path; but this path already departs from the died-mid-turn shape by writing a terminal
+    /// line at all, and leaving the reason nil made *presence of the line* the only thing telling
+    /// the two apart in the file.
+    ///
+    /// ⛔ Inert for Task 15's fold, deliberately: `state(for:)` tests `stopReason == "cancelled"`
+    /// and then `summary.isError`, so this reads `.failed` exactly as `nil` + `isError` did. It
+    /// adds a record, it does not move a verdict.
+    public static let sessionForkRefusedStopReason = "elliot/session_fork_refused"
+
+    /// Did the agent **answer** the fork with a refusal, or did nobody manage to ask?
+    ///
+    /// ⛔ **The narrowing is the whole point of this task, and this is the only place it is
+    /// decided.** An agent that answers — a JSON-RPC error saying it will not fork that session —
+    /// has established that the transcript is gone, and `ResumeVerdict` turns that into
+    /// `.sessionGone`, which Task 15's policy may spend a relaunch on. A transport that died, a
+    /// request that timed out, a reply that would not decode: each establishes only that nobody
+    /// could ask, so each is `false` and falls through to the ordinary died-mid-turn path, where
+    /// the absence of a terminal line is itself the fact and the verdict is `.ran` — the answer
+    /// `ResumeVerdict` documents as "everything else, including we do not know". Collapsing the
+    /// two would report a missing transcript on evidence that says nothing about one.
+    ///
+    /// ⚠️ **`.decodingError` is `false`, and it is the case worth reading twice.**
+    /// `Client.forkSession` today lets a decode failure escape as a bare `DecodingError` rather
+    /// than wrapping it (`Vendor/swift-acp/ACP/Client.swift`, the `decoder.decode` at the tail),
+    /// so that case is unreachable from here right now. One line in vendored code would change
+    /// that, and this function answers correctly the day it does — which is exactly what an
+    /// `Error`-typed parameter buys over a `ClientError`-typed one: the question is "what did we
+    /// establish", and every error this call can throw is entitled to an answer.
+    ///
+    /// ⚠️ **The adapter really does answer, and with two different codes.**
+    /// `Scripts/probe/acp_fork.py` against @agentclientprotocol/claude-agent-acp 0.66.0: a fork of
+    /// a well-formed session id that never existed comes back `-32002 "Resource not found:
+    /// <uuid>"`, a named refusal; a fork of a *junk* string comes back `-32603 Internal error`
+    /// whose details read `--resume requires a valid session ID … is not a UUID`, i.e. argument
+    /// validation. Both are JSON-RPC errors, so both arrive as `.agentError` and both read as a
+    /// refusal — deliberately, because for both the answer is the same: this anchor will never
+    /// fork, relaunch without it. ⛔ Do not narrow this to `-32002`: that trades a stable
+    /// protocol-level distinction for an undocumented vendor code, and the second shape would then
+    /// read as "we could not ask" and never relaunch.
+    static func isForkRefusal(_ error: Error) -> Bool {
+        guard let error = error as? ClientError, case .agentError = error else { return false }
+        return true
+    }
+
     public static func start(
         invocation: AgentInvocation,
         agent: ACPAgentProcess,
@@ -661,36 +730,23 @@ public final class AgentRun: Sendable {
                             additionalDirectories: invocation.extraDirectories,
                             mcpServers: []
                         ))
-                    } catch let error as ClientError {
-                        // ⛔ **`agentError` and nothing else, and the narrowing is the whole point
-                        // of this task.** An agent that *answers* — a JSON-RPC error saying it will
-                        // not fork that session — has established that the transcript is gone, and
-                        // `ResumeVerdict` turns that into `.sessionGone`, which Task 15's policy may
-                        // spend a relaunch on. A transport that died, a reply that would not decode
-                        // or a request that timed out establish only that nobody could ask; they
-                        // fall through to the ordinary died-mid-turn path below, where the absence
-                        // of a terminal line is itself the fact and the verdict is `.ran` — the
-                        // answer that type documents as "everything else, including we do not
-                        // know". Collapsing the two would report a missing transcript on evidence
-                        // that says nothing about one.
-                        //
-                        // ⚠️ **The adapter really does answer, and with two different codes.**
-                        // Same probe: a fork of a well-formed session id that never existed comes
-                        // back `-32002 "Resource not found: <uuid>"`, a named refusal; a fork of a
-                        // *junk* string comes back `-32603 Internal error` whose details read
-                        // `--resume requires a valid session ID … is not a UUID`, i.e. argument
-                        // validation. Both are JSON-RPC errors, so both arrive here as
-                        // `.agentError` and both read as `.sessionGone` — deliberately, because
-                        // for both the answer is the same: this anchor will never fork, relaunch
-                        // without it. ⛔ Do not narrow this to `-32002`: that trades a stable
-                        // protocol-level distinction for an undocumented vendor code, and the
-                        // second shape would then read as "we could not ask" and never relaunch.
-                        guard case .agentError = error else { throw error }
-                        sessionResumeFailed = true
-                        // ⛔ Rethrown rather than fallen through to `newSession`. A fresh session
-                        // here would look like a perfectly ordinary green run, and would do the
-                        // work a second time — on a card whose whole point was to continue an
-                        // earlier one.
+                    } catch {
+                        // The decision — refusal, or merely nobody could ask — is
+                        // `isForkRefusal`'s, in one named place a unit test can drive over every
+                        // error this call can throw. It used to live here as a two-part pattern
+                        // (`catch let error as ClientError` plus an inner `guard case
+                        // .agentError`), and only the outer half was reachable from a test: the
+                        // double's unreadable answer throws a bare `DecodingError`, so deleting
+                        // the inner guard left the whole suite green. A decision worth this much
+                        // comment is worth a test, and it could not have one while it was spelled
+                        // in two constructs that no caller could name.
+                        if Self.isForkRefusal(error) { sessionResumeFailed = true }
+                        // ⛔ Rethrown in every case rather than fallen through to `newSession`. A
+                        // fresh session here would look like a perfectly ordinary green run, and
+                        // would do the work a second time — on a card whose whole point was to
+                        // continue an earlier one. The rethrow is unconditional, so catching every
+                        // error rather than only `ClientError` changes nothing about where a
+                        // non-refusal lands: the outer handler, exactly as before.
                         throw error
                     }
                 } else {
@@ -862,13 +918,16 @@ public final class AgentRun: Sendable {
                 // nothing, and that is a thing this log can say. Writing nothing would file the one
                 // failure a relaunch can fix under "we do not know what happened".
                 //
-                // ⚠️ `stopReason: nil` because there was no turn to stop — `TurnSummary.stopReason`
-                // documents nil as "the response never arrived", which is exactly true here. The
-                // consequence, named rather than left to be discovered: in the **file** this run
-                // is a failure with no stop reason, and the fact that it was a *refused fork*
-                // survives only on `AgentRunOutcome.sessionResumeFailed`, in memory, for
-                // `ResumeVerdict`. A later reader of the archive alone cannot recover it.
-                let refusal = TurnSummary(stopReason: nil, isError: true)
+                // ⚠️ **The reason is named, and `sessionForkRefusedStopReason` carries the
+                // argument.** The brief dictated `stopReason: nil` on the ground that
+                // `TurnSummary.stopReason` documents nil as "the response never arrived" — true of
+                // this path, and still the wrong value: nil is also what a run that *died*
+                // mid-turn writes, so the only thing telling the two apart in the file was whether
+                // this line existed at all, and on screen the one failure a relaunch can fix drew
+                // as a bare "Finished with issues". A reader of the archive alone can now recover
+                // what happened.
+                let refusal = TurnSummary(
+                    stopReason: Self.sessionForkRefusedStopReason, isError: true)
                 writer.record(AgentLog.terminalLine(refusal))
                 // The same value in both places, for the reason `AgentLog.lastSummary`'s doc
                 // comment gives: the file is a transcription of what the caller was handed, and the

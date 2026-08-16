@@ -16,6 +16,7 @@ Env:
   FAKE_ACP_EXIT_AFTER_REPLY  exit 0 the instant session/prompt is answered
   FAKE_ACP_FORKABLE     the one sessionId session/fork will fork; unset = every fork is refused
   FAKE_ACP_FORK_UNREADABLE  answer session/fork with a result that will not decode (see below)
+  FAKE_ACP_FORK_DIES    exit at session/fork without answering it at all (see below)
 
 FAKE_ACP_STDERR is the counterpart of fake-claude.sh's FAKE_CLAUDE_STDERR, and it exists for one
 path in particular: MODE=crash exits without a word, so a test asserting that a died-mid-turn run
@@ -116,6 +117,15 @@ else entirely — `-32603 Internal error`, whose details read `--resume requires
 is not a UUID` — i.e. argument validation, not a missing session; this double does not model that
 second shape, because every id Elliot forks from is one an agent issued.
 
+FAKE_ACP_FORK_UNREADABLE and FAKE_ACP_FORK_DIES exist to drive the two ways a fork can fail
+WITHOUT the agent having answered, which is the distinction the runner narrows on. UNREADABLE
+answers `result: {}` — successful-looking, undecodable — so the client throws a bare
+`DecodingError`; DIES exits without answering, so the client's pending request is failed with
+`ClientError.connectionClosed`. Neither is `ClientError.agentError`, so neither may set
+`sessionResumeFailed`, and between them they cover both sides of `AgentRun.isForkRefusal`'s type
+test: an error that is not a `ClientError` at all, and one that is a `ClientError` of the wrong
+case. That second one had no double until the narrowing was found to be unpinned.
+
 ⛔ What is still invented is the **successful** reply's body: the real adapter's fork response was
 not recorded field by field, so `modes`/`configOptions` below are copied from this file's own
 `session/new` rather than from a recording. Tests riding on it can therefore claim things about
@@ -136,6 +146,7 @@ DELAY_MS = int(os.environ.get("FAKE_ACP_DELAY_MS", "0"))
 EXIT_AFTER_REPLY = bool(os.environ.get("FAKE_ACP_EXIT_AFTER_REPLY"))
 FORKABLE = os.environ.get("FAKE_ACP_FORKABLE")
 FORK_UNREADABLE = bool(os.environ.get("FAKE_ACP_FORK_UNREADABLE"))
+FORK_DIES = bool(os.environ.get("FAKE_ACP_FORK_DIES"))
 SESSION_ID = "sess-fake-0001"
 # Deliberately not SESSION_ID: see the module docstring — the same string back would make a client
 # that adopted the fork's answer indistinguishable from one that opened a new session instead.
@@ -356,6 +367,15 @@ def handle(message, stdin_iter):
         # answer, so it is present even for the refusal.
         print(f"fake-acp: session/fork for {sid!r} — forkable is {FORKABLE!r}",
               file=sys.stderr, flush=True)
+        if FORK_DIES:
+            # Exit without answering at all. The client's read loop sees `transport.messages`
+            # finish and `handleTermination` fails every pending request with
+            # `ClientError.connectionClosed` — a `ClientError` that is NOT `.agentError`, which is
+            # the case the type filter alone could never reach and the one that made deleting the
+            # narrowing guard a green break. Deterministic, not a race: the process is gone before
+            # anything else can be written, so the only way this request can resolve is through
+            # termination.
+            sys.exit(0)
         if FORK_UNREADABLE:
             # A *successful-looking* answer whose body cannot be read: `ForkSessionResponse`
             # requires `sessionId`, so the client's decode throws rather than the agent refusing.
