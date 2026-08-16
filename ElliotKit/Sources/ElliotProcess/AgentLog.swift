@@ -1,3 +1,4 @@
+import ACPModel
 import ElliotModel
 import Foundation
 
@@ -128,6 +129,64 @@ public enum AgentLog {
     /// **last** is the right reading anyway, since it is the one the run ended under.
     public static func sessionInfo(inLogAt url: URL) -> RunSessionInfo? {
         last(RunSessionInfo.self, method: sessionMethod, inLogAt: url)
+    }
+
+    /// The whole run, replayed from the file, for a reader that was not there when it happened.
+    ///
+    /// The archive's half of the live consumer in `ACPRunner` (`ACPRunner.swift:827-861`), and
+    /// deliberately its *same two statements*: encode the notification's params, decode them as a
+    /// `SessionUpdateNotification`, hand them to `RunEventMapper`. A second decode path would be a
+    /// second way to read the same bytes, and the panel would draw a finished run differently from
+    /// the one it had just watched.
+    ///
+    /// Three line kinds and only three:
+    ///
+    /// - `elliot/session` becomes `.session`, which is what the live path yields directly from the
+    ///   handshake rather than from a frame;
+    /// - `session/update` goes through the mapper, with the same `catch` yielding `.unreadable`
+    ///   rather than dropping a line this build cannot understand;
+    /// - everything else is skipped. Half the lines in a run log are **responses** — `id` and
+    ///   `result`, no `method` at all — and `JSONRPCNotification` refuses them for that reason, so
+    ///   `initialize` cannot fold into a row.
+    ///
+    /// ⚠️ **`elliot/terminal` is skipped here, and that is not an omission.** The turn's summary
+    /// is not an event: `RunLog.rows(from:denials:summary:)` takes it as its own argument, because
+    /// the stop reason arrives as the `session/prompt` **response** and there is no frame in the
+    /// stream that carries it. `lastSummary(inLogAt:)` above is how a caller gets it, and a
+    /// caller wanting the archive's rows needs both calls.
+    ///
+    /// ⚠️ `elliot/refusals` is skipped too. It is *Elliot's* account of a request it refused,
+    /// while the rows' denial list is the *agent's* account read off `nonExecutionKind` — the two
+    /// are independent records that `refusalsLine`'s own comment says can disagree, and folding
+    /// one into the other here would silently make them one.
+    public static func events(inLogAt url: URL) -> [RunEvent] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        let decoder = JSONDecoder()
+        let encoder = JSONEncoder()
+        var events: [RunEvent] = []
+        for line in data.split(separator: 0x0A) {
+            // Re-based for `JSONDecoder`, exactly as `last(_:method:inLogAt:)` above does.
+            let line = Data(line)
+            guard let notification = try? decoder.decode(JSONRPCNotification.self, from: line)
+            else { continue }
+            switch notification.method {
+            case sessionMethod:
+                guard let record = try? decoder.decode(Record<RunSessionInfo>.self, from: line)
+                else { continue }
+                events.append(.session(record.params))
+            case "session/update":
+                let raw = (try? encoder.encode(notification.params)) ?? Data()
+                do {
+                    let note = try decoder.decode(SessionUpdateNotification.self, from: raw)
+                    events.append(contentsOf: RunEventMapper.events(from: note))
+                } catch {
+                    events.append(.unreadable(raw: raw, error: String(describing: error)))
+                }
+            default:
+                continue
+            }
+        }
+        return events
     }
 
     /// Just enough of a line to answer "is this one of ours, and which".

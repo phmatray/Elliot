@@ -985,7 +985,11 @@ public struct RunDTO: Codable, Sendable, Hashable {
     /// is an absence of a record and not a fourth kind.
     public var resultSource: String?
     public var permissionDenials: [String]
-    /// NDJSON, one Claude Code `stream-json` event per line.
+    /// NDJSON, one JSON object per line. Runs from Stage 1 of #379 onward are the JSON-RPC the
+    /// ACP adapter **sent** — responses and notifications — plus Elliot's own `elliot/session`
+    /// and `elliot/terminal` records; older runs are Claude Code stream-json. The first line
+    /// tells you which. Not "as exchanged with": the mirror is on `receiveStdout`, so Elliot's
+    /// own requests go to the child's stdin and are never written down.
     public var logPath: String
     public var stderrPath: String
     /// When to look again, in seconds. `nil` once the run is terminal: there is

@@ -1,4 +1,6 @@
 import ElliotModel
+import ElliotProcess
+import Foundation
 import SwiftUI
 
 /// The runs of one card: what each one did, and what came of it.
@@ -244,6 +246,105 @@ extension RunsPane {
         trimmed(
             RunLog.rows(
                 from: events, denials: denials(of: run, in: events), summary: summary))
+    }
+
+    // MARK: - Which log is this
+
+    /// Which of the two formats a run log on disk is written in.
+    ///
+    /// `runs/` holds both at once and will for as long as the archive is kept: every run recorded
+    /// before Stage 1 of #379 is `claude -p --output-format stream-json`, every run since is the
+    /// JSON-RPC the ACP adapter sent. They are different vocabularies — a `.terminal` row and a
+    /// `.turnEnded` row are not the same row — so the panel has to know which fold to use.
+    enum LogShape: Sendable, Hashable {
+        case streamJSON
+        case acp
+    }
+
+    /// Read from the file's own first line, and **deliberately from nothing else**.
+    ///
+    /// ⚠️ Not a filename convention and not a database column. Either would be a second source for
+    /// a fact the file already carries, and the file is the one thing that survives being copied
+    /// out of `runs/` and read by hand — which is exactly what a person does with a log they are
+    /// diagnosing. A column would also be a claim about a file that could have been replaced, and
+    /// a suffix would be a claim `ArtifactSweeper` and `scp` are both free to lose.
+    ///
+    /// The question asked of the line is the smallest one that separates them: JSON-RPC always
+    /// carries a top-level `jsonrpc`, and every stream-json line carries a top-level `type`.
+    /// Neither present is `nil` — *which fold* unanswered, never *do not read this file*.
+    nonisolated static func shape(ofLogAt path: String) -> LogShape? {
+        guard
+            let line = firstLine(ofLogAt: path),
+            let parsed = try? JSONSerialization.jsonObject(with: line),
+            let object = parsed as? [String: Any]
+        else { return nil }
+        if object["jsonrpc"] != nil { return .acp }
+        if object["type"] != nil { return .streamJSON }
+        return nil
+    }
+
+    /// How much of a log is read to answer `shape`, and in what bites.
+    ///
+    /// Bounded rather than `Data(contentsOf:)`, because the fold below reads the whole file
+    /// straight afterwards and a `merge-pr` log that waited hours on CI is not small: reading it
+    /// twice to learn one thing about its first line would double the cost of opening the panel.
+    private static let shapeReadLimit = 1 << 20
+    private static let shapeChunk = 1 << 16
+
+    /// The first line with any bytes in it, or `nil` if there is none to be had.
+    ///
+    /// ⚠️ A line is only answered once it is **complete** — a chunk boundary falls wherever the
+    /// filesystem put it, and half a first line parses as no JSON at all, which would read as
+    /// "neither format" on a perfectly good log. At end of file the last line is answered without
+    /// its newline, because `AgentLog.Writer.close()` deliberately does not invent one.
+    nonisolated private static func firstLine(ofLogAt path: String) -> Data? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        var head = Data()
+        while head.count < shapeReadLimit {
+            let chunk = (try? handle.read(upToCount: shapeChunk)) ?? nil
+            guard let chunk, !chunk.isEmpty else { return firstNonEmptyLine(in: head, atEOF: true) }
+            head.append(chunk)
+            if let line = firstNonEmptyLine(in: head, atEOF: false) { return line }
+        }
+        // A first line over a megabyte is a truncated frame, not a format: say nothing rather
+        // than classify half of it.
+        return nil
+    }
+
+    nonisolated private static func firstNonEmptyLine(in head: Data, atEOF: Bool) -> Data? {
+        var start = head.startIndex
+        while let newline = head[start...].firstIndex(of: 0x0A) {
+            if newline > start { return Data(head[start..<newline]) }
+            start = head.index(after: newline)
+        }
+        guard atEOF, start < head.endIndex else { return nil }
+        return Data(head[start...])
+    }
+
+    /// One run's log off disk, folded by whichever vocabulary it is written in.
+    ///
+    /// ⚠️ An unanswerable shape returns an **empty window rather than no window**, and the two are
+    /// not interchangeable: `RunBox.emptyNote` reads `diskRows == nil` as *the file has not been
+    /// opened yet* and says "Reading the log…". `ArtifactSweeper` prunes logs past a fortnight
+    /// (#167), so a run whose log is gone is an ordinary, deliberate state of this app — and
+    /// telling its reader that a read is still in progress would be a claim about a read that has
+    /// already finished and found nothing. The honest sentence for that file is the one the panel
+    /// already had: it may have been cleaned up.
+    nonisolated static func diskRows(at path: String, run: SkillRun) -> LogWindow {
+        switch shape(ofLogAt: path) {
+        case .acp:
+            let url = URL(fileURLWithPath: path)
+            return rows(
+                of: run,
+                events: AgentLog.events(inLogAt: url),
+                summary: AgentLog.lastSummary(inLogAt: url)
+            )
+        case .streamJSON:
+            return rows(of: run, events: RunBox.diskEvents(at: path))
+        case nil:
+            return LogWindow(rows: [], dropped: 0)
+        }
     }
 
     /// What one run says about its own clock: how long ago, and how long for.
@@ -596,12 +697,16 @@ struct RunBox: View {
         }
         let run = run
         let loaded = await Task.detached(priority: .userInitiated) {
-            RunsPane.rows(of: run, events: RunBox.diskEvents(at: run.logPath))
+            RunsPane.diskRows(at: run.logPath, run: run)
         }.value
         guard !Task.isCancelled else { return }
         diskRows = loaded
     }
 
+    /// The **archive** half of the read, reached only for a log whose first line says stream-json
+    /// — `RunsPane.diskRows(at:run:)` is what decides. Nothing writes this format any more; every
+    /// run recorded before Stage 1 of #379 is in it.
+    ///
     /// `decodeAll` rather than `decode`: an assistant turn that carries prose
     /// *and* a tool call is two rows, and the one-event form would silently keep
     /// only the first.
