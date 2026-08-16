@@ -342,10 +342,19 @@ failed and `capture()` fell back to a built-in `PATH`.
 open -n --env ELLIOT_HOME=/tmp/elliot-check --env ELLIOT_GH_PATH=/tmp/shim/gh dist/Elliot.app
 ```
 
-`ELLIOT_<TOOL>_PATH` — `ELLIOT_GH_PATH`, `ELLIOT_CLAUDE_PATH`, `ELLIOT_GIT_PATH`, and any fourth tool
-for free, since the name is derived rather than listed. It is read *ahead* of the captured `PATH`, so
-it cannot be out-ranked the way a prepended directory is, and Preflight's row says `— set by
-ELLIOT_GH_PATH` so an override never changes which binary runs without the screen saying so.
+`ELLIOT_<TOOL>_PATH` — `ELLIOT_GH_PATH`, `ELLIOT_GIT_PATH`, `ELLIOT_NODE_PATH`, `ELLIOT_NPX_PATH`,
+and any further tool for free, since the name is derived rather than listed. It is read *ahead* of the
+captured `PATH`, so it cannot be out-ranked the way a prepended directory is, and Preflight's row says
+`— set by ELLIOT_GH_PATH` so an override never changes which binary runs without the screen saying so.
+
+⛔ **`ELLIOT_CLAUDE_PATH` is the exception, and it selects nothing.** Since #381's task 15 a card's
+run is an ACP adapter, and the adapter resolves the Claude CLI vendored **inside its own npm
+dependency** (`@anthropic-ai/claude-agent-sdk`) rather than the `claude` on this PATH. The variable
+is still read, still fills in `ToolConfig.claudePath`, and nothing spawns it. Preflight's `claude` row
+is gone for that reason — a version reported for a binary that never runs reads as having been checked
+— and a `tool.claudeOverride` row says so whenever the variable is actually set. The adapter's own
+documented escape hatch is `CLAUDE_CODE_EXECUTABLE`, and ⚠️ **whether pointing that at a local install
+works is UNMEASURED.** Do not repoint one variable at the other.
 
 ⛔ **An override that names something unrunnable is a Preflight failure, not a fall-back.** That is the
 whole point of the case existing: `ToolLocator.find` used to fall through to `PATH`, so "I told it

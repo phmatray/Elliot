@@ -26,8 +26,8 @@ public struct AgentInvocation: Sendable {
     /// constructs an `AgentSession`**, so a refusal spawns nothing. (This line named
     /// `AgentSession.start` until Task 7 wrote the throw site; no such method has ever existed.)
     /// `RunScheduler.start`'s existing `catch` already turns it into a failed run with an
-    /// Elliot-authored sentence, and Preflight gains a row (Task 16) so the operator meets it
-    /// before a drag rather than after.
+    /// Elliot-authored sentence, and Preflight's `repo.runTerms` row (Task 16) is a `.fail` on any
+    /// repository carrying one, so the operator meets it before a drag rather than after.
     public var extraAllowedTools: [String]
     public var extraDirectories: [String]
     /// `--max-budget-usd` is gone with the CLI; the ceiling is rebuilt on live `usage_update` +
@@ -184,18 +184,20 @@ public enum AgentInvocationError: Error, LocalizedError, Sendable {
     /// so the operator who meets it after a drag and the one who meets it before are sent to one
     /// place.
     ///
-    /// ⛔ **`adapterNotResolved` deliberately does not, and this sentence used to say it did.** It
-    /// read *"Preflight names which one and why"*, which is a forward-looking claim about Task 16
-    /// written in the present tense: `PreflightService.globalChecks` iterates
-    /// `[("claude", …), ("gh", …), ("git", …)]` and has **no row for node, npx or the adapter at
-    /// all**. So in this tree an operator with no Node gets a fully green Preflight, a card that
-    /// fails the instant it is dragged, and an error pointing them at a screen that has nothing to
-    /// say. The sentence now names the next action itself — the floor, the relaunch, and the two
-    /// overrides — because a remedy that has to be true *when it is read* cannot be paid for by a
-    /// screen that does not exist yet. When Task 16 lands the row, sending the reader there as
-    /// well is one clause; asserting it early was the defect. Same shape as the `no CI` claims
-    /// CLAUDE.md catalogues three times, and the reason it is written down here rather than only
-    /// in a report.
+    /// ⚠️ **`adapterNotResolved` still names the next action itself, and that is now a choice
+    /// rather than a necessity.** It read *"Preflight names which one and why"* while
+    /// `PreflightService.globalChecks` iterated `[("claude", …), ("gh", …), ("git", …)]` and had no
+    /// row for node, npx or the adapter at all — a forward-looking claim about Task 16 written in
+    /// the present tense, which left an operator with no Node reading a fully green Preflight and
+    /// an error pointing at a screen that had nothing to say. Task 16 has since landed `tool.node`,
+    /// `tool.npx` and `agent.adapter`, so the screen *does* answer it now.
+    ///
+    /// ⛔ **The sentence still carries the whole remedy anyway, deliberately.** It is read on a
+    /// **card**, by someone whose drag just failed and who may never open Preflight; a remedy that
+    /// has to be true when it is read cannot be paid for by a screen the reader is not looking at.
+    /// Deferring to Preflight would trade a working sentence for a hop. Same shape as the `no CI`
+    /// claims CLAUDE.md catalogues three times, and the reason the history is kept here rather than
+    /// only in a report.
     public var errorDescription: String? {
         switch self {
         case .unmappableAllowedTools(let tools):

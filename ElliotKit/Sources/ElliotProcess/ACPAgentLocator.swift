@@ -40,25 +40,65 @@ public struct ACPAgentLocator: Sendable {
     /// The argv only — what `AppModel` puts on `ToolConfig` at launch, and what Preflight
     /// spawns. Separate from `agentProcess` because the executable and its arguments are a
     /// per-machine fact while `cwd` is a per-run one.
-    public func resolveAdapter() async throws -> (executable: String, arguments: [String]) {
-        let node = try await resolvedNode()
+    /// What a `node` resolution amounts to — **five answers, not two**.
+    ///
+    /// ⛔ This exists because two callers now need the same judgement and a second copy of it is
+    /// exactly how the collapse gets reintroduced. `resolveAdapter()` turns it into a refusal;
+    /// `PreflightService`'s `tool.node` row turns it into a sentence a person reads. The plan for
+    /// that row prescribed only two failing renderings — *"Not found."* and *"Found X, but the
+    /// adapter needs 22 or newer."* — which would have rendered a Node whose `--version` could not
+    /// be read as `"Found " + nothing`, and told someone running Node 26 their Node was old.
+    /// **Elliot never established that a Node it could not read is old.**
+    ///
+    /// `unreadable` carries the tool, so a screen can still name the binary it could not read;
+    /// `reported` is nil when `--version` failed outright and quotes the answer when it succeeded
+    /// and said something that is not a version. Exactly `LocatorError.nodeVersionUnreadable`'s
+    /// payload, because it becomes one.
+    public enum NodeVerdict: Sendable, Hashable {
+        case ok(LocatedTool, major: Int)
+        case tooOld(LocatedTool, found: String)
+        case unreadable(LocatedTool, reported: String?)
+        case overrideUnusable(variable: String, value: String)
+        case missing
+    }
 
+    /// Pure, and `static`, so the whole matrix is assertable without a toolchain on disk.
+    public static func nodeVerdict(_ resolution: ToolResolution) -> NodeVerdict {
+        switch resolution {
+        case .notFound:
+            return .missing
+        case .overrideUnusable(let variable, let value):
+            return .overrideUnusable(variable: variable, value: value)
+        case .found(let tool):
+            // ⛔ "too old" is one of *three* answers, not the negation of "new enough".
+            // `ToolLocator.locate` leaves `version` nil whenever the `--version` probe fails at
+            // all, so collapsing that into `nodeTooOld(found: "unknown")` — which is what this
+            // did until it was measured — tells someone running Node 26 that their Node is older
+            // than 22.
+            guard let reported = tool.version else { return .unreadable(tool, reported: nil) }
+            guard let major = majorVersion(of: reported) else {
+                return .unreadable(tool, reported: reported)
+            }
+            return major >= minimumNodeMajor ? .ok(tool, major: major) : .tooOld(tool, found: reported)
+        }
+    }
+
+    public func resolveAdapter() async throws -> (executable: String, arguments: [String]) {
         // ⛔ Refuse, never fall through — a version this adapter has never been measured against
         // is not a "close enough", which is the failure shape `ToolResolution.overrideUnusable`'s
-        // doc comment names. ⛔ And refuse in the operator's own vocabulary: "too old" is one of
-        // *three* answers, not the negation of "new enough". `ToolLocator.locate` leaves
-        // `version` nil whenever the `--version` probe fails at all, so collapsing that into
-        // `nodeTooOld(found: "unknown")` — which is what this did until it was measured — tells
-        // someone running Node 26 that their Node is older than 22. Elliot never established
-        // that, and a claim about a toolchain it could not read is worse than a refusal.
-        guard let reported = node.version else {
-            throw LocatorError.nodeVersionUnreadable(path: node.path, reported: nil)
-        }
-        guard let major = Self.majorVersion(of: reported) else {
-            throw LocatorError.nodeVersionUnreadable(path: node.path, reported: reported)
-        }
-        guard major >= Self.minimumNodeMajor else {
-            throw LocatorError.nodeTooOld(found: reported)
+        // doc comment names. Every arm below is a throw; the classifier above is what keeps this
+        // refusal and Preflight's sentence answering the same question the same way.
+        switch Self.nodeVerdict(await resolveNode()) {
+        case .ok:
+            break
+        case .tooOld(_, let found):
+            throw LocatorError.nodeTooOld(found: found)
+        case .unreadable(let tool, let reported):
+            throw LocatorError.nodeVersionUnreadable(path: tool.path, reported: reported)
+        case .overrideUnusable(let variable, let value):
+            throw LocatorError.nodeOverrideUnusable(variable: variable, value: value)
+        case .missing:
+            throw LocatorError.nodeMissing
         }
 
         let npx = try await resolvedNpx()
@@ -83,17 +123,11 @@ public struct ACPAgentLocator: Sendable {
     /// off to install software they already have"*. One arm each, so the distinction survives as
     /// far as the sentence Task 15 writes onto a card — not just as far as `resolveNode()`,
     /// which Preflight reads directly and which was already telling the truth.
-    private func resolvedNode() async throws -> LocatedTool {
-        switch await resolveNode() {
-        case .found(let tool):
-            return tool
-        case .overrideUnusable(let variable, let value):
-            throw LocatorError.nodeOverrideUnusable(variable: variable, value: value)
-        case .notFound:
-            throw LocatorError.nodeMissing
-        }
-    }
-
+    ///
+    /// ⚠️ Node's half of this used to live here as `resolvedNode()`; it is now `nodeVerdict`'s,
+    /// which answers **five** ways rather than three because Preflight needs the passing case and
+    /// the two unreadable ones by name. `npx` keeps the three-way shape: nothing reads its version,
+    /// so there is no floor to be below and nothing to be unreadable.
     private func resolvedNpx() async throws -> LocatedTool {
         switch await resolveNpx() {
         case .found(let tool):

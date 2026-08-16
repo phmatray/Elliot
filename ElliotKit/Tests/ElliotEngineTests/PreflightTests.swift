@@ -338,6 +338,231 @@ struct PreflightTests {
         #expect(try await store.cards(repoID: repo.id).count == 1)
     }
 
+    // MARK: - The rows that describe the binary that actually runs (#381, task 16)
+
+    /// A scratch `PATH` holding nothing but stub `node`/`npx` executables, so these tests say the
+    /// same thing on a machine with Node 26 and on one with none at all.
+    ///
+    /// Copied in shape from `ACPAgentLocatorTests.scratchToolchain` — parameterised by the `node`
+    /// stub's script **body** rather than a version string, because "answers nothing" and
+    /// "answers v20" are the two different failures this row has to tell apart.
+    private func scratchToolchain(nodeBody: String) throws -> (
+        env: LoginShellEnvironment, directory: String, remove: () -> Void
+    ) {
+        let dir = "/private/tmp/preflight-acp-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try stub("node", body: nodeBody, at: dir)
+        try stub("npx", body: "echo \"10.9.0\"", at: dir)
+        return (LoginShellEnvironment(variables: ["PATH": dir], capturedVia: "test"), dir, {
+            try? FileManager.default.removeItem(atPath: dir)
+        })
+    }
+
+    private func stub(_ name: String, body: String, at directory: String) throws {
+        let path = (directory as NSString).appendingPathComponent(name)
+        try Data("#!/bin/sh\n\(body)\n".utf8).write(to: URL(fileURLWithPath: path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+    }
+
+    /// A service whose adapter is `Scripts/fake-acp.py` — a real child, a real handshake, no
+    /// network and no `npx`.
+    private func adapterService(
+        environment: LoginShellEnvironment = LoginShellEnvironment(
+            variables: [:], capturedVia: "test"),
+        childEnvironment: [String: String] = [:]
+    ) -> PreflightService {
+        PreflightService(
+            environment: environment,
+            config: ToolConfig(
+                claudePath: "/usr/bin/false",
+                adapterExecutable: "/usr/bin/env",
+                adapterArguments: [
+                    "python3", Paths.repoRoot.appendingPathComponent("Scripts/fake-acp.py").path,
+                ],
+                ghPath: Paths.fakeGH,
+                gitPath: "/usr/bin/git",
+                environment: childEnvironment.merging(
+                    ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"], uniquingKeysWith: { a, _ in a })
+            )
+        )
+    }
+
+    @Test("the claude row is gone, and the adapter rows have taken its place")
+    func theClaudeRowIsRetired() async {
+        let ids = Set(await adapterService().globalChecks(packs: []).map(\.id))
+        #expect(!ids.contains("tool.claude"))
+        #expect(ids.isSuperset(of: ["tool.node", "tool.npx", "agent.adapter", "agent.commands"]))
+    }
+
+    @Test("an adapter answering a version other than the pin is a warning, not a pass")
+    func aVersionDriftIsAWarning() async {
+        // `fake-acp.py` answers `agentInfo` `fake-acp 0.0.1`, which is not the pin — so this is
+        // the drift case without anything having to be stubbed for it.
+        let results = await adapterService().globalChecks(packs: [])
+        guard let adapter = results.first(where: { $0.id == "agent.adapter" }) else {
+            Issue.record("expected an agent.adapter row")
+            return
+        }
+        // ⚠️ A pin that has silently stopped being what runs is worse than no pin (decision 10),
+        // so this is neither a pass nor a failure: the adapter answered, and it is not the one
+        // every fixture in this design was measured against.
+        #expect(adapter.status == .warn)
+        #expect(adapter.detail.contains("0.0.1"))
+        #expect(adapter.detail.contains(ACPAgentLocator.adapterVersion))
+    }
+
+    @Test("Node below 22 fails by name and says the number it found")
+    func oldNodeFails() async throws {
+        let (env, _, remove) = try scratchToolchain(nodeBody: "echo \"v20.11.1\"")
+        defer { remove() }
+
+        let results = await adapterService(environment: env).globalChecks(packs: [])
+        guard let node = results.first(where: { $0.id == "tool.node" }) else {
+            Issue.record("expected a tool.node row")
+            return
+        }
+        #expect(node.status == .fail)
+        #expect(node.detail.contains("v20.11.1"))
+        #expect(node.detail.contains("\(ACPAgentLocator.minimumNodeMajor)"))
+    }
+
+    /// ⛔ The three-valued answer task 5 refused to collapse, one layer up.
+    ///
+    /// `resolveNode()` has three outcomes, not two: found-and-readable, found-but-unreadable, and
+    /// not-found. The plan prescribed only two fail renderings — *"Not found."* and *"Found X, but
+    /// the adapter needs 22 or newer."* — and a `.found` tool whose `version` is nil would have
+    /// rendered as `"Found " + nothing`. **Elliot never established that a Node it could not read
+    /// is old, and saying so is worse than refusing.**
+    @Test("a node whose version cannot be read is not reported as too old")
+    func unreadableNodeIsNotCalledOld() async throws {
+        let (env, directory, remove) = try scratchToolchain(nodeBody: "exit 1")
+        defer { remove() }
+
+        let results = await adapterService(environment: env).globalChecks(packs: [])
+        guard let node = results.first(where: { $0.id == "tool.node" }) else {
+            Issue.record("expected a tool.node row")
+            return
+        }
+        // Not a pass — nothing was established — and not a `.fail` either, which on this screen
+        // means "cards cannot be dragged" for a toolchain that may be perfectly fine.
+        #expect(node.status == .warn)
+        #expect(node.detail.contains((directory as NSString).appendingPathComponent("node")))
+        // ⛔ The sentence the two-valued rendering would have produced.
+        #expect(!node.detail.contains("22 or newer"))
+        #expect(!node.detail.contains("Found ,"))
+    }
+
+    @Test("the adapter names the commands it advertises, and the three Elliot dispatches")
+    func advertisedCommandsAreNamed() async throws {
+        let commands = "/private/tmp/preflight-commands-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: commands) }
+        try Data(
+            """
+            [{"name": "ai-migration-kit:create-issue", "description": "x"},
+             {"name": "ai-migration-kit:implement-issue", "description": "y"},
+             {"name": "ai-migration-kit:merge-pr", "description": "z"},
+             {"name": "superpowers:brainstorming", "description": "w"}]
+            """.utf8
+        ).write(to: URL(fileURLWithPath: commands))
+
+        // The packs `AppModel` passes on a machine with nothing registered — which folds the
+        // default in, so the three commands looked for are the ones this board dispatches.
+        let results = await adapterService(childEnvironment: ["FAKE_ACP_COMMANDS": commands])
+            .globalChecks(packs: PreflightService.packsInUse([]))
+        guard let advertised = results.first(where: { $0.id == "agent.commands" }) else {
+            Issue.record("expected an agent.commands row")
+            return
+        }
+        #expect(advertised.status == .pass)
+        #expect(advertised.detail.contains("4"))
+        #expect(advertised.detail.contains("ai-migration-kit:merge-pr"))
+    }
+
+    /// ⛔ *"The adapter advertises none"* and *"nobody could ask"* are different facts, and a row
+    /// that listed all three as missing would be reporting the first on the evidence of the
+    /// second — `isBlocking([])`'s two-valued answer, one screen over.
+    @Test("commands that were never established are not reported as missing")
+    func unestablishedCommandsAreNotMissing() async {
+        // No `FAKE_ACP_COMMANDS`, so the double opens a session and advertises nothing at all —
+        // which is what an adapter that never sends the notification looks like from here.
+        let results = await adapterService().globalChecks(packs: [])
+        guard let advertised = results.first(where: { $0.id == "agent.commands" }) else {
+            Issue.record("expected an agent.commands row")
+            return
+        }
+        #expect(advertised.status == .warn)
+        #expect(advertised.detail.lowercased().contains("could not be established"))
+        #expect(!advertised.detail.contains("Missing:"))
+    }
+
+    /// ⛔ An operator who set `ELLIOT_CLAUDE_PATH` and reads a green Preflight gets a binary they
+    /// did not choose: the adapter runs the CLI vendored inside its own npm dependency.
+    @Test("ELLIOT_CLAUDE_PATH is named where it stopped meaning anything")
+    func theClaudeOverrideIsNamedWhereItDies() async {
+        let results = await adapterService().globalChecks(
+            packs: [], overrides: ToolOverrides(["claude": "/usr/bin/true"]))
+        guard let row = results.first(where: { $0.id == "tool.claudeOverride" }) else {
+            Issue.record("expected a row naming ELLIOT_CLAUDE_PATH")
+            return
+        }
+        #expect(row.status == .warn)
+        #expect(row.detail.contains("CLAUDE_CODE_EXECUTABLE"))
+        // ⚠️ Whether pointing that at a local install works is UNMEASURED, and the row says so
+        // rather than implying somebody checked.
+        #expect(row.detail.lowercased().contains("unmeasured"))
+    }
+
+    @Test("no ELLIOT_CLAUDE_PATH, no row about it")
+    func theClaudeOverrideRowIsSilentWhenUnset() async {
+        let results = await adapterService().globalChecks(packs: [], overrides: ToolOverrides())
+        #expect(!results.contains { $0.id == "tool.claudeOverride" })
+    }
+
+    // MARK: - Run terms, met before a drag rather than after
+
+    private func checkout() async throws -> (path: String, remove: () -> Void) {
+        let path = "/private/tmp/preflight-runterms-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+        _ = try await ProcessRunner.run(
+            executable: "/usr/bin/git",
+            arguments: ["-C", path, "init", "--initial-branch=main"],
+            environment: ["PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory(),
+                          "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"],
+            timeout: .seconds(30)
+        )
+        return (path, { try? FileManager.default.removeItem(atPath: path) })
+    }
+
+    @Test("a repository with extra allowed tools warns before a drag, not after")
+    func runTermsWarn() async throws {
+        // Ties to task 6's refusal: `AgentRun.start` throws `unmappableAllowedTools` before it
+        // spawns anything, so *every* run in this repository refuses to start. Meeting that on a
+        // screen beats meeting it as a failed card.
+        let (path, remove) = try await checkout()
+        defer { remove() }
+        var subject = Repo(path: path, nameWithOwner: "phmatray/sandbox", displayName: "sandbox")
+        subject.extraAllowedTools = ["Bash(git push:*)"]
+
+        let results = await adapterService().repoChecks(subject)
+        guard let terms = results.first(where: { $0.id == "repo.runTerms" }) else {
+            Issue.record("expected a repo.runTerms row")
+            return
+        }
+        #expect(terms.status == .fail)
+        #expect(terms.detail.contains("Bash(git push:*)"))
+        #expect(terms.fixHint?.contains("Run terms") == true)
+    }
+
+    @Test("a repository that allows nothing extra grows no row at all")
+    func runTermsIsSilentWhenEmpty() async throws {
+        let (path, remove) = try await checkout()
+        defer { remove() }
+        let subject = Repo(path: path, nameWithOwner: "phmatray/sandbox", displayName: "sandbox")
+
+        let results = await adapterService().repoChecks(subject)
+        #expect(!results.contains { $0.id == "repo.runTerms" })
+    }
+
     @Test("A label that already existed is not reported as created")
     func alreadyThereIsSaidApart() async throws {
         // `labels()` reads one page, so a repository past that limit can hold a

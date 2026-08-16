@@ -957,16 +957,17 @@ public final class AppModel {
             // refusal: `AgentRun.start` throws `adapterNotResolved` rather than
             // spawning anything.
             //
-            // ⚠️ **What is lost here is which of the five it was, and today
-            // nothing recovers it.** `ACPAgentLocator.LocatorError` has one case
-            // per next action — install node, fix `ELLIOT_NODE_PATH`, upgrade
-            // past the floor, look at a binary that answers no version, the same
-            // two for `npx` — and Task 16's plan is for Preflight to re-run the
-            // resolution and name the one that fired. Until that row exists,
-            // `adapterNotResolved`'s own sentence carries the remedy for all
-            // five at once, which is why it names the floor and the overrides
-            // rather than deferring to a screen. Do not read this comment as
-            // saying Preflight answers it: it does not, yet.
+            // ⚠️ **Which of the five it was is lost *here*, and recovered on the
+            // screen.** `ACPAgentLocator.LocatorError` has one case per next
+            // action — install node, fix `ELLIOT_NODE_PATH`, upgrade past the
+            // floor, look at a binary that answers no version, the same two for
+            // `npx` — and `PreflightService.globalChecks` re-runs the resolution
+            // through the same `ACPAgentLocator`, rendering it as the `tool.node`
+            // and `tool.npx` rows. So the five are namable a few milliseconds
+            // later, on a screen, rather than folded into one empty string here.
+            // `adapterNotResolved`'s own sentence still carries the remedy for
+            // all five at once, because it is read on a *card* by someone who
+            // may never open Preflight.
             //
             // Keeping the error here instead would put a launch-time sentence on
             // a screen that has moved on.

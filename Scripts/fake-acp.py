@@ -22,6 +22,20 @@ Env:
   FAKE_ACP_FORKABLE     the one sessionId session/fork will fork; unset = every fork is refused
   FAKE_ACP_FORK_UNREADABLE  answer session/fork with a result that will not decode (see below)
   FAKE_ACP_FORK_DIES    exit at session/fork without answering it at all (see below)
+  FAKE_ACP_COMMANDS     JSON file of AvailableCommand objects to advertise after session/new
+
+FAKE_ACP_COMMANDS drives Preflight's `agent.commands` row. The frame it produces is a
+`session/update` notification carrying `available_commands_update`, sent AFTER the `session/new`
+reply — which is where the real adapter puts it: measured on Fixtures/acp/session-new-commands.json,
+it is message index 2 of 3, following the session/new response and carrying 123 commands. Ordering
+it before the reply would make a client that reads the notification off `session/new`'s own response
+pass a test it should fail.
+
+⛔ Unset means the double advertises NOTHING, and that is a case worth having rather than a gap:
+"the adapter advertises no commands" and "nobody could ask" are different facts, and a client that
+reports the first on the evidence of the second is the two-valued answer this repository keeps
+paying for. With this unset, `session/new` succeeds and no notification ever arrives — which is
+exactly the shape a client must render as *could not be established* rather than as *all missing*.
 
 FAKE_ACP_STDERR is the counterpart of fake-claude.sh's FAKE_CLAUDE_STDERR, and it exists for one
 path in particular: MODE=crash exits without a word, so a test asserting that a died-mid-turn run
@@ -455,6 +469,12 @@ def handle(message, stdin_iter):
             "modes": {"currentModeId": "default", "availableModes": AVAILABLE_MODES},
             "configOptions": CONFIG_OPTIONS,
         })
+        # AFTER the reply, never inside it: the real adapter advertises its commands as a separate
+        # notification once the session exists. See the module docstring for the recording.
+        if path := os.environ.get("FAKE_ACP_COMMANDS"):
+            with open(path) as fh:
+                notify({"sessionUpdate": "available_commands_update",
+                        "availableCommands": json.load(fh)})
     elif method == "session/fork":
         params = message.get("params") or {}
         sid = params.get("sessionId")

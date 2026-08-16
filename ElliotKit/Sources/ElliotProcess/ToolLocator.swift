@@ -177,9 +177,14 @@ public struct ToolLocator: Sendable {
 /// Injected by construction rather than read from a global, so tests can point
 /// at fake tools and still run in parallel.
 public struct ToolConfig: Sendable {
-    /// ⚠️ Nothing spawns this any more — `RunScheduler` reaches the agent through the adapter
-    /// below. It is still resolved at launch and still read by Preflight's `claude` row, and it
-    /// dies with `ClaudeRunner.swift` in Task 18, not here.
+    /// ⚠️ **Nothing spawns this and nothing reports on it.** `RunScheduler` reaches the agent
+    /// through the adapter below, and since Task 16 Preflight has no `claude` row: the adapter
+    /// resolves the CLI vendored inside its own npm dependency, so this path is not the binary that
+    /// runs and saying anything about it would be a confident claim about the wrong thing. It is
+    /// still resolved at launch, and it dies with `ClaudeRunner.swift` in Task 18, not here.
+    ///
+    /// ⚠️ `ELLIOT_CLAUDE_PATH` still fills this in, and still selects nothing — which is why
+    /// Preflight grows a `tool.claudeOverride` row saying so whenever it is set.
     public var claudePath: String
     /// The ACP adapter's argv, resolved once at launch by `ACPAgentLocator.resolveAdapter()`.
     ///
