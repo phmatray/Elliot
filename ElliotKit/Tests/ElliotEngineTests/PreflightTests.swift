@@ -84,7 +84,6 @@ struct PreflightTests {
         PreflightService(
             environment: LoginShellEnvironment(variables: [:], capturedVia: "test"),
             config: ToolConfig(
-                claudePath: "/usr/bin/false",
                 ghPath: Paths.fakeGH,
                 gitPath: "/usr/bin/false",
                 environment: environment
@@ -374,7 +373,6 @@ struct PreflightTests {
         PreflightService(
             environment: environment,
             config: ToolConfig(
-                claudePath: "/usr/bin/false",
                 adapterExecutable: "/usr/bin/env",
                 adapterArguments: [
                     "python3", Paths.repoRoot.appendingPathComponent("Scripts/fake-acp.py").path,

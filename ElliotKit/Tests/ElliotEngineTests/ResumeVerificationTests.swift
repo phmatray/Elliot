@@ -53,7 +53,6 @@ private func issuesFixture(
 /// matching.
 private func verifier(issues: String) -> Verifier {
     Verifier(gh: GHClient(config: ToolConfig(
-        claudePath: "/usr/bin/false",
         ghPath: TestPaths.fakeGH,
         gitPath: "/usr/bin/false",
         environment: [

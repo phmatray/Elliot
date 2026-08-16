@@ -35,7 +35,7 @@ struct GHMergeStatusTests {
         ]
         if let argvOut { env["FAKE_GH_ARGV_OUT"] = argvOut }
         return GHClient(config: ToolConfig(
-            claudePath: "", ghPath: Self.fakeGH, gitPath: "", environment: env))
+            ghPath: Self.fakeGH, gitPath: "", environment: env))
     }
 
     private func temporaryFile() -> String {

@@ -29,7 +29,7 @@ struct SchedulerLimitsAdmissionTests {
     private func scheduler(_ limits: SchedulerLimits) throws -> RunScheduler {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:]
         )
         return RunScheduler(
@@ -134,7 +134,7 @@ struct QueueRefusalAdmissionTests {
     private func scheduler(_ limits: SchedulerLimits = .default) throws -> RunScheduler {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:]
         )
         return RunScheduler(
@@ -268,7 +268,7 @@ struct QueueRefusalAdmissionTests {
     func canStartRefusesWhatPumpRefuses() async throws {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:]
         )
         let scheduler = RunScheduler(
@@ -316,7 +316,7 @@ struct SpendCeilingAdmissionTests {
     private func scheduler(ceiling: SpendCeiling, spentToday: Double?) async throws -> RunScheduler {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:]
         )
         if let spentToday {

@@ -148,7 +148,6 @@ struct AppraisalEndToEndTests {
         environment.merge(extraEnv) { _, new in new }
 
         let config = ToolConfig(
-            claudePath: "/usr/bin/false",
             adapterExecutable: TestPaths.adapterExecutable,
             adapterArguments: TestPaths.adapterArguments,
             ghPath: "/usr/bin/false",

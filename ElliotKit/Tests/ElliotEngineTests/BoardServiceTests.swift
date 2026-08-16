@@ -63,7 +63,7 @@ private struct Fixture {
             .deletingLastPathComponent()  // ElliotKit
             .deletingLastPathComponent()  // repository root
         let gh = GHClient(config: ToolConfig(
-            claudePath: "", ghPath: root.appendingPathComponent("Scripts/fake-gh.sh").path,
+            ghPath: root.appendingPathComponent("Scripts/fake-gh.sh").path,
             gitPath: "",
             environment: [
                 "FAKE_GH_MODE": "ok",
@@ -554,7 +554,7 @@ struct SchedulerAdmissionTests {
     private func scheduler(maxConcurrent: Int = 2) throws -> RunScheduler {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:]
         )
         return RunScheduler(

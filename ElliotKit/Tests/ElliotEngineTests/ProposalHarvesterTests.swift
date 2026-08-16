@@ -56,7 +56,7 @@ struct ProposalHarvesterTests {
     /// also the honest default in these tests.
     private func makeHarvester(_ fixture: Fixture) -> ProposalHarvester {
         let config = ToolConfig(
-            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
         return ProposalHarvester(store: fixture.store, gh: GHClient(config: config))

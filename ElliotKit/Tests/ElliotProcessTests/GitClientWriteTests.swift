@@ -8,7 +8,7 @@ import Testing
 /// assertion below is about a guard that fires *before* the subprocess.
 private func testConfig() -> ToolConfig {
     ToolConfig(
-        claudePath: "/usr/bin/true", ghPath: "/usr/bin/true", gitPath: "/usr/bin/true",
+        ghPath: "/usr/bin/true", gitPath: "/usr/bin/true",
         environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
     )
 }

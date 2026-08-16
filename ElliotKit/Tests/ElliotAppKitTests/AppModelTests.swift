@@ -530,7 +530,7 @@ struct AppModelTests {
         let store = try BoardStore.inMemory()
         let gh = GHClient(
             config: ToolConfig(
-                claudePath: "", ghPath: Paths.fakeGH, gitPath: "",
+                ghPath: Paths.fakeGH, gitPath: "",
                 environment: [
                     "FAKE_GH_MODE": "ok",
                     "FAKE_GH_PRS": Paths.fixture("prs-52-a1b2c3.json"),
@@ -1403,7 +1403,7 @@ struct AppModelTests {
             board: BoardService(store: store, launcher: launcher),
             gh: GHClient(
                 config: ToolConfig(
-                    claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+                    ghPath: "/usr/bin/false",
                     gitPath: "/usr/bin/false", environment: [:])),
             gate: OpenGate()
         )

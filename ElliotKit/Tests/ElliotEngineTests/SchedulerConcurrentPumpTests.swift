@@ -23,7 +23,7 @@ struct SchedulerConcurrentPumpTests {
     func blockedQueue(count: Int) async throws -> (RunScheduler, BoardStore, [UUID]) {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/nonexistent/claude", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:]
         )
         let repo = Repo(
@@ -146,7 +146,6 @@ struct SchedulerConcurrentPumpTests {
 
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/false",
             adapterExecutable: "/usr/bin/env",
             adapterArguments: ["python3", root.appendingPathComponent("Scripts/fake-acp.py").path],
             ghPath: "/usr/bin/true", gitPath: "/usr/bin/true",
@@ -340,9 +339,13 @@ struct SchedulerConcurrentPumpTests {
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
         // The repository path exists, so the only reason the spawn can fail is
-        // the one under test: there is no `claude` at that path.
+        // the one under test: `adapterExecutable` is left at its `""` default,
+        // which `AgentRun.start` refuses with `adapterNotResolved` before it
+        // spawns anything. It used to be a `claudePath` naming no binary; the
+        // refusal moved earlier when the CLI runner died, and the claim this
+        // test makes — a failed spawn releases the claim — is unchanged.
         let config = ToolConfig(
-            claudePath: "/nonexistent/claude", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: ["PATH": "/usr/bin:/bin"]
         )
         let scheduler = RunScheduler(

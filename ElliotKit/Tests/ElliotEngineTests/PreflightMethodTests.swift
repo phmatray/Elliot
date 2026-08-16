@@ -45,7 +45,6 @@ struct PreflightMethodTests {
         PreflightService(
             environment: LoginShellEnvironment(variables: [:], capturedVia: "test"),
             config: ToolConfig(
-                claudePath: "/usr/bin/false",
                 ghPath: Paths.fakeGH,
                 gitPath: "/usr/bin/git",
                 environment: [

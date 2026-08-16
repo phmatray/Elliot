@@ -112,7 +112,6 @@ struct AutoDevEndToEndTests {
         if let prView { environment["FAKE_GH_PR_VIEW"] = AutoDevPaths.ghFixture(prView) }
 
         let config = ToolConfig(
-            claudePath: "/usr/bin/false",
             adapterExecutable: AutoDevPaths.adapterExecutable,
             adapterArguments: AutoDevPaths.adapterArguments,
             ghPath: AutoDevPaths.fakeGH,

@@ -93,7 +93,6 @@ struct RunsPaneLiveTests {
         try await store.saveRepo(repo)
 
         let config = ToolConfig(
-            claudePath: "/usr/bin/false",
             adapterExecutable: "/usr/bin/env",
             adapterArguments: ["python3", Self.fakeACP],
             // `false` for both, so nothing here can reach the network or the

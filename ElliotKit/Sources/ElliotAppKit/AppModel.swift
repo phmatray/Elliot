@@ -937,12 +937,19 @@ public final class AppModel {
             // the mechanism that does.
             let locator = ToolLocator(
                 environment: environment, overrides: .fromProcessEnvironment())
-            async let claude = locator.locate("claude")
+            // ⛔ No `locate("claude")` here, and its absence is the point: the
+            // adapter runs the CLI vendored inside its own npm dependency, so a
+            // `claude` on `PATH` is not the binary that runs. Resolving it would
+            // produce a path that looks like an answer to "which CLI is this?"
+            // and is not one. `ToolLocator.locate` stays generic, so looking is
+            // still possible for anything that has a reason to; Preflight's
+            // `tool.claudeOverride` row is what tells an operator who set
+            // `ELLIOT_CLAUDE_PATH` that it selects nothing.
             async let gh = locator.locate("gh")
             async let git = locator.locate("git")
             // The ACP adapter's argv, resolved through the same captured shell
             // and the same overrides — `npx` plus the version-pinned package.
-            // A per-machine fact, settled once here, exactly as the three above
+            // A per-machine fact, settled once here, exactly as the two above
             // are.
             async let adapter = ACPAgentLocator(
                 environment: environment, overrides: .fromProcessEnvironment()
@@ -973,7 +980,6 @@ public final class AppModel {
             // a screen that has moved on.
             let resolvedAdapter = try? await adapter
             let config = ToolConfig(
-                claudePath: await claude.tool?.path ?? "",
                 adapterExecutable: resolvedAdapter?.executable ?? "",
                 adapterArguments: resolvedAdapter?.arguments ?? [],
                 ghPath: await gh.tool?.path ?? "",

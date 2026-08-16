@@ -218,7 +218,6 @@ struct AppraisalInvocationTests {
 
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/false",
             adapterExecutable: "/usr/bin/env",
             adapterArguments: ["python3", root.appendingPathComponent("Scripts/fake-acp.py").path],
             ghPath: "/usr/bin/true", gitPath: "/usr/bin/true",

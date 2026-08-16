@@ -89,10 +89,6 @@ private struct Stack {
         environment.merge(extraEnv) { _, new in new }
 
         let config = ToolConfig(
-            // Resolved, and never spawned: nothing reaches `claude` directly any more. Left
-            // pointing at something unrunnable so a path that quietly went back to it would fail
-            // rather than work.
-            claudePath: "/usr/bin/false",
             adapterExecutable: adapterExecutable,
             adapterArguments: TestPaths.adapterArguments,
             // `false` by default so every verification fails cleanly rather
@@ -813,7 +809,7 @@ struct EndToEndTests {
         try await stack.store.saveRun(orphan)
 
         let config = ToolConfig(
-            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
         let reconciler = Reconciler(
@@ -843,7 +839,7 @@ struct EndToEndTests {
     /// A `Reconciler` over the same store, with `gh` answering from a fixture.
     private func reconciler(for stack: Stack, prs: String) -> Reconciler {
         let config = ToolConfig(
-            claudePath: "/usr/bin/false", ghPath: TestPaths.fakeGH,
+            ghPath: TestPaths.fakeGH,
             gitPath: "/usr/bin/false",
             environment: [
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -993,7 +989,7 @@ struct EndToEndTests {
 
     private func watcher(for stack: Stack) -> PRWatcher {
         let config = ToolConfig(
-            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
         // `reconcile` is handed its pull requests directly, so this client is
@@ -1285,7 +1281,7 @@ struct AnalysisCompletionTests {
         try await stack.store.saveRun(orphan)
 
         let config = ToolConfig(
-            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
         let reconciler = Reconciler(
