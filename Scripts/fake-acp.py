@@ -25,6 +25,7 @@ Env:
   FAKE_ACP_COMMANDS     JSON file of AvailableCommand objects to advertise after session/new
   FAKE_ACP_AGENT_VERSION  what initialize reports as agentInfo.version    (default: 0.0.1)
   FAKE_ACP_NO_AGENT_INFO  omit agentInfo from initialize entirely (see below)
+  FAKE_ACP_EXIT_AFTER_SESSION  exit 0 the instant session/new is answered (see below)
 
 FAKE_ACP_NO_AGENT_INFO makes this double answer `initialize` with NO `agentInfo` at all — which is
 legal, not malformed: `InitializeResponse.agentInfo` is declared `AgentInfo?` in ACPModel, so an
@@ -33,6 +34,13 @@ identity" as "no adapter" renders a healthy, anonymous adapter as a failure — 
 Preflight's `agent.adapter` row printing a sentence about *commands* under a hint saying nothing
 would run, for an adapter that had just spawned, answered and opened a session. Every other knob
 here leaves agentInfo in place, so that case had no witness.
+
+FAKE_ACP_EXIT_AFTER_SESSION is FAKE_ACP_EXIT_AFTER_REPLY one door earlier, and it exists for one
+distinction: an adapter that opens a session and then goes away advertises nothing after waiting no
+measurable time, while an adapter that stays and says nothing advertises nothing after a client's
+whole window. A client that reported the first as "advertised nothing within 2 seconds" would be
+quoting a wait it never made. Without this knob that difference was a GREEN break — measured — since
+every other route to "no commands" here leaves the child alive.
 
 FAKE_ACP_AGENT_VERSION exists for exactly one judgement: Preflight's `agent.adapter` row is a
 `.warn` when the version the adapter reports differs from the pin and a `.pass` when it matches
@@ -494,6 +502,11 @@ def handle(message, stdin_iter):
             "modes": {"currentModeId": "default", "availableModes": AVAILABLE_MODES},
             "configOptions": CONFIG_OPTIONS,
         })
+        if os.environ.get("FAKE_ACP_EXIT_AFTER_SESSION"):
+            # Before the commands notification, deliberately: this is the adapter that opened a
+            # session and went away without advertising anything. `reply` already flushed, so the
+            # client reads the session before it sees EOF.
+            sys.exit(0)
         # AFTER the reply, never inside it: the real adapter advertises its commands as a separate
         # notification once the session exists. See the module docstring for the recording.
         if path := os.environ.get("FAKE_ACP_COMMANDS"):

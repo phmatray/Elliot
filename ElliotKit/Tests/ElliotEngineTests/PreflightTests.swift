@@ -581,6 +581,28 @@ struct PreflightTests {
         #expect(advertised.detail.lowercased().contains("could not be established"))
         #expect(!advertised.detail.contains("Missing:"))
         #expect(!advertised.detail.contains("ai-migration-kit:create-issue"))
+        // The reason, which is Elliot's own window running out — a wait it really made, so the
+        // number is quotable. This is the sentence that used to arrive dressed as the *adapter's*
+        // failure, on the *adapter's* row.
+        let seconds = Int(AdapterHandshake.commandsWindow.components.seconds)
+        #expect(advertised.detail.contains("within \(seconds) seconds"))
+    }
+
+    /// ⛔ The other silence, and it must not borrow the first one's number. An adapter that opens a
+    /// session and goes away advertised nothing after no measurable wait; printing *"within 2
+    /// seconds"* there would put a wait Elliot never made on the screen whose job is to be believed.
+    @Test("an adapter that goes away is not reported as having kept Elliot waiting")
+    func aDepartedAdapterQuotesNoWindow() async {
+        let results = await adapterService(childEnvironment: ["FAKE_ACP_EXIT_AFTER_SESSION": "1"])
+            .globalChecks(packs: PreflightService.packsInUse([]))
+        guard let advertised = results.first(where: { $0.id == "agent.commands" }) else {
+            Issue.record("expected an agent.commands row")
+            return
+        }
+        #expect(advertised.status == .warn)
+        #expect(advertised.detail.lowercased().contains("could not be established"))
+        #expect(!advertised.detail.contains("within"))
+        #expect(!advertised.detail.contains("Missing:"))
     }
 
     /// ⛔ An operator who set `ELLIOT_CLAUDE_PATH` and reads a green Preflight gets a binary they

@@ -71,6 +71,23 @@ struct AdapterProbeTests {
         #expect(probe.failure == nil)
     }
 
+    /// ⛔ **Two silences, and only one of them is a wait Elliot actually made.** An adapter that
+    /// opens a session and goes away advertises nothing in no measurable time; recording the window
+    /// here would put *"advertised nothing within 2 seconds"* on screen for a wait that never
+    /// happened. Setting `quietCommands` on `commands == nil` alone — dropping the `windowClosed`
+    /// condition — was a **green break** across both suites until this test existed.
+    @Test("an adapter that opens a session and goes away leaves no window behind either")
+    func aDepartedAdapterRecordsNoWindow() async {
+        let probe = await AdapterHandshake.probe(
+            agent: Self.agent(["FAKE_ACP_EXIT_AFTER_SESSION": "1"]), commandsWindow: Self.window)
+
+        #expect(probe.sessionOpened)
+        #expect(probe.commands == nil)
+        #expect(probe.failure == nil)
+        // The window is not what ended this wait, so there is no window to report.
+        #expect(probe.quietCommands == nil)
+    }
+
     /// The other side of `quietCommands`: when the notification arrives there is no window to
     /// report, and a probe that recorded one anyway would be quoting a wait it never made.
     @Test("commands that arrive leave no window behind")
