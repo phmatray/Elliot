@@ -552,6 +552,41 @@ struct RunsPaneLiveTests {
         )
     }
 
+    /// The ACP closing line, and the one case it exists to keep readable: a **refused fork**.
+    ///
+    /// ⛔ This is the reader that made `stopReason: nil` the wrong value on that path. The row
+    /// appends a reason only when there is one, so a refused fork with a nil reason draws as a
+    /// bare "Finished with issues" — the single failure a relaunch can fix, rendered exactly like
+    /// a run that fell over for unknown reasons. Pinned here rather than read off the source,
+    /// because "it names itself on screen" was a claim about a function nothing called in a test:
+    /// `terminalSummaryOmitsWhatItDoesNotHave` above covers `TerminalRow.summary`, the
+    /// **stream-json** renderer, and this ACP one had no coverage at all.
+    @Test("The ACP closing line names an Elliot-authored stop reason")
+    func turnEndedSummaryNamesTheStopReason() {
+        #expect(
+            TurnEndedRow.summary(TurnSummary(
+                stopReason: AgentRun.sessionForkRefusedStopReason, isError: true))
+                == "Finished with issues · elliot/session_fork_refused"
+        )
+        // The brake's reason is the precedent this one follows; both are Elliot's own words, and
+        // both must survive to the row rather than being recognised and dropped.
+        #expect(
+            TurnEndedRow.summary(TurnSummary(
+                stopReason: AgentRun.maxBudgetStopReason, isError: true))
+                == "Finished with issues · elliot/max_budget"
+        )
+        // And nil is still nil: a run that died mid-turn has no reason, and inventing one would
+        // read as a measurement.
+        #expect(
+            TurnEndedRow.summary(TurnSummary(stopReason: nil, isError: true))
+                == "Finished with issues"
+        )
+        #expect(
+            TurnEndedRow.summary(TurnSummary(stopReason: "end_turn", isError: false))
+                == "Finished clean · end_turn"
+        )
+    }
+
     // MARK: - Fixtures and helpers
 
     private static func run(
