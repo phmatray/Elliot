@@ -485,7 +485,14 @@ struct PreflightTests {
     func unestablishedCommandsAreNotMissing() async {
         // No `FAKE_ACP_COMMANDS`, so the double opens a session and advertises nothing at all —
         // which is what an adapter that never sends the notification looks like from here.
-        let results = await adapterService().globalChecks(packs: [])
+        //
+        // ⚠️ **`packsInUse([])`, not `[]`, and the difference is the whole test.** With no packs
+        // there is nothing to look for, so collapsing nil into `[]` renders a confident *pass* —
+        // red, but not the rendering this test is named for. With the default pack folded in, the
+        // same collapse produces `Missing: ai-migration-kit:create-issue, …`: three commands
+        // reported absent on the evidence of a question nobody got to ask. Measured by breaking it
+        // both ways.
+        let results = await adapterService().globalChecks(packs: PreflightService.packsInUse([]))
         guard let advertised = results.first(where: { $0.id == "agent.commands" }) else {
             Issue.record("expected an agent.commands row")
             return
@@ -493,6 +500,7 @@ struct PreflightTests {
         #expect(advertised.status == .warn)
         #expect(advertised.detail.lowercased().contains("could not be established"))
         #expect(!advertised.detail.contains("Missing:"))
+        #expect(!advertised.detail.contains("ai-migration-kit:create-issue"))
     }
 
     /// ⛔ An operator who set `ELLIOT_CLAUDE_PATH` and reads a green Preflight gets a binary they

@@ -37,9 +37,6 @@ public struct ACPAgentLocator: Sendable {
         await locator.locate("npx")
     }
 
-    /// The argv only — what `AppModel` puts on `ToolConfig` at launch, and what Preflight
-    /// spawns. Separate from `agentProcess` because the executable and its arguments are a
-    /// per-machine fact while `cwd` is a per-run one.
     /// What a `node` resolution amounts to — **five answers, not two**.
     ///
     /// ⛔ This exists because two callers now need the same judgement and a second copy of it is
@@ -83,6 +80,9 @@ public struct ACPAgentLocator: Sendable {
         }
     }
 
+    /// The argv only — what `AppModel` puts on `ToolConfig` at launch, and what Preflight
+    /// spawns. Separate from `agentProcess` because the executable and its arguments are a
+    /// per-machine fact while `cwd` is a per-run one.
     public func resolveAdapter() async throws -> (executable: String, arguments: [String]) {
         // ⛔ Refuse, never fall through — a version this adapter has never been measured against
         // is not a "close enough", which is the failure shape `ToolResolution.overrideUnusable`'s
