@@ -344,6 +344,139 @@ struct MigrationsTests {
         #expect(origin?.resumedFrom == nil)
     }
 
+    /// Every run already on a board must read back naming no agent session and
+    /// no stop reason.
+    ///
+    /// The same two-claims-in-one-window shape as the two tests above, against
+    /// the same table and for the same reason — v11, v13 and v17 all add a
+    /// nullable column to `skillRun` so `BoardStore.openReadOnly` keeps serving
+    /// a helper that is ahead of the file. First the *absent column* case: the
+    /// row is fetched with a record type that knows two columns the file does
+    /// not have. Both are `Optional`, so the synthesised decoder calls
+    /// `decodeIfPresent` and they read as nil; a non-optional `String` would
+    /// throw `keyNotFound` on **every run ever recorded**, and a default value
+    /// on the property would not change that. Then the migrated case, where the
+    /// columns exist and are NULL.
+    ///
+    /// ⛔ NULL must stay NULL — there is no backfill and there can be no honest
+    /// one. Nothing before this build ever ran under ACP, so nil is the truth
+    /// about these rows rather than a default standing in for an unknown.
+    /// Inferring a session from `argv` or a stop reason from the exit code would
+    /// write a guess where nothing afterwards could tell it from a measurement.
+    @Test("runs recorded before v17 have no agent session and no stop reason")
+    func runsPredatingV17ReadNil() throws {
+        let queue = try DatabaseQueue()
+        try Migrations.migrator.migrate(queue, upTo: Self.migrationBeforeACPSession)
+
+        let repoID = UUID().uuidString.uppercased()
+        let cardID = UUID().uuidString.uppercased()
+        let runID = UUID().uuidString.uppercased()
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO "repo"
+                    ("id", "path", "nameWithOwner", "defaultBranch", "displayName",
+                     "permissionMode", "extraAllowedTools", "isEnabled")
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    repoID, "/R/phmatray/private/Koine", "phmatray/Koine", "main", "Koine",
+                    "bypassPermissions", "[]", true,
+                ])
+            try db.execute(
+                sql: """
+                    INSERT INTO "card"
+                    ("id", "repoID", "title", "body", "column", "orderIndex",
+                     "columnEnteredAt", "createdAt", "updatedAt")
+                    VALUES (?, ?, 'Written before ACP', '', 'todo', 1024, ?, ?, ?)
+                    """,
+                arguments: [cardID, repoID, then, then, then])
+            try db.execute(
+                sql: """
+                    INSERT INTO "skillRun"
+                    ("id", "cardID", "repoID", "kind", "prompt", "argv", "cwd", "state",
+                     "logPath", "stderrPath", "permissionDenials", "createdAt")
+                    VALUES (?, ?, ?, 'createIssue', '/x', '[]', '/tmp', 'succeeded',
+                            '/tmp/a.ndjson', '/tmp/a.stderr', '[]', ?)
+                    """,
+                arguments: [runID, cardID, repoID, then])
+        }
+
+        // The fixture is genuinely a pre-v17 database, or everything below
+        // upgrades a schema that was already current and measures nothing.
+        let columns = try queue.read { db in try db.columns(in: "skillRun").map(\.name) }
+        #expect(!columns.contains("agentSessionID"), "the fixture is not actually a pre-v17 database")
+        #expect(!columns.contains("stopReason"), "the fixture is not actually a pre-v17 database")
+
+        // The window `openReadOnly` exists to keep working: the record type
+        // knows two columns this file does not have.
+        let missing = try queue.read { try SkillRun.fetchOne($0, key: runID) }
+        let beforeMigrating = try #require(missing, "a pre-v17 run failed to decode at all")
+        #expect(beforeMigrating.agentSessionID == nil)
+        #expect(beforeMigrating.stopReason == nil)
+
+        try Migrations.migrator.migrate(queue)
+
+        let loaded = try #require(try queue.read { try SkillRun.fetchOne($0, key: runID) })
+        #expect(loaded.cwd == "/tmp", "the pre-v17 row is still there, unchanged")
+        #expect(
+            loaded.agentSessionID == nil,
+            "the added column reads as absent, not as a session the migration invented")
+        #expect(
+            loaded.stopReason == nil,
+            "the added column reads as absent, not as an ending the migration invented")
+    }
+
+    /// A session and a stop reason recorded today survive the round trip, so the
+    /// test above is not passing because the columns are never populated at all.
+    ///
+    /// Built through the designated initialiser rather than `SkillRun.card`,
+    /// because the initialiser is where the two parameters were added and the
+    /// factory deliberately does not forward them — the writer is Task 15's
+    /// `finish`. It also says the columns are *live* rather than merely created:
+    /// an `ALTER TABLE` that added them under another name, or a record type
+    /// that never encoded them, would leave the test above green and this one
+    /// red.
+    @Test("an agent session id and a stop reason round-trip")
+    func acpSessionRoundTrips() throws {
+        let queue = try DatabaseQueue()
+        try Migrations.migrator.migrate(queue)
+
+        let repository = Repo(
+            path: "/tmp/repo-\(UUID().uuidString)", nameWithOwner: "phmatray/Elliot",
+            displayName: "Elliot"
+        )
+        let card = Card(
+            repoID: repository.id, title: "Anything",
+            columnEnteredAt: then, createdAt: then, updatedAt: then
+        )
+        let underACP = SkillRun(
+            cardID: card.id, repoID: repository.id, kind: .createIssue, prompt: "/x",
+            cwd: "/tmp", logPath: "/tmp/a.ndjson", stderrPath: "/tmp/a.stderr",
+            agentSessionID: "sess_01JQZ8H4", stopReason: "end_turn", createdAt: then
+        )
+        // A run whose response never arrived — the shape a run that died
+        // mid-turn leaves behind, and a different fact from "this build cannot
+        // store one".
+        let diedMidTurn = SkillRun.card(
+            cardID: card.id, repoID: repository.id, kind: .createIssue, prompt: "/x",
+            cwd: "/tmp", logPath: "/tmp/b.ndjson", stderrPath: "/tmp/b.stderr", createdAt: then
+        )
+        try queue.write { db in
+            try repository.insert(db)
+            try card.insert(db)
+            try underACP.insert(db)
+            try diedMidTurn.insert(db)
+        }
+
+        let loaded = try queue.read { try SkillRun.fetchOne($0, key: underACP.id.uuidString.uppercased()) }
+        #expect(loaded?.agentSessionID == "sess_01JQZ8H4")
+        #expect(loaded?.stopReason == "end_turn")
+        let orphan = try queue.read { try SkillRun.fetchOne($0, key: diedMidTurn.id.uuidString.uppercased()) }
+        #expect(orphan?.agentSessionID == nil)
+        #expect(orphan?.stopReason == nil)
+    }
+
     /// Named once. When the next migration lands on top of this one, the two
     /// tests above must keep asking about the schema *before* labels rather than
     /// silently starting to test the newest thing instead.
@@ -356,6 +489,10 @@ struct MigrationsTests {
     /// And for the resume column. Third of the same shape, which is what says
     /// this is the file's convention rather than three coincidences.
     private static let migrationBeforeResumedFrom = "v12_cardAppraisal"
+
+    /// And for the ACP session columns. `upTo:` is inclusive, so this names the
+    /// migration that must have *run*, leaving the schema one step behind v17.
+    private static let migrationBeforeACPSession = "v16_autoDev"
 }
 
 private let then = Date(timeIntervalSince1970: 1_700_000_000)

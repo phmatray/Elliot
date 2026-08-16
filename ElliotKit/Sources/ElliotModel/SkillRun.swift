@@ -177,6 +177,30 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     /// dangerous is `BoardService.makeRun`, which takes this undefaulted for
     /// exactly that reason; this initialiser is not it.
     public var requiresVerifiedGreen: Bool?
+    /// The session id the **agent** returned from `session/new`.
+    ///
+    /// Not `id`. Under `claude -p` Elliot passed `--session-id` and the two were
+    /// one value; under ACP the agent names its own session. `resumedFrom` still
+    /// points at a *run*, and `RunScheduler` reads this column off that run to
+    /// fork from — so the chain `ResumeChain` walks is unchanged, and only what
+    /// it hands the runner is different.
+    ///
+    /// ⚠️ `Optional`, for the reason `resumedFrom` above gives at length: a
+    /// non-optional `String` would be decoded with `decode(_:forKey:)` rather
+    /// than `decodeIfPresent` — a default value does not change that — and would
+    /// throw `keyNotFound` on every run recorded before v17, in exactly the
+    /// window `BoardStore.openReadOnly` exists to serve. `MigrationsTests` pins
+    /// it.
+    public var agentSessionID: String?
+    /// How the turn ended, verbatim: `end_turn`, `max_tokens`,
+    /// `max_turn_requests`, `refusal`, `cancelled` — or `elliot/max_budget` when
+    /// Elliot's own brake stopped it, or `nil` when the response never arrived
+    /// at all, which is what a run that died mid-turn looks like.
+    ///
+    /// Stored as the raw string rather than a Swift enum: `StopReason` is the
+    /// vendored library's and this column outlives it, and an unrecognised value
+    /// must survive being written down.
+    public var stopReason: String?
     public var createdAt: Date
 
     public init(
@@ -203,6 +227,12 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         verifiedOutcome: VerifiedOutcome? = nil,
         analysisReport: AnalysisRunReport? = nil,
         requiresVerifiedGreen: Bool? = nil,
+        // ⛔ Both defaulted, and position alone does not do the work: `createdAt`
+        // below has no default, so an undefaulted parameter inserted before it
+        // would not be skippable and every existing call site would fail to
+        // compile. Defaulted, only a writer that has something to say passes them.
+        agentSessionID: String? = nil,
+        stopReason: String? = nil,
         createdAt: Date
     ) {
         self.id = id
@@ -229,6 +259,8 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         self.verifiedOutcome = verifiedOutcome
         self.analysisReport = analysisReport
         self.requiresVerifiedGreen = requiresVerifiedGreen
+        self.agentSessionID = agentSessionID
+        self.stopReason = stopReason
         self.createdAt = createdAt
     }
 }
