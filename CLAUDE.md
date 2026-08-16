@@ -204,7 +204,10 @@ because `DrainDuplicationTests.commentsAreNotDuplicated` intersects its comments
 `ProcessRunner.swift`'s, and that intersection *is* the running record of #146 — deleting the file
 retires the gate rather than satisfying it. Removing it means re-pointing that gate at
 `ACPTransport.swift` and deciding what becomes of `StreamingProcessDrainTests`; that is a change with
-its own argument, and its follow-up issue is **not yet filed**.
+its own argument, and it is filed as **#384**. Measured there with the gate's own normalisation:
+`ProcessRunner` ∩ `StreamingProcess` and `ProcessRunner` ∩ `ACPTransport` are **both empty today**, so
+re-pointing costs no cleanup — ⚠️ but a zero is the gate's *passing* state, not evidence the new pair
+is the one whose duplication is worth fearing. Only a break-test settles that.
 
 This was the mechanism written twice until #146, and the copy was not incidental: **eight comment
 lines were byte-identical between the two files**, and they were the four load-bearing arguments

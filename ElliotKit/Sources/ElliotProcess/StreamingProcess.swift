@@ -11,11 +11,12 @@ import Foundation
 /// `StreamingProcessDrainTests`, which is a change with its own argument and not a tidy-up to fold
 /// into this one.
 ///
-/// ⛔ **Follow-up not yet filed**, and this comment is not a substitute for it: *"Delete
-/// StreamingProcess and re-point the #146 gate at ACPTransport"*. The task that wrote this note was
-/// barred from writing to GitHub, so the issue number is missing rather than pending. A comment
-/// saying somebody should is exactly the gap that leaves work unrouted — file it, then put the
-/// number here.
+/// Filed as **#384**, *"Delete StreamingProcess and re-point the #146 gate at ACPTransport"*, so
+/// this note routes to work rather than saying somebody should. Measured there, with the gate's own
+/// normalisation: `ProcessRunner` ∩ `StreamingProcess` and `ProcessRunner` ∩ `ACPTransport` are
+/// **both empty today**, so re-pointing costs no cleanup — but a zero is the passing state, not
+/// evidence the new pair is the one whose duplication is worth fearing. That judgement, and the
+/// fate of `StreamingProcessDrainTests`, are what #384 is for.
 ///
 /// Cancellation is a plain `terminate()` (SIGTERM) — and that already reaches
 /// the whole process group. Measured directly (`bash -c 'sleep 300 & sleep
