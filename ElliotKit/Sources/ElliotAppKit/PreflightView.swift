@@ -114,11 +114,19 @@ public struct PreflightView: View {
             // arrives when there is nothing left to stop. What the ceiling reliably
             // buys is the verdict. See `AgentInvocation.maxBudgetUSD`, which carries
             // the measurement.
+            //
+            // ⚠️ And it must stay one line, because `ceilingField` renders `help` in
+            // an `HStack` where the whole column is ~723 pt and the row's fixed parts
+            // take 174, leaving ~549. Typeset at `Type.prose` (`NSFont.systemFont(11)`):
+            // this string 416 pt, "Per day" 345 pt — the widest the row has ever held.
+            // The first replacement written here ran to 809 pt, needing two lines in
+            // the one prose `Text` of this view that had no `.fixedSize`; a truncation
+            // would have cut it at "Elliot cancels when a reported cost reaches it…",
+            // leaving on screen exactly the promise the rewrite exists to withdraw.
             ceilingField(
                 title: "Per run", value: model.ceiling.perRunUSD,
-                help: "Elliot cancels when a reported cost reaches it. Cost usually "
-                    + "arrives as the turn ends, so this marks an overspending run "
-                    + "failed more often than it stops one."
+                help: "Cancels on a reported cost — usually too late to stop a run, "
+                    + "so it marks it failed."
             ) { new in SpendCeiling(perRunUSD: new, perDayUSD: model.ceiling.perDayUSD) }
 
             ceilingField(
@@ -164,7 +172,14 @@ public struct PreflightView: View {
             )
             .textFieldStyle(.roundedBorder)
             .frame(width: 90)
+            // Inert while every `help` fits one line, which the call sites keep it
+            // to — and the reason it is here anyway: without it this is the only
+            // prose `Text` in the view lacking the modifier its two multi-line
+            // siblings both carry, so the next long help string truncates in silence
+            // rather than wrapping. A hint cut mid-sentence still reads like a
+            // sentence, which is the failure worth pre-empting.
             Text(help).font(Type.prose).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer()
         }
         .accessibilityElement(children: .combine)
