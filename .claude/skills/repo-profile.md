@@ -32,8 +32,12 @@
 ## Build & test
 - **Build:** `cd ElliotKit && swift build` (SwiftPM package; **there is no manifest at the repo root** —
   every `swift` command must run from `ElliotKit/`)
-- **Full test:** `cd ElliotKit && swift test` (**2561 tests in 296 suites**, 5 of 5 samples on
-  **`fix/372-e2e-test-hygiene`**, based on `main` at `9cff06f`, on 2026-08-10, on a wiped `.build`;
+- **Full test:** `cd ElliotKit && swift test` (**2888 tests in 338 suites**, measured on
+  **`feat/381-acp-stage-1`** on 2026-08-16 — ⚠️ and the run now takes **~23 s, not ~5 s**. That is
+  not a hang and not a regression in any one test: individual suites are still fast (one sampled at
+  **0.06 s in isolation** against 5.4 s inside the full run), and the wall clock is subprocess-spawn
+  **contention** under swift-testing's parallelism, since every model start now resolves the ACP
+  adapter as well as `gh`/`git`. Sampling is still cheap, just not free;
   ⚠️ **this line was corrected twice in one evening and the second correction is the interesting
   one.** It went in at 2006/230 off `feat/333-repo-run-terms`, honestly measured — and was stale
   within the hour, because four pull requests landed in sequence and `main` measured **2135 in 244**
@@ -42,8 +46,8 @@
   number written down in prose. Filled from a `PLACEHOLDER` overwritten by the run, per the ⛔ bullet
   below;
   needs no Xcode,
-  no API token, no network — the end-to-end suite drives `Scripts/fake-claude.sh` instead of the
-  real `claude`)
+  no API token, no network — the end-to-end suite drives `Scripts/fake-acp.py`, a JSON-RPC
+  **responder**, instead of the real ACP adapter)
   - ⛔ **This is the only place the count lives, and `README.md` deliberately carries none** (#176).
     The README's line said *459 tests* while the suite ran 1167 — understating it 2.5× for a long
     time, because nothing had ever checked it, in the one document a stranger reads first. Correcting
@@ -582,8 +586,12 @@ above within seconds.
 - **One funnel.** `BoardService` is the *only* thing that changes a card's column. A drag and an MCP
   `board_move_card` must reach the same two methods; callers supply only an origin. Never add a second
   path that mutates a column.
-- **One spawn.** `ChildProcess` is the *only* thing that starts a child, drains its pipes and
-  publishes its exit. `ProcessRunner` and `StreamingProcess` are wrappers differing only in a
+- **One spawn**, and the rule is narrower than "the only thing that starts a child": **anything
+  whose output we read, or whose exit we await, goes through `ChildProcess`**, which drains its
+  pipes and publishes its exit. (`IPCClient`'s fire-and-forget `open -g -j -b` is the one sanctioned
+  exception, named in `OneSpawnerTests.sanctionedSpawners`. The broader phrasing stood here until
+  Stage 0 of #379 measured it false — `IPCClient` had constructed a bare `Process()` since
+  2026-08-04.) `ProcessRunner` and `ACPTransport`'s `MessageSink` are wrappers differing only in a
   `ChildOutputSink`, whose methods are called **while the drain lock is held** — that is the
   invariant, not an implementation detail, and a sink invoked after the lock is released is the
   tail-dropping bug restored. A plan that needs a third kind of child writes a sink; it does not
@@ -610,8 +618,16 @@ above within seconds.
   was three switches until #135 and they had drifted, which is how a reconciled card kept showing the
   banner of the run that failed. `Attribution` (`.live` / `.launchSweep`) is the one difference that
   is genuinely real, because `MoveAudit` persists it and the history view renders it.
-- **A run is clean only when `permission_denials` is empty too** — `is_error: false` /
-  `subtype: "success"` alone is not enough.
+- **A run is clean only when it was refused nothing, as well as not erroring** — the fields moved
+  with the runner. It is now `TurnSummary.isClean` (`!isError && denials.isEmpty`), read by
+  `RunScheduler.state(for:)`; the CLI-era `permission_denials` / `is_error` / `subtype: "success"`
+  spellings are stream-json and nothing emits them any more.
+  ⛔ **`denials`, not `nonExecutionKinds`.** The fold is BY VALUE: `permission-rule` is a denial,
+  while `interrupted`, `cancelled` and `user-rejected` are recorded and are **not** — Elliot cancels
+  runs by design, so folding on bare presence would mark every cancelled run as refused.
+  ⚠️ And the ledger is only half wired: `PermissionPolicy`'s own refusals reach the log file and
+  **not** the card, so a run Elliot itself declined every tool call in can still be filed
+  `.succeeded`. See `PermissionMode.appraisal`'s doc comment.
 - **A system-originated move never triggers a skill** (`MoveContext.allowSideEffects == false` →
   `.noAction`): it reacts to state a skill produced. One of the two invariants the test suite leans on.
   The other: the first digit run of an `implement-issue` prompt must be the issue number, because the
@@ -626,10 +642,18 @@ above within seconds.
 ## Environment gotchas
 - **All `swift` commands run from `ElliotKit/`**, not the repo root — but `./Scripts/build-app.sh` runs
   from the root (it anchors itself). Use `git -C <path>` rather than `cd` when working across worktrees.
-- **No token, no network needed for tests.** The end-to-end suite spawns `Scripts/fake-claude.sh`,
-  driven by `FAKE_CLAUDE_FIXTURE`, `FAKE_CLAUDE_DELAY_MS`, `FAKE_CLAUDE_MODE=hang|trap|crash`,
-  `FAKE_CLAUDE_ARGV_OUT`, and — for an analysis — `FAKE_CLAUDE_STORIES` / `FAKE_CLAUDE_TOUCH`. The fake
-  is equally usable by hand from a terminal when reproducing a run.
+- **No token, no network needed for tests.** The end-to-end suite spawns **`Scripts/fake-acp.py`**,
+  driven by `FAKE_ACP_FIXTURE`, `FAKE_ACP_MODE` (`ok|hang|deaf|deaf-after-fixture|…`),
+  `FAKE_ACP_READY`, `FAKE_ACP_ARGV_OUT`, `FAKE_ACP_STOP_REASON`, `FAKE_ACP_FORKABLE`,
+  `FAKE_ACP_COMMANDS`, `FAKE_ACP_AGENT_VERSION`. Fixtures live at `Fixtures/acp/*.json`, several of
+  them verbatim transcripts of the real adapter. The fake is equally usable by hand from a terminal.
+  - ⚠️ **It is a *responder*, not a printer.** `fake-claude.sh` printed and exited, which is enough
+    for a CLI and not for a protocol: this one reads JSON-RPC on stdin and answers. That is why the
+    ACP suites can drive a whole turn offline.
+  - ⛔ **`FAKE_CLAUDE_*` no longer exists in this suite.** Measured 2026-08-16:
+    `grep -rn FAKE_CLAUDE ElliotKit/Tests/` returns **zero hits**, not even a comment, while 15 test
+    files drive `fake-acp.py`. This bullet described the old harness for the length of one branch;
+    `Scripts/fake-claude.sh` itself is retained for any non-Swift reader, but no Swift test drives it.
 - **`gh` is fakeable too — do not plan around it being untestable.** `Scripts/fake-gh.sh` answers
   `issue list` and `pr list` from `Fixtures/gh/*.json` (`FAKE_GH_ISSUES`, `FAKE_GH_PRS`,
   `FAKE_GH_MODE=ok|fail`, `FAKE_GH_FAIL_REPO`, `FAKE_GH_EXIT`, `FAKE_GH_ARGV_OUT`). `FAKE_GH_FAIL_REPO`

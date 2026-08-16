@@ -3,8 +3,19 @@ import Foundation
 /// What a run started in one repository is allowed to do.
 ///
 /// The two fields have been columns since the **v1** schema, are read at spawn
-/// by `RunScheduler` and emitted by `ClaudeInvocation.arguments()`, and are
-/// reported over the wire — and until #333 nothing anywhere ever *wrote* them.
+/// by `RunScheduler`, and are reported over the wire — and until #333 nothing
+/// anywhere ever *wrote* them.
+///
+/// ⚠️ **They no longer travel the same way, and since Stage 1 of #379 only one of
+/// them travels at all.** Both used to become CLI flags in
+/// `ClaudeInvocation.arguments()` — `--permission-mode` and `--allowedTools`.
+/// Now `permissionMode` is sent as an ACP `session/set_config_option`, and
+/// `extraAllowedTools` has **no ACP equivalent and is refused**: the adapter
+/// advertises five config options and none of them grants tools, so
+/// `AgentRun.start` throws `AgentInvocationError.unmappableAllowedTools` before
+/// it spawns anything rather than dropping the grant silently. Preflight's
+/// `repo.runTerms` row fails any repository carrying one, so the refusal is met
+/// before a drag rather than inside a run.
 /// Every registered repository ran on identical terms, so `Repo.permissionMode`'s
 /// own doc comment ("per-repo so a single repo can be tightened without touching
 /// the others") described a capability that did not exist.
@@ -114,19 +125,28 @@ public enum RunTermsCaveat: String, Codable, Sendable, Hashable, CaseIterable {
 
 // MARK: - The empty-list rule, in one place
 
-/// The rule that an empty extra-allowed-tools list means *no flag*.
+/// The rule that an empty extra-allowed-tools list means *nothing was granted*.
 ///
-/// `ClaudeInvocation.arguments()` emits `--allowedTools` only when the list is
-/// non-empty, so a list holding one blank string is not "no tools" — it is
-/// `--allowedTools ""`, an empty pattern handed to the CLI. That distinction is
-/// invisible in a text field and would only ever be discovered inside a run.
+/// ⚠️ **What hangs on this got heavier in Stage 1 of #379, not lighter.** Under
+/// the CLI, `ClaudeInvocation.arguments()` emitted `--allowedTools` only when the
+/// list was non-empty, so a list holding one blank string was not "no tools" — it
+/// was `--allowedTools ""`, an empty pattern handed to the CLI. ACP has no way to
+/// grant tools at all, so a non-empty list is now a **refusal**:
+/// `AgentRun.start` throws `unmappableAllowedTools` and the run never spawns.
+///
+/// So normalisation is what stands between "the reader left a stray space in a
+/// text field" and "every drag in this repository is refused". A blank entry that
+/// survived to the guard would block the repository outright, and the reason
+/// would be a character nobody can see.
 public enum ExtraAllowedTools {
     /// Trims, drops blanks, de-duplicates keeping first position.
     ///
-    /// ⛔ Does **not** split on commas. `arguments()` joins with a comma, so a
-    /// pattern legitimately containing one — `Bash(git add, git commit)` — must
-    /// survive whole; splitting here would silently halve it and the halves
-    /// would each look like a plausible pattern.
+    /// ⛔ Does **not** split on commas. A pattern legitimately containing one —
+    /// `Bash(git add, git commit)` — must survive whole; splitting here would
+    /// silently halve it and the halves would each look like a plausible
+    /// pattern. This mattered because `arguments()` joined with a comma; it
+    /// still matters because the halves are what `unmappableAllowedTools` would
+    /// print back at the reader.
     ///
     /// ⛔ Does **not** validate. Elliot does not own Claude Code's tool-pattern
     /// grammar, and a validator written against a guess would refuse a legal

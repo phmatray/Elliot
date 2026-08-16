@@ -9,7 +9,7 @@ import Testing
 /// `gh` stays a stub: nothing here reaches the network or needs a token.
 private func testConfig() -> ToolConfig {
     ToolConfig(
-        claudePath: "/usr/bin/true", ghPath: "/usr/bin/true", gitPath: "/usr/bin/git",
+        ghPath: "/usr/bin/true", gitPath: "/usr/bin/git",
         environment: [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": NSHomeDirectory(),

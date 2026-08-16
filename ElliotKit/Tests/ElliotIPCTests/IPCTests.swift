@@ -565,8 +565,20 @@ struct IPCTests {
     /// half of the terms a run gets. Until then neither term could be *written*,
     /// so every row reported the same defaults and a reply carrying half of them
     /// was indistinguishable from the whole.
-    @Test("Widening the outcome, attributing closing text, and reporting run terms, bumped it")
-    func protocolVersionIsNine() {
-        #expect(elliotProtocolVersion == 9)
+    ///
+    /// And again at 10 (Stage 1 of #379): the wire's shapes did not move, but
+    /// what the app does with a move did — an old helper talks to an app that
+    /// no longer spawns `claude -p` at all, so a bundle mismatch must fail at
+    /// `hello` rather than halfway through a move.
+    ///
+    /// ⚠️ That was forward-looking for four commits and is now a reading of the
+    /// tree: Task 15 landed the switchover, and `RunScheduler.start` calls
+    /// `AgentRun.start`. The fence went up first so no bundle assembled
+    /// mid-stage could pair a 9 helper with a 10 app. `Protocol.swift`'s own
+    /// paragraph for 10 says the same thing at length, and records why the
+    /// interval is worth keeping in writing.
+    @Test("Widening the outcome, attributing closing text, reporting run terms, and retiring claude -p, bumped it")
+    func protocolVersionIsTen() {
+        #expect(elliotProtocolVersion == 10)
     }
 }

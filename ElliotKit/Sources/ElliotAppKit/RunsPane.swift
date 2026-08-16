@@ -1,4 +1,6 @@
 import ElliotModel
+import ElliotProcess
+import Foundation
 import SwiftUI
 
 /// The runs of one card: what each one did, and what came of it.
@@ -37,7 +39,11 @@ struct RunsPane: View {
                         .foregroundStyle(.tertiary)
                 }
                 ForEach(runs) { run in
-                    RunBox(run: run, live: model.liveLog[run.id] ?? [])
+                    RunBox(
+                        run: run,
+                        live: model.liveLog[run.id] ?? [],
+                        summary: model.liveSummary[run.id]
+                    )
                 }
             }
         }
@@ -155,6 +161,45 @@ extension RunsPane {
         return run.permissionDenials
     }
 
+    /// The same question of an ACP run, and **an overload rather than a rewrite**.
+    ///
+    /// The `[StreamEvent]` form above is still the archive's: `RunBox.diskEvents` decodes
+    /// stream-json off disk for every run recorded before the switchover, and replacing that form
+    /// in place would leave those logs with no denial source at all.
+    ///
+    /// ⛔ What differs is *when* the answer exists. Stream-json carried denials only on the
+    /// terminal `result` line, so a run in flight had nothing to show; under ACP a refusal is
+    /// knowable on the failing frame itself — `_meta.claudeCode.nonExecutionKind` arrives with
+    /// the tool call — so this reads the calls, and reads them **by value** through
+    /// `NonExecutionKind.isDenial`. Folding on presence would name every tool a cancelled run had
+    /// in flight as one it was refused.
+    ///
+    /// The fallback is `run.permissionDenials`, filled by `RunScheduler.finish` from
+    /// `TurnSummary.denials` — which is the same by-value rule, applied one layer up. Preferring
+    /// one source rather than merging both is what stops a finished run drawing every refusal
+    /// twice.
+    nonisolated static func denials(of run: SkillRun, in events: [RunEvent]) -> [String] {
+        var byID: [String: ToolCallPatch] = [:]
+        var order: [String] = []
+        for case .toolCall(let patch) in events {
+            if let existing = byID[patch.id] {
+                byID[patch.id] = existing.merging(patch)
+            } else {
+                byID[patch.id] = patch
+                order.append(patch.id)
+            }
+        }
+        let refused = order.compactMap { id -> String? in
+            guard let call = byID[id], call.nonExecutionKind?.isDenial == true else { return nil }
+            // `_meta.claudeCode.toolName` is the real name (`Bash`, `Edit`); the title is the
+            // adapter's prose and the id a correlation token, so those are fallbacks in that
+            // order rather than alternatives. `AgentRun.summary` states the identical rule, which
+            // is why a finished run's two sources agree.
+            return call.claudeToolName ?? call.title ?? call.id
+        }
+        return refused.isEmpty ? run.permissionDenials : refused
+    }
+
     /// How many rows of one log the panel will draw.
     nonisolated static let logRowLimit = 300
 
@@ -187,6 +232,119 @@ extension RunsPane {
     /// The typed rows of one run, capped at the tail the panel can show.
     nonisolated static func rows(of run: SkillRun, events: [StreamEvent]) -> LogWindow {
         trimmed(RunLog.rows(from: events, denials: denials(of: run, in: events)))
+    }
+
+    /// The same, for an ACP run.
+    ///
+    /// `summary` is separate from `events` because it is not one: the stop reason arrives as the
+    /// `session/prompt` **response**, so there is no frame in the stream that carries it. `nil`
+    /// means the turn has not ended — or ended without answering, which is the same absence and
+    /// the same rendering: no `.turnEnded` row.
+    nonisolated static func rows(
+        of run: SkillRun, events: [RunEvent], summary: TurnSummary?
+    ) -> LogWindow {
+        trimmed(
+            RunLog.rows(
+                from: events, denials: denials(of: run, in: events), summary: summary))
+    }
+
+    // MARK: - Which log is this
+
+    /// Which of the two formats a run log on disk is written in.
+    ///
+    /// `runs/` holds both at once and will for as long as the archive is kept: every run recorded
+    /// before Stage 1 of #379 is `claude -p --output-format stream-json`, every run since is the
+    /// JSON-RPC the ACP adapter sent. They are different vocabularies — a `.terminal` row and a
+    /// `.turnEnded` row are not the same row — so the panel has to know which fold to use.
+    enum LogShape: Sendable, Hashable {
+        case streamJSON
+        case acp
+    }
+
+    /// Read from the file's own first line, and **deliberately from nothing else**.
+    ///
+    /// ⚠️ Not a filename convention and not a database column. Either would be a second source for
+    /// a fact the file already carries, and the file is the one thing that survives being copied
+    /// out of `runs/` and read by hand — which is exactly what a person does with a log they are
+    /// diagnosing. A column would also be a claim about a file that could have been replaced, and
+    /// a suffix would be a claim `ArtifactSweeper` and `scp` are both free to lose.
+    ///
+    /// The question asked of the line is the smallest one that separates them: JSON-RPC always
+    /// carries a top-level `jsonrpc`, and every stream-json line carries a top-level `type`.
+    /// Neither present is `nil` — *which fold* unanswered, never *do not read this file*.
+    nonisolated static func shape(ofLogAt path: String) -> LogShape? {
+        guard
+            let line = firstLine(ofLogAt: path),
+            let parsed = try? JSONSerialization.jsonObject(with: line),
+            let object = parsed as? [String: Any]
+        else { return nil }
+        if object["jsonrpc"] != nil { return .acp }
+        if object["type"] != nil { return .streamJSON }
+        return nil
+    }
+
+    /// How much of a log is read to answer `shape`, and in what bites.
+    ///
+    /// Bounded rather than `Data(contentsOf:)`, because the fold below reads the whole file
+    /// straight afterwards and a `merge-pr` log that waited hours on CI is not small: reading it
+    /// twice to learn one thing about its first line would double the cost of opening the panel.
+    private static let shapeReadLimit = 1 << 20
+    private static let shapeChunk = 1 << 16
+
+    /// The first line with any bytes in it, or `nil` if there is none to be had.
+    ///
+    /// ⚠️ A line is only answered once it is **complete** — a chunk boundary falls wherever the
+    /// filesystem put it, and half a first line parses as no JSON at all, which would read as
+    /// "neither format" on a perfectly good log. At end of file the last line is answered without
+    /// its newline, because `AgentLog.Writer.close()` deliberately does not invent one.
+    nonisolated private static func firstLine(ofLogAt path: String) -> Data? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        var head = Data()
+        while head.count < shapeReadLimit {
+            let chunk = (try? handle.read(upToCount: shapeChunk)) ?? nil
+            guard let chunk, !chunk.isEmpty else { return firstNonEmptyLine(in: head, atEOF: true) }
+            head.append(chunk)
+            if let line = firstNonEmptyLine(in: head, atEOF: false) { return line }
+        }
+        // A first line over a megabyte is a truncated frame, not a format: say nothing rather
+        // than classify half of it.
+        return nil
+    }
+
+    nonisolated private static func firstNonEmptyLine(in head: Data, atEOF: Bool) -> Data? {
+        var start = head.startIndex
+        while let newline = head[start...].firstIndex(of: 0x0A) {
+            if newline > start { return Data(head[start..<newline]) }
+            start = head.index(after: newline)
+        }
+        guard atEOF, start < head.endIndex else { return nil }
+        return Data(head[start...])
+    }
+
+    /// One run's log off disk, folded by whichever vocabulary it is written in.
+    ///
+    /// ⚠️ An unanswerable shape returns an **empty window rather than no window**, and the two are
+    /// not interchangeable: `RunBox.emptyNote` reads `diskRows == nil` as *the file has not been
+    /// opened yet* and says "Reading the log…". `ArtifactSweeper` prunes logs past a fortnight
+    /// (#167), so a run whose log is gone is an ordinary, deliberate state of this app — and
+    /// telling its reader that a read is still in progress would be a claim about a read that has
+    /// already finished and found nothing. The honest sentence for that file is the one the panel
+    /// already had: it may have been cleaned up.
+    nonisolated static func diskRows(at path: String, run: SkillRun) -> LogWindow {
+        switch shape(ofLogAt: path) {
+        case .acp:
+            let url = URL(fileURLWithPath: path)
+            return rows(
+                of: run,
+                events: AgentLog.events(inLogAt: url),
+                summary: AgentLog.lastSummary(inLogAt: url)
+            )
+        case .streamJSON:
+            return rows(of: run, events: RunBox.diskEvents(at: path))
+        case nil:
+            return LogWindow(rows: [], dropped: 0)
+        }
     }
 
     /// What one run says about its own clock: how long ago, and how long for.
@@ -241,7 +399,11 @@ struct RunBox: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let run: SkillRun
-    let live: [StreamEvent]
+    let live: [RunEvent]
+    /// What the live turn amounted to, once it has said so. `nil` while it is still going — and
+    /// also for a run whose response never arrived, which is the same absence and draws the same
+    /// way: no terminal row.
+    let summary: TurnSummary?
 
     /// `nil` means "the reader has not said", which is not the same as "closed".
     /// A run in flight opens its own log — it is the thing you selected the card
@@ -343,14 +505,24 @@ struct RunBox: View {
 
     // MARK: What it was sent
 
-    /// The exact `-p` argument and the full argv, which `SkillRun` documents as
-    /// "kept so a run can be reproduced by hand" and which nothing rendered.
+    /// The prompt the turn was sent, and the adapter's argv.
     ///
     /// The editor shows "What create-issue will receive" while a story is still
     /// being written, and then that visibility ends the moment the card freezes
     /// — so for `implement-issue` and `merge-pr`, the two runs that write code
-    /// and merge it, a reader could never see what was actually asked, nor that
-    /// the run carried `--permission-mode bypassPermissions`.
+    /// and merge it, a reader could never see what was actually asked. That is
+    /// the whole of what this section still buys, and it is still worth it.
+    ///
+    /// ⛔ **The argv half no longer shows the grant, and this comment argued its
+    /// own existence on the fact that it did** — *"nor that the run carried
+    /// `--permission-mode bypassPermissions`"*, true of `claude -p` and false
+    /// the moment ACP landed. `AgentInvocation.displayArgv` renders the same
+    /// three tokens for every run: `npx --yes @agentclientprotocol/…`. The mode
+    /// is in the log instead, as the `elliot/session` record's `mode`
+    /// (`AgentLog.sessionInfo`), and the `Agent session` row is where a reader
+    /// meets it. Restoring the claim by appending a token to `argv` is refused
+    /// at the source — see `displayArgv`, which explains why a field the pane
+    /// renders as one command line must not carry things that are not argv.
     ///
     /// ⛔ **`Text(verbatim:)`, and no syntax colouring.** A prompt carrying
     /// `#123` or `%@` through `LocalizedStringKey` is the locale bug
@@ -506,7 +678,7 @@ struct RunBox: View {
     private var rows: RunsPane.LogWindow {
         live.isEmpty
             ? (diskRows ?? RunsPane.LogWindow(rows: [], dropped: 0))
-            : RunsPane.rows(of: run, events: live)
+            : RunsPane.rows(of: run, events: live, summary: summary)
     }
 
     /// Reads the log off the main actor and folds it, once per `LogSource`.
@@ -525,12 +697,16 @@ struct RunBox: View {
         }
         let run = run
         let loaded = await Task.detached(priority: .userInitiated) {
-            RunsPane.rows(of: run, events: RunBox.diskEvents(at: run.logPath))
+            RunsPane.diskRows(at: run.logPath, run: run)
         }.value
         guard !Task.isCancelled else { return }
         diskRows = loaded
     }
 
+    /// The **archive** half of the read, reached only for a log whose first line says stream-json
+    /// — `RunsPane.diskRows(at:run:)` is what decides. Nothing writes this format any more; every
+    /// run recorded before Stage 1 of #379 is in it.
+    ///
     /// `decodeAll` rather than `decode`: an assistant turn that carries prose
     /// *and* a tool call is two rows, and the one-event form would silently keep
     /// only the first.

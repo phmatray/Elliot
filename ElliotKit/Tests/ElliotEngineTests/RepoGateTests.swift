@@ -52,7 +52,7 @@ struct RepoGateTests {
         PreflightService(
             environment: LoginShellEnvironment(variables: [:], capturedVia: "test"),
             config: ToolConfig(
-                claudePath: "/usr/bin/false", ghPath: Paths.fakeGH,
+                ghPath: Paths.fakeGH,
                 gitPath: git, environment: environment
             )
         )

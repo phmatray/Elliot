@@ -35,7 +35,7 @@ struct MethodSeedCardTests {
         PreflightService(
             environment: LoginShellEnvironment(variables: [:], capturedVia: "test"),
             config: ToolConfig(
-                claudePath: "/usr/bin/false", ghPath: "/usr/bin/false", gitPath: "/usr/bin/git",
+                ghPath: "/usr/bin/false", gitPath: "/usr/bin/git",
                 environment: ["PATH": "/usr/bin:/bin"]
             )
         )

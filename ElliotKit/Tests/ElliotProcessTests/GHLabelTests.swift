@@ -27,7 +27,6 @@ struct GHLabelTests {
 
     private func client(_ environment: [String: String] = [:]) -> GHClient {
         GHClient(config: ToolConfig(
-            claudePath: "/usr/bin/false",
             ghPath: Paths.fakeGH,
             gitPath: "/usr/bin/false",
             environment: environment

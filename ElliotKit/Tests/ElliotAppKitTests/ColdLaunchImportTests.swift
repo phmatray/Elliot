@@ -71,7 +71,7 @@ struct ColdLaunchImportTests {
         if let issues { environment["FAKE_GH_ISSUES"] = Paths.fixture(issues) }
         environment["FAKE_GH_PRS"] = Paths.fixture("prs-basic.json")
         let config = ToolConfig(
-            claudePath: "", ghPath: Paths.fakeGH, gitPath: "", environment: environment)
+            ghPath: Paths.fakeGH, gitPath: "", environment: environment)
         return GitHubImportService(
             store: store,
             gh: GHClient(config: config),

@@ -63,7 +63,7 @@ struct DismissedListTests {
         GitHubImportService(
             store: store,
             gh: GHClient(config: ToolConfig(
-                claudePath: "", ghPath: Paths.fakeGH, gitPath: "",
+                ghPath: Paths.fakeGH, gitPath: "",
                 environment: [
                     "FAKE_GH_ISSUES": Paths.fixture("issues-basic.json"),
                     "FAKE_GH_PRS": Paths.fixture("prs-basic.json"),

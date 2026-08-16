@@ -40,7 +40,7 @@ private enum Paths {
 /// loudly instead of returning something that decodes to nothing.
 private func testConfig(_ environment: [String: String] = [:]) -> ToolConfig {
     ToolConfig(
-        claudePath: "/usr/bin/true", ghPath: Paths.fakeGH, gitPath: "/usr/bin/true",
+        ghPath: Paths.fakeGH, gitPath: "/usr/bin/true",
         environment: environment.merging(["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]) { a, _ in a }
     )
 }

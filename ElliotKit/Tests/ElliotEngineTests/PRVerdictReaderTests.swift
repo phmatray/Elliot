@@ -41,7 +41,7 @@ struct PRVerdictReaderTests {
         var environment = ["FAKE_GH_MODE": mode, "FAKE_GH_PRS": Paths.fixture(prs)]
         if let argvOut { environment["FAKE_GH_ARGV_OUT"] = argvOut }
         return GHClient(config: ToolConfig(
-            claudePath: "", ghPath: Paths.fakeGH, gitPath: "", environment: environment))
+            ghPath: Paths.fakeGH, gitPath: "", environment: environment))
     }
 
     /// How many `gh pr list` invocations reached the fake so far.

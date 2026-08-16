@@ -1,0 +1,15 @@
+[
+  {"sessionUpdate": "agent_message_chunk",
+   "content": {"type": "text", "text": "Trying to push."},
+   "messageId": "msg_denied_1"},
+  {"sessionUpdate": "tool_call", "toolCallId": "tc-push", "title": "git push",
+   "kind": "execute", "status": "pending", "content": [],
+   "_meta": {"claudeCode": {"toolName": "Bash"}}},
+  {"sessionUpdate": "tool_call_update", "toolCallId": "tc-push", "status": "failed",
+   "content": [{"type": "content", "content": {"type": "text",
+    "text": "probe: denied on purpose"}}],
+   "_meta": {"claudeCode": {"toolName": "Bash", "nonExecutionKind": "permission-rule"}}},
+  {"sessionUpdate": "agent_message_chunk",
+   "content": {"type": "text", "text": "I could not push, so I stopped."},
+   "messageId": "msg_denied_2"}
+]

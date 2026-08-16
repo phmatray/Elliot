@@ -96,7 +96,7 @@ struct PRWatcherStatusTests {
         let argvPath = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("argv-\(UUID().uuidString).txt").path
         let config = ToolConfig(
-            claudePath: "", ghPath: Self.fakeGH, gitPath: "",
+            ghPath: Self.fakeGH, gitPath: "",
             environment: [
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
                 "FAKE_GH_PRS": try prsFixture(

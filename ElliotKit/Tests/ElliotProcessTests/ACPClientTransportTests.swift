@@ -45,6 +45,13 @@ private final class LoopbackTransport: Transport, Sendable {
     var isConnected: Bool {
         get async { !closed.value }
     }
+
+    /// Owns no child, so there is nothing to escalate against — the whole point of this
+    /// transport is that it proves the protocol without a process. ⛔ Deliberately a no-op and
+    /// deliberately **not** a default implementation on `Transport`: a default would silently
+    /// disarm #381's escalation for the next conformer that forgot to write one, which is the
+    /// same shape as the fall-through `ToolResolution.overrideUnusable` exists to refuse.
+    func terminate(hardKillAfter grace: Duration) {}
 }
 
 @Suite("ACP client over a transport")

@@ -71,7 +71,7 @@ struct CardValueFromProposalTests {
         // `gh` unreachable, so duplicate hints come from the board alone — which
         // is also the honest default here.
         let config = ToolConfig(
-            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
         let gh = GHClient(config: config)

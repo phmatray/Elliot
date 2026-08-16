@@ -54,17 +54,25 @@ own guard read against those three names — is empty.
 
 ## What was changed in place
 
-Four files, corrected 2026-08-12 (the "20 sites" this line previously claimed was Step 5's
+Five files as of #381 — four until then, corrected 2026-08-12 (the "20 sites" this line previously claimed was Step 5's
 *diagnostic* count — 5 source sites × 4 reporting passes — not a count of edits; there is one):
 
-- `Client.swift:909`: the one generic parameter the build named at Step 6 —
-  `withRequestTimeout<T>` → `withRequestTimeout<T: Sendable>`.
-- `Client.swift:912`: `withRequestTimeout`'s `operation` parameter —
+⚠️ **The `Client.swift` entries below name symbols, not lines, and that is a correction.** They read
+`:909`, `:912` and `:1001` until #381's review round; measured 2026-08-13, all three were already
+wrong at `1963067` — `:909` was `await self.failRequest(...)`, not `withRequestTimeout` — and #381
+shifted them a further ~50 lines. A citation into a file this section exists to help someone re-diff
+is worth nothing once it points at the wrong statement, and a line number in a file under active
+vendoring rots by construction. Entries for files this issue did not touch are left as they are:
+correcting a citation nobody has re-measured would only move the problem.
+
+- `Client.swift`, `withRequestTimeout<T>` → `withRequestTimeout<T: Sendable>`: the one generic
+  parameter the build named at Step 6.
+- `Client.swift`, `withRequestTimeout`'s `operation` parameter —
   `@escaping () async throws -> T` → `@escaping @Sendable () async throws -> T`. Not a generic
   parameter, so the line above doesn't cover it: this is a `SendingClosureRisksDataRace`
-  diagnostic that only appeared once `:909`'s fix let the file clear an earlier type error and
+  diagnostic that only appeared once the fix above let the file clear an earlier type error and
   reach that later, SIL-level check.
-- `Client.swift:1142`: `writeMessageWithDebug<T: Encodable>` → `<T: Encodable & Sendable>`, the
+- `Client.swift`, `writeMessageWithDebug<T: Encodable>` → `<T: Encodable & Sendable>`, the
   other half of that same cascade (a `SendingRisksDataRace` at its call into
   `processManager.writeMessage`).
 - `Internal/ProcessManager.swift:250`: `ACPProcessManager.writeMessage<T: Encodable>` →
@@ -75,6 +83,35 @@ Four files, corrected 2026-08-12 (the "20 sites" this line previously claimed wa
 - `Utilities/ShellEnvironment.swift:19-20`: `cachedEnvironment`/`isLoading` made
   `nonisolated(unsafe) static var` — arbitrated 2026-08-12; see the comment at the site for
   exactly what synchronisation this does and does not rely on.
+- `Transport/Transport.swift`: the `Transport` protocol gains
+  `func terminate(hardKillAfter grace: Duration)` — #381. Upstream declared `send`, `messages`,
+  `close` and `isConnected` and no way to end a child, so `Client`, which holds `any Transport`,
+  could only ever *ask* an agent to stop by closing its stdin. An agent that ignores that survives
+  the client that owned it. Deliberately not `async` and deliberately without a protocol-extension
+  default: the caller that most needs it is a `deinit`, and a default would silently disarm the
+  escalation for the next conformer that forgot to write one.
+- `Client.swift`, `terminate()` — #381. Upstream closed the transport and cancelled the read
+  loop in the very next statement, throwing away the flush that closing exists to permit, and had
+  no escalation at all. It now arms a flush deadline *before* the wait (armed-then-disarmed, never
+  raced inside a task group — see the comment at the site for why the group shape deadlocks
+  precisely for the agent this exists for), awaits the read loop, and escalates through
+  `transport.terminate(hardKillAfter:)` when the flush window expires or no loop ever started.
+- `Client.swift`, `isTerminated`, `defaultFlushGrace`, `defaultEscalationGrace`, the two
+  stored graces, and the two new defaulted `init` parameters — #381. `init` defers
+  `startReadLoop()` into a `Task`, so the loop can start *after* a caller has already terminated;
+  `startReadLoop()` now returns early when it has. The graces are injectable so tests need not
+  wait out two and fifteen seconds per case.
+- `Client.swift`, `startReadLoop()` `private` → `internal`, and a new internal `hasReadLoop` —
+  #381, added in that issue's review round. Neither changes behaviour; both exist so criterion 4
+  can be *pinned*, and it needed pinning because measurement said it was not. Deleting the
+  `isTerminated` guard left the whole suite green — 8 filtered runs of 8, plus one full run of
+  2 798 tests — and deleting the escalation the `readLoop == nil` branch performs turned it red
+  only 11 filtered runs in 12, because the branch is chosen by a scheduler race no test can win on
+  purpose. `ClientTerminationTests` reproduces both orderings on demand: it calls `startReadLoop()`
+  itself for the first, and relies on `terminate()` nilling the field for the second. Break-tested
+  after: each deletion now reddens its own test, 6 runs of 6. ⛔ `readLoop` itself stays `private`
+  — widening it would let a test *write* the state those two branches are chosen by, which is the
+  opposite of pinning them.
 
 **Task 5 (`refactor(vendor): the client speaks through the Transport it already declared`) made the
 replacement above true.** `Client.swift` no longer names `ACPProcessManager` anywhere except in a
