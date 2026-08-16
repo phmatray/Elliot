@@ -182,8 +182,8 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     /// Not `id`. Under `claude -p` Elliot passed `--session-id` and the two were
     /// one value; under ACP the agent names its own session. `resumedFrom` still
     /// points at a *run*, and `RunScheduler` reads this column off that run to
-    /// fork from — so the chain `ResumeChain` walks is unchanged, and only what
-    /// it hands the runner is different.
+    /// fork from (Task 13) — so the chain `ResumeChain` walks is unchanged, and
+    /// only what it hands the runner is different.
     ///
     /// ⚠️ `Optional`, for the reason `resumedFrom` above gives at length: a
     /// non-optional `String` would be decoded with `decode(_:forKey:)` rather
