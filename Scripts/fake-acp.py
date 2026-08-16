@@ -116,7 +116,9 @@ the same way, and `fake-claude.sh` carried the same warning.
 
 FAKE_ACP_DELAY_MS is what lets a test reach a client's idle watchdog, and it is the counterpart
 of `fake-claude.sh`'s FAKE_CLAUDE_DELAY_MS — the knob `ClaudeRunnerTests.silenceAndRecoveryAlternate`
-rides on. A client that announces a silence and then withdraws it can only be exercised by a turn
+rode on, before Stage 1 of #379 deleted that suite. Three suites read this one now: `ACPRunnerTests`,
+`EndToEndTests` and `RunsPaneLiveTests`.
+A client that announces a silence and then withdraws it can only be exercised by a turn
 that genuinely goes quiet and genuinely talks again, and this double otherwise writes its whole
 conversation as fast as the pipe takes it. ⚠️ It is a pause per *line*, not a total: the gaps are
 what a test needs, so the pause is what is configured, and no test may assert on how long the run

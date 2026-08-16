@@ -84,8 +84,9 @@ public enum AgentLog {
     ///
     /// ⚠️ **Nothing in production calls this yet, and the sentence that stood here claimed
     /// otherwise.** It said `RunScheduler.finish` reads what this scan finds on every run — true of
-    /// `ClaudeRun`, which really does recover its outcome from the log
-    /// (`ClaudeRunner.swift:301-310`), and not true of `AgentRun`, which hands
+    /// `ClaudeRun`, which really did recover its outcome from the log
+    /// (`ClaudeRunner.swift:301-310`, deleted in Stage 1 of #379 — the citation is to history, not
+    /// to a file you can open), and not true of `AgentRun`, which hands
     /// `AgentRunOutcome.summary` straight from the value it assembled and wrote
     /// (`ACPRunner.swift:516-525`). That difference is deliberate rather than an omission: under
     /// `claude -p` the log carried the agent's **own** bytes, so it was the source; here it carries

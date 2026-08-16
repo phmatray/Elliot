@@ -959,8 +959,10 @@ struct AppModelTests {
     @Test("A run that starts talking again stops being stalled, on every screen")
     func resumeReachesTheUI() {
         // The mirror of the test above, and the whole of #309. The mark was
-        // one-way: `ClaudeRun` cleared its announce latch on the next byte and
-        // yielded nothing, so a `merge-pr` that waited twenty-one minutes on CI
+        // one-way: `ClaudeRun` — the CLI runner, retired in Stage 1 of #379 —
+        // cleared its announce latch on the next byte and yielded nothing, and
+        // `AgentRun` inherited the guarantee rather than the defect. So a
+        // `merge-pr` that waited twenty-one minutes on CI
         // and then produced its next tool call kept the attention tint and "No
         // output for a while" until it exited. Silence is the only signal a
         // wedged run gives — there is deliberately no wall-clock kill — so a

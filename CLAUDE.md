@@ -5,8 +5,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A native macOS Kanban board where **moving a card is the act of execution**. Dragging a card from
-Backlog to To Do genuinely spawns `claude -p /ai-migration-kit:create-issue <story>` in a registered
-repository. The board is a remote control, not a mirror of GitHub.
+Backlog to To Do genuinely runs `/ai-migration-kit:create-issue <story>` against a real agent in a
+registered repository. The board is a remote control, not a mirror of GitHub.
+
+⚠️ **Since Stage 1 of #379 that agent is reached over ACP, not by spawning `claude -p`.** Elliot
+spawns `npx @agentclientprotocol/claude-agent-acp` — the same three tokens for every run — and holds
+one JSON-RPC session per run over its stdio. `ClaudeRunner.swift` is deleted, and so is
+`ToolConfig.claudePath`: **`ELLIOT_CLAUDE_PATH` no longer selects the CLI**, because the adapter runs
+the copy vendored inside its own npm dependency. Preflight's `tool.claudeOverride` row says so
+whenever the variable is set, rather than letting a green screen imply it was honoured.
 
 Two binaries ship in one bundle: the SwiftUI app (`ElliotApp`) and an MCP helper (`elliot-mcp`) that
 Claude Code spawns over stdio. Both reach the same rule engine, so an agent's `board_move_card` and a
@@ -26,9 +33,11 @@ open dist/Elliot.app                             # launch from Finder, not a ter
 claude mcp add elliot -s user -- "$PWD/dist/Elliot.app/Contents/MacOS/elliot-mcp"
 ```
 
-- `swift test --filter` matches the **type** name, not the `@Suite` display name: `ClaudeRunnerTests`,
-  not `"Claude runner"`. A filter matching nothing prints `warning: No matching test cases were run`
-  and **exits 0** — indistinguishable from success.
+- `swift test --filter` matches the **type** name, not the `@Suite` display name: `ACPRunnerTests`,
+  not `"ACP runner"`. A filter matching nothing prints `warning: No matching test cases were run`
+  and **exits 0** — indistinguishable from success. (This example named `ClaudeRunnerTests` until
+  Stage 1 of #379 deleted that suite — at which point the line was demonstrating the trap rather
+  than describing it.)
 - **Swift 6.3.1 tools-version** — Xcode 26.4 or newer, no lower option — `swiftLanguageModes: [.v6]`,
   deployment target macOS 15. Strict concurrency is on: every new type crossing an isolation boundary
   must be `Sendable`.
@@ -189,6 +198,14 @@ sink's methods are called **while the drain lock is held**, because under the lo
 invariant. A sink handed a chunk to deal with later can append to a result already returned or yield
 into a stream already finished, which is the tail-dropping bug restored.
 
+⚠️ **`StreamingProcess` has had no production consumer since Stage 1 of #379**, which deleted its only
+caller, `ClaudeRunner`; its sole remaining construction site is `StreamingProcessDrainTests`. It stays
+because `DrainDuplicationTests.commentsAreNotDuplicated` intersects its comments with
+`ProcessRunner.swift`'s, and that intersection *is* the running record of #146 — deleting the file
+retires the gate rather than satisfying it. Removing it means re-pointing that gate at
+`ACPTransport.swift` and deciding what becomes of `StreamingProcessDrainTests`; that is a change with
+its own argument, and its follow-up issue is **not yet filed**.
+
 This was the mechanism written twice until #146, and the copy was not incidental: **eight comment
 lines were byte-identical between the two files**, and they were the four load-bearing arguments
 themselves. When the *explanation* of an invariant has been copied word for word, the invariant has
@@ -289,7 +306,7 @@ could perform one, which was two screens answering the same question and only on
 
 ⛔ **The choice of mechanism is not stylistic.** `createLabels` is deterministic — `gh label create`,
 one right answer, nothing committed — so it runs `gh` directly and **no agent**: an unattended
-`claude -p`, which Elliot launches at `bypassPermissions` inside a real checkout, is a slower and
+agent run, which Elliot launches at `bypassPermissions` inside a real checkout, is a slower and
 far wider-reaching way to run a `for` loop. `seedCard` is for work that *is* a judgement and edits a
 committed file, so it goes on the board and through a pull request. Reaching the agent through a card
 rather than through a button is what keeps *moving a card is the act of execution* true: a second
@@ -350,7 +367,10 @@ captured `PATH`, so it cannot be out-ranked the way a prepended directory is, an
 ⛔ **`ELLIOT_CLAUDE_PATH` is the exception, and it selects nothing.** Since #381's task 15 a card's
 run is an ACP adapter, and the adapter resolves the Claude CLI vendored **inside its own npm
 dependency** (`@anthropic-ai/claude-agent-sdk`) rather than the `claude` on this PATH. The variable
-is still read, still fills in `ToolConfig.claudePath`, and nothing spawns it. Preflight's `claude` row
+is still read by `ToolOverrides`, which is generic over the tool name, but **nothing consumes it**:
+Task 18 deleted `ToolConfig.claudePath`, its last reader, along with the `locate("claude")` that
+filled it in. So the variable no longer resolves to anything, rather than resolving to a path nobody
+spawns. Preflight's `claude` row
 is gone for that reason — a version reported for a binary that never runs reads as having been checked
 — and a `tool.claudeOverride` row says so whenever the variable is actually set. The adapter's own
 documented escape hatch is `CLAUDE_CODE_EXECUTABLE`, and ⚠️ **whether pointing that at a local install
@@ -548,7 +568,7 @@ strip at ~143×160 with nothing in it readable as text. See the probe table furt
 agent can and cannot do, and reach for `board_screenshot` instead.
 
 ⛔ **Probe with those, not by firing a click at the board.** A synthetic click that lands on a card in
-a registered repository *is the act of execution* — it can start an unattended `claude -p` at
+a registered repository *is the act of execution* — it can start an unattended agent run at
 `bypassPermissions` — so "just try it and see" is the one probe that can do real work by accident.
 The table below records what each channel *answered*; it is a reference, not a script to run top to
 bottom against your everyday board.
@@ -660,7 +680,7 @@ settles the daemon, so it does nothing for an agent shell whose ancestor is Elli
 *Elliot.app* ticked under System Settings ▸ Privacy & Security ▸ Accessibility (and Screen Recording
 for capture). Two things make that less simple than it sounds:
 
-- ⛔ **It grants far more than a verification pass.** Elliot spawns unattended `claude -p` runs at `bypassPermissions`, and each inherits Elliot as its responsible process — so ticking that box lets **every** future run post synthetic clicks and keystrokes into any application and read any app's accessibility tree. That is a standing capability bought for one afternoon of looking; decide it deliberately, and prefer `board_screenshot` when it will do.
+- ⛔ **It grants far more than a verification pass.** Elliot spawns unattended agent runs at `bypassPermissions` — `npx …claude-agent-acp` since Stage 1 of #379, not `claude -p` — and each inherits Elliot as its responsible process — so ticking that box lets **every** future run post synthetic clicks and keystrokes into any application and read any app's accessibility tree. That is a standing capability bought for one afternoon of looking; decide it deliberately, and prefer `board_screenshot` when it will do.
 - ⚠️ **It expires the next time you build.** `build-app.sh` deletes and re-ad-hoc-signs the bundle, so the grant you just ticked is dropped by the very command this file tells you to run before a look-at-the-app pass — silently, back to `-1719`. And *three* Elliots are routinely on disk at different worktree paths; each is its own TCC subject, so tick the bundle you are actually going to launch.
 
 Until then, anything needing a click, a key or a `screencapture` is **not verifiable from here** —
@@ -742,6 +762,13 @@ invisible with a single repository registered, which is how every scratch board 
 | In Progress → In Review | *no skill* — a system move, when `PRWatcher` sees the PR go ready |
 | In Review → Done | `/ai-migration-kit:merge-pr <pr>` (+ repeatable `--follow-up`) |
 | anything else | nothing |
+
+⚠️ **The skills are unchanged; how the prompt reaches them is not.** There is no `-p <text>` on a
+child's argv any more — the prompt is the content of one ACP `session/prompt`, sent verbatim as a
+single opaque text block. Two consequences bite in practice: `SkillRun.argv` is now the adapter's
+three tokens for **every** run, so argv no longer records what a run was allowed to do
+(`theDisplayedArgvCarriesNothingPerRun` pins that loss); and a test that wants to know what prompt
+was really sent reads `FAKE_ACP_PROMPT_OUT` from the double rather than the child's arguments.
 
 The backlog holds **user stories** (`role` / `want` / `benefit` + acceptance criteria as separate
 fields), not loose prose. A card is editable up to the moment it carries an issue number; after that
@@ -998,16 +1025,51 @@ One more false negative to know: `entire contents` of the window can return **em
 
 ### Run lifecycle
 
-`is_error` is not enough: a run only counts as clean when `permission_denials` is empty too — a run can
-end `subtype: "success"` having been refused a tool and quietly worked around the gap.
+`is_error` is not enough: a run only counts as clean when its refusals are empty too — a run can end
+successfully having been refused a tool and quietly worked around the gap. Under ACP those two are
+`TurnSummary.isError` and `TurnSummary.denials`, and `RunScheduler.state(for:cancelRequested:)` is
+the one fold from a finished run to a `RunState`.
+
+⛔ **`nonExecutionKind` folds by value, never by presence.** A cancelled turn's in-flight tool calls
+come back carrying `interrupted` or `cancelled`, so a fold that asked merely *whether* a kind was
+present would mark every cancelled run as one that was refused a tool. `NonExecutionKind.isDenial`
+is the single implementation and `TurnSummary.denials` is filled from it.
+
+⚠️ **A run that produced no terminal line is `.failed`, not `.succeeded`** — a deliberate change from
+the CLI, where a `claude -p` exiting 0 without a terminal `result` counted as a success. Under ACP
+the absence of a terminal line means the `session/prompt` response never arrived, which is a run that
+did not finish whatever the adapter's exit code says.
 
 There is no wall-clock kill (`merge-pr` waiting hours on CI is legitimate). What is actionable is
-**silence**: 20 minutes without output marks the run stalled and asks. Cancellation is a plain SIGTERM —
-Claude Code handles it, aborts the turn, kills its Bash process tree, runs SessionEnd hooks, exits 143.
+**silence**: 20 minutes without output marks the run stalled and asks.
 
-Runs default to `--permission-mode bypassPermissions`. **Since #333 a single repository can actually be
+**Cancellation is two-phase, and the second phase is not optional.** `session/cancel` asks the agent
+to stop, which ends the turn with `stopReason: "cancelled"` — that word is what `RunState.cancelled`
+is read off. It does **not** end the Node child, so `end()` still must, via the SIGTERM→SIGKILL
+escalation. Under `claude -p` this was one act, a SIGTERM; splitting it is what buys a cancelled run a
+verdict instead of only a corpse. ⚠️ The scheduler passes its own `cancelRequested` rather than
+trusting the wire, because the kill backstop can end the adapter before the `stopReason` arrives, and
+a killed adapter is indistinguishable from a crashed one from outside.
+
+**The run log is JSON-RPC now, not stream-json.** Elliot writes the terminal line itself: under
+`claude -p` the terminal `result` was a stream-json line like any other, so the log was
+self-sufficient for free, whereas an ACP `stopReason` comes back as the *response* to
+`session/prompt` and never reaches the log unless Elliot puts it there. The stream-json archive
+reader is still present for old runs, and `Scripts/fake-claude.sh` with it.
+
+Runs default to `bypassPermissions`. **Since #333 a single repository can actually be
 tightened** — Preflight ▸ each repository ▸ *Run terms*, holding the mode picker and the extra allowed
 tools, written through `AppModel.setRunTerms` → `saveRepo`.
+
+⛔ **The two halves of *Run terms* stopped travelling together in Stage 1 of #379, and only one of
+them still travels.** `permissionMode` was `--permission-mode <mode>` and is now an ACP
+`session/set_config_option`. `extraAllowedTools` was `--allowedTools` and now has **no ACP equivalent
+at all**: the adapter advertises five config options — `mode`, `model`, `effort`, `fast`, `agent` —
+and none of them grants tools. So a non-empty list is **refused**, not dropped:
+`AgentRun.start` throws `AgentInvocationError.unmappableAllowedTools` before it constructs a session,
+and Preflight's `repo.runTerms` row fails any repository carrying one, so an operator meets the
+refusal before a drag rather than inside a run. Dropping the grant silently would make an agent hit a
+refusal for a tool that had been explicitly allowed, with nothing on screen saying why.
 
 ⚠️ **This line claimed that capability for the whole life of the project and it did not exist.**
 `permissionMode` and `extraAllowedTools` are **v1** columns; `RunScheduler` read both at spawn,
@@ -1113,8 +1175,10 @@ seconds. A single sample cannot detect an intermittent regression, and that is h
 53 % of the time reached `main` past **21 single-sample merges**. Repetition alone is not the whole
 answer either: one flake was 1-in-13 idle and 6-in-10 under load, so sample under load where you can.
 
-**`ClaudeRun.updates` is deliberately lossy — never assert an exact count on it.** It is
-`AsyncStream(bufferingPolicy: .bufferingNewest(512))` (`ClaudeRunner.swift:136`), and the streaming
+**`AgentRun.updates` is deliberately lossy — never assert an exact count on it.** It is
+`AsyncStream(bufferingPolicy: .bufferingNewest(512))` (`ACPRunner.swift:587`, and
+`ClaudeRunner.swift:136` before Stage 1 of #379 deleted it — the guarantee was carried across
+deliberately, not inherited by accident), and the streaming
 commit says so at the seam: *the UI stream is bounded and may drop, this never does*. **The log file
 is the lossless sink** — raw bytes reach it before parsing — so a count is asserted against the log.
 Measured over 10 full-suite runs: the exact-count assertion on the stream failed **9/10**, the same

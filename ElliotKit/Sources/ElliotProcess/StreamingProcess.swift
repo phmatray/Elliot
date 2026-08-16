@@ -2,6 +2,21 @@ import Foundation
 
 /// A long-running child whose stdout is consumed line by line as it arrives.
 ///
+/// ⚠️ **No production consumer since Stage 1 of #379.** `ClaudeRunner` was its only caller, and it
+/// was deleted with the CLI runner; the sole remaining construction site is
+/// `StreamingProcessDrainTests`. It is kept anyway because
+/// `DrainDuplicationTests.commentsAreNotDuplicated` reads this file against `ProcessRunner.swift`
+/// — that intersection is #146's runnable receipt — and because `ACPTransport` is modelled on it.
+/// Deleting it means re-pointing that gate at `ACPTransport.swift` and deciding what becomes of
+/// `StreamingProcessDrainTests`, which is a change with its own argument and not a tidy-up to fold
+/// into this one.
+///
+/// ⛔ **Follow-up not yet filed**, and this comment is not a substitute for it: *"Delete
+/// StreamingProcess and re-point the #146 gate at ACPTransport"*. The task that wrote this note was
+/// barred from writing to GitHub, so the issue number is missing rather than pending. A comment
+/// saying somebody should is exactly the gap that leaves work unrouted — file it, then put the
+/// number here.
+///
 /// Cancellation is a plain `terminate()` (SIGTERM) — and that already reaches
 /// the whole process group. Measured directly (`bash -c 'sleep 300 & sleep
 /// 300'`, and this package's own `fake-claude.sh` in `FAKE_CLAUDE_MODE=hang`,

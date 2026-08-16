@@ -102,9 +102,9 @@ struct ACPRunnerTests {
     /// The counterpart of `drain`, which swallows exactly these two cases — a separate collector
     /// rather than a flag on that one, because everything else in this suite asserts on the log
     /// and nothing else here has any use for `.stalled`/`.resumed`. `ClaudeRunnerTests`
-    /// (`collectSilences`) states the same shape one runner over; the two are the same eight lines
-    /// because they are one question asked of two enums, and this one outlives the other when
-    /// Task 18 deletes `ClaudeRunner.swift`.
+    /// (`collectSilences`) stated the same shape one runner over — the two were the same eight
+    /// lines because they were one question asked of two enums — and it was deleted with
+    /// `ClaudeRunner.swift` in Stage 1 of #379. This is now the only copy.
     static func silences(_ run: AgentRun, timeout: Duration = .seconds(30)) async throws
         -> [RunSilence]
     {

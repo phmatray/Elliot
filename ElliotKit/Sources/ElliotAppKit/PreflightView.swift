@@ -106,9 +106,19 @@ public struct PreflightView: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
 
+            // ⛔ This help text must not promise a stop. It said "Handed to Claude
+            // Code, which stops the run itself", which was true of `--max-budget-usd`
+            // and is false twice over now: nothing is handed to anything, and on the
+            // four recordings in `Fixtures/acp/turn-*.json` cost is reported once per
+            // turn, on the last frame before the reply — so the cancel Elliot sends
+            // arrives when there is nothing left to stop. What the ceiling reliably
+            // buys is the verdict. See `AgentInvocation.maxBudgetUSD`, which carries
+            // the measurement.
             ceilingField(
                 title: "Per run", value: model.ceiling.perRunUSD,
-                help: "Handed to Claude Code, which stops the run itself."
+                help: "Elliot cancels when a reported cost reaches it. Cost usually "
+                    + "arrives as the turn ends, so this marks an overspending run "
+                    + "failed more often than it stops one."
             ) { new in SpendCeiling(perRunUSD: new, perDayUSD: model.ceiling.perDayUSD) }
 
             ceilingField(

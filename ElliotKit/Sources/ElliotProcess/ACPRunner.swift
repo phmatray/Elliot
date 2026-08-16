@@ -116,12 +116,12 @@ public struct AgentInvocation: Sendable {
     ///
     /// ⛔ **Which makes it the same three tokens for every run — a loss of record, not a tidier
     /// one, and it is written down here rather than discovered from a pane that quietly stopped
-    /// answering.** `RunScheduler.swift:729` stamps `[toolConfig.claudePath] +
-    /// invocation.arguments()` today, which carries `--permission-mode <mode>` and one `--add-dir`
-    /// per extra directory; the moment Task 15 replaces that line with this function, a
-    /// `bypassPermissions` `implement-issue` and a `plan` `merge-pr` are indistinguishable in the
-    /// row. `SkillRun` has no `permissionMode` column — argv was the only *per-run* record of the
-    /// grant — and Task 12 adds `agentSessionID` and `stopReason`, not this.
+    /// answering.** `RunScheduler` used to stamp `[toolConfig.claudePath] + invocation.arguments()`,
+    /// which carried `--permission-mode <mode>` and one `--add-dir` per extra directory. Task 15
+    /// replaced that with this function and Task 18 deleted the field, so a `bypassPermissions`
+    /// `implement-issue` and a `plan` `merge-pr` **are** now indistinguishable in the row.
+    /// `SkillRun` has no `permissionMode` column — argv was the only *per-run* record of the
+    /// grant — and Task 12 added `agentSessionID` and `stopReason`, not this.
     ///
     /// `Repo.permissionMode` is not a substitute, twice over. It is the value *now*, editable from
     /// Preflight ▸ Run terms since #333, so it cannot say what a run three weeks ago spawned
@@ -299,9 +299,9 @@ extension AgentUpdate {
     /// two directions cannot be wired up differently. The switch is exhaustive with no `default`,
     /// so a third direction added to `RunSilence` is a compile error here rather than a notice
     /// that reaches one site and not the other, which is the shape of the defect `RunSilence`
-    /// exists to end. `RunUpdate.announcing` states the same rule for the CLI runner; the two are
-    /// the same three lines because they are one *decision* rendered into two enums, and the
-    /// older one dies when Task 18 deletes `ClaudeRunner.swift`.
+    /// exists to end. `RunUpdate.announcing` stated the same rule for the CLI runner — the two were
+    /// the same three lines because they were one *decision* rendered into two enums — and it died
+    /// with `ClaudeRunner.swift` in Stage 1 of #379. This is now the only copy.
     static func announcing(_ notice: RunSilence, lastOutput: Date) -> AgentUpdate {
         switch notice {
         case .wentQuiet: .stalled(since: lastOutput)
