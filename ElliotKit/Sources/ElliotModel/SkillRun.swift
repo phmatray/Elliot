@@ -82,10 +82,19 @@ public enum VerifiedOutcome: Codable, Sendable, Hashable {
     case unverified(reason: String)
 }
 
-/// One invocation of `claude -p`.
+/// One turn of one ACP session.
+///
+/// ⚠️ *"One invocation of `claude -p`"* until the switchover. Two sentences in this type were
+/// written against that CLI and are corrected below rather than left for a later task: a reader
+/// reasoning from a retired premise is the failure #186 exists to record, and these were made
+/// false by the very commit that would have been deferring them.
 public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
-    /// Also passed as `--session-id`, so the CLI transcript path is known
-    /// before the process emits anything.
+    /// Elliot's own id for the run, and the key `StoreLocation.runLogURL(runID:)` is built from.
+    ///
+    /// ⚠️ **Not the agent's session id.** It was also passed as `claude -p --session-id`, so the
+    /// two were one value and the CLI's transcript path was known before the process emitted a
+    /// byte. Under ACP the agent names its own session at `session/new` — which is what
+    /// `agentSessionID` below holds, and what a resume forks.
     public var id: UUID
     /// The card this run works on. `nil` for an analysis run, which has no card
     /// — exactly one of `cardID` and `analysisID` is set.
@@ -98,9 +107,27 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     /// scheduler's dedupe key is `(repoID, angle)`.
     public var analysisAngle: AnalysisAngle?
     public var kind: SkillKind
-    /// The exact `-p` argument.
+    /// The exact text of the turn's `session/prompt`.
+    ///
+    /// ⚠️ It read *"the exact `-p` argument"* until the ACP switchover, which is now no argument
+    /// at all: the prompt travels as JSON-RPC on the adapter's stdin, not on argv. The *text* is
+    /// unchanged, which is why nothing else about this field moved.
     public var prompt: String
-    /// The full argv, kept so a run can be reproduced by hand.
+    /// The adapter's argv — `npx --yes @agentclientprotocol/claude-agent-acp@<pin>`, or an
+    /// interpreter and a script under test.
+    ///
+    /// ⛔ **It no longer reproduces a run, and this said it did.** It read *"the full argv, kept so
+    /// a run can be reproduced by hand"*, true while `claude -p` carried `--permission-mode`, one
+    /// `--add-dir` per extra directory and the prompt itself. `AgentInvocation.displayArgv` renders
+    /// the **same three tokens for every run**, so a `bypassPermissions` `implement-issue` and a
+    /// `plan` `merge-pr` are indistinguishable here. What the row still tells you is which adapter
+    /// answered — a real thing, and the only per-machine fact in the column.
+    ///
+    /// The per-run grant did not vanish, it moved: `RunSessionInfo.mode` is written to the log as
+    /// `elliot/session` the instant `session/new` returns, and `AgentLog.sessionInfo(inLogAt:)`
+    /// reads it back. A per-run *column* beside `agentSessionID` and `stopReason` is the durable
+    /// fix and is deliberately not taken inside this stage — see `displayArgv`'s own comment,
+    /// which carries the argument and the reason a `mode=…` token must not be appended here.
     public var argv: [String]
     public var cwd: String
     /// The last attempt that actually created a session.

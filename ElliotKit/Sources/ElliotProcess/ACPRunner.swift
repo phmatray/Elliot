@@ -129,16 +129,16 @@ public struct AgentInvocation: Sendable {
     /// `PermissionMode.appraisal(repo:)`, a derived value that has never had a column at all.
     /// `theDisplayedArgvCarriesNothingPerRun` pins the loss so it stays a measurement.
     ///
-    /// ⚠️ **Two doc comments in code this task does not touch assert that visibility, and both are
-    /// still true until Task 15 lands** — named here rather than corrected early, because a
-    /// comment made false in the other direction is no better. `SkillRun.argv`
-    /// (`ElliotModel/SkillRun.swift:103`) says *"the full argv, kept so a run can be reproduced by
-    /// hand"*; `npx --yes @agentclientprotocol/claude-agent-acp` reproduces an adapter, not a run.
-    /// `RunsPane.inputs` (`ElliotAppKit/RunsPane.swift:346-353`) gives as its whole reason for
-    /// existing that otherwise, for *"implement-issue and merge-pr, the two runs that write code
-    /// and merge it, a reader could never see … that the run carried `--permission-mode
-    /// bypassPermissions`"*. Task 18 step 4 enumerates the doc comments this stage falsifies and
-    /// **omits both**.
+    /// ✅ **Two doc comments elsewhere asserted that visibility and are now corrected**, in the
+    /// same commit that made them false rather than in the later task whose list omitted both.
+    /// `SkillRun.argv` said *"the full argv, kept so a run can be reproduced by hand"*; `npx --yes
+    /// @agentclientprotocol/claude-agent-acp` reproduces an adapter, not a run. `RunsPane.inputs`
+    /// gave as its whole reason for existing that otherwise, for *"implement-issue and merge-pr,
+    /// the two runs that write code and merge it, a reader could never see … that the run carried
+    /// `--permission-mode bypassPermissions`"*. Both now name `elliot/session` as where the
+    /// per-run grant went. Deferring them was the plan and it was the wrong one: the interval
+    /// between falsifying a comment and correcting it is time every reader spends reasoning from
+    /// a retired premise, which is exactly what #186 is a record of.
     ///
     /// ⛔ **Do not close the gap by returning tokens that are not argv.** A `mode=…` appended here
     /// lands in a field the pane renders as one command line and documents as runnable by hand,
@@ -180,8 +180,22 @@ public enum AgentInvocationError: Error, LocalizedError, Sendable {
     /// conforms — `ProcessError`, `ArtifactProbeError`, `StoreError`, `BoardError`,
     /// `AnalysisError`, `AutoDevError`, `SocketError`, `IPCServer.StartError`.
     ///
-    /// The remedy it names is the same screen Preflight's `repo.runTerms` row points at, so the
-    /// operator who meets this after a drag and the one who meets it before are sent to one place.
+    /// `unmappableAllowedTools` names the same screen Preflight's `repo.runTerms` row points at,
+    /// so the operator who meets it after a drag and the one who meets it before are sent to one
+    /// place.
+    ///
+    /// ⛔ **`adapterNotResolved` deliberately does not, and this sentence used to say it did.** It
+    /// read *"Preflight names which one and why"*, which is a forward-looking claim about Task 16
+    /// written in the present tense: `PreflightService.globalChecks` iterates
+    /// `[("claude", …), ("gh", …), ("git", …)]` and has **no row for node, npx or the adapter at
+    /// all**. So in this tree an operator with no Node gets a fully green Preflight, a card that
+    /// fails the instant it is dragged, and an error pointing them at a screen that has nothing to
+    /// say. The sentence now names the next action itself — the floor, the relaunch, and the two
+    /// overrides — because a remedy that has to be true *when it is read* cannot be paid for by a
+    /// screen that does not exist yet. When Task 16 lands the row, sending the reader there as
+    /// well is one clause; asserting it early was the defect. Same shape as the `no CI` claims
+    /// CLAUDE.md catalogues three times, and the reason it is written down here rather than only
+    /// in a report.
     public var errorDescription: String? {
         switch self {
         case .unmappableAllowedTools(let tools):
@@ -191,7 +205,10 @@ public enum AgentInvocationError: Error, LocalizedError, Sendable {
                 + "the extra allowed tools in Preflight ▸ this repository ▸ Run terms."
         case .adapterNotResolved:
             "Elliot has no ACP adapter to run: node or npx could not be resolved at launch, so "
-                + "there is nothing to spawn. Preflight names which one and why."
+                + "there is nothing to spawn. Install Node "
+                + "\(ACPAgentLocator.minimumNodeMajor) or newer and relaunch Elliot — or, if it "
+                + "is installed somewhere your login shell does not look, point ELLIOT_NODE_PATH "
+                + "and ELLIOT_NPX_PATH at it."
         }
     }
 }

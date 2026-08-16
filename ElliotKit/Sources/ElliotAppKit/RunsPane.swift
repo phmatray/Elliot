@@ -404,14 +404,24 @@ struct RunBox: View {
 
     // MARK: What it was sent
 
-    /// The exact `-p` argument and the full argv, which `SkillRun` documents as
-    /// "kept so a run can be reproduced by hand" and which nothing rendered.
+    /// The prompt the turn was sent, and the adapter's argv.
     ///
     /// The editor shows "What create-issue will receive" while a story is still
     /// being written, and then that visibility ends the moment the card freezes
     /// — so for `implement-issue` and `merge-pr`, the two runs that write code
-    /// and merge it, a reader could never see what was actually asked, nor that
-    /// the run carried `--permission-mode bypassPermissions`.
+    /// and merge it, a reader could never see what was actually asked. That is
+    /// the whole of what this section still buys, and it is still worth it.
+    ///
+    /// ⛔ **The argv half no longer shows the grant, and this comment argued its
+    /// own existence on the fact that it did** — *"nor that the run carried
+    /// `--permission-mode bypassPermissions`"*, true of `claude -p` and false
+    /// the moment ACP landed. `AgentInvocation.displayArgv` renders the same
+    /// three tokens for every run: `npx --yes @agentclientprotocol/…`. The mode
+    /// is in the log instead, as the `elliot/session` record's `mode`
+    /// (`AgentLog.sessionInfo`), and the `Agent session` row is where a reader
+    /// meets it. Restoring the claim by appending a token to `argv` is refused
+    /// at the source — see `displayArgv`, which explains why a field the pane
+    /// renders as one command line must not carry things that are not argv.
     ///
     /// ⛔ **`Text(verbatim:)`, and no syntax colouring.** A prompt carrying
     /// `#123` or `%@` through `LocalizedStringKey` is the locale bug

@@ -68,9 +68,14 @@ private struct Stack {
     var repo: Repo
     var home: URL
 
+    /// - Parameter adapterExecutable: defaulted, and overridden by exactly one caller — the one
+    ///   that reproduces an unresolved adapter by passing `""`, which is what `AppModel` writes
+    ///   when `ACPAgentLocator.resolveAdapter()` throws and what every one of the 79 other
+    ///   `ToolConfig(…)` sites takes by default.
     static func make(
         fixture: String, extraEnv: [String: String] = [:], gitPath: String = "/usr/bin/false",
-        ghPath: String = "/usr/bin/false", idleTimeout: Duration = AgentRun.defaultIdleTimeout
+        ghPath: String = "/usr/bin/false", idleTimeout: Duration = AgentRun.defaultIdleTimeout,
+        adapterExecutable: String = TestPaths.adapterExecutable
     ) async throws -> Stack {
         let home = TestHome.scratch("board-e2e")
         try FileManager.default.createDirectory(
@@ -88,7 +93,7 @@ private struct Stack {
             // pointing at something unrunnable so a path that quietly went back to it would fail
             // rather than work.
             claudePath: "/usr/bin/false",
-            adapterExecutable: TestPaths.adapterExecutable,
+            adapterExecutable: adapterExecutable,
             adapterArguments: TestPaths.adapterArguments,
             // `false` by default so every verification fails cleanly rather
             // than reaching the network; this test is about the run mechanics.
@@ -554,6 +559,58 @@ struct EndToEndTests {
 
         #expect(run.state == .succeeded)
         #expect(run.exitCode == 0)
+    }
+
+    /// ⛔ **The `adapterNotResolved` guard, which had no test at all until code review deleted the
+    /// line and watched the whole suite stay green.** `ToolConfig.adapterExecutable` defaults to
+    /// `""` — the value all 79 other construction sites take, and the value `AppModel` writes when
+    /// `ACPAgentLocator.resolveAdapter()` throws, i.e. what an operator with no Node actually gets.
+    /// So this is not a synthetic input: it is the machine state the guard exists for.
+    ///
+    /// Without the guard `ChildProcess` still refuses — `isExecutableFile("")` is false — so
+    /// nothing runs either way and no assertion about *spawning* can tell the two apart. What
+    /// changes is the sentence, and the sentence is the whole point: `ProcessError.notExecutable("")`
+    /// reads `"Not an executable file: "` with the path left blank, and `RunScheduler`'s spawn
+    /// `catch` writes it verbatim onto a failed card **as Elliot's own words**. That is why the
+    /// negative assertion below is here rather than merely the positive ones.
+    @Test("A repository whose adapter never resolved fails by name, not by a blank path")
+    func unresolvedAdapterRefusesTheSpawn() async throws {
+        let stack = try await Stack.make(fixture: "fake-create-issue.json", adapterExecutable: "")
+        defer { stack.cleanUp() }
+
+        let card = try await stack.board.createCard(repoID: stack.repo.id, title: "No Node").card
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
+        let run = try await stack.awaitRun(cardID: card.id)
+
+        #expect(run.state == .failed)
+        // Nothing was spawned, so there is no exit code — the same tell as the sibling refusal.
+        #expect(run.exitCode == nil)
+        // Elliot's own words, never the agent's: no agent existed to say anything (#288).
+        #expect(run.resultSource == .elliot)
+        #expect(RunVerdict.of(run).itSaid == nil)
+
+        let sentence = try #require(run.resultText)
+        #expect(
+            !sentence.contains("Not an executable file"),
+            """
+            The card is carrying `ChildProcess`'s sentence with the path left blank. \
+            That is the guard in `AgentRun.start` gone: it fails one line earlier precisely \
+            so the words a person reads name a cause and a remedy.
+            """
+        )
+        #expect(sentence.contains("adapter"), "the sentence does not say what is missing")
+        #expect(sentence.contains("npx"), "the sentence does not name the toolchain")
+        #expect(
+            sentence.contains("ELLIOT_NODE_PATH"),
+            "the sentence names no remedy the reader can act on")
+
+        // ⛔ And it refuses *before* the log file is created, which is the guard's second claim.
+        // A run that left an empty artefact behind would show a reader an empty log rather than
+        // nothing at all — the `RunsPane` equivalent of a blank error.
+        #expect(
+            !FileManager.default.fileExists(atPath: run.logPath),
+            "an unresolvable adapter left an empty log behind")
     }
 
     @Test("A move that triggers nothing spawns nothing")

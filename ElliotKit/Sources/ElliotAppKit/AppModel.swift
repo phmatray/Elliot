@@ -955,11 +955,21 @@ public final class AppModel {
             // ⛔ The adapter's `try?` collapses five refusals into one empty
             // string, and that is safe **only** because empty is itself a
             // refusal: `AgentRun.start` throws `adapterNotResolved` rather than
-            // spawning anything. Which of the five it was is Preflight's to say
-            // — `ACPAgentLocator.LocatorError` has one case per next action, and
-            // Preflight re-runs the resolution to name it (Task 16). Keeping the
-            // error here instead would put a launch-time sentence on a screen
-            // that has moved on.
+            // spawning anything.
+            //
+            // ⚠️ **What is lost here is which of the five it was, and today
+            // nothing recovers it.** `ACPAgentLocator.LocatorError` has one case
+            // per next action — install node, fix `ELLIOT_NODE_PATH`, upgrade
+            // past the floor, look at a binary that answers no version, the same
+            // two for `npx` — and Task 16's plan is for Preflight to re-run the
+            // resolution and name the one that fired. Until that row exists,
+            // `adapterNotResolved`'s own sentence carries the remedy for all
+            // five at once, which is why it names the floor and the overrides
+            // rather than deferring to a screen. Do not read this comment as
+            // saying Preflight answers it: it does not, yet.
+            //
+            // Keeping the error here instead would put a launch-time sentence on
+            // a screen that has moved on.
             let resolvedAdapter = try? await adapter
             let config = ToolConfig(
                 claudePath: await claude.tool?.path ?? "",
