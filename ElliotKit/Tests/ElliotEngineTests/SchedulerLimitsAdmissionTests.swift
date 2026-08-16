@@ -384,9 +384,13 @@ struct SpendCeilingAdmissionTests {
 
     @Test("A per-run ceiling alone never closes admission")
     func perRunDoesNotGateAdmission() async throws {
-        // The two halves are enforced in different places: the per-run ceiling
-        // is Claude Code's job via `--max-budget-usd`, and gating admission on
-        // it would refuse runs that have not spent anything yet.
+        // The two halves are enforced in different places, and gating admission
+        // on the per-run one would refuse runs that have not spent anything yet.
+        // ⚠️ This said the per-run ceiling "is Claude Code's job via
+        // `--max-budget-usd`" — retired with the CLI in Stage 1 of #379. It is
+        // now a live brake inside the run, on the cost the agent reports; what
+        // the test asserts is unchanged, because the point was always that the
+        // per-run half is enforced *somewhere other than admission*.
         let scheduler = try await scheduler(
             ceiling: SpendCeiling(perRunUSD: 0.5, perDayUSD: nil), spentToday: 900
         )
