@@ -14,6 +14,8 @@ Env:
   FAKE_ACP_DELAY_MS     pause before every line written                (default: 0, no pause)
   FAKE_ACP_STDERR       text to emit on stderr at start-up
   FAKE_ACP_EXIT_AFTER_REPLY  exit 0 the instant session/prompt is answered
+  FAKE_ACP_FORKABLE     the one sessionId session/fork will fork; unset = every fork is refused
+  FAKE_ACP_FORK_UNREADABLE  answer session/fork with a result that will not decode (see below)
 
 FAKE_ACP_STDERR is the counterpart of fake-claude.sh's FAKE_CLAUDE_STDERR, and it exists for one
 path in particular: MODE=crash exits without a word, so a test asserting that a died-mid-turn run
@@ -95,6 +97,32 @@ and not the agent.
 before `session/new` has happened at all. A plausible success here would hide a client bug behind
 a turn that looks like it worked, the same instinct as `fake-gh.sh` exiting 64 on an unexpected
 subcommand rather than returning an empty list.
+
+`session/fork` follows that same discipline: it forks exactly one session id, the one named by
+FAKE_ACP_FORKABLE, and answers a JSON-RPC error for anything else — which, with the variable
+unset, is every fork. The fork returns a session id DIFFERENT from `session/new`'s
+(FORK_SESSION_ID below), because a double that handed back the same string could not tell a client
+that adopted the fork's answer from one that quietly opened a new session instead. Its arrival is
+announced on stderr, exactly as `session/cancel`'s is and for the same reason: without a receipt, a
+client that never called it and one that called it and was refused look identical from the outside.
+
+⚠️ **The refusal here is measured; the successful reply's payload is this double's own invention.**
+`Scripts/probe/acp_fork.py` drove the real adapter (@agentclientprotocol/claude-agent-acp 0.66.0) on
+2026-08-16, and what it saw was: a fork of a live session returns a **new** session id, and a turn on
+it carries the parent's context (a nonce planted in the parent turn came back from the fork). A fork
+of a well-formed session id that never existed answers **`-32002 "Resource not found: <uuid>"`**,
+which is the code this double uses for the same case. A fork of a *junk* string answers something
+else entirely — `-32603 Internal error`, whose details read `--resume requires a valid session ID …
+is not a UUID` — i.e. argument validation, not a missing session; this double does not model that
+second shape, because every id Elliot forks from is one an agent issued.
+
+⛔ What is still invented is the **successful** reply's body: the real adapter's fork response was
+not recorded field by field, so `modes`/`configOptions` below are copied from this file's own
+`session/new` rather than from a recording. Tests riding on it can therefore claim things about
+*Elliot's* side — that a fork is what a resumed run asks for, that the id it answers with is the one
+adopted, and that a refusal ends the run instead of silently opening a fresh session — and nothing
+about the adapter's payload. Same posture as `session/cancel` above, which exercises the plumbing
+and not the agent.
 """
 import json
 import os
@@ -106,7 +134,12 @@ MODE = os.environ.get("FAKE_ACP_MODE", "ok")
 STOP_REASON = os.environ.get("FAKE_ACP_STOP_REASON", "end_turn")
 DELAY_MS = int(os.environ.get("FAKE_ACP_DELAY_MS", "0"))
 EXIT_AFTER_REPLY = bool(os.environ.get("FAKE_ACP_EXIT_AFTER_REPLY"))
+FORKABLE = os.environ.get("FAKE_ACP_FORKABLE")
+FORK_UNREADABLE = bool(os.environ.get("FAKE_ACP_FORK_UNREADABLE"))
 SESSION_ID = "sess-fake-0001"
+# Deliberately not SESSION_ID: see the module docstring — the same string back would make a client
+# that adopted the fork's answer indistinguishable from one that opened a new session instead.
+FORK_SESSION_ID = "sess-fake-fork-0002"
 
 # Before the trap and before a single byte of stdout: a crash reason that arrives only if the
 # double survives long enough to write it is not a crash reason.
@@ -312,6 +345,39 @@ def handle(message, stdin_iter):
         known_sessions.add(SESSION_ID)
         reply(request_id, {
             "sessionId": SESSION_ID,
+            "modes": {"currentModeId": "default", "availableModes": AVAILABLE_MODES},
+            "configOptions": CONFIG_OPTIONS,
+        })
+    elif method == "session/fork":
+        params = message.get("params") or {}
+        sid = params.get("sessionId")
+        # The receipt, on stderr and never stdout: a client that never asked and a client that
+        # asked and was refused are otherwise identical from the outside. Printed before the
+        # answer, so it is present even for the refusal.
+        print(f"fake-acp: session/fork for {sid!r} — forkable is {FORKABLE!r}",
+              file=sys.stderr, flush=True)
+        if FORK_UNREADABLE:
+            # A *successful-looking* answer whose body cannot be read: `ForkSessionResponse`
+            # requires `sessionId`, so the client's decode throws rather than the agent refusing.
+            # ⛔ That distinction is the reason this knob exists, and it is not decoration: an
+            # agent that ANSWERS "no such session" has established that the transcript is gone,
+            # while a reply nobody can read establishes only that nobody could ask. A client that
+            # treats them alike reports a missing transcript on evidence it does not have.
+            reply(request_id, {})
+            return
+        if not FORKABLE or sid != FORKABLE:
+            # Unknown, or this double was given nothing to fork: refuse rather than hand back a
+            # plausible session for a transcript that does not exist — the same instinct as
+            # session/prompt below. The code and wording are the real adapter's, measured by
+            # Scripts/probe/acp_fork.py; see the module docstring.
+            respond_error(request_id, -32002, f"Resource not found: {sid}")
+            return
+        known_sessions.add(FORK_SESSION_ID)
+        # `models` is absent here as it is from session/new, matching the 0.66.0 recording — and
+        # ForkSessionResponse declares no such field at all, so the model can only be read off
+        # configOptions on this path.
+        reply(request_id, {
+            "sessionId": FORK_SESSION_ID,
             "modes": {"currentModeId": "default", "availableModes": AVAILABLE_MODES},
             "configOptions": CONFIG_OPTIONS,
         })

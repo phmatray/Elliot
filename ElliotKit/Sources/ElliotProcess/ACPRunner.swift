@@ -208,6 +208,17 @@ public struct AgentRunOutcome: Sendable {
     /// Where a failed `npx` resolution, a Node stack trace or a missing `CLAUDE_CODE_EXECUTABLE`
     /// lands.
     public var stderr: String
+    /// The agent **answered** `session/fork` with a JSON-RPC error: the transcript this run was
+    /// pointed at is not there, and nothing was attempted.
+    ///
+    /// ⚠️ **Narrower than "the fork did not work", deliberately.** `AgentRun.start` sets this only
+    /// for `ClientError.agentError`. A transport that died, a reply that would not decode, a
+    /// handshake that never reached the fork — none of them set it, because none of them
+    /// establishes anything about the transcript. `ResumeVerdict.of(resumedFrom:sessionResumeFailed:)`
+    /// is the one reader, and it turns this into `.sessionGone`; everything else is `.ran`, which
+    /// that type documents as "everything else, including we do not know".
+    ///
+    /// Defaulted in the initialiser below so call sites that predate this field keep compiling.
     public var sessionResumeFailed: Bool
 
     public init(
@@ -534,6 +545,11 @@ public final class AgentRun: Sendable {
             var agentSessionID: String?
             var response: SessionPromptResponse?
 
+            // Task 13. A plain `var` rather than a `Locked`: it is written and read inside this one
+            // task, sequentially, and the only other value in this closure that needs a lock —
+            // `brakedByElliot` — needs one because the *notification consumer* writes it.
+            var sessionResumeFailed = false
+
             // The per-run spend ceiling (Task 11): written only from the notification consumer
             // below, and read again after `await consumer?.value` has returned, to decide the
             // summary. That barrier is what makes the later read safe in spirit as well as in
@@ -624,11 +640,66 @@ public final class AgentRun: Sendable {
                 // explicit supply is *additive*. That is why `PermissionMode.appraisal`'s cap must
                 // stay — an appraisal's agent can still see the `elliot` server and call
                 // `board_move_card`.
-                let opened = try await client.newSession(
-                    workingDirectory: invocation.cwd,
-                    additionalDirectories: invocation.extraDirectories,
-                    mcpServers: []
-                )
+                let opened: OpenedSession
+                if let resumeFrom = invocation.resumeFromAgentSession {
+                    // Task 13. `--resume <id> --fork-session` went with the CLI; `session/fork` is
+                    // its replacement, and it takes **the agent's** own session id — see
+                    // `AgentInvocation.resumeFromAgentSession` for why that is a `String`.
+                    //
+                    // ⚠️ **Measured against the real adapter, not inferred from the capability it
+                    // advertises.** `Scripts/probe/acp_fork.py` against
+                    // @agentclientprotocol/claude-agent-acp 0.66.0, 2026-08-16: a fork of a live
+                    // session returns a **new** session id, and a turn on it carries the parent's
+                    // context — a nonce planted in the parent turn came back from the fork, on two
+                    // independent runs. That is the premise this whole path rests on, and until
+                    // that probe ran it was an advertisement (`sessionCapabilities.fork` in
+                    // `Fixtures/acp/session-new-commands.json`) rather than a measurement.
+                    do {
+                        opened = OpenedSession(try await client.forkSession(
+                            sessionId: SessionId(resumeFrom),
+                            cwd: invocation.cwd,
+                            additionalDirectories: invocation.extraDirectories,
+                            mcpServers: []
+                        ))
+                    } catch let error as ClientError {
+                        // ⛔ **`agentError` and nothing else, and the narrowing is the whole point
+                        // of this task.** An agent that *answers* — a JSON-RPC error saying it will
+                        // not fork that session — has established that the transcript is gone, and
+                        // `ResumeVerdict` turns that into `.sessionGone`, which Task 15's policy may
+                        // spend a relaunch on. A transport that died, a reply that would not decode
+                        // or a request that timed out establish only that nobody could ask; they
+                        // fall through to the ordinary died-mid-turn path below, where the absence
+                        // of a terminal line is itself the fact and the verdict is `.ran` — the
+                        // answer that type documents as "everything else, including we do not
+                        // know". Collapsing the two would report a missing transcript on evidence
+                        // that says nothing about one.
+                        //
+                        // ⚠️ **The adapter really does answer, and with two different codes.**
+                        // Same probe: a fork of a well-formed session id that never existed comes
+                        // back `-32002 "Resource not found: <uuid>"`, a named refusal; a fork of a
+                        // *junk* string comes back `-32603 Internal error` whose details read
+                        // `--resume requires a valid session ID … is not a UUID`, i.e. argument
+                        // validation. Both are JSON-RPC errors, so both arrive here as
+                        // `.agentError` and both read as `.sessionGone` — deliberately, because
+                        // for both the answer is the same: this anchor will never fork, relaunch
+                        // without it. ⛔ Do not narrow this to `-32002`: that trades a stable
+                        // protocol-level distinction for an undocumented vendor code, and the
+                        // second shape would then read as "we could not ask" and never relaunch.
+                        guard case .agentError = error else { throw error }
+                        sessionResumeFailed = true
+                        // ⛔ Rethrown rather than fallen through to `newSession`. A fresh session
+                        // here would look like a perfectly ordinary green run, and would do the
+                        // work a second time — on a card whose whole point was to continue an
+                        // earlier one.
+                        throw error
+                    }
+                } else {
+                    opened = OpenedSession(try await client.newSession(
+                        workingDirectory: invocation.cwd,
+                        additionalDirectories: invocation.extraDirectories,
+                        mcpServers: []
+                    ))
+                }
                 agentSessionID = opened.sessionId.value
                 // Before the `.session` event is yielded, and before the `set_config_option` that
                 // follows: from here on a `cancel()` can name a session to the agent rather than
@@ -783,6 +854,26 @@ public final class AgentRun: Sendable {
                 )
                 writer.record(AgentLog.terminalLine(assembled))
                 summary = assembled
+            } else if sessionResumeFailed {
+                // ⛔ **The one path with no `session/prompt` response that still writes a terminal
+                // line, and the exception is the point.** The `catch` above records that an absent
+                // `elliot/terminal` *is* the fact — it is what tells a run that died mid-turn from
+                // one that ended. A refused fork did not die: it ended, immediately, having done
+                // nothing, and that is a thing this log can say. Writing nothing would file the one
+                // failure a relaunch can fix under "we do not know what happened".
+                //
+                // ⚠️ `stopReason: nil` because there was no turn to stop — `TurnSummary.stopReason`
+                // documents nil as "the response never arrived", which is exactly true here. The
+                // consequence, named rather than left to be discovered: in the **file** this run
+                // is a failure with no stop reason, and the fact that it was a *refused fork*
+                // survives only on `AgentRunOutcome.sessionResumeFailed`, in memory, for
+                // `ResumeVerdict`. A later reader of the archive alone cannot recover it.
+                let refusal = TurnSummary(stopReason: nil, isError: true)
+                writer.record(AgentLog.terminalLine(refusal))
+                // The same value in both places, for the reason `AgentLog.lastSummary`'s doc
+                // comment gives: the file is a transcription of what the caller was handed, and the
+                // two are pinned to agree rather than left to diverge in silence.
+                summary = refusal
             }
 
             // ⛔ **The one close, and it is here for a reason that does not transfer from
@@ -804,7 +895,8 @@ public final class AgentRun: Sendable {
                 exitCode: exitCode,
                 summary: summary,
                 agentSessionID: agentSessionID,
-                stderr: await session.collectedStderr()
+                stderr: await session.collectedStderr(),
+                sessionResumeFailed: sessionResumeFailed
             )))
             updateContinuation.finish()
         }
@@ -933,16 +1025,46 @@ public final class AgentRun: Sendable {
         )
     }
 
+    /// Either door onto a session — `session/new` or `session/fork` — reduced to what a turn needs
+    /// from it.
+    ///
+    /// ⛔ **Two protocol types with two different shapes, and only one of them has `models` at
+    /// all**: `ForkSessionResponse` declares `sessionId`, `modes` and `configOptions` and no models
+    /// field whatsoever (`ACPModel/UnstableTypes.swift`). Folding them here rather than branching at
+    /// every reader is what keeps `model(in:)` a single implementation — a second copy written for
+    /// the fork path is the copy that stops matching when the fallback below moves, and that
+    /// fallback is the *only* route to a model name on a real adapter.
+    private struct OpenedSession {
+        var sessionId: SessionId
+        var models: ModelsInfo?
+        var configOptions: [SessionConfigOption]?
+
+        init(_ response: NewSessionResponse) {
+            sessionId = response.sessionId
+            models = response.models
+            configOptions = response.configOptions
+        }
+
+        init(_ response: ForkSessionResponse) {
+            sessionId = response.sessionId
+            // Not an omission: the type has no such field. See above.
+            models = nil
+            configOptions = response.configOptions
+        }
+    }
+
     /// The model this session runs under, from whichever place the agent chose to say it.
     ///
     /// `models` is the protocol's field; the adapter Elliot actually talks to does not send it —
     /// measured on `Fixtures/acp/session-new-commands.json`, which carries the model as a
     /// `configOptions` entry with id `model` instead. Reading only the first would leave this
-    /// field permanently `nil` against the one agent this design targets.
-    private static func model(in response: NewSessionResponse) -> String? {
-        if let current = response.models?.currentModelId { return current }
+    /// field permanently `nil` against the one agent this design targets. On a forked session the
+    /// first branch is unreachable by construction, since `ForkSessionResponse` cannot carry
+    /// `models` — so there the fallback is not a fallback, it is the whole function.
+    private static func model(in opened: OpenedSession) -> String? {
+        if let current = opened.models?.currentModelId { return current }
         guard
-            let option = response.configOptions?.first(where: { $0.id.value == "model" }),
+            let option = opened.configOptions?.first(where: { $0.id.value == "model" }),
             case .select(let select) = option.kind
         else { return nil }
         return select.currentValue.value

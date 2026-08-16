@@ -44,7 +44,8 @@ struct ACPRunnerTests {
         cwd: String = "/tmp",
         permissionMode: PermissionMode = .bypassPermissions,
         extraAllowedTools: [String] = [],
-        maxBudgetUSD: Double? = nil
+        maxBudgetUSD: Double? = nil,
+        resumeFromAgentSession: String? = nil
     ) -> AgentInvocation {
         AgentInvocation(
             runID: UUID(),
@@ -54,7 +55,7 @@ struct ACPRunnerTests {
             extraAllowedTools: extraAllowedTools,
             extraDirectories: [],
             maxBudgetUSD: maxBudgetUSD,
-            resumeFromAgentSession: nil
+            resumeFromAgentSession: resumeFromAgentSession
         )
     }
 
@@ -758,6 +759,169 @@ struct ACPRunnerTests {
     /// `maxBudgetUSD: nil` is "no ceiling — the default"
     /// (`AgentInvocation.maxBudgetUSD`'s doc comment), so the same over-ceiling fixture must run
     /// to its ordinary end.
+    // MARK: - Resuming
+
+    /// Task 13: a resumed run asks for `session/fork`, and adopts **the id the agent answered
+    /// with** rather than the one it asked about.
+    ///
+    /// ⛔ **The two ids differ on purpose, and that is what makes this discriminating.**
+    /// `fake-acp.py` answers a fork with `sess-fake-fork-0002` where `session/new` answers
+    /// `sess-fake-0001`, so a runner that quietly opened a new session instead of forking — the
+    /// tempting shape, since it always produces a working turn — comes back with the wrong string
+    /// here rather than with a green test. Break-tested by replacing the fork call with
+    /// `newSession`: red on `agentSessionID`, on the log's session line, and on the stderr receipt.
+    ///
+    /// ⚠️ **What the double does on `session/fork` is its own invention, not a recording** — the
+    /// real adapter advertises the capability and, at the time this was written, nothing had ever
+    /// called it. So this pins Elliot's half: that a fork is what a resumed run asks for, and that
+    /// its answer is what the run adopts. Step 4 of the brief measures the adapter's half by hand.
+    @Test("a resumed run forks, and takes the session the agent handed back")
+    func aResumedRunForksTheSession() async throws {
+        let logURL = try Self.logURL("acp-fork-ok")
+        let run = try AgentRun.start(
+            invocation: Self.invocation(resumeFromAgentSession: "sess-parent-0001"),
+            agent: Self.agent(environment: ["FAKE_ACP_FORKABLE": "sess-parent-0001"]),
+            logURL: logURL
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let (events, outcome) = await Self.drain(run)
+
+        let finished = try #require(outcome)
+        // The receipt, for the reason `cancelIsTwoPhase` gives: the log mirrors the adapter's
+        // stdout, and a request Elliot sent went the other way, to its stdin.
+        #expect(
+            finished.stderr.contains("session/fork for 'sess-parent-0001'"),
+            Comment(rawValue: "the agent was never asked to fork; stderr was \(finished.stderr)")
+        )
+        #expect(finished.agentSessionID == "sess-fake-fork-0002")
+        #expect(finished.sessionResumeFailed == false)
+        // And the turn really ran on it — a fork whose session nothing can prompt is not a resume.
+        #expect(finished.summary?.stopReason == "end_turn")
+        #expect(events.contains { if case .agentText = $0 { true } else { false } })
+
+        // The log's first record names the forked session, not the parent: `elliot/session` is
+        // what a later reader has instead of this outcome.
+        let objects = try Self.objects(inLogAt: logURL)
+        let line = try #require(objects.first { $0["method"] as? String == AgentLog.sessionMethod })
+        let params = try #require(line["params"] as? [String: Any])
+        #expect(params["agentSessionID"] as? String == "sess-fake-fork-0002")
+        // ⛔ `ForkSessionResponse` declares no `models` field at all, so on this path
+        // `AgentRun.model(in:)`'s `configOptions` fallback is the ONLY route to a model name.
+        // `theLogIsSelfDescribing` pins that fallback for `session/new`; this pins that folding the
+        // two responses together did not lose it.
+        #expect(params["model"] as? String == "opus[1m]")
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
+    }
+
+    /// A fork the agent **refused** ends the run, says so, and does not quietly start a fresh
+    /// session — which would run the work a second time against a transcript nobody asked for.
+    ///
+    /// `FAKE_ACP_FORKABLE` is unset, so the double refuses every fork, exactly as it refuses a
+    /// `session/prompt` for a session it never issued.
+    ///
+    /// ⛔ **`agentSessionID == nil` is the assertion that catches the silent fall-back**, and it is
+    /// the one worth reading twice: a runner that caught the refusal and called `newSession`
+    /// anyway would come back with `sess-fake-0001` and a perfectly ordinary `end_turn` — a green
+    /// run, having done the work, on a card whose whole point was to continue an earlier one.
+    /// Break-tested exactly that way: red here, on `sessionResumeFailed`, on `summary`, and on the
+    /// terminal line's `isError`.
+    @Test("a fork the agent refused ends the run instead of starting a fresh session")
+    func aRefusedForkEndsTheRun() async throws {
+        let logURL = try Self.logURL("acp-fork-refused")
+        let run = try AgentRun.start(
+            invocation: Self.invocation(resumeFromAgentSession: "sess-that-never-was"),
+            agent: Self.agent(),
+            logURL: logURL
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let (events, outcome) = await Self.drain(run)
+
+        let finished = try #require(outcome)
+        // The positive witness: the agent WAS asked. Without it every assertion below would also
+        // hold for a run that fell over before it got as far as forking — the shape
+        // `unmappableRunTermsRefuse` records getting wrong.
+        #expect(
+            finished.stderr.contains("session/fork for 'sess-that-never-was'"),
+            Comment(rawValue: "the agent was never asked to fork; stderr was \(finished.stderr)")
+        )
+        #expect(finished.sessionResumeFailed)
+        #expect(finished.agentSessionID == nil)
+        #expect(!events.contains { if case .agentText = $0 { true } else { false } })
+
+        // ⛔ A terminal line IS written here, and the ordinary died-mid-turn path writes none. That
+        // is the difference between "this run ended, having done nothing" and "we do not know what
+        // happened to this run", and the archive has only the file to read it off.
+        let summary = try #require(finished.summary)
+        #expect(summary.isError)
+        #expect(summary.stopReason == nil)
+        let objects = try Self.objects(inLogAt: logURL)
+        #expect(objects.last?["method"] as? String == AgentLog.terminalMethod)
+        // The file and the value handed to the caller are the same value, which is the invariant
+        // `AgentLogTests.theTerminalLineIsNotLostToTheExit` states for the ordinary path.
+        #expect(AgentLog.lastSummary(inLogAt: logURL) == summary)
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
+    }
+
+    /// ⛔ **Refused and unreadable are not the same answer, and this is the test that keeps them
+    /// apart.** An agent that answers *"no such session"* has established that the transcript is
+    /// gone; a reply nobody can decode establishes only that nobody could ask. `ResumeVerdict` has
+    /// a name for the second — `.ran`, "everything else, including we do not know" — and reporting
+    /// `.sessionGone` for it would assert a missing transcript on evidence that does not say so,
+    /// and in Task 15's relaunch policy spend an attempt on that assertion.
+    ///
+    /// So `AgentRun.start` narrows to `ClientError.agentError` — the agent *answering* a refusal —
+    /// and lets everything else fall through to the ordinary died-mid-turn path: no terminal line,
+    /// no summary, `sessionResumeFailed` false. `FAKE_ACP_FORK_UNREADABLE` answers the fork with
+    /// `result: {}`, which `ForkSessionResponse` cannot decode (it requires `sessionId`), so the
+    /// throw is a `DecodingError` and not a `ClientError` at all.
+    ///
+    /// Break-tested by widening the catch to a bare `catch { sessionResumeFailed = true }`: red on
+    /// `sessionResumeFailed` and on `summary`, with `aRefusedForkEndsTheRun` staying green — which
+    /// is the point, since the wide catch is the version that looks right in one test and reports
+    /// a lost transcript in the other.
+    @Test("a fork answered with something unreadable is not a refusal")
+    func anUnreadableForkAnswerIsNotARefusal() async throws {
+        let logURL = try Self.logURL("acp-fork-unreadable")
+        let run = try AgentRun.start(
+            invocation: Self.invocation(resumeFromAgentSession: "sess-parent-0001"),
+            agent: Self.agent(environment: [
+                "FAKE_ACP_FORKABLE": "sess-parent-0001",
+                "FAKE_ACP_FORK_UNREADABLE": "1",
+            ]),
+            logURL: logURL
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let (_, outcome) = await Self.drain(run)
+
+        let finished = try #require(outcome)
+        #expect(finished.stderr.contains("session/fork for 'sess-parent-0001'"))
+        // Nothing was established, so nothing is claimed: `ResumeVerdict.of` reads this as `.ran`,
+        // the safe answer that costs a verification which would have happened anyway.
+        #expect(finished.sessionResumeFailed == false)
+        #expect(ResumeVerdict.of(
+            resumedFrom: UUID(), sessionResumeFailed: finished.sessionResumeFailed) == .ran)
+        // The died-mid-turn shape, whose whole meaning is the ABSENCE of a terminal line.
+        #expect(finished.summary == nil)
+        #expect(finished.agentSessionID == nil)
+        #expect(AgentLog.lastSummary(inLogAt: logURL) == nil)
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
+    }
+
     @Test("a run with no ceiling is never braked")
     func noCeilingNeverBrakes() async throws {
         let logURL = try Self.logURL("acp-brake-no-ceiling")
