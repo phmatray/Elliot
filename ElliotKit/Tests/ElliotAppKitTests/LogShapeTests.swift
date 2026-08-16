@@ -120,11 +120,17 @@ struct LogShapeTests {
 
         #expect(RunsPane.shape(ofLogAt: home.appendingPathComponent("absent.jsonl").path) == nil)
 
-        // ⚠️ A log with neither answer still renders. `nil` is "which fold" unanswered, not "do
-        // not read the file" — and the panel's own three-state note is what says so: a pruned log
-        // reports that it may have been cleaned up, never that a read is still in progress.
+        // ⚠️ A log with neither answer still renders, and **the pin here is the expression rather
+        // than the assertion**: `.rows` on the result compiles only while `diskRows` returns a
+        // window rather than an optional one. That is the whole difference the panel reads —
+        // `RunBox.emptyNote` treats a nil `diskRows` as *not opened yet* and says "Reading the
+        // log…", so a pruned log (`ArtifactSweeper`, #167) would report a read still in progress
+        // for ever. `emptyNote` is private to a `View` and unreachable from here; the return type
+        // is the part of that guarantee a test can hold.
         let run = Self.run(logPath: empty.path)
-        #expect(RunsPane.diskRows(at: empty.path, run: run).rows.isEmpty)
+        let window: RunsPane.LogWindow = RunsPane.diskRows(at: empty.path, run: run)
+        #expect(window.rows.isEmpty)
+        #expect(window.dropped == 0)
     }
 
     // MARK: - The ACP half
