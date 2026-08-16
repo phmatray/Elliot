@@ -113,6 +113,12 @@ public struct AdapterProbe: Sendable, Hashable {
 /// | warm | 1.18 s to `initialize` | **2.41 s** |
 /// | cold (`rm -rf "$(npm config get cache)/_npx"`) | 5.64 s to `initialize` | **8.72 s** |
 ///
+/// ⚠️ **Each cell is one sample, not a constant.** A second warm run on the same machine the same
+/// day gave 1.33 s and 2.56 s — the same order, a different number. Read these as the scale of the
+/// cost, and re-run the script rather than quoting them if a decision turns on the exact figure.
+/// What *was* identical across every sample is the part the window below is sized against: the
+/// `available_commands_update` notification arrives **0.00 s** after the `session/new` response.
+///
 /// That is paid **once per launch**: `globalChecks` has exactly one caller, `AppModel.start()`, and
 /// nothing re-runs it (Preflight's *Check* button calls `refreshRepoChecks`, which does not). So no
 /// cache is kept — a cached figure would have to say when it was taken, and a value nobody asks for
