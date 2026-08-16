@@ -69,12 +69,20 @@ import Foundation
 /// repository's run terms could not be *written* at all, so every row reported
 /// the same defaults and half a reply looked exactly like the whole of one.
 ///
-/// **10 (Stage 1 of #379).** The wire's shapes are unchanged; what changed is
-/// what the app does with a move. An old helper in an old bundle talks to an
-/// app that no longer spawns `claude -p` at all — it spawns a Node adapter and
-/// speaks JSON-RPC — and a bundle mismatch must fail at `hello` rather than
-/// halfway through a move. `IPCServer` answers `.protocolMismatch` on the spot
-/// (`IPCServer.swift:95-101`).
+/// **10 (Stage 1 of #379).** The wire's shapes are unchanged; what changes is
+/// what the app does with a move. An old helper in an old bundle will talk to
+/// an app that no longer spawns `claude -p` at all — it spawns a Node adapter
+/// and speaks JSON-RPC — and a bundle mismatch must fail at `hello` rather
+/// than halfway through a move. `IPCServer` answers `.protocolMismatch` on the
+/// spot (`IPCServer.swift:95-101`).
+///
+/// ⚠️ **That is forward-looking, and this is the one bump so far where the
+/// number moves ahead of the behaviour it fences.** Task 15 switches the spawn
+/// (`RunScheduler.swift:756`, `ClaudeRun.start` → `AgentRun.start`); at the
+/// commit that raised this constant the engine still spawned `claude -p` and
+/// held no ACP reference at all. Raising it first is deliberate — it is what
+/// stops a bundle assembled mid-stage from pairing a 9 helper with a 10 app.
+/// Do not read the paragraph above as a reading of the tree you are in.
 ///
 /// This is the first bump for a behaviour change rather than a field, and it
 /// is worth saying so plainly: `RunDTO` does **not** gain `agentSessionID` or
