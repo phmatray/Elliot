@@ -411,6 +411,26 @@ struct PreflightTests {
         #expect(adapter.detail.contains(ACPAgentLocator.adapterVersion))
     }
 
+    /// The other side of decision 10, and it was **unpinned until a break-test found it**: writing
+    /// `guard false, probe.agentVersion == pinned` makes the row warn *unconditionally*, which the
+    /// drift test above cannot see because it asserts a warn. Nothing constructed an adapter
+    /// answering exactly the pinned version, so half the judgement had no witness.
+    @Test("an adapter answering the pinned version passes, and says what the pin is")
+    func thePinnedVersionPasses() async {
+        let results = await adapterService(
+            childEnvironment: ["FAKE_ACP_AGENT_VERSION": ACPAgentLocator.adapterVersion]
+        ).globalChecks(packs: [])
+        guard let adapter = results.first(where: { $0.id == "agent.adapter" }) else {
+            Issue.record("expected an agent.adapter row")
+            return
+        }
+        #expect(adapter.status == .pass)
+        #expect(adapter.detail.contains(ACPAgentLocator.adapterVersion))
+        // The pin is shown beside the identity, not merely agreed with in silence — a reader has
+        // to be able to see *what* it matched.
+        #expect(adapter.detail.contains("pinned at"))
+    }
+
     @Test("Node below 22 fails by name and says the number it found")
     func oldNodeFails() async throws {
         let (env, _, remove) = try scratchToolchain(nodeBody: "echo \"v20.11.1\"")

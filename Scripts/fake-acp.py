@@ -23,6 +23,14 @@ Env:
   FAKE_ACP_FORK_UNREADABLE  answer session/fork with a result that will not decode (see below)
   FAKE_ACP_FORK_DIES    exit at session/fork without answering it at all (see below)
   FAKE_ACP_COMMANDS     JSON file of AvailableCommand objects to advertise after session/new
+  FAKE_ACP_AGENT_VERSION  what initialize reports as agentInfo.version    (default: 0.0.1)
+
+FAKE_ACP_AGENT_VERSION exists for exactly one judgement: Preflight's `agent.adapter` row is a
+`.warn` when the version the adapter reports differs from the pin and a `.pass` when it matches
+(decision 10). With this double hardcoded at `0.0.1` only the warning side could ever be reached,
+so a break that made the row warn UNCONDITIONALLY left the suite green — measured. The pin is what
+every fixture in this design was recorded against; a row that had stopped noticing a drift, or one
+that cried drift at the very version it pins, are both worth a test.
 
 FAKE_ACP_COMMANDS drives Preflight's `agent.commands` row. The frame it produces is a
 `session/update` notification carrying `available_commands_update`, sent AFTER the `session/new`
@@ -454,7 +462,10 @@ def handle(message, stdin_iter):
         reply(request_id, {
             "protocolVersion": 1,
             "agentCapabilities": AGENT_CAPABILITIES,
-            "agentInfo": {"name": "fake-acp", "version": "0.0.1"},
+            "agentInfo": {
+                "name": "fake-acp",
+                "version": os.environ.get("FAKE_ACP_AGENT_VERSION", "0.0.1"),
+            },
             "authMethods": [],
             "_meta": INITIALIZE_META,
         })
