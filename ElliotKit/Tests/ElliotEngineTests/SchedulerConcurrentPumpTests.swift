@@ -344,6 +344,14 @@ struct SchedulerConcurrentPumpTests {
         // spawns anything. It used to be a `claudePath` naming no binary; the
         // refusal moved earlier when the CLI runner died, and the claim this
         // test makes — a failed spawn releases the claim — is unchanged.
+        //
+        // ⚠️ Measured, so nobody reads more into it: this test does **not** pin
+        // *which* guard refuses. Deleting `AgentRun.start`'s `adapterNotResolved`
+        // guard leaves it green, because `ChildProcess` then refuses the empty
+        // path one layer lower and the spawn still fails. The single test that
+        // goes red is `EndToEndTests`' "A repository whose adapter never resolved
+        // fails by name, not by a blank path", which is the right place for it —
+        // what the guard buys is the sentence, not the failure.
         let config = ToolConfig(
             ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: ["PATH": "/usr/bin:/bin"]
