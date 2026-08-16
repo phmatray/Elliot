@@ -68,7 +68,24 @@ import Foundation
 /// **9** — `RepoDTO` carries `extraAllowedTools` (#333). Until then a
 /// repository's run terms could not be *written* at all, so every row reported
 /// the same defaults and half a reply looked exactly like the whole of one.
-public let elliotProtocolVersion = 9
+///
+/// **10 (Stage 1 of #379).** The wire's shapes are unchanged; what changed is
+/// what the app does with a move. An old helper in an old bundle talks to an
+/// app that no longer spawns `claude -p` at all — it spawns a Node adapter and
+/// speaks JSON-RPC — and a bundle mismatch must fail at `hello` rather than
+/// halfway through a move. `IPCServer` answers `.protocolMismatch` on the spot
+/// (`IPCServer.swift:95-101`).
+///
+/// This is the first bump for a behaviour change rather than a field, and it
+/// is worth saying so plainly: `RunDTO` does **not** gain `agentSessionID` or
+/// `stopReason` here (Task 12 adds them to `SkillRun`, and nothing crosses
+/// `ElliotIPC`), so an agent reading `board_list_runs` still cannot see how a
+/// turn ended; and `resultText`/`resultSource` keep meaning exactly what they
+/// meant, because `ClosingRemark.of` is untouched. Whether the helper should
+/// report `stopReason` is a real question and the answer here is *not in this
+/// stage* — adding a field would be an eleventh version, and this bump exists
+/// so that decision is not forced now.
+public let elliotProtocolVersion = 10
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
