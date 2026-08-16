@@ -27,11 +27,26 @@ struct NonExecutionFoldTests {
             == .completedWithDenials)
     }
 
-    /// ⛔ The regression this whole rule exists to prevent. Elliot cancels runs by design, and a
-    /// cancelled run's in-flight tool calls carry `interrupted` or `cancelled`. Folding on the
-    /// bare *presence* of a `nonExecutionKind` — the design's first frozen rule, corrected —
-    /// would mark every cancelled run as one that "was refused a tool and quietly worked around
-    /// the gap".
+    /// ⚠️ **What this pins, precisely — and what it does not.**
+    ///
+    /// It pins the *engine* half: given a summary whose `denials` list is empty, `state(for:)`
+    /// answers `.succeeded` however many `nonExecutionKinds` came along for the ride. That is worth
+    /// pinning, because it is what keeps a recorded-but-not-folded kind from leaking into the
+    /// verdict later.
+    ///
+    /// ⛔ It does **not** pin the by-value fold itself, and an earlier version of this comment
+    /// claimed it did — "the regression this whole rule exists to prevent". The final whole-branch
+    /// review measured otherwise: `kinds` is inert here. `state(for:)` reads `stopReason`,
+    /// `isError` and `isClean`, and `isClean` is `!isError && denials.isEmpty` — so
+    /// `nonExecutionKinds` drives no decision at any layer, and these three cases pass because
+    /// `denials` **defaults to empty**, not because the kinds are non-denials. Switching the real
+    /// fold to by-presence left this suite green.
+    ///
+    /// The fold is pinned where it is applied:
+    /// `ACPRunnerTests.theDenialFoldIsByValueNotByPresence`, driven end to end through
+    /// `Fixtures/acp/fake-nonexecution-kinds.json`, which carries all four kinds so that by-value
+    /// and by-presence disagree by three. This suite and that one are two halves; neither is the
+    /// other's substitute.
     @Test("interrupted, cancelled and user-rejected are not denials")
     func theThreeNonDenials() {
         for kind in [NonExecutionKind.interrupted, .cancelled, .userRejected] {

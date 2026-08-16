@@ -1080,4 +1080,56 @@ struct ACPRunnerTests {
         await killer.value
         #expect(!killerFired.value)
     }
+
+    /// ⛔ The by-value denial fold, pinned at the site that actually applies it.
+    ///
+    /// `NonExecutionKind.isDenial` was pinned, and so was the live pane — but the assembly site in
+    /// `AgentRun.summary` that produces `TurnSummary.denials` → `SkillRun.permissionDenials` →
+    /// `RunState` was **not**. The final whole-branch review switched that fold from by-value to
+    /// by-presence (`call.nonExecutionKind != nil`) and measured the whole suite still green:
+    /// 2886 tests, 0 failures. The rule this design argues for at greatest length was unpinned at
+    /// its only production site.
+    ///
+    /// It survived because every fixture carrying a `nonExecutionKind` carried `permission-rule`,
+    /// which is a denial under *both* folds — so the two rules could not disagree anywhere in the
+    /// suite. `Fixtures/acp/fake-nonexecution-kinds.json` carries all four values the adapter's own
+    /// source enumerates, and the two folds now disagree by three.
+    ///
+    /// The regression this prevents is not cosmetic. Elliot **cancels runs by design**, and a
+    /// cancelled run's in-flight tool calls carry `interrupted`/`cancelled` — so under a by-presence
+    /// fold every cancelled run would flip `.succeeded` → `.completedWithDenials`, telling the
+    /// reader it *"was refused a tool and quietly worked around the gap"* about a run nothing
+    /// refused, on the board's most common deliberate action.
+    @Test("only permission-rule is a denial, and the other three are still recorded")
+    func theDenialFoldIsByValueNotByPresence() async throws {
+        let logURL = try Self.logURL("acp-nonexecution-kinds")
+        let run = try AgentRun.start(
+            invocation: Self.invocation(),
+            agent: Self.agent(fixture: "fake-nonexecution-kinds.json"),
+            logURL: logURL
+        )
+        let (killer, killerFired) = armKiller { run.session.transport.terminate() }
+        defer { killer.cancel() }
+
+        let (_, outcome) = await Self.drain(run)
+        let summary = try #require(outcome?.summary)
+
+        // ⛔ Exactly one — the only value measured against the mechanism Elliot ships (a `PreToolUse`
+        // hook block, recorded at `Fixtures/acp/turn-refusal.json`). A by-presence fold returns all
+        // four here, which is what makes this line the pin.
+        #expect(summary.denials == ["Bash"])
+
+        // ...and the other three are RECORDED rather than discarded. §5.4 keeps every value "for the
+        // log and the card": a kind that is not folded is still a fact someone may need, and an
+        // unrecognised fifth value must never be defaulted into a denial.
+        #expect(summary.nonExecutionKinds.count == 4)
+        #expect(summary.nonExecutionKinds.contains(.permissionRule))
+        #expect(summary.nonExecutionKinds.contains(.interrupted))
+        #expect(summary.nonExecutionKinds.contains(.cancelled))
+        #expect(summary.nonExecutionKinds.contains(.userRejected))
+
+        killer.cancel()
+        await killer.value
+        #expect(!killerFired.value)
+    }
 }

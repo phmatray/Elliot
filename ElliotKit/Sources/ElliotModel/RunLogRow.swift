@@ -96,8 +96,13 @@ public struct TurnSummary: Sendable, Hashable, Codable {
 
     /// A run only counts as clean if it neither errored **nor** was refused a tool along the
     /// way. The same predicate `RunResult.isClean` states, and `RunScheduler.state(for:)` reads
-    /// this rather than restating it — that restatement is live today
-    /// (`RunScheduler.swift:1036` re-implements `RunResult.isClean`) and Task 15 removes it.
+    /// this rather than restating it — the CLI-era restatement this comment used to point at was
+    /// removed with `ClaudeRunner`, so there is one copy of the rule now.
+    ///
+    /// ⚠️ **`denials`, not `nonExecutionKinds`.** Only values that folded to a denial reach
+    /// `denials`; `nonExecutionKinds` records every kind seen and drives no decision anywhere.
+    /// That separation is the point — `interrupted` and `cancelled` are recorded and are *not*
+    /// refusals — so a reader looking for what makes a run unclean must look at `denials`.
     public var isClean: Bool { !isError && denials.isEmpty }
 }
 
