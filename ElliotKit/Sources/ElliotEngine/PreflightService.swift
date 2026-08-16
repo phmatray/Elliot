@@ -494,21 +494,29 @@ public struct PreflightService: Sendable {
     /// `.fail  "The adapter opened a session and advertised no commands within 2 seconds."` under
     /// *"Nothing will run until it does."* Both halves false, on the screen whose job is to be
     /// believed, in exactly the case this row exists for: an adapter that is not the pinned one.
+    ///
+    /// ⛔ **And the converse, which the fix for that defect did not state and therefore lost.** The
+    /// guard order used to be `namedItself` first, so an adapter that answered `initialize` — naming
+    /// itself and matching the pin — and then *failed or hung on `session/new`* fell straight
+    /// through to the version comparison and rendered a green `.pass`. Reachable by construction,
+    /// not hypothetically: `AdapterProbe.probe` assigns `agentName`/`agentVersion` the moment
+    /// `initialize` returns and only *then* calls `newSession`, so a JSON-RPC error or a 30-second
+    /// hang lands in exactly that quadrant. Measured before this change, with a probe carrying
+    /// `namedItself: true, sessionOpened: false, failure: .error(…)`:
+    /// `status=pass  detail="@agentclientprotocol/claude-agent-acp 0.66.0 — pinned at 0.66.0."`
+    ///
+    /// So the over-failing defect above was fixed into an **under-failing** one, which is worse:
+    /// this row renders the single verdict the screen reserves for *cards cannot be dragged*, and it
+    /// was saying the opposite about an adapter under which nothing could run. `sessionOpened` is
+    /// therefore consulted **first** — it is the field whose own doc comment says
+    /// ⛔ *"This, not `namedItself`, is what settles would a run work"*, and honouring that on one
+    /// path out of two is how the claim and the code came apart.
     public static func adapterCheck(_ probe: AdapterProbe) -> CheckResult {
         let pinned = ACPAgentLocator.adapterVersion
-        guard probe.namedItself else {
-            // Checked ahead of `failure`, because it outranks it: two successful round trips are
-            // evidence about the adapter, and the commands question is answered one row down.
-            if probe.sessionOpened {
-                return CheckResult(
-                    id: "agent.adapter", title: "ACP adapter", status: .warn,
-                    detail: "The adapter answered and opened a session, and named neither itself "
-                        + "nor a version. agentInfo is optional in the protocol, so this is a legal "
-                        + "answer — but Elliot has no identity to check against its pin of "
-                        + "\(pinned).",
-                    command: "npx --yes \(ACPAgentLocator.adapterPackage)"
-                )
-            }
+        // ⛔ Ahead of the identity guard, because a session that never opened settles this row
+        // whatever the adapter called itself. An identity is a claim; an opened session is the
+        // measurement.
+        guard probe.sessionOpened else {
             switch probe.failure {
             case .silent(let deadline):
                 return CheckResult(
@@ -528,9 +536,10 @@ public struct PreflightService: Sendable {
                 )
             case nil:
                 // Unreachable by construction: `probe` leaves `failure` nil only once it has
-                // reached `session/new`, which the guard above has already caught. Said out loud
-                // rather than folded into one of the arms — inventing a cause nobody established
-                // is the failure mode this whole row is written against.
+                // reached `session/new`, and reaching it sets `sessionOpened`, which the guard
+                // enclosing this switch has already caught. Said out loud rather than folded into
+                // one of the arms — inventing a cause nobody established is the failure mode this
+                // whole row is written against.
                 return CheckResult(
                     id: "agent.adapter", title: "ACP adapter", status: .warn,
                     detail: "Could not be established: the handshake reported neither an identity "
@@ -538,6 +547,19 @@ public struct PreflightService: Sendable {
                     command: "npx --yes \(ACPAgentLocator.adapterPackage)"
                 )
             }
+        }
+
+        // Past the guard the session is open, so nothing below may fail this row — the ⛔ above.
+        // Two successful round trips are evidence about the adapter, and `agentInfo` is optional on
+        // the wire, so *no identity* is a legal answer rather than a missing adapter.
+        guard probe.namedItself else {
+            return CheckResult(
+                id: "agent.adapter", title: "ACP adapter", status: .warn,
+                detail: "The adapter answered and opened a session, and named neither itself nor a "
+                    + "version. agentInfo is optional in the protocol, so this is a legal answer — "
+                    + "but Elliot has no identity to check against its pin of \(pinned).",
+                command: "npx --yes \(ACPAgentLocator.adapterPackage)"
+            )
         }
 
         let named = [probe.agentName, probe.agentVersion].compactMap { $0 }.joined(separator: " ")

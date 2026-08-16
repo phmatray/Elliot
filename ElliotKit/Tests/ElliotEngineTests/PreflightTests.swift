@@ -489,6 +489,40 @@ struct PreflightTests {
             AdapterProbe(failure: .silent(.seconds(30)))).status == .warn)
     }
 
+    /// ⛔ The quadrant no test covered, and the one the row was silently wrong about: an adapter that
+    /// **named itself and matched the pin** and then never opened a session.
+    ///
+    /// Every "no session" probe above is also *anonymous*, so all of them entered through the
+    /// identity guard and never reached the version comparison. This one has an identity, and until
+    /// the guard order was fixed it fell straight through to `.pass`:
+    /// `status=pass  detail="@agentclientprotocol/claude-agent-acp 0.66.0 — pinned at 0.66.0."`
+    /// — a green row, under the one verdict this screen reserves for *cards cannot be dragged*,
+    /// about an adapter under which no card could run.
+    ///
+    /// It is reachable by construction rather than contrived: `AdapterProbe.probe` assigns the
+    /// identity the moment `initialize` returns and only *then* calls `newSession`
+    /// (`AdapterProbe.swift:234-245`), so every JSON-RPC error and every hang on `session/new`
+    /// lands here holding a perfectly good `agentInfo`.
+    @Test("An adapter that named itself and never opened a session does not pass")
+    func namingItselfDoesNotOutrankAFailedSession() {
+        let pinned = ACPAgentLocator.adapterVersion
+
+        let errored = PreflightService.adapterCheck(AdapterProbe(
+            agentName: "@agentclientprotocol/claude-agent-acp", agentVersion: pinned,
+            sessionOpened: false, failure: .error("Resource not found: 9f3a")))
+        #expect(errored.status == .fail)
+        // The adapter's own words, not Elliot's paraphrase of them.
+        #expect(errored.detail == "Resource not found: 9f3a")
+
+        // A deadline is still only a `.warn` — that is a statement about Elliot's patience, not a
+        // finding about the adapter — but it must not be a `.pass` either.
+        let silent = PreflightService.adapterCheck(AdapterProbe(
+            agentName: "@agentclientprotocol/claude-agent-acp", agentVersion: pinned,
+            sessionOpened: false, failure: .silent(.seconds(30))))
+        #expect(silent.status == .warn)
+        #expect(silent.status != .pass)
+    }
+
     @Test("Node below 22 fails by name and says the number it found")
     func oldNodeFails() async throws {
         let (env, _, remove) = try scratchToolchain(nodeBody: "echo \"v20.11.1\"")
