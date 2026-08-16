@@ -10,6 +10,11 @@ Env:
   FAKE_ACP_MODE         ok | hang | crash | permission | deaf | deaf-after-fixture  (default: ok)
   FAKE_ACP_READY        path touched once trap-protected
   FAKE_ACP_ARGV_OUT     path to write argv to, one element per line
+  FAKE_ACP_PROMPT_OUT   path to write session/prompt's text content to (see below)
+  FAKE_ACP_SESSION_OUT  path to write the session-opening call's params to, as JSON (see below)
+  FAKE_ACP_SPAWN_LOG    file to APPEND the prompt's first line to, once per turn (see below)
+  FAKE_ACP_STORIES      JSON file to drop at the ELLIOT_OUTPUT= path named in the prompt
+  FAKE_ACP_TOUCH        path, relative to cwd, to write to — proves a read-only run wrote
   FAKE_ACP_STOP_REASON  default: end_turn
   FAKE_ACP_DELAY_MS     pause before every line written                (default: 0, no pause)
   FAKE_ACP_STDERR       text to emit on stderr at start-up
@@ -30,6 +35,45 @@ window rather than to simulate anything: Elliot writes `elliot/terminal` **after
 has returned, so a log writer closed from whichever of "the prompt returned" and "the child exited"
 happens first would lose that line. With this set the child is gone before Elliot has written a
 byte of its own record, so the ordering is exercised rather than reasoned about.
+
+FAKE_ACP_PROMPT_OUT and FAKE_ACP_SESSION_OUT exist because ACP moved two things off argv and onto
+the wire, and FAKE_ACP_ARGV_OUT can no longer see either. Under `claude -p` the prompt was `-p
+<text>` and every extra directory was an `--add-dir` pair, so a test could read both out of the
+child's argv; under ACP the prompt is `session/prompt`'s content and the directories are
+`session/new`'s `additionalDirectories`, and the adapter's argv is the same three tokens for every
+run. Without these two knobs, two guarantees this repository holds by test would silently stop
+being checked:
+
+  * **The first digit run of an `implement-issue` prompt is the issue number**, because the skill
+    resolves its argument with `grep -oE '[0-9]+' | head -1`. That is asserted against
+    FAKE_ACP_PROMPT_OUT.
+  * **A run is granted the artifact directory it is about to be told to write**, which was
+    `--add-dir <path>` on the recorded argv. That is asserted against FAKE_ACP_SESSION_OUT, and it
+    is the *stronger* of the two forms: argv proved what Elliot spelled, this proves what the agent
+    was handed.
+
+FAKE_ACP_SESSION_OUT records whichever call opened the session — `session/new` **or**
+`session/fork` — because a resumed run takes the second door and never the first, and the fork's
+anchor (`--resume <id>` on the old argv) is exactly the value a resume test needs to read. Each
+overwrites the file, so what it holds is the door this run actually went through.
+
+All are written once, when the message arrives, and only when the variable is set.
+
+FAKE_ACP_SPAWN_LOG, FAKE_ACP_STORIES and FAKE_ACP_TOUCH are `fake-claude.sh`'s three prompt-driven
+behaviours, ported. Each of them read the prompt out of argv (`-p <text>`) at start-up; here the
+prompt only exists once `session/prompt` arrives, so all three happen there.
+
+⚠️ **That moves SPAWN_LOG's meaning slightly, and in the useful direction.** It was "one line per
+process"; it is now "one line per turn actually asked for". A child that spawned and never got as
+far as prompting writes nothing — which is the honest reading, since the concurrency defect it
+exists to catch (two agents each merging to `main` for one run) requires a prompt to have been
+sent. As before, the line is the prompt's **first** line, appended: O_APPEND writes under PIPE_BUF
+are atomic, so two doubles running at once cannot interleave halves of a line.
+
+FAKE_ACP_STORIES parses `ELLIOT_OUTPUT=` to **end of line**, never to the first whitespace: Elliot's
+real default home is `~/Library/Application Support/Elliot`, and a path that stops at the first
+space silently loses everything after "Application". `AnalysisPromptBuilder.outputPath(in:)` parses
+the same way, and `fake-claude.sh` carried the same warning.
 
 FAKE_ACP_DELAY_MS is what lets a test reach a client's idle watchdog, and it is the counterpart
 of `fake-claude.sh`'s FAKE_CLAUDE_DELAY_MS — the knob `ClaudeRunnerTests.silenceAndRecoveryAlternate`
@@ -341,6 +385,54 @@ def wait_for_response(stdin_iter, expected_id):
               file=sys.stderr, flush=True)
 
 
+def record_session_call(message):
+    """Write a session-opening call's params to FAKE_ACP_SESSION_OUT, if it is set.
+
+    One function for both doors — `session/new` and `session/fork` — because a test that reads
+    this file wants "what was this session opened with", and a run takes exactly one of the two.
+    """
+    path = os.environ.get("FAKE_ACP_SESSION_OUT")
+    if not path:
+        return
+    with open(path, "w") as fh:
+        json.dump(message.get("params") or {}, fh)
+
+
+def act_on_prompt(text):
+    """`fake-claude.sh`'s three prompt-driven side effects, performed where the prompt now is.
+
+    Each is inert unless its variable is set, so the ordinary turn pays three environment reads.
+    """
+    if path := os.environ.get("FAKE_ACP_PROMPT_OUT"):
+        with open(path, "w") as fh:
+            fh.write(text)
+
+    if path := os.environ.get("FAKE_ACP_SPAWN_LOG"):
+        first = text.split("\n", 1)[0]
+        # Append, one short line, in a single write: see the module docstring on atomicity.
+        with open(path, "a") as fh:
+            fh.write(first + "\n")
+
+    if stories := os.environ.get("FAKE_ACP_STORIES"):
+        # To end of line, never to the first whitespace — see the module docstring.
+        for line in text.split("\n"):
+            marker = "ELLIOT_OUTPUT="
+            if (index := line.find(marker)) == -1:
+                continue
+            out = line[index + len(marker):].rstrip(" \t")
+            if out:
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                with open(stories) as src, open(out, "w") as dst:
+                    dst.write(src.read())
+            break
+
+    if path := os.environ.get("FAKE_ACP_TOUCH"):
+        # Relative to the process's own cwd, which the client sets from the run's — that is the
+        # whole point: it proves a read-only run wrote inside the checkout it was told to read.
+        with open(path, "w") as fh:
+            fh.write("touched by fake-acp\n")
+
+
 def handle(message, stdin_iter):
     method, request_id = message.get("method"), message.get("id")
 
@@ -353,6 +445,10 @@ def handle(message, stdin_iter):
             "_meta": INITIALIZE_META,
         })
     elif method == "session/new":
+        # The whole params object, not just the directories: `cwd` is the other half of what
+        # `--add-dir` used to make visible, and a test asserting on one usually wants the other in
+        # the same breath.
+        record_session_call(message)
         known_sessions.add(SESSION_ID)
         reply(request_id, {
             "sessionId": SESSION_ID,
@@ -362,6 +458,10 @@ def handle(message, stdin_iter):
     elif method == "session/fork":
         params = message.get("params") or {}
         sid = params.get("sessionId")
+        # The other door onto a session, recorded through the same knob: a resumed run never
+        # reaches `session/new`, so a test reading only that file would find nothing and could not
+        # tell "the fork carried the wrong anchor" from "no fork happened".
+        record_session_call(message)
         # The receipt, on stderr and never stdout: a client that never asked and a client that
         # asked and was refused are otherwise identical from the outside. Printed before the
         # answer, so it is present even for the refusal.
@@ -411,6 +511,17 @@ def handle(message, stdin_iter):
     elif method == "session/prompt":
         params = message.get("params") or {}
         sid = params.get("sessionId")
+        # Before the sessionId check, deliberately: a test asserting on what was *sent* wants the
+        # answer even when this double refuses the turn, and a refusal that also swallowed the
+        # evidence would make a wrong sessionId look like a missing prompt.
+        #
+        # `prompt`, which is what `SessionPromptRequest` puts on the wire — not `content`, which is
+        # what the Swift call site's parameter happens to be called.
+        blocks = params.get("prompt") or []
+        act_on_prompt("".join(
+            b.get("text", "") for b in blocks
+            if isinstance(b, dict) and b.get("type") == "text"
+        ))
         if sid not in known_sessions:
             # Unknown session, or session/new never happened on this connection at all: refuse
             # rather than answer a plausible-looking turn for a session that does not exist.

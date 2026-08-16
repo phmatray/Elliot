@@ -17,10 +17,16 @@ private enum TestPaths {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
 
-    static let fakeClaude = repoRoot.appendingPathComponent("Scripts/fake-claude.sh").path
+    static let fakeACP = repoRoot.appendingPathComponent("Scripts/fake-acp.py").path
 
-    static func streamFixture(_ name: String) -> String {
-        repoRoot.appendingPathComponent("Fixtures/stream-json/\(name)").path
+    /// The double is a Python script, so the executable is an interpreter and the script
+    /// is an argument — the same shape the real adapter has, where the executable is `npx`
+    /// and the package is an argument.
+    static let adapterExecutable = "/usr/bin/env"
+    static var adapterArguments: [String] { ["python3", fakeACP] }
+
+    static func acpFixture(_ name: String) -> String {
+        repoRoot.appendingPathComponent("Fixtures/acp/\(name)").path
     }
 
     static func analysisFixture(_ name: String) -> String {
@@ -92,12 +98,14 @@ struct AnalysisEndToEndTests {
 
         let store = try BoardStore.open(at: home.appendingPathComponent("elliot.sqlite"))
         var environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
-        environment["FAKE_CLAUDE_FIXTURE"] = TestPaths.streamFixture("analyze-success.ndjson")
-        environment["FAKE_CLAUDE_STORIES"] = TestPaths.analysisFixture("e2e-bugs.json")
+        environment["FAKE_ACP_FIXTURE"] = TestPaths.acpFixture("fake-simple-turn.json")
+        environment["FAKE_ACP_STORIES"] = TestPaths.analysisFixture("e2e-bugs.json")
         environment.merge(extraEnv) { _, new in new }
 
         let config = ToolConfig(
-            claudePath: TestPaths.fakeClaude,
+            claudePath: "/usr/bin/false",
+            adapterExecutable: TestPaths.adapterExecutable,
+            adapterArguments: TestPaths.adapterArguments,
             ghPath: "/usr/bin/false",
             gitPath: gitPath,
             environment: environment
@@ -234,7 +242,7 @@ struct AnalysisEndToEndTests {
         .enabled(if: gitFixtureIsAvailable))
     func theSentinelFires() async throws {
         let stack = try await makeStack(
-            extraEnv: ["FAKE_CLAUDE_TOUCH": "meddled.txt"], gitPath: gitFixturePath
+            extraEnv: ["FAKE_ACP_TOUCH": "meddled.txt"], gitPath: gitFixturePath
         )
         defer { stack.cleanUp() }
 

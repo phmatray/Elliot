@@ -19,10 +19,10 @@ import Testing
 /// that those rows exist **while a run is still going** rather than only in the
 /// file it leaves behind.
 ///
-/// So the centrepiece drives `Scripts/fake-claude.sh` through the real
-/// scheduler — a real `Process`, a real stdout pipe, the real NDJSON decoder —
-/// and reads the rows out of the live tail before the run has finished. A test
-/// built on hand-written `StreamEvent`s would pass with the spawn broken.
+/// So the centrepiece drives `Scripts/fake-acp.py` through the real scheduler — a real `Process`,
+/// a real JSON-RPC conversation, the real notification decoder — and reads the rows out of the
+/// live tail before the run has finished. A test built on hand-written `RunEvent`s would pass
+/// with the spawn broken.
 ///
 /// ### Why this suite lives in `ElliotAppKitTests`
 ///
@@ -49,12 +49,12 @@ struct RunsPaneLiveTests {
         .deletingLastPathComponent()   // ElliotKit
         .deletingLastPathComponent()   // repo root
 
-    private static var fakeClaude: String {
-        repoRoot.appendingPathComponent("Scripts/fake-claude.sh").path
+    private static var fakeACP: String {
+        repoRoot.appendingPathComponent("Scripts/fake-acp.py").path
     }
 
     private static func fixture(_ name: String) -> String {
-        repoRoot.appendingPathComponent("Fixtures/stream-json/\(name)").path
+        repoRoot.appendingPathComponent("Fixtures/acp/\(name)").path
     }
 
     // MARK: - The live run
@@ -93,23 +93,27 @@ struct RunsPaneLiveTests {
         try await store.saveRepo(repo)
 
         let config = ToolConfig(
-            claudePath: Self.fakeClaude,
+            claudePath: "/usr/bin/false",
+            adapterExecutable: "/usr/bin/env",
+            adapterArguments: ["python3", Self.fakeACP],
             // `false` for both, so nothing here can reach the network or the
             // work tree: this test is about what the panel draws from a stream.
             ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false",
             environment: [
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-                // One fixture that carries all of it: a session init, agent
-                // prose, a tool call whose result **succeeded**, a tool call
-                // whose result failed, a refusal (inside the result line), and
-                // the terminal result.
-                "FAKE_CLAUDE_FIXTURE": Self.fixture("failing-tool.ndjson"),
-                "FAKE_CLAUDE_READY": ready.path,
-                // Paced so the lines arrive as separate reads rather than one
+                // One fixture that carries all of it: a thought, agent prose, a
+                // tool call that **succeeded**, one that failed, one that was
+                // refused (`nonExecutionKind: permission-rule`, the shape
+                // recorded in `Fixtures/acp/turn-refusal.json`), and a usage
+                // frame. The session row is not in the fixture: Elliot writes it
+                // itself from the handshake.
+                "FAKE_ACP_FIXTURE": Self.fixture("fake-mixed-turn.json"),
+                "FAKE_ACP_READY": ready.path,
+                // Paced so the frames arrive as separate reads rather than one
                 // buffer. Nothing is asserted about the delay — see the note on
                 // `LiveCapture`.
-                "FAKE_CLAUDE_DELAY_MS": "5",
+                "FAKE_ACP_DELAY_MS": "5",
             ]
         )
         let scheduler = RunScheduler(
@@ -151,7 +155,8 @@ struct RunsPaneLiveTests {
 
         let capture = try await withTimeout(.seconds(30)) {
             var outputs: [SchedulerUpdate] = []
-            var events: [StreamEvent] = []
+            var events: [RunEvent] = []
+            var summary: TurnSummary?
             var kinds: Set<String> = []
             var nested = false
 
@@ -159,62 +164,85 @@ struct RunsPaneLiveTests {
                 // Everything past here would be after the run, which is the one
                 // thing this test is written to exclude.
                 if case .runFinished = update { break }
-                guard case .runOutput(_, let event) = update else { continue }
+                switch update {
+                case .runOutput(_, let event):
+                    outputs.append(update)
+                    events.append(event)
+                // ⛔ Kept, and kept **before** `.runFinished`, because this is the whole of the
+                // terminal row's route under ACP: the stop reason is the `session/prompt`
+                // response, so no `RunEvent` can carry it and `runOutput` never sees it. The
+                // stream-json version of this test read a `.result` **event** here; a capture
+                // that ignored this case would find no `Turn` row and read as though the panel
+                // had stopped drawing one.
+                case .runSummary(_, let turn):
+                    outputs.append(update)
+                    summary = turn
+                default:
+                    continue
+                }
 
-                outputs.append(update)
-                events.append(event)
-                let rows = RunsPane.rows(of: run, events: events).rows
+                let rows = RunsPane.rows(of: run, events: events, summary: summary).rows
                 for row in rows {
                     kinds.insert(LogRowAccessibility.kind(of: row))
-                    if case .toolUse(_, _, _, let outcome) = row, outcome?.isError == false {
-                        nested = true
-                    }
+                    if case .toolCall(let call) = row, call.status == .completed { nested = true }
                 }
             }
             return LiveCapture(
                 outputs: outputs, kinds: kinds,
-                finalRows: RunsPane.rows(of: run, events: events).rows,
+                finalRows: RunsPane.rows(of: run, events: events, summary: summary).rows,
                 sawNestedSuccess: nested
             )
         }
 
-        // Criterion 16, mid-flight: four distinct kinds, from four distinct
-        // cases of `RunLogRow`.
-        #expect(capture.kinds.contains("Tool use"))
+        // Criterion 16, mid-flight: distinct kinds, from distinct cases of `RunLogRow`.
+        //
+        // ⚠️ "Session" and "Result" are the stream-json names and neither can appear now — the
+        // handshake writes `.agentSession` and the turn's end writes `.turnEnded`, which
+        // `LogRowAccessibility` deliberately calls by different words so a listener can tell which
+        // decoder wrote the log being read.
+        #expect(capture.kinds.contains("Tool call"))
         #expect(capture.kinds.contains("Refused"))
-        #expect(capture.kinds.contains("Result"))
-        #expect(capture.kinds.contains("Session"))
+        #expect(capture.kinds.contains("Turn"))
+        #expect(capture.kinds.contains("Agent session"))
         #expect(capture.kinds.contains("It said"))
+        // NEW under ACP, and the point of the whole retyping: stream-json discarded thinking
+        // outright, so no version of this assertion could have existed before.
+        #expect(capture.kinds.contains("It thought"))
         #expect(
             capture.sawNestedSuccess,
             """
-            No tool call ever carried a successful result. That is the case the \
-            old `[String]` log dropped outright — `AppModel.describe` returns \
-            nil for it — and the one this pane exists to show.
+            No tool call ever reached `completed`. That is the case the old `[String]` log \
+            dropped outright — `AppModel.describe` returns nil for it — and the one this pane \
+            exists to show.
             """
         )
 
-        // …and the four kinds are four *different* rows, not one row counted
-        // four times.
+        // …and the kinds are *different* rows, not one row counted several times.
         let byKind = Dictionary(grouping: capture.finalRows, by: LogRowAccessibility.kind(of:))
-        #expect(byKind["Tool use"]?.count == 2)
+        // Three calls, three rows: every frame of a call folds onto the row its id opened, so
+        // the eight `tool_call`/`tool_call_update` frames in the fixture are three acts.
+        #expect(byKind["Tool call"]?.count == 3)
         #expect(byKind["Refused"]?.count == 1)
-        #expect(byKind["Result"]?.count == 1)
+        #expect(byKind["Turn"]?.count == 1)
 
         let succeeded = capture.finalRows.filter {
-            if case .toolUse(_, _, _, let outcome) = $0 { return outcome?.isError == false }
+            if case .toolCall(let call) = $0 { return call.status == .completed }
             return false
         }
         let failed = capture.finalRows.filter {
-            if case .toolUse(_, _, _, let outcome) = $0 { return outcome?.isError == true }
+            if case .toolCall(let call) = $0 { return call.status == .failed }
             return false
         }
-        #expect(succeeded.count == 1, "the successful `swift build` call lost its result")
-        #expect(failed.count == 1, "the failing `swift test` call lost its result")
+        #expect(succeeded.count == 1, "the successful `swift build` call lost its outcome")
+        // Two: the failing `swift test`, and the refused `WebFetch`, which the adapter also
+        // reports as a failed call — the refusal row is *additional* to it, never instead of it.
+        #expect(failed.count == 2, "the failing calls lost their outcome")
 
-        // The refusal is knowable from the stream alone. `SkillRun`'s own
-        // `permissionDenials` is written by `finish()`, which has not run yet —
-        // so had the pane read only the record, this row would not exist.
+        // The refusal is knowable from the stream alone, and **earlier** than it used to be:
+        // stream-json carried denials only on the terminal `result` line, while ACP puts
+        // `nonExecutionKind` on the failing frame itself. `SkillRun`'s own `permissionDenials` is
+        // written by `finish()`, which has not run yet — so had the pane read only the record,
+        // this row would not exist.
         #expect(RunsPane.denials(of: run, in: capture.outputs.compactMap(Self.event)) == ["WebFetch"])
         #expect(run.permissionDenials.isEmpty, "the queued record cannot know about a refusal yet")
 
@@ -224,7 +252,11 @@ struct RunsPaneLiveTests {
         // but not with the model would be green and blind.
         let model = AppModel()
         for update in capture.outputs { model.apply(update) }
-        #expect(RunsPane.rows(of: run, events: model.liveLog[runID] ?? []).rows == capture.finalRows)
+        #expect(
+            RunsPane.rows(
+                of: run, events: model.liveLog[runID] ?? [], summary: model.liveSummary[runID]
+            ).rows == capture.finalRows
+        )
 
         // Finally, let the run land, so the temporary home is not deleted from
         // under a child that is still writing to it.
@@ -232,7 +264,13 @@ struct RunsPaneLiveTests {
         #expect(finished.state == .completedWithDenials)
         #expect(finished.permissionDenials == ["WebFetch"])
         // The record now knows, and the fallback path agrees with the stream.
-        #expect(RunsPane.denials(of: finished, in: []) == ["WebFetch"])
+        #expect(RunsPane.denials(of: finished, in: [RunEvent]()) == ["WebFetch"])
+        // ⚠️ The two sources agree because they apply the same by-value rule to the same frames —
+        // `TurnSummary.denials` is assembled by `AgentRun.summary`, `RunsPane.denials` by the
+        // pane. That agreement is the thing worth pinning: it is what stops a finished run
+        // drawing one refusal from the tail and a different one from the record.
+        #expect(finished.permissionDenials
+            == RunsPane.denials(of: run, in: capture.outputs.compactMap(Self.event)))
     }
 
     /// Polls until the run reaches a terminal state, reporting what it last saw
@@ -251,7 +289,7 @@ struct RunsPaneLiveTests {
         }
     }
 
-    private static func event(_ update: SchedulerUpdate) -> StreamEvent? {
+    private static func event(_ update: SchedulerUpdate) -> RunEvent? {
         if case .runOutput(_, let event) = update { return event }
         return nil
     }
@@ -272,7 +310,7 @@ struct RunsPaneLiveTests {
         let recorded = Self.run(denials: ["Bash", "WebFetch"])
 
         #expect(RunsPane.denials(of: recorded, in: [.result(stream)]) == ["WebFetch"])
-        #expect(RunsPane.denials(of: recorded, in: []) == ["Bash", "WebFetch"])
+        #expect(RunsPane.denials(of: recorded, in: [StreamEvent]()) == ["Bash", "WebFetch"])
         #expect(RunsPane.denials(of: recorded, in: [.assistantText("no result yet")])
             == ["Bash", "WebFetch"])
         // A finished run whose stream says "nothing was refused" is not the same
@@ -281,9 +319,70 @@ struct RunsPaneLiveTests {
             .isEmpty)
     }
 
+    /// The ACP overload, and it answers a **different** question in one place that matters.
+    ///
+    /// Stream-json carried denials only on the terminal `result` line, so the presence of that
+    /// line was itself the signal — "the stream has got there" versus "it has not". ACP puts
+    /// `nonExecutionKind` on the failing frame, so there is no such line to look for and no
+    /// moment at which the stream can say "nothing was refused": an empty answer and a
+    /// not-yet answer are the same reading, and both fall back to the record.
+    ///
+    /// ⛔ And the fold is **by value**. A cancelled run's in-flight calls carry `interrupted` or
+    /// `cancelled`, and cancelling is the board's most common deliberate act — folding on the
+    /// presence of a kind would name every tool a cancelled run had open as one it was refused.
+    @Test("An ACP refusal is read off the failing frame, by value")
+    func acpDenialsComeFromTheFrame() {
+        let recorded = Self.run(denials: ["Bash", "WebFetch"])
+
+        func call(_ id: String, _ tool: String, _ kind: NonExecutionKind?) -> RunEvent {
+            .toolCall(ToolCallPatch(
+                id: id, title: "t", status: .failed, claudeToolName: tool, nonExecutionKind: kind))
+        }
+
+        #expect(RunsPane.denials(of: recorded, in: [call("a", "WebFetch", .permissionRule)])
+            == ["WebFetch"])
+        #expect(RunsPane.denials(of: recorded, in: [RunEvent]()) == ["Bash", "WebFetch"])
+        // No frame carries a kind at all: nothing has been established, so the record answers.
+        #expect(RunsPane.denials(of: recorded, in: [call("a", "Bash", nil)]) == ["Bash", "WebFetch"])
+        // ⛔ The three non-denials, each of which a cancelled run produces.
+        for kind in [NonExecutionKind.interrupted, .cancelled, .userRejected] {
+            #expect(
+                RunsPane.denials(of: recorded, in: [call("a", "Bash", kind)])
+                    == ["Bash", "WebFetch"],
+                Comment(rawValue: "\(kind.rawValue) was folded as a refusal")
+            )
+        }
+        // An unmeasured kind is not defaulted into a refusal either.
+        #expect(RunsPane.denials(of: recorded, in: [call("a", "Bash", NonExecutionKind("newish"))])
+            == ["Bash", "WebFetch"])
+
+        // ⛔ Frames fold by id, and `nil` means absent-from-this-frame rather than cleared: the
+        // adapter's last frame for a call often carries a status and nothing else. A pane that
+        // replaced instead of merging would lose the refusal recorded two frames earlier.
+        #expect(
+            RunsPane.denials(of: recorded, in: [
+                call("a", "WebFetch", .permissionRule),
+                .toolCall(ToolCallPatch(id: "a", status: .failed)),
+            ]) == ["WebFetch"]
+        )
+        // And the name is the adapter's real tool name where there is one, its title otherwise,
+        // its id last — the same order `AgentRun.summary` uses, which is why the two sources agree.
+        #expect(
+            RunsPane.denials(of: recorded, in: [
+                .toolCall(ToolCallPatch(id: "zz", title: "a title", nonExecutionKind: .permissionRule))
+            ]) == ["a title"]
+        )
+        #expect(
+            RunsPane.denials(of: recorded, in: [
+                .toolCall(ToolCallPatch(id: "zz", nonExecutionKind: .permissionRule))
+            ]) == ["zz"]
+        )
+    }
+
     @Test("A run with no events at all yields no rows")
     func noEventsNoRows() {
-        #expect(RunsPane.rows(of: Self.run(), events: []).rows.isEmpty)
+        #expect(RunsPane.rows(of: Self.run(), events: [StreamEvent]()).rows.isEmpty)
+        #expect(RunsPane.rows(of: Self.run(), events: [RunEvent](), summary: nil).rows.isEmpty)
     }
 
     // MARK: - The filter, and what it announces

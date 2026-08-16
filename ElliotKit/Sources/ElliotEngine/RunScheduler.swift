@@ -20,7 +20,22 @@ public protocol SystemMoving: AnyObject, Sendable {
 
 public enum SchedulerUpdate: Sendable {
     case runStarted(runID: UUID, cardID: UUID?)
-    case runOutput(runID: UUID, event: StreamEvent)
+    case runOutput(runID: UUID, event: RunEvent)
+    /// What the turn amounted to, yielded the moment the runner says so and **before**
+    /// `.runFinished`.
+    ///
+    /// ⛔ **Without this the terminal row can never render for a run anyone is watching.**
+    /// `RunEvent` has no terminal case, deliberately — under ACP the stop reason arrives as a
+    /// *response*, not a notification — so nothing in `runOutput` can carry it. `AppModel.liveLog`
+    /// is never cleared, and `RunBox` takes the live tail whenever it is non-empty, falling back
+    /// to disk only on `live.isEmpty`. So a finished ACP run keeps a non-empty live tail for the
+    /// rest of the app session, never reaches the disk fold, and would show no terminal row at
+    /// all. `.result` used to be a `StreamEvent` travelling through `runOutput`, becoming
+    /// `.terminal(RunResult)` the instant it arrived; `RunsPaneLiveTests` asserts that row appears
+    /// **mid-run**, which is the guarantee this case restores.
+    ///
+    /// Engine-local like every case here, so it does not bump `elliotProtocolVersion`.
+    case runSummary(runID: UUID, summary: TurnSummary)
     case runStalled(runID: UUID, since: Date)
     /// The mirror of `.runStalled`: the run started talking again and is no
     /// longer holding a mark that nothing could take off.
@@ -60,7 +75,7 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
     private var isPaused = false
     /// How long a spawned run may say nothing before the silence is announced.
     ///
-    /// A constructor parameter rather than the constant `ClaudeRun.start`
+    /// A constructor parameter rather than the constant `AgentRun.start`
     /// defaults to, and **not** part of `SchedulerLimits`: those are persisted as
     /// JSON, and a new non-optional field there would fail to decode every row
     /// written by an older build. This is construction-time only.
@@ -86,9 +101,26 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
     private var treeBaselines: [UUID: String] = [:]
     private let git: GitClient
 
-    private var live: [UUID: ClaudeRun] = [:]
+    private var live: [UUID: AgentRun] = [:]
     private var inFlight: [UUID: SkillRun] = [:]
     private var pending: [UUID] = []
+
+    /// Runs Elliot itself asked to stop, erased in `finish`.
+    ///
+    /// ⛔ **Elliot's own knowledge, and the only thing that can tell a cancel from a crash.**
+    /// `ClaudeRunOutcome` carried `wasTerminated`, a flag `ChildProcess.terminate()` set on the way
+    /// out, so the process itself said so. Under ACP a cancelled turn says so in its `stopReason`
+    /// — but the SIGKILL backstop can kill the adapter before that answer arrives, and the child
+    /// then dies on SIGTERM at 143, which is **indistinguishable from a crash**. Reading the exit
+    /// code instead would mark every backstopped cancel as a failure, silently, on the board's most
+    /// common deliberate action.
+    ///
+    /// ⛔ **Inserted on the live branch of `cancel(runID:)` only.** That method has three branches
+    /// and only the live one reaches `finish`: a queued run goes through `discardQueued` and
+    /// returns, an orphan row is written `.cancelled` in place and returns. Inserting at the top
+    /// would leak one entry per queued-or-orphan cancel for the life of the process — the leak
+    /// `treeBaselines`' own comment warns about.
+    private var cancelRequested: Set<UUID> = []
 
     public weak var systemMover: (any SystemMoving)?
     /// Told after every run-ending path, once the row is written and (where the
@@ -107,7 +139,7 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
         appraiser: AppraisalHarvester? = nil,
         limits: SchedulerLimits = .default,
         ceiling: SpendCeiling = .off,
-        idleTimeout: Duration = ClaudeRun.defaultIdleTimeout
+        idleTimeout: Duration = AgentRun.defaultIdleTimeout
     ) {
         self.store = store
         self.toolConfig = toolConfig
@@ -608,9 +640,17 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
     /// a tighter permission mode and the one directory outside the checkout it
     /// must be allowed to write — travel together here rather than as two `if`s
     /// in `start`, where only one of them would be remembered next time.
-    static func invocation(for run: SkillRun, repo: Repo, perRunUSD: Double?) -> ClaudeInvocation {
+    ///
+    /// ⚠️ `resumingAgentSession` is a **parameter** rather than something read here, and that is
+    /// what keeps this function pure. `AgentInvocation.resumeFromAgentSession` is the *agent's*
+    /// own session id, which lives on the predecessor `SkillRun` row — a store read, and an
+    /// `async` one. `start(_:)` performs it and hands the answer down, so
+    /// `AppraisalInvocationTests` can still assert the appraisal cap without spawning anything.
+    static func invocation(
+        for run: SkillRun, repo: Repo, perRunUSD: Double?, resumingAgentSession: String?
+    ) -> AgentInvocation {
         let isAppraisal = run.kind == .appraiseCards
-        return ClaudeInvocation(
+        return AgentInvocation(
             runID: run.id,
             prompt: run.prompt,
             // The **run's** cwd, not the repository's. They are the same value
@@ -628,16 +668,16 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
                 ? [StoreLocation.appraisalRunDirectory(runID: run.id).path]
                 : [],
             maxBudgetUSD: perRunUSD,
-            resumeFrom: run.resumedFrom
+            resumeFromAgentSession: resumingAgentSession
         )
     }
 
     /// Creates every directory the invocation grants beyond the checkout.
     ///
-    /// ⛔ `--add-dir` on a path that is not there grants nothing, and it says
-    /// nothing either: the only symptom is the agent reporting it could not
-    /// write the file it was asked for — a failure that reads as the agent's,
-    /// one layer away from the grant that looks perfectly correct.
+    /// ⛔ `session/new`'s `additionalDirectories` on a path that is not there grants nothing, and
+    /// it says nothing either — exactly as `--add-dir` did not: the only symptom is the agent
+    /// reporting it could not write the file it was asked for — a failure that reads as the
+    /// agent's, one layer away from the grant that looks perfectly correct.
     /// `StoreLocation.ensureDirectories()` creates `home`, `runs`, `analyses`
     /// and `screenshots`, measured, and not `analyses/appraisals/<runID>`.
     ///
@@ -652,7 +692,7 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
     /// beside the socket and the token. `try?`, matching `AnalysisService`: a
     /// directory that could not be made costs the run its artifact and the
     /// harvester says so, which is a better outcome than refusing to spawn.
-    static func prepareExtraDirectories(of invocation: ClaudeInvocation) {
+    static func prepareExtraDirectories(of invocation: AgentInvocation) {
         for path in invocation.extraDirectories {
             try? FileManager.default.createDirectory(
                 at: URL(fileURLWithPath: path, isDirectory: true),
@@ -725,8 +765,33 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
             return
         }
 
-        let invocation = Self.invocation(for: run, repo: repo, perRunUSD: ceiling.perRunUSD)
-        updated.argv = [toolConfig.claudePath] + invocation.arguments()
+        // The **agent's** session id of the attempt this one continues, not a `SkillRun.id`.
+        // Read here rather than inside `invocation(for:)` so that function stays pure and
+        // synchronous; `?? nil` flattens the `T??` a `try?` around an optional-returning throwing
+        // call produces, the idiom `mergeAdmission` above already uses. A predecessor that never
+        // got as far as `session/new` has none, and `nil` then means "start fresh" — which is
+        // what a run with no transcript to fork can do.
+        let resumingAgentSession: String?
+        if let resumedFrom = run.resumedFrom {
+            resumingAgentSession = ((try? await store.run(id: resumedFrom)) ?? nil)?.agentSessionID
+        } else {
+            resumingAgentSession = nil
+        }
+
+        let invocation = Self.invocation(
+            for: run, repo: repo, perRunUSD: ceiling.perRunUSD,
+            resumingAgentSession: resumingAgentSession
+        )
+        // The **adapter's** argv, not this invocation's: `AgentInvocation` renders no flags at
+        // all, so there is nothing of its own to show. `AgentInvocation.displayArgv` carries the
+        // record of what that costs — the same three tokens for every run.
+        let agent = ACPAgentProcess(
+            executable: toolConfig.adapterExecutable,
+            arguments: toolConfig.adapterArguments,
+            cwd: run.cwd,
+            environment: toolConfig.environment
+        )
+        updated.argv = invocation.displayArgv(agent: agent)
 
         let logURL = URL(fileURLWithPath: run.logPath)
 
@@ -744,17 +809,17 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
             treeBaselines[run.id] = await git.porcelainStatus(cwd: repo.path)
         }
 
-        let claudeRun: ClaudeRun
+        let agentRun: AgentRun
         do {
             try? FileManager.default.createDirectory(
                 at: logURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            // Before the child, not after: the grant in `--add-dir` above is
-            // inert until the directory it names exists.
+            // Before the child, not after: the grant in `additionalDirectories`
+            // above is inert until the directory it names exists.
             Self.prepareExtraDirectories(of: invocation)
-            claudeRun = try ClaudeRun.start(
-                invocation: invocation, config: toolConfig, logURL: logURL, idleTimeout: idleTimeout
+            agentRun = try AgentRun.start(
+                invocation: invocation, agent: agent, logURL: logURL, idleTimeout: idleTimeout
             )
         } catch {
             // The baseline was taken above whether or not the spawn survives;
@@ -769,7 +834,11 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
             updated.state = .failed
             updated.endedAt = Date()
             // The spawn itself failed, so this is Elliot reporting a `Process`
-            // that never started — not an agent's account of anything.
+            // that never started — not an agent's account of anything. It also
+            // catches `AgentInvocationError`, whose two cases are refusals taken
+            // *before* any child exists; both conform to `LocalizedError`
+            // precisely so the sentence that lands here is one a person can act
+            // on.
             updated.setClosing(.elliot(error.localizedDescription))
             try? await store.saveRun(updated)
             continuation.yield(.runFinished(
@@ -784,20 +853,20 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
         }
 
         try? await store.saveRun(updated)
-        live[run.id] = claudeRun
+        live[run.id] = agentRun
         // Refreshes the claim made at the top of this method with `argv`; it is
         // no longer what *makes* the claim. Moving it back down re-opens the
         // double spawn.
         inFlight[run.id] = updated
         continuation.yield(.runStarted(runID: run.id, cardID: run.cardID))
 
-        Task { await self.consume(claudeRun, run: updated) }
+        Task { await self.consume(agentRun, run: updated) }
     }
 
-    private func consume(_ claudeRun: ClaudeRun, run: SkillRun) async {
-        var finalOutcome: ClaudeRunOutcome?
+    private func consume(_ agentRun: AgentRun, run: SkillRun) async {
+        var finalOutcome: AgentRunOutcome?
 
-        for await update in claudeRun.updates {
+        for await update in agentRun.updates {
             switch update {
             case .started:
                 break
@@ -815,6 +884,14 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
                 await mark(.startedTalkingAgain, on: run.id)
             case .finished(let outcome):
                 finalOutcome = outcome
+                // ⛔ Yielded here, and **before** `.runFinished` below, because the terminal row
+                // has no other route to a live reader. `RunEvent` carries no terminal case, so
+                // nothing in `.runOutput` can say how the turn ended — and `AppModel.liveLog` is
+                // never cleared, so a finished run keeps a non-empty live tail and never reaches
+                // the disk fold that would otherwise supply one. See `SchedulerUpdate.runSummary`.
+                if let summary = outcome.summary {
+                    continuation.yield(.runSummary(runID: run.id, summary: summary))
+                }
             }
         }
         await finish(run: run, outcome: finalOutcome)
@@ -846,9 +923,13 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
         try? await store.saveRun(run)
     }
 
-    private func finish(run: SkillRun, outcome: ClaudeRunOutcome?) async {
+    private func finish(run: SkillRun, outcome: AgentRunOutcome?) async {
         live[run.id] = nil
         inFlight[run.id] = nil
+        // Erased unconditionally, and above every branch, for exactly the reason
+        // `treeBaselines` is: a path that returned without erasing leaks one
+        // entry per cancelled run for the life of the process.
+        let wasCancelRequested = cancelRequested.remove(run.id) != nil
         // The only moment the day's total moves. Invalidated rather than
         // recomputed: the `pump()` at the end of this method reads it back, and
         // doing it here would read a total that does not include this run yet.
@@ -861,21 +942,29 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
         // choosing between the agent's words and the process's *is* the
         // attribution — and settling it here left the panel to assume it (#288).
         updated.setClosing(
-            .of(agentText: outcome?.result?.text, stderr: outcome?.stderr)
+            .of(agentText: outcome?.summary?.text, stderr: outcome?.stderr)
         )
-        updated.totalCostUSD = outcome?.result?.totalCostUSD
-        updated.numTurns = outcome?.result?.numTurns
-        updated.permissionDenials = outcome?.result?.permissionDenials.map(\.toolName) ?? []
-        updated.state = Self.state(for: outcome)
+        updated.totalCostUSD = outcome?.summary?.usage?.costUSD
+        // ⚠️ **`nil`, never a guessed 1.** ACP reports no turn count at all: `num_turns` was
+        // stream-json's own field and the protocol has nothing standing in for it. A synthesised
+        // figure would read on screen exactly like a measured one.
+        updated.numTurns = nil
+        updated.permissionDenials = outcome?.summary?.denials ?? []
+        updated.agentSessionID = outcome?.agentSessionID
+        updated.stopReason = outcome?.summary?.stopReason
+        updated.state = Self.state(for: outcome, cancelRequested: wasCancelRequested)
 
-        // Computed here because this is the only place the terminal result
-        // exists: `numTurns` and `errors` live on `outcome.result`, and by the
-        // time anything downstream sees the row they are gone.
+        // Computed here because this is the only place the outcome exists: by
+        // the time anything downstream sees the row, `sessionResumeFailed` is
+        // gone.
         //
         // Passed **to** `completeCardRun` rather than used to skip it. A run
         // that could not resume may still have left an issue or a pull request
         // behind on an earlier attempt, and the only thing that knows is `gh`.
-        let resume = ResumeVerdict.of(resumedFrom: updated.resumedFrom, result: outcome?.result)
+        let resume = ResumeVerdict.of(
+            resumedFrom: updated.resumedFrom,
+            sessionResumeFailed: outcome?.sessionResumeFailed ?? false
+        )
 
         // The baseline is erased for **every** run, above the routing rather
         // than inside a branch of it. The dictionary has exactly three sites —
@@ -1026,16 +1115,40 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
         }
     }
 
-    static func state(for outcome: ClaudeRunOutcome?) -> RunState {
-        guard let outcome else { return .failed }
-        if outcome.wasTerminated { return .cancelled }
-        if let result = outcome.result {
-            if result.isError { return .failed }
-            // A run that was refused a tool often finishes "success" having
-            // worked around the gap. That is not a clean result.
-            return result.permissionDenials.isEmpty ? .succeeded : .completedWithDenials
+    /// The one fold from a finished run to a `RunState`.
+    ///
+    /// ⛔ `nonExecutionKind` folds **by value**, never by presence — `NonExecutionKind.isDenial`
+    /// is the single implementation, `TurnSummary.denials` is filled from it by value, and this
+    /// reads that rather than restating the list. Folding on presence would mark every cancelled
+    /// run as one refused a tool, because a cancelled turn's in-flight calls carry `interrupted`
+    /// or `cancelled`.
+    ///
+    /// ⚠️ `cancelRequested` is Elliot's own knowledge, not the agent's. `ClaudeRunOutcome`
+    /// carried `wasTerminated`, a flag `ChildProcess.terminate()` set on the way out, so the
+    /// process itself told us. Under ACP a cancelled turn says so in its `stopReason` — but the
+    /// backstop can kill the adapter before that answer arrives, and a killed adapter is
+    /// indistinguishable from a crashed one from outside. So the scheduler passes what it knows:
+    /// it wrote `.cancelling` before it called `cancel()`.
+    ///
+    /// `summary.isClean` is called rather than re-implemented. `RunResult.isClean` existed and
+    /// this function restated it inline anyway (`!isError && permissionDenials.isEmpty`) — two
+    /// copies of one rule, the exact shape #146 catalogues.
+    ///
+    /// ⚠️ **One deliberate behaviour change, stated so nobody reads it as a slip.** The old tail
+    /// was `return outcome.exitCode == 0 ? .succeeded : .failed`, so a `claude -p` that exited 0
+    /// without ever emitting a terminal `result` counted as a success. Under ACP the absence of a
+    /// terminal line means the **prompt response never arrived**, which is a run that did not
+    /// finish, whatever the adapter's exit code says. So it reads `.failed` — or `.cancelled` if
+    /// Elliot asked. `aRequestedCancelWithNoAnswer` pins both halves.
+    static func state(for outcome: AgentRunOutcome?, cancelRequested: Bool) -> RunState {
+        guard let outcome else { return cancelRequested ? .cancelled : .failed }
+        if outcome.summary?.stopReason == "cancelled" { return .cancelled }
+        guard let summary = outcome.summary else {
+            // No terminal line at all: the response never arrived.
+            return cancelRequested ? .cancelled : .failed
         }
-        return outcome.exitCode == 0 ? .succeeded : .failed
+        if summary.isError { return .failed }
+        return summary.isClean ? .succeeded : .completedWithDenials
     }
 
     /// Writes what `gh` reported back onto the card.
@@ -1065,7 +1178,7 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
     /// the store still believes is active with nothing behind it — a crash the
     /// launch sweep would otherwise resolve — and is closed out in place.
     public func cancel(runID: UUID) async {
-        guard let claudeRun = live[runID] else {
+        guard let agentRun = live[runID] else {
             if pending.contains(runID) {
                 await discardQueued(runID)
                 // Without this the discarded row stays on screen until something
@@ -1085,7 +1198,14 @@ public actor RunScheduler: RunLaunching, RunQueueReading, QueueReconsidering {
             run.state = .cancelling
             try? await store.saveRun(run)
         }
-        claudeRun.cancel()
+        // ⛔ Recorded here and nowhere else, immediately before the ask. Only this branch reaches
+        // `finish`, which is the one place the set is erased — the two other branches above
+        // return, so an insert at the top of this method would leak an entry per queued-or-orphan
+        // cancel for the life of the process. And it must be recorded *at all*: under ACP the
+        // backstop can kill the adapter before any `stopReason` arrives, and the exit code that
+        // survives (143, on SIGTERM) is the same one a crash produces.
+        cancelRequested.insert(runID)
+        agentRun.cancel()
     }
 
     public func cancelAll() async {

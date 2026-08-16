@@ -697,9 +697,26 @@ struct RoundTriggeringTests {
         // doc comment names outright.
         _ = TestHome.root
         let store = try BoardStore.inMemory()
+        // ⚠️ **`/usr/bin/true` no longer stands in for an agent, and could not.** It spawned,
+        // printed nothing and exited 0, which under stream-json's fold meant `.succeeded` — the
+        // old tail read the exit code when there was no terminal line. Under ACP a child that
+        // never speaks JSON-RPC is a handshake that never happened, so there is no summary and the
+        // run reads `.failed`, which is the deliberate change `state(for:cancelRequested:)`
+        // records. To keep exercising `finish()`'s path this has to be a child that really holds a
+        // conversation.
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
-            gitPath: "/usr/bin/false", environment: [:])
+            claudePath: "/usr/bin/false",
+            adapterExecutable: "/usr/bin/env",
+            adapterArguments: [
+                "python3", repositoryRoot.appendingPathComponent("Scripts/fake-acp.py").path,
+            ],
+            ghPath: "/usr/bin/false",
+            gitPath: "/usr/bin/false",
+            environment: [
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "FAKE_ACP_FIXTURE": repositoryRoot
+                    .appendingPathComponent("Fixtures/acp/fake-create-issue.json").path,
+            ])
         let scheduler = RunScheduler(
             store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
         let trigger = CountingTrigger()
@@ -733,7 +750,7 @@ struct RoundTriggeringTests {
         await scheduler.launch(runID: run.id)
 
         // Bounded, and waiting on a condition rather than on a duration: the
-        // child is `/usr/bin/true`, so this is milliseconds in practice.
+        // double replays five frames and exits, so this is milliseconds in practice.
         try await withTimeout(.seconds(20)) {
             while trigger.triggers == 0 { try await Task.sleep(for: .milliseconds(20)) }
         }
@@ -742,14 +759,16 @@ struct RoundTriggeringTests {
         #expect(saved?.state.isTerminal == true)
         // Confirm this is really `finish()`'s path, not `start()`'s
         // spawn-failure `catch` — the exact confusion fix round 1 found.
-        // `state(for:)` only ever produces `.succeeded` from a *real*
-        // `ClaudeRunOutcome`; the catch block always writes `.failed` with a
+        // `state(for:cancelRequested:)` only ever produces `.succeeded` from a
+        // real terminal line; the catch block always writes `.failed` with a
         // nil `exitCode` and an `.elliot`-sourced closing remark, never this
-        // shape. `/usr/bin/true` exits 0 and prints nothing, so a genuine run
-        // is `.succeeded` with `exitCode == 0`.
+        // shape.
         #expect(saved?.state == .succeeded)
         #expect(saved?.exitCode == 0)
         #expect(saved?.closing?.source != .elliot)
+        // The turn really ended, rather than the child merely exiting: this is the fact that
+        // distinguishes the two under ACP, where an exit code says nothing on its own.
+        #expect(saved?.stopReason == "end_turn")
     }
 
     @Test("No trigger registered is not an error — the scheduler is unchanged without one")

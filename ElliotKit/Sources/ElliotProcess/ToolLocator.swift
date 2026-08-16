@@ -177,13 +177,39 @@ public struct ToolLocator: Sendable {
 /// Injected by construction rather than read from a global, so tests can point
 /// at fake tools and still run in parallel.
 public struct ToolConfig: Sendable {
+    /// ⚠️ Nothing spawns this any more — `RunScheduler` reaches the agent through the adapter
+    /// below. It is still resolved at launch and still read by Preflight's `claude` row, and it
+    /// dies with `ClaudeRunner.swift` in Task 18, not here.
     public var claudePath: String
+    /// The ACP adapter's argv, resolved once at launch by `ACPAgentLocator.resolveAdapter()`.
+    ///
+    /// A per-machine fact, which is why it lives here beside `ghPath` and not on a per-run value;
+    /// `cwd` is the per-run half and comes from the `SkillRun`. Reusing this seam rather than
+    /// adding a `RunScheduler.init` parameter is what keeps the switchover's diff to the suites
+    /// that actually spawn: every test that builds a scheduler already builds a `ToolConfig`.
+    ///
+    /// ⛔ **Defaulted to `""`, and an empty value is a refusal rather than a fall-back.**
+    /// `AgentRun.start` throws `AgentInvocationError.adapterNotResolved` before anything is
+    /// spawned; `ChildProcess` would refuse it too, but only with a sentence naming an empty path.
+    /// A default that silently ran *anything* would be the fall-through shape
+    /// `ToolResolution.overrideUnusable` exists to refuse.
+    public var adapterExecutable: String = ""
+    public var adapterArguments: [String] = []
     public var ghPath: String
     public var gitPath: String
     public var environment: [String: String]
 
-    public init(claudePath: String, ghPath: String, gitPath: String, environment: [String: String]) {
+    public init(
+        claudePath: String,
+        adapterExecutable: String = "",
+        adapterArguments: [String] = [],
+        ghPath: String,
+        gitPath: String,
+        environment: [String: String]
+    ) {
         self.claudePath = claudePath
+        self.adapterExecutable = adapterExecutable
+        self.adapterArguments = adapterArguments
         self.ghPath = ghPath
         self.gitPath = gitPath
         self.environment = environment

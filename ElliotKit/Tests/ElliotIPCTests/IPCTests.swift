@@ -567,15 +567,16 @@ struct IPCTests {
     /// was indistinguishable from the whole.
     ///
     /// And again at 10 (Stage 1 of #379): the wire's shapes did not move, but
-    /// what the app does with a move will — an old helper will talk to an app
-    /// that no longer spawns `claude -p` at all, so a bundle mismatch must fail
-    /// at `hello` rather than halfway through a move.
+    /// what the app does with a move did — an old helper talks to an app that
+    /// no longer spawns `claude -p` at all, so a bundle mismatch must fail at
+    /// `hello` rather than halfway through a move.
     ///
-    /// ⚠️ Forward-looking, and deliberately so: Task 15 switches the spawn, and
-    /// at the commit that raised the constant `RunScheduler` still called
-    /// `ClaudeRun.start`. The fence goes up first so no bundle assembled
-    /// mid-stage can pair a 9 helper with a 10 app. `Protocol.swift`'s own
-    /// paragraph for 10 says the same thing at length.
+    /// ⚠️ That was forward-looking for four commits and is now a reading of the
+    /// tree: Task 15 landed the switchover, and `RunScheduler.start` calls
+    /// `AgentRun.start`. The fence went up first so no bundle assembled
+    /// mid-stage could pair a 9 helper with a 10 app. `Protocol.swift`'s own
+    /// paragraph for 10 says the same thing at length, and records why the
+    /// interval is worth keeping in writing.
     @Test("Widening the outcome, attributing closing text, reporting run terms, and retiring claude -p, bumped it")
     func protocolVersionIsTen() {
         #expect(elliotProtocolVersion == 10)

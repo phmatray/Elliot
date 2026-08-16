@@ -16,11 +16,17 @@ private enum TestPaths {
         .deletingLastPathComponent()   // ElliotKit
         .deletingLastPathComponent()   // repo root
 
-    static let fakeClaude = repoRoot.appendingPathComponent("Scripts/fake-claude.sh").path
+    static let fakeACP = repoRoot.appendingPathComponent("Scripts/fake-acp.py").path
     static let fakeGH = repoRoot.appendingPathComponent("Scripts/fake-gh.sh").path
 
+    /// The double is a Python script, so the executable is an interpreter and the script is an
+    /// argument — the same shape the real adapter has, where the executable is `npx` and the
+    /// package is an argument.
+    static let adapterExecutable = "/usr/bin/env"
+    static var adapterArguments: [String] { ["python3", fakeACP] }
+
     static func fixture(_ name: String) -> String {
-        repoRoot.appendingPathComponent("Fixtures/stream-json/\(name)").path
+        repoRoot.appendingPathComponent("Fixtures/acp/\(name)").path
     }
 
     static func ghFixture(_ name: String) -> String {
@@ -52,9 +58,9 @@ private func issuesFixtureCreatedNow(title: String, number: Int, at directory: U
     return path.path
 }
 
-/// The whole stack against a fake `claude`: a card is dragged, the rule engine
-/// decides, the scheduler spawns, the stream is parsed and logged, and the run
-/// is recorded — without spending a token or touching GitHub.
+/// The whole stack against a fake ACP agent: a card is dragged, the rule engine
+/// decides, the scheduler spawns, the conversation is decoded and logged, and
+/// the run is recorded — without spending a token or touching GitHub.
 private struct Stack {
     var store: BoardStore
     var board: BoardService
@@ -64,7 +70,7 @@ private struct Stack {
 
     static func make(
         fixture: String, extraEnv: [String: String] = [:], gitPath: String = "/usr/bin/false",
-        ghPath: String = "/usr/bin/false", idleTimeout: Duration = ClaudeRun.defaultIdleTimeout
+        ghPath: String = "/usr/bin/false", idleTimeout: Duration = AgentRun.defaultIdleTimeout
     ) async throws -> Stack {
         let home = TestHome.scratch("board-e2e")
         try FileManager.default.createDirectory(
@@ -74,11 +80,16 @@ private struct Stack {
 
         let store = try BoardStore.open(at: home.appendingPathComponent("elliot.sqlite"))
         var environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
-        environment["FAKE_CLAUDE_FIXTURE"] = TestPaths.fixture(fixture)
+        environment["FAKE_ACP_FIXTURE"] = TestPaths.fixture(fixture)
         environment.merge(extraEnv) { _, new in new }
 
         let config = ToolConfig(
-            claudePath: TestPaths.fakeClaude,
+            // Resolved, and never spawned: nothing reaches `claude` directly any more. Left
+            // pointing at something unrunnable so a path that quietly went back to it would fail
+            // rather than work.
+            claudePath: "/usr/bin/false",
+            adapterExecutable: TestPaths.adapterExecutable,
+            adapterArguments: TestPaths.adapterArguments,
             // `false` by default so every verification fails cleanly rather
             // than reaching the network; this test is about the run mechanics.
             // Callers that exercise the git sentinel pass a real `git` instead,
@@ -147,7 +158,19 @@ struct EndToEndTests {
 
     @Test("Dragging a story from Backlog to To Do runs create-issue for real")
     func backlogToTodoRunsTheSkill() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        // ⛔ Where the double records the prompt it was actually sent. Under `claude -p` the
+        // prompt was `-p <text>` on the child's argv, so `run.argv` carried it; under ACP it is
+        // `session/prompt`'s content and argv is the adapter's three tokens. Without this file
+        // the guarantee below — *the first digit run of an `implement-issue` prompt is the issue
+        // number* — would silently stop being checked.
+        let promptOut = TestHome.scratch("board-e2e-prompt")
+            .appendingPathComponent("prompt-\(UUID().uuidString).txt")
+        try FileManager.default.createDirectory(
+            at: promptOut.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let stack = try await Stack.make(
+            fixture: "fake-create-issue.json",
+            extraEnv: ["FAKE_ACP_PROMPT_OUT": promptOut.path]
+        )
         defer { stack.cleanUp() }
 
         let card = try await stack.board.createCard(
@@ -174,24 +197,52 @@ struct EndToEndTests {
         #expect(run.state == .succeeded)
         #expect(run.exitCode == 0)
         #expect(run.totalCostUSD == 0.1834)
-        #expect(run.numTurns == 7)
+        // ⚠️ **`nil`, and that is the switchover's one recorded loss on this row.** `num_turns`
+        // was stream-json's own field and ACP has nothing standing in for it; this used to read
+        // `7`. A synthesised figure would look on screen exactly like a measured one.
+        #expect(run.numTurns == nil)
         #expect(run.permissionDenials.isEmpty)
+        // NEW: the agent names its own session under ACP, and the row records which one — the
+        // anchor a later resume forks from.
+        #expect(run.agentSessionID == "sess-fake-0001")
+        #expect(run.stopReason == "end_turn")
 
-        // The prompt is what the skill actually receives.
+        // The prompt is what the skill actually receives — read off the wire, because that is
+        // where it now travels.
+        let sent = try String(contentsOf: promptOut, encoding: .utf8)
+        #expect(sent == run.prompt)
         #expect(run.prompt == "/ai-migration-kit:create-issue As a developer, I want to see the "
             + "run log inside the card, so that I can diagnose without a terminal. "
             + "Acceptance criteria: 1) the log streams live")
 
-        // The argv is reproducible by hand.
-        #expect(run.argv.contains("--output-format"))
-        #expect(run.argv.contains("stream-json"))
-        #expect(run.argv.contains("--session-id"))
-        #expect(run.argv.contains(run.id.uuidString.lowercased()))
+        // ⚠️ The argv is the **adapter's**, and no longer reproduces this run: `AgentInvocation`
+        // renders no flags, so `--output-format`, `--session-id` and the permission mode are all
+        // gone from it. `AgentInvocation.displayArgv` carries the record of that loss. What is
+        // still true, and worth pinning, is that argv names the process Elliot really spawned.
+        #expect(run.argv.first == TestPaths.adapterExecutable)
+        #expect(run.argv.dropFirst().elementsEqual(TestPaths.adapterArguments))
 
-        // Every raw line was written to the durable sink.
+        // Every raw frame was written to the durable sink. Counted by *presence* rather than by an
+        // exact line count: the number of JSON-RPC frames a conversation takes is the adapter's
+        // business, not this test's.
         let log = try String(contentsOfFile: run.logPath, encoding: .utf8)
-        #expect(log.split(separator: "\n").count == 8)
         #expect(log.contains("https://github.com/phmatray/Elliot/issues/47"))
+
+        // ⚠️ **Elliot's own two records are asserted through the decoders, not by substring, and
+        // that is a measured caveat rather than a preference.** `JSONEncoder` escapes forward
+        // slashes by default, so the bytes in the file read `"elliot\/session"` — a `grep` for
+        // `elliot/session` finds nothing, on a log written by this very build. The archive's own
+        // readers decode, so they are unaffected; a person at a terminal is not.
+        #expect(!log.contains("\"elliot/session\""))
+        #expect(log.contains(#""elliot\/session""#))
+
+        let logURL = URL(fileURLWithPath: run.logPath)
+        let session = try #require(AgentLog.sessionInfo(inLogAt: logURL))
+        #expect(session.agentSessionID == run.agentSessionID)
+        // And the file's own account agrees with the row's — the archive is the one reader with
+        // no memory to fall back on.
+        let logSummary = try #require(AgentLog.lastSummary(inLogAt: logURL))
+        #expect(logSummary.stopReason == run.stopReason)
 
         // The card moved, and the audit records who asked.
         #expect(try await stack.store.card(id: card.id)?.column == .todo)
@@ -209,13 +260,13 @@ struct EndToEndTests {
         // call kept the attention tint until it exited.
         //
         // ⛔ Nothing here measures a duration. The fixture's own pace makes the
-        // silences — `FAKE_CLAUDE_DELAY_MS` sleeps after every line, so eight
-        // lines give seven gaps that are followed by more output — the window is
+        // silences — `FAKE_ACP_DELAY_MS` sleeps before every line written, so
+        // the frames give gaps that are followed by more output — the window is
         // short so the watchdog looks inside them, and what is asserted is the
         // *order* of what arrived.
         let stack = try await Stack.make(
-            fixture: "create-issue-success.ndjson",
-            extraEnv: ["FAKE_CLAUDE_DELAY_MS": "150"],
+            fixture: "fake-create-issue.json",
+            extraEnv: ["FAKE_ACP_DELAY_MS": "150"],
             idleTimeout: .milliseconds(20)
         )
         defer { stack.cleanUp() }
@@ -247,7 +298,7 @@ struct EndToEndTests {
                 // Written out rather than `default`, so a case added to
                 // `SchedulerUpdate` has to be considered here rather than
                 // silently ignored by a collector that judges an ordering.
-                case .runStarted, .runOutput, .queueChanged: break
+                case .runStarted, .runOutput, .runSummary, .queueChanged: break
                 }
             }
             return seen
@@ -278,7 +329,7 @@ struct EndToEndTests {
         let issues = try issuesFixtureCreatedNow(title: title, number: 4242, at: ghHome)
 
         let stack = try await Stack.make(
-            fixture: "create-issue-success.ndjson",
+            fixture: "fake-create-issue.json",
             extraEnv: ["FAKE_GH_ISSUES": issues],
             ghPath: TestPaths.fakeGH
         )
@@ -314,7 +365,7 @@ struct EndToEndTests {
 
     @Test("A run refused a tool is not recorded as a plain success")
     func deniedRunIsFlagged() async throws {
-        let stack = try await Stack.make(fixture: "denied.ndjson")
+        let stack = try await Stack.make(fixture: "fake-denied.json")
         defer { stack.cleanUp() }
 
         let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Push something").card
@@ -323,16 +374,27 @@ struct EndToEndTests {
 
         let run = try await stack.awaitRun(cardID: card.id)
         #expect(run.exitCode == 0)
-        // The whole point: exit zero, is_error false, and still not a success.
+        // The whole point: exit zero, the turn not in error, and still not a success.
         #expect(run.state == .completedWithDenials)
         #expect(run.permissionDenials == ["Bash"])
+        // ⛔ And the fold is **by value**: this run was refused (`permission-rule`), which is a
+        // denial, and `NonExecutionKind.isDenial` is the single implementation deciding so.
+        #expect(run.stopReason == "end_turn")
     }
 
     @Test("A crashing run is recorded as failed, with its stderr kept")
     func crashingRunIsRecorded() async throws {
         let stack = try await Stack.make(
-            fixture: "create-issue-success.ndjson",
-            extraEnv: ["FAKE_CLAUDE_MODE": "crash", "FAKE_CLAUDE_EXIT": "3"]
+            fixture: "fake-create-issue.json",
+            extraEnv: [
+                "FAKE_ACP_MODE": "crash",
+                // ⚠️ The double exits 9 under `crash`, and there is no exit-code knob. That
+                // number is not what this test is about: what matters is that a child which dies
+                // mid-turn writes **no** terminal line, so the run has no summary and reads
+                // `.failed` — see `state(for:cancelRequested:)`'s note on the one deliberate
+                // behaviour change.
+                "FAKE_ACP_STDERR": "simulated failure",
+            ]
         )
         defer { stack.cleanUp() }
 
@@ -342,7 +404,10 @@ struct EndToEndTests {
 
         let run = try await stack.awaitRun(cardID: card.id)
         #expect(run.state == .failed)
-        #expect(run.exitCode == 3)
+        #expect(run.exitCode == 9)
+        // No terminal line at all — which is the fact, not an omission: it is what tells a run
+        // that died mid-turn from one that ended.
+        #expect(run.stopReason == nil)
         #expect(run.resultText?.contains("simulated failure") == true)
         // ⛔ And it is recorded as the process's, not the agent's. This is the
         // whole of #288 measured through a real spawn: the child died before
@@ -354,6 +419,15 @@ struct EndToEndTests {
         #expect(RunVerdict.of(run).itSaid == nil)
     }
 
+    /// ⛔ **The case forward-warned about, and the one that reads as a crash if it is got wrong.**
+    ///
+    /// `MODE=deaf` answers the handshake, never answers `session/prompt`, and — the point —
+    /// does **not** exit when its stdin closes. So the polite `session/cancel` cannot end it and
+    /// only the SIGTERM backstop can, which means the turn produces no `stopReason` at all and
+    /// the child dies at 143. That exit code is exactly what a crash produces, so the verdict
+    /// cannot come from it: it comes from Elliot having written `.cancelling` and recorded that
+    /// it asked. Under `claude -p` this was `ClaudeRunOutcome.wasTerminated`, a flag the process
+    /// itself set; there is no such flag now.
     @Test("Cancelling a run stops it and records the cancellation")
     func cancellingARun() async throws {
         let ready = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -361,8 +435,8 @@ struct EndToEndTests {
         defer { try? FileManager.default.removeItem(at: ready) }
 
         let stack = try await Stack.make(
-            fixture: "create-issue-success.ndjson",
-            extraEnv: ["FAKE_CLAUDE_MODE": "trap", "FAKE_CLAUDE_READY": ready.path]
+            fixture: "fake-create-issue.json",
+            extraEnv: ["FAKE_ACP_MODE": "deaf", "FAKE_ACP_READY": ready.path]
         )
         defer { stack.cleanUp() }
 
@@ -376,7 +450,7 @@ struct EndToEndTests {
 
         // Wait on the fact that the child is trap-protected, not on a duration:
         // exit 143 only exists once the trap is installed, and under load a
-        // fixed sleep can expire before bash gets there.
+        // fixed sleep can expire before python gets there.
         try await withTimeout(.seconds(5)) {
             while !FileManager.default.fileExists(atPath: ready.path) {
                 try await Task.sleep(for: .milliseconds(20))
@@ -384,29 +458,63 @@ struct EndToEndTests {
         }
         await stack.board.cancelRun(id: runID)
 
-        let run = try await stack.awaitRun(cardID: card.id)
+        let run = try await stack.awaitRun(cardID: card.id, timeout: .seconds(40))
         #expect(run.state == .cancelled)
+        // 143 — the SIGTERM the backstop sent, and **indistinguishable from a crash**. The
+        // verdict above is Elliot's own knowledge, not this number.
         #expect(run.exitCode == 143)
+        #expect(run.stopReason == nil, "the agent never got to say how the turn ended")
     }
 
     /// Criterion 2 of #333, asserted end to end for the first time.
     ///
-    /// `RunScheduler` has always read `repo.permissionMode` and
-    /// `repo.extraAllowedTools` at spawn, and `ClaudeInvocation.arguments()` has
-    /// always emitted both flags — but nothing ever *wrote* either column, so
-    /// every run in the suite's history was made under the same defaults and the
-    /// path was never exercised with anything else. This pins the half of the
-    /// feature that was already built.
+    /// `RunScheduler` has always read `repo.permissionMode` at spawn — but nothing ever *wrote*
+    /// that column until #333, so every run in the suite's history was made under the same
+    /// default and the path was never exercised with anything else.
     ///
-    /// Asserted positionally rather than with `contains`, because an argument
-    /// landing next to the wrong flag is exactly what `contains` cannot see.
+    /// ⚠️ **Read off the log rather than off argv, because that is where the mode now lives.**
+    /// `--permission-mode <mode>` went with the CLI; ACP sets it with a
+    /// `session/set_config_option`, and Elliot records what it set in the `elliot/session` line
+    /// it writes itself. `AgentLog.sessionInfo` is the archive's own reader for that, so this
+    /// asserts the thing a person reading the log would see.
     @Test("A repository's run terms reach the spawn")
     func runTermsReachTheSpawn() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         var repo = stack.repo
         repo.permissionMode = .acceptEdits
+        try await stack.store.saveRepo(repo)
+
+        let card = try await stack.board.createCard(repoID: repo.id, title: "Tightened").card
+        _ = try await stack.board.move(
+            cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
+        let run = try await stack.awaitRun(cardID: card.id)
+
+        #expect(run.state == .succeeded)
+        let session = try #require(
+            AgentLog.sessionInfo(inLogAt: URL(fileURLWithPath: run.logPath)))
+        // The adapter's own word for `.acceptEdits`, which is the one this mode keeps.
+        #expect(session.mode == "acceptEdits")
+        #expect(session.cwd == repo.path)
+    }
+
+    /// ⛔ **The other half of the same criterion, and it inverted.** Under `claude -p` an extra
+    /// allowed tool was a flag: `--allowedTools Read,Bash(git status *)`. The adapter advertises
+    /// **no config option for allowed tools at all**, so there is nothing to send — and the
+    /// design refuses rather than dropping the grant, because a run that silently lost it would
+    /// meet a refusal for a tool the operator had explicitly allowed, with nothing on screen
+    /// saying why.
+    ///
+    /// So a repository carrying one fails **every** drag, before anything is spawned, with a
+    /// sentence naming the patterns and the screen to fix them on. That is a real cost and it is
+    /// pinned here rather than discovered on a card.
+    @Test("A repository allowing extra tools refuses the spawn by name")
+    func extraAllowedToolsRefuseTheSpawn() async throws {
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
+        defer { stack.cleanUp() }
+
+        var repo = stack.repo
         repo.extraAllowedTools = ["Read", "Bash(git status *)"]
         try await stack.store.saveRepo(repo)
 
@@ -415,18 +523,24 @@ struct EndToEndTests {
             cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         let run = try await stack.awaitRun(cardID: card.id)
 
-        #expect(argumentValues(after: "--permission-mode", in: run.argv) == ["acceptEdits"])
-        #expect(
-            argumentValues(after: "--allowedTools", in: run.argv)
-                == ["Read,Bash(git status *)"])
+        #expect(run.state == .failed)
+        // Nothing was spawned, so there is no exit code — which is how this failure is told
+        // apart from a child that ran and died.
+        #expect(run.exitCode == nil)
+        // Elliot's own words, never the agent's: no agent existed to say anything (#288).
+        #expect(run.resultSource == .elliot)
+        #expect(RunVerdict.of(run).itSaid == nil)
+        let sentence = try #require(run.resultText)
+        #expect(sentence.contains("Read"))
+        #expect(sentence.contains("Bash(git status *)"))
+        #expect(sentence.contains("Run terms"), "the sentence names no remedy")
     }
 
-    /// The other half of the same criterion, and the reason `ExtraAllowedTools`
-    /// exists: an empty list must produce **no flag at all**, so a list holding
-    /// one blank string is not "no tools" but `--allowedTools ""`.
-    @Test("A repository allowing no extra tools passes no such flag")
-    func noExtraToolsMeansNoFlag() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+    /// The ordinary path, and the reason `ExtraAllowedTools.normalise` exists: a list holding one
+    /// blank string is **not** a grant, so it must not trip the refusal above.
+    @Test("A repository allowing no extra tools spawns normally")
+    func noExtraToolsSpawnsNormally() async throws {
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         var repo = stack.repo
@@ -438,13 +552,13 @@ struct EndToEndTests {
             cardID: card.id, to: .todo, origin: .userDrag, requiresVerifiedGreen: false)
         let run = try await stack.awaitRun(cardID: card.id)
 
-        #expect(!run.argv.contains("--allowedTools"))
-        #expect(!run.argv.contains(""))
+        #expect(run.state == .succeeded)
+        #expect(run.exitCode == 0)
     }
 
     @Test("A move that triggers nothing spawns nothing")
     func inertMoveSpawnsNothing() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Already running").card
@@ -460,16 +574,35 @@ struct EndToEndTests {
         #expect(try await stack.store.runs(cardID: card.id).isEmpty)
     }
 
-    /// The two facts a resume depends on, in one assertion: the fork tokens are
-    /// there, and the child runs in the cwd of the **first** attempt.
+    /// The two facts a resume depends on, in one test: the fork names the **agent's** own
+    /// session id from the first attempt, and the child runs in the cwd of that attempt.
     ///
-    /// The cwd matters as much as the flags. Claude Code keeps a session's
-    /// transcript under a slug of the directory it ran in, so a fork launched
-    /// from anywhere else finds nothing — and fails by saying "No conversation
-    /// found", which reads as a lost session rather than a wrong directory.
-    @Test("A resumed run forks the session it names, from where the first attempt ran")
+    /// The cwd matters as much as the anchor. Claude Code keeps a session's transcript under a
+    /// slug of the directory it ran in, so a fork launched from anywhere else finds nothing —
+    /// and fails by saying the session is gone, which reads as an expired session rather than a
+    /// wrong directory.
+    ///
+    /// ⚠️ **The anchor changed type, and that is the substance.** `--resume <id>` took
+    /// `SkillRun.id`, because `claude -p` was handed that id as `--session-id` and the two were
+    /// one value; `session/fork` takes the id the *agent* chose, which is why
+    /// `SkillRun.agentSessionID` exists and why `RunScheduler.start` reads the predecessor row.
+    /// A resume that still passed `resumedFrom` would be forking an id no agent has ever issued.
+    @Test("A resumed run forks the agent session its predecessor recorded, from where it ran")
     func resumedRunCarriesTheForkTokensAndTheFirstAttemptsCwd() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let sessionOut = TestHome.scratch("board-e2e-fork")
+            .appendingPathComponent("session-\(UUID().uuidString).json")
+        try FileManager.default.createDirectory(
+            at: sessionOut.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let stack = try await Stack.make(
+            fixture: "fake-create-issue.json",
+            extraEnv: [
+                // The double forks exactly one id and refuses every other, so naming the one the
+                // predecessor recorded is what makes the fork succeed. Refuse-by-default is the
+                // point: an anchor Elliot got wrong cannot pass here by accident.
+                "FAKE_ACP_FORKABLE": "sess-the-first-attempt",
+                "FAKE_ACP_SESSION_OUT": sessionOut.path,
+            ]
+        )
         defer { stack.cleanUp() }
 
         // A directory of the first attempt's own, deliberately not `repo.path`:
@@ -482,7 +615,7 @@ struct EndToEndTests {
             repoID: stack.repo.id, title: "Resume me").card
         let now = Date()
 
-        let first = SkillRun.card(
+        var first = SkillRun.card(
             cardID: card.id, repoID: stack.repo.id, kind: .createIssue,
             prompt: "/ai-migration-kit:create-issue Resume me", cwd: firstCwd.path,
             state: .failed,
@@ -492,6 +625,10 @@ struct EndToEndTests {
             stderrPath: stack.home.appendingPathComponent("runs/first.log").path,
             createdAt: now.addingTimeInterval(-1_800)
         )
+        // The anchor: what the *agent* called its session on the first attempt. Deliberately not
+        // `first.id` — those were one value under `claude -p`, and a resume that still used the
+        // run's own id would be forking something no agent has ever issued.
+        first.agentSessionID = "sess-the-first-attempt"
         try await stack.store.saveRun(first)
 
         // `.queued`, so `pump()` admits it; seeded straight into the store
@@ -509,37 +646,44 @@ struct EndToEndTests {
 
         let run = try await stack.awaitRun(cardID: card.id)
         #expect(run.id == resumed.id)
+        // It really forked, rather than quietly opening a fresh session: the double refuses every
+        // anchor but the one it was given, and a refusal ends the run.
+        #expect(run.state == .succeeded)
 
-        // Adjacency, not membership: where the block sits is the contract, and
-        // `--add-dir` naming the first attempt's directory is half of it.
-        //
-        // Read as a bounded slice, never by index. Before the fix below ships,
-        // `--add-dir <cwd>` is the *last* pair argv has: `Stack` builds its
-        // scheduler with `ceiling: .off`, so no `--max-budget-usd` follows, and
-        // the repository's `extraAllowedTools` is empty, so no `--allowedTools`
-        // does either. `argv[addDir + 2]` would therefore trap with
-        // `Fatal error: Index out of range` — killing the whole test process
-        // instead of failing this expectation, and looking exactly like the
-        // intermittent signal abort CLAUDE.md warns about. `prefix(5)` is total:
-        // it returns what is there and this reports the difference.
-        let argv = run.argv
-        let addDir = try #require(argv.firstIndex(of: "--add-dir"))
-        #expect(Array(argv.dropFirst(addDir).prefix(5)) == [
-            "--add-dir", firstCwd.path,
-            "--resume", first.id.uuidString.lowercased(),
-            "--fork-session",
-        ])
+        // Read off the wire, which is where both facts now travel. The old form asserted a
+        // five-element argv slice — `--add-dir <cwd> --resume <id> --fork-session` — and each of
+        // those three tokens has become a field of `session/fork`.
+        let asked = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: sessionOut)) as? [String: Any]
+        #expect(asked?["sessionId"] as? String == "sess-the-first-attempt")
+        #expect(asked?["cwd"] as? String == firstCwd.path)
+        // And it is not the repository's directory, which is the wrong source three characters
+        // away — the assertion that made this test worth writing.
+        #expect(firstCwd.path != stack.repo.path)
+        // The fork answers with a **new** session id, and that is the one the row records: a run
+        // that adopted the parent's id would be indistinguishable from one that never forked.
+        #expect(run.agentSessionID == "sess-fake-fork-0002")
     }
 
-    /// A resume that finds no conversation never had a turn, so its closing
-    /// prose is the CLI complaining about a missing transcript. Copy that into
-    /// `.noIssueCreated(reason:)` and the card says the idea was already covered
-    /// — which is exactly the sentence an unattended loop reads as "nothing to
-    /// do here", on a card for which nothing whatsoever was attempted.
+    /// A resume that finds no conversation never had a turn, so it must not be read as the agent
+    /// having decided there was nothing to do. Copy that into `.noIssueCreated(reason:)` and the
+    /// card says the idea was already covered — which is exactly the sentence an unattended loop
+    /// reads as "nothing to do here", on a card for which nothing whatsoever was attempted.
+    ///
+    /// ⚠️ **How the fact arrives changed completely, and the guarantee did not.** Under
+    /// `claude -p` the CLI *ran*, printed "No conversation found" as its terminal `result`, and
+    /// exited 0 — so the evidence was prose, and the danger was that prose becoming the reason.
+    /// Under ACP the agent **answers `session/fork` with a JSON-RPC error**, and
+    /// `AgentRun.isForkRefusal` narrows that to `sessionResumeFailed`, which
+    /// `ResumeVerdict.of(resumedFrom:sessionResumeFailed:)` turns into `.sessionGone`. The
+    /// verdict this test asserts is therefore reached from a *typed* signal rather than from a
+    /// sentence, which is strictly the safer of the two — and the reason the assertion is worth
+    /// keeping is that the outcome it must not become is unchanged.
     @Test("A resume that finds no conversation is not recorded as a duplicate skip")
     func sessionGoneIsNotADuplicateSkip() async throws {
         let stack = try await Stack.make(
-            fixture: "resume-session-gone.ndjson",
+            // FAKE_ACP_FORKABLE unset: every fork is refused, which is exactly this scenario.
+            fixture: "fake-create-issue.json",
             // `gh` has to answer, so the title sweep reaches the sentence: with
             // no FAKE_GH_ISSUES the fake prints `[]`, which is what `gh` returns
             // for a repository with nothing matching.
@@ -551,7 +695,7 @@ struct EndToEndTests {
             repoID: stack.repo.id, title: "Stream the run log inside the card").card
         let now = Date()
 
-        let first = SkillRun.card(
+        var first = SkillRun.card(
             cardID: card.id, repoID: stack.repo.id, kind: .createIssue,
             prompt: "/ai-migration-kit:create-issue Stream the run log inside the card",
             cwd: stack.repo.path,
@@ -562,6 +706,9 @@ struct EndToEndTests {
             stderrPath: stack.home.appendingPathComponent("runs/gone-first.log").path,
             createdAt: now.addingTimeInterval(-1_800)
         )
+        // An anchor that looks perfectly good and that no agent will fork — which is what a
+        // transcript that has aged out looks like from here.
+        first.agentSessionID = "sess-long-gone"
         try await stack.store.saveRun(first)
 
         let resumed = SkillRun.card(
@@ -578,18 +725,15 @@ struct EndToEndTests {
 
         let run = try await stack.awaitRun(cardID: card.id)
         #expect(run.id == resumed.id)
-        // `is_error`, so the run failed; `num_turns: 0`, so it never started.
-        // Exit code zero throughout — the state comes from the result, not the
-        // shell.
+        // A terminal line **is** written on this one path, and it is the exception that makes the
+        // archive readable: a refused fork did not die mid-turn, it ended immediately having done
+        // nothing, and that is a thing the log can say. `isError`, so `.failed`.
         #expect(run.state == .failed)
-        #expect(run.exitCode == 0)
-        #expect(run.numTurns == 0)
-        // The prose exists, and is exactly what must NOT become the reason.
-        #expect(run.resultText?.hasPrefix("No conversation found") == true)
-        // The CLI's complaint travels through the terminal event's `result`
-        // field, so `ClosingRemark.of` attributes it to the agent — never to
-        // stderr, and never unattributed.
-        #expect(run.resultSource == .agent)
+        #expect(run.stopReason == AgentRun.sessionForkRefusedStopReason)
+        // ⚠️ `numTurns` is nil for every ACP run — this used to read `0`, which was stream-json's
+        // own way of saying "it never started". The absence of a *stop reason* is what says that
+        // now, and this run has one, which is the point.
+        #expect(run.numTurns == nil)
 
         #expect(run.verifiedOutcome == .noIssueCreated(
             reason: "The conversation this run tried to resume no longer exists, so nothing ran."))
@@ -597,7 +741,7 @@ struct EndToEndTests {
 
     @Test("The launch sweep admits runs that died with the app")
     func reconcilerAdmitsOrphans() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         let card = try await stack.board.createCard(repoID: stack.repo.id, title: "Interrupted").card
@@ -612,7 +756,7 @@ struct EndToEndTests {
         try await stack.store.saveRun(orphan)
 
         let config = ToolConfig(
-            claudePath: TestPaths.fakeClaude, ghPath: "/usr/bin/false",
+            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
         let reconciler = Reconciler(
@@ -642,7 +786,7 @@ struct EndToEndTests {
     /// A `Reconciler` over the same store, with `gh` answering from a fixture.
     private func reconciler(for stack: Stack, prs: String) -> Reconciler {
         let config = ToolConfig(
-            claudePath: TestPaths.fakeClaude, ghPath: TestPaths.fakeGH,
+            claudePath: "/usr/bin/false", ghPath: TestPaths.fakeGH,
             gitPath: "/usr/bin/false",
             environment: [
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -687,7 +831,7 @@ struct EndToEndTests {
     /// Review clean — the error describes a run that has since been disproved.
     @Test("A card reconciled at launch no longer carries the failed run's error")
     func reconciledCardDropsTheStaleError() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         let card = try await seedInterruptedCard(
@@ -726,7 +870,7 @@ struct EndToEndTests {
     /// card that has *nothing left to learn*.
     @Test("A merged pull request teaches a Done card which pull request closed it")
     func reconcilerRecordsThePullRequestOnADoneCard() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         let card = try await seedInterruptedCard(in: stack, column: .done, issue: 104)
@@ -755,7 +899,7 @@ struct EndToEndTests {
     /// outcome having had nothing to offer.
     @Test("A merged pull request on a Done card that already names it corrects nothing")
     func reconcilerDoesNotCountRealNoOps() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         var card = try await seedInterruptedCard(in: stack, column: .done, issue: 104)
@@ -792,7 +936,7 @@ struct EndToEndTests {
 
     private func watcher(for stack: Stack) -> PRWatcher {
         let config = ToolConfig(
-            claudePath: TestPaths.fakeClaude, ghPath: "/usr/bin/false",
+            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
         // `reconcile` is handed its pull requests directly, so this client is
@@ -804,7 +948,7 @@ struct EndToEndTests {
     /// moved the card to In Review and left the failed run's banner on it.
     @Test("A card the watcher sends to In Review no longer carries the failed run's error")
     func watcherClearsTheStaleError() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         var card = try await stack.board.createCard(repoID: stack.repo.id, title: "In flight").card
@@ -834,7 +978,7 @@ struct EndToEndTests {
     /// It acts whenever the text would change now, and only then.
     @Test("A card carrying another error still learns its pull request was abandoned")
     func watcherReplacesAStaleErrorWithTheClosedSentence() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Abandoned").card
@@ -860,7 +1004,7 @@ struct EndToEndTests {
     /// must read `MERGED` as `.merged` for this to work at all.
     @Test("A pull request merged outside Elliot sends the card to Done, as something the watcher saw")
     func watcherSendsAMergedCardToDone() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Landed").card
@@ -891,7 +1035,7 @@ struct EndToEndTests {
     /// `reconcile` that `card.prNumber` being nil selects.
     @Test("A pull request first sighted already merged sends the card to Done naming itself")
     func watcherRecordsAPullRequestItOnlyEverSawMerged() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Landed unseen").card
@@ -916,7 +1060,7 @@ struct EndToEndTests {
     /// with no pull request to open is the same dead end one case over.
     @Test("A pull request first sighted already closed records itself and says it was abandoned")
     func watcherRecordsAPullRequestItOnlyEverSawClosed() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Dropped unseen").card
@@ -949,7 +1093,7 @@ struct EndToEndTests {
     /// `.inReview`.
     @Test("A card whose pull request was abandoned still finds the replacement for the same issue")
     func watcherFindsAReplacementAfterAnAbandonedPullRequest() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Second attempt").card
@@ -985,7 +1129,7 @@ struct EndToEndTests {
     /// onto an unrelated later pull request.
     @Test("A Done card keeps the pull request it recorded, and is not re-matched by issue")
     func doneCardKeepsItsRecordedPullRequest() async throws {
-        let stack = try await Stack.make(fixture: "create-issue-success.ndjson")
+        let stack = try await Stack.make(fixture: "fake-create-issue.json")
         defer { stack.cleanUp() }
 
         var card = try await stack.board.createCard(repoID: stack.repo.id, title: "Finished").card
@@ -1028,7 +1172,7 @@ struct AnalysisCompletionTests {
         .enabled(if: gitFixtureIsAvailable))
     func sentinelDistinguishesCleanFromUnchecked() async throws {
         let stack = try await Stack.make(
-            fixture: "create-issue-success.ndjson", gitPath: gitFixturePath)
+            fixture: "fake-create-issue.json", gitPath: gitFixturePath)
         defer { stack.cleanUp() }
 
         // A directory of its own, distinct from `stack.home`: `stack.home` is
@@ -1084,7 +1228,7 @@ struct AnalysisCompletionTests {
         try await stack.store.saveRun(orphan)
 
         let config = ToolConfig(
-            claudePath: TestPaths.fakeClaude, ghPath: "/usr/bin/false",
+            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
         let reconciler = Reconciler(

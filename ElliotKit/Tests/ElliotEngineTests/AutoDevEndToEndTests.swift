@@ -17,11 +17,17 @@ private enum AutoDevPaths {
         .deletingLastPathComponent()  // ElliotKit
         .deletingLastPathComponent()  // repo root
 
-    static let fakeClaude = repoRoot.appendingPathComponent("Scripts/fake-claude.sh").path
+    static let fakeACP = repoRoot.appendingPathComponent("Scripts/fake-acp.py").path
+
+    /// The double is a Python script, so the executable is an interpreter and the script is
+    /// an argument — the same shape the real adapter has, where the executable is `npx` and
+    /// the package is an argument.
+    static let adapterExecutable = "/usr/bin/env"
+    static var adapterArguments: [String] { ["python3", fakeACP] }
     static let fakeGH = repoRoot.appendingPathComponent("Scripts/fake-gh.sh").path
 
-    static func streamFixture(_ name: String) -> String {
-        repoRoot.appendingPathComponent("Fixtures/stream-json/\(name)").path
+    static func acpFixture(_ name: String) -> String {
+        repoRoot.appendingPathComponent("Fixtures/acp/\(name)").path
     }
 
     static func ghFixture(_ name: String) -> String {
@@ -30,7 +36,7 @@ private enum AutoDevPaths {
 }
 
 /// Task 15: a whole unattended session, driven against real fakes rather than
-/// spies — a genuine `claude -p` child, a real `gh` binary stand-in, a real
+/// spies — a genuine ACP agent child, a real `gh` binary stand-in, a real
 /// `BoardStore`. Everything this suite exercises was written in Tasks 5-14;
 /// this file's only job is to run it all together and assert on the rows that
 /// come out the other end.
@@ -101,13 +107,14 @@ struct AutoDevEndToEndTests {
 
         let store = try BoardStore.open(at: home.appendingPathComponent("elliot.sqlite"))
         var environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
-        environment["FAKE_CLAUDE_FIXTURE"] =
-            AutoDevPaths.streamFixture("create-issue-success.ndjson")
+        environment["FAKE_ACP_FIXTURE"] = AutoDevPaths.acpFixture("fake-create-issue.json")
         environment["FAKE_GH_PRS"] = AutoDevPaths.ghFixture("prs-52-a1b2c3.json")
         if let prView { environment["FAKE_GH_PR_VIEW"] = AutoDevPaths.ghFixture(prView) }
 
         let config = ToolConfig(
-            claudePath: AutoDevPaths.fakeClaude,
+            claudePath: "/usr/bin/false",
+            adapterExecutable: AutoDevPaths.adapterExecutable,
+            adapterArguments: AutoDevPaths.adapterArguments,
             ghPath: AutoDevPaths.fakeGH,
             gitPath: "/usr/bin/false",
             environment: environment)

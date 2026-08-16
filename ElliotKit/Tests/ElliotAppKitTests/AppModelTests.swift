@@ -811,24 +811,42 @@ struct AppModelTests {
     /// one-line strip on a card with a run in flight. Its assertions are
     /// unchanged; only what they are said to be *about* has moved, from the log
     /// to the strip.
-    @Test("A stream event becomes one readable line, or none")
+    @Test("A run event becomes one readable line, or none")
     func describeRendersTheLine() {
-        #expect(AppModel.describe(.assistantText("hello\nworld")) == "hello")
+        #expect(AppModel.describe(.agentText("hello\nworld")) == "hello")
         #expect(
-            AppModel.describe(.assistantToolUse(name: "Bash", id: "1", inputPreview: "ls"))
+            AppModel.describe(.toolCall(ToolCallPatch(
+                id: "1", title: "ls", kind: .execute, claudeToolName: "Bash")))
                 == "⚙ Bash ls"
         )
-        #expect(AppModel.describe(.system(subtype: "anything", raw: Data())) == nil)
+        // `_meta.claudeCode.toolName` is the real name; the ACP `kind` is the fallback, and the
+        // word "tool" the last resort. A frame carrying neither must still produce a line rather
+        // than blanking the strip.
+        #expect(
+            AppModel.describe(.toolCall(ToolCallPatch(id: "1", title: "x", kind: .read)))
+                == "⚙ read x"
+        )
+        #expect(AppModel.describe(.toolCall(ToolCallPatch(id: "1"))) == "⚙ tool ")
+        #expect(AppModel.describe(.modeChanged("plan")) == "⇄ plan")
+        #expect(AppModel.describe(.plan([PlanStep(content: "a", status: .pending)])) == "▤ 1 steps")
     }
 
-    @Test("A failed tool result is shown; a successful one is not")
-    func describeKeepsFailures() {
-        // On a *card* this is still right: one line has room for the call that
-        // went wrong and none for the ones that went fine. The panel's log,
-        // which has room, keeps both — see `toolResultsNestUnderTheirCall`.
-        #expect(AppModel.describe(.toolResult(toolUseID: "1", isError: false, preview: "fine")) == nil)
-        let failed = AppModel.describe(.toolResult(toolUseID: "1", isError: true, preview: "boom"))
-        #expect(failed?.hasPrefix("✗") == true)
+    /// ⚠️ **This suite used to say "a failed tool result is shown; a successful one is not", and
+    /// under ACP neither half is expressible here.** `.toolResult` was a stream-json event of its
+    /// own; ACP folds a call and its outcome into one `tool_call`/`tool_call_update` id, so there
+    /// is no separate frame to keep or drop — the strip shows the call, whatever became of it.
+    /// What replaces the distinction is the two events a strip must stay **silent** about, and
+    /// they are silent for two different reasons.
+    @Test("Thinking and usage produce no strip line at all")
+    func describeStaysSilentWhereItShould() {
+        // Thinking is not doing. It is a row in the panel's log, where there is room for it.
+        #expect(AppModel.describe(.agentThought("hmm")) == nil)
+        // A running figure, drawn as a figure elsewhere: a line per `usage_update` would bury
+        // whatever the run is actually doing.
+        #expect(AppModel.describe(.usage(RunUsage(used: 1, size: 2, costUSD: 0.1))) == nil)
+        // ⛔ And there is deliberately no terminal arm — see `describe`'s own doc comment. The
+        // `.turnEnded` fact lives in the panel; a strip narrating a finished run is what an arm
+        // here would produce.
     }
 
     // MARK: - The live tail is bounded
@@ -841,26 +859,49 @@ struct AppModelTests {
         // 301, so the cap has to act exactly once and the assertion below can
         // name which end went.
         for index in 0...300 {
-            model.apply(.runOutput(runID: runID, event: .assistantText("line \(index)")))
+            model.apply(.runOutput(runID: runID, event: .agentText("line \(index)")))
         }
 
         let events = model.liveLog[runID] ?? []
         #expect(events.count == 300)
         // The oldest goes. A tail that dropped its newest would stop following
         // the run while still looking full.
-        #expect(events.first == .assistantText("line 1"))
-        #expect(events.last == .assistantText("line 300"))
-        #expect(events.contains(.assistantText("line 0")) == false, "the first event should be gone")
+        #expect(events.first == .agentText("line 1"))
+        #expect(events.last == .agentText("line 300"))
+        #expect(events.contains(.agentText("line 0")) == false, "the first event should be gone")
     }
 
     @Test("A run starting empties its tail rather than seeding it with a line")
     func runStartedClearsTheTail() {
         let model = model(repos: [], cards: [])
         let runID = UUID()
-        model.apply(.runOutput(runID: runID, event: .assistantText("stale")))
+        model.apply(.runOutput(runID: runID, event: .agentText("stale")))
 
         model.apply(.runStarted(runID: runID, cardID: nil))
         #expect(model.liveLog[runID] == [])
+    }
+
+    /// ⛔ The route the terminal row depends on, and the reason `SchedulerUpdate.runSummary`
+    /// exists at all.
+    ///
+    /// `RunEvent` carries no terminal case — under ACP the stop reason is the `session/prompt`
+    /// **response**, not a notification — so nothing arriving through `.runOutput` can say how a
+    /// turn ended. And `liveLog` is never cleared, so a finished run keeps a non-empty live tail
+    /// and never reaches the disk fold that would otherwise supply one. Without this the panel
+    /// would show no `.turnEnded` row for any run the reader was watching.
+    @Test("The turn's summary reaches the model, keyed to its run")
+    func runSummaryIsKept() {
+        let model = model(repos: [], cards: [])
+        let runID = UUID()
+        let other = UUID()
+        #expect(model.liveSummary[runID] == nil)
+
+        model.apply(.runSummary(
+            runID: runID, summary: TurnSummary(stopReason: "end_turn", isError: false)))
+
+        #expect(model.liveSummary[runID]?.stopReason == "end_turn")
+        // Keyed, not global: a second run in flight must not inherit the first's verdict.
+        #expect(model.liveSummary[other] == nil)
     }
 
     // MARK: - A stalled run has to reach the screen

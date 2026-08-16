@@ -37,7 +37,11 @@ struct RunsPane: View {
                         .foregroundStyle(.tertiary)
                 }
                 ForEach(runs) { run in
-                    RunBox(run: run, live: model.liveLog[run.id] ?? [])
+                    RunBox(
+                        run: run,
+                        live: model.liveLog[run.id] ?? [],
+                        summary: model.liveSummary[run.id]
+                    )
                 }
             }
         }
@@ -155,6 +159,45 @@ extension RunsPane {
         return run.permissionDenials
     }
 
+    /// The same question of an ACP run, and **an overload rather than a rewrite**.
+    ///
+    /// The `[StreamEvent]` form above is still the archive's: `RunBox.diskEvents` decodes
+    /// stream-json off disk for every run recorded before the switchover, and replacing that form
+    /// in place would leave those logs with no denial source at all.
+    ///
+    /// ⛔ What differs is *when* the answer exists. Stream-json carried denials only on the
+    /// terminal `result` line, so a run in flight had nothing to show; under ACP a refusal is
+    /// knowable on the failing frame itself — `_meta.claudeCode.nonExecutionKind` arrives with
+    /// the tool call — so this reads the calls, and reads them **by value** through
+    /// `NonExecutionKind.isDenial`. Folding on presence would name every tool a cancelled run had
+    /// in flight as one it was refused.
+    ///
+    /// The fallback is `run.permissionDenials`, filled by `RunScheduler.finish` from
+    /// `TurnSummary.denials` — which is the same by-value rule, applied one layer up. Preferring
+    /// one source rather than merging both is what stops a finished run drawing every refusal
+    /// twice.
+    nonisolated static func denials(of run: SkillRun, in events: [RunEvent]) -> [String] {
+        var byID: [String: ToolCallPatch] = [:]
+        var order: [String] = []
+        for case .toolCall(let patch) in events {
+            if let existing = byID[patch.id] {
+                byID[patch.id] = existing.merging(patch)
+            } else {
+                byID[patch.id] = patch
+                order.append(patch.id)
+            }
+        }
+        let refused = order.compactMap { id -> String? in
+            guard let call = byID[id], call.nonExecutionKind?.isDenial == true else { return nil }
+            // `_meta.claudeCode.toolName` is the real name (`Bash`, `Edit`); the title is the
+            // adapter's prose and the id a correlation token, so those are fallbacks in that
+            // order rather than alternatives. `AgentRun.summary` states the identical rule, which
+            // is why a finished run's two sources agree.
+            return call.claudeToolName ?? call.title ?? call.id
+        }
+        return refused.isEmpty ? run.permissionDenials : refused
+    }
+
     /// How many rows of one log the panel will draw.
     nonisolated static let logRowLimit = 300
 
@@ -187,6 +230,20 @@ extension RunsPane {
     /// The typed rows of one run, capped at the tail the panel can show.
     nonisolated static func rows(of run: SkillRun, events: [StreamEvent]) -> LogWindow {
         trimmed(RunLog.rows(from: events, denials: denials(of: run, in: events)))
+    }
+
+    /// The same, for an ACP run.
+    ///
+    /// `summary` is separate from `events` because it is not one: the stop reason arrives as the
+    /// `session/prompt` **response**, so there is no frame in the stream that carries it. `nil`
+    /// means the turn has not ended — or ended without answering, which is the same absence and
+    /// the same rendering: no `.turnEnded` row.
+    nonisolated static func rows(
+        of run: SkillRun, events: [RunEvent], summary: TurnSummary?
+    ) -> LogWindow {
+        trimmed(
+            RunLog.rows(
+                from: events, denials: denials(of: run, in: events), summary: summary))
     }
 
     /// What one run says about its own clock: how long ago, and how long for.
@@ -241,7 +298,11 @@ struct RunBox: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let run: SkillRun
-    let live: [StreamEvent]
+    let live: [RunEvent]
+    /// What the live turn amounted to, once it has said so. `nil` while it is still going — and
+    /// also for a run whose response never arrived, which is the same absence and draws the same
+    /// way: no terminal row.
+    let summary: TurnSummary?
 
     /// `nil` means "the reader has not said", which is not the same as "closed".
     /// A run in flight opens its own log — it is the thing you selected the card
@@ -506,7 +567,7 @@ struct RunBox: View {
     private var rows: RunsPane.LogWindow {
         live.isEmpty
             ? (diskRows ?? RunsPane.LogWindow(rows: [], dropped: 0))
-            : RunsPane.rows(of: run, events: live)
+            : RunsPane.rows(of: run, events: live, summary: summary)
     }
 
     /// Reads the log off the main actor and folds it, once per `LogSource`.

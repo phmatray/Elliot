@@ -156,6 +156,18 @@ public enum AgentInvocationError: Error, LocalizedError, Sendable {
     /// so a refusal spawns nothing.
     case unmappableAllowedTools([String])
 
+    /// `ACPAgentProcess.executable` is empty — nothing was resolved to spawn.
+    ///
+    /// ⛔ **A refusal, and it has to be a named one.** `ToolConfig.adapterExecutable` defaults to
+    /// `""` so that the 79 existing construction sites keep compiling, and `AppModel` writes `""`
+    /// when `ACPAgentLocator.resolveAdapter()` throws — no Node, no `npx`, a Node below the floor.
+    /// `ChildProcess` does already refuse an empty path, so nothing runs either way; what it
+    /// cannot do is *say* anything, because its sentence is `"Not an executable file: "` with the
+    /// path left blank. That lands verbatim on a failed card as Elliot's own words, naming
+    /// neither the cause nor a remedy. This is the same refusal one layer earlier, with the
+    /// sentence a person can act on.
+    case adapterNotResolved
+
     /// ⛔ **`LocalizedError`, not bare `Error`, because the sentence *is* what this refusal is
     /// for.** `RunScheduler`'s spawn `catch` writes
     /// `updated.setClosing(.elliot(error.localizedDescription))` (`RunScheduler.swift:773`), and
@@ -177,6 +189,9 @@ public enum AgentInvocationError: Error, LocalizedError, Sendable {
                 + "\(tools.joined(separator: ", ")) cannot be granted — and dropping the grant "
                 + "silently would let this run meet a refusal for a tool you had allowed. Clear "
                 + "the extra allowed tools in Preflight ▸ this repository ▸ Run terms."
+        case .adapterNotResolved:
+            "Elliot has no ACP adapter to run: node or npx could not be resolved at launch, so "
+                + "there is nothing to spawn. Preflight names which one and why."
         }
     }
 }
@@ -531,6 +546,10 @@ public final class AgentRun: Sendable {
         guard invocation.extraAllowedTools.isEmpty else {
             throw AgentInvocationError.unmappableAllowedTools(invocation.extraAllowedTools)
         }
+        // ⛔ And before the log file is created, so an unresolvable adapter leaves no empty
+        // artefact behind. `ChildProcess` refuses this too — with a sentence naming an empty
+        // path, which is the whole reason this case exists. See `adapterNotResolved`.
+        guard !agent.executable.isEmpty else { throw AgentInvocationError.adapterNotResolved }
 
         // The durable sink is a file, not the database: the UI stream is bounded and may drop,
         // this never does.
