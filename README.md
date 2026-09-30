@@ -1,3 +1,5 @@
+![Elliot banner](.github/banner.png)
+
 # Elliot
 
 <img src="docs/elliot-icon.png" width="128" alt="Elliot's mark: three interlocking chevron cards, each pointed on the right and notched on the left, on a plate that runs from violet to crimson.">
