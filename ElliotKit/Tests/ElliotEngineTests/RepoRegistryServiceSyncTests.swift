@@ -11,7 +11,7 @@ import Testing
 /// classifier believes git's answers. `gh` stays a stub — no network, no token.
 private func syncTestConfig() -> ToolConfig {
     ToolConfig(
-        claudePath: "/usr/bin/true", ghPath: "/usr/bin/true", gitPath: "/usr/bin/git",
+        ghPath: "/usr/bin/true", gitPath: "/usr/bin/git",
         environment: [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": NSHomeDirectory(),

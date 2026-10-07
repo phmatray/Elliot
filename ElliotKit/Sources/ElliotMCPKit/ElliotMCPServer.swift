@@ -111,8 +111,11 @@ public extension ElliotMCPServer {
                 name: "run-log",
                 title: "Run log (NDJSON)",
                 description: """
-                    Everything one skill run emitted: NDJSON, one Claude Code stream-json \
-                    event per line, exactly as the CLI wrote it. This is the durable record \
+                    Everything one skill run emitted: NDJSON, one JSON object per line. Runs \
+                    from Stage 1 onward are the JSON-RPC the ACP adapter **sent** — responses \
+                    and notifications — plus Elliot's own `elliot/session` and \
+                    `elliot/terminal` records; older runs are Claude Code stream-json. The \
+                    first line tells you which. This is the durable record \
                     — the live UI stream is bounded and may drop lines, this never does. \
                     Read it when a run failed and `verifiedOutcome` does not explain why. \
                     Large logs are served tail-first; `_meta.truncated` says when that \

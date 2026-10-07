@@ -752,7 +752,21 @@ public final class AppModel {
     /// away the tool-use id a result has to be nested under, the whole of an
     /// agent turn after its first line, and every successful tool call — and it
     /// threw them away in the model, before any view could ask for them.
-    public private(set) var liveLog: [UUID: [StreamEvent]] = [:]
+    public private(set) var liveLog: [UUID: [RunEvent]] = [:]
+
+    /// What each live run's turn amounted to, once it has said so.
+    ///
+    /// ⛔ **A second dictionary rather than a terminal `RunEvent`, because there is no such
+    /// event.** Under ACP the stop reason arrives as the `session/prompt` **response**, not a
+    /// notification, so it never enters the event stream at all — `SchedulerUpdate.runSummary`
+    /// carries it instead, and this is where it lands. Without it the `.turnEnded` row would be
+    /// unreachable for any run somebody is watching: `liveLog` is never cleared, and `RunBox`
+    /// takes the live tail whenever it is non-empty, so a finished run never falls back to the
+    /// disk fold that would otherwise supply one.
+    ///
+    /// Unbounded like `liveLog`, and for the same reason: two entries per run in a dictionary
+    /// nothing clears is the cost this model already pays.
+    public private(set) var liveSummary: [UUID: TurnSummary] = [:]
 
     /// The run currently holding each card, for every card at once.
     ///
@@ -923,15 +937,51 @@ public final class AppModel {
             // the mechanism that does.
             let locator = ToolLocator(
                 environment: environment, overrides: .fromProcessEnvironment())
-            async let claude = locator.locate("claude")
+            // ⛔ No `locate("claude")` here, and its absence is the point: the
+            // adapter runs the CLI vendored inside its own npm dependency, so a
+            // `claude` on `PATH` is not the binary that runs. Resolving it would
+            // produce a path that looks like an answer to "which CLI is this?"
+            // and is not one. `ToolLocator.locate` stays generic, so looking is
+            // still possible for anything that has a reason to; Preflight's
+            // `tool.claudeOverride` row is what tells an operator who set
+            // `ELLIOT_CLAUDE_PATH` that it selects nothing.
             async let gh = locator.locate("gh")
             async let git = locator.locate("git")
+            // The ACP adapter's argv, resolved through the same captured shell
+            // and the same overrides — `npx` plus the version-pinned package.
+            // A per-machine fact, settled once here, exactly as the two above
+            // are.
+            async let adapter = ACPAgentLocator(
+                environment: environment, overrides: .fromProcessEnvironment()
+            ).resolveAdapter()
 
             // An unusable override resolves to no path at all rather than to
             // whatever `PATH` would have given, so the app refuses to run a
             // binary the reader did not choose. Preflight names the variable.
+            //
+            // ⛔ The adapter's `try?` collapses five refusals into one empty
+            // string, and that is safe **only** because empty is itself a
+            // refusal: `AgentRun.start` throws `adapterNotResolved` rather than
+            // spawning anything.
+            //
+            // ⚠️ **Which of the five it was is lost *here*, and recovered on the
+            // screen.** `ACPAgentLocator.LocatorError` has one case per next
+            // action — install node, fix `ELLIOT_NODE_PATH`, upgrade past the
+            // floor, look at a binary that answers no version, the same two for
+            // `npx` — and `PreflightService.globalChecks` re-runs the resolution
+            // through the same `ACPAgentLocator`, rendering it as the `tool.node`
+            // and `tool.npx` rows. So the five are namable a few milliseconds
+            // later, on a screen, rather than folded into one empty string here.
+            // `adapterNotResolved`'s own sentence still carries the remedy for
+            // all five at once, because it is read on a *card* by someone who
+            // may never open Preflight.
+            //
+            // Keeping the error here instead would put a launch-time sentence on
+            // a screen that has moved on.
+            let resolvedAdapter = try? await adapter
             let config = ToolConfig(
-                claudePath: await claude.tool?.path ?? "",
+                adapterExecutable: resolvedAdapter?.executable ?? "",
+                adapterArguments: resolvedAdapter?.arguments ?? [],
                 ghPath: await gh.tool?.path ?? "",
                 gitPath: await git.tool?.path ?? "",
                 environment: environment.childEnvironment(cwd: NSHomeDirectory())
@@ -1530,6 +1580,12 @@ public final class AppModel {
             // would stop following the run.
             if events.count > 300 { events.removeFirst(events.count - 300) }
             liveLog[runID] = events
+        case .runSummary(let runID, let summary):
+            // Arrives before `.runFinished`, so the terminal row is on screen by
+            // the time the run's state changes underneath it. See
+            // `SchedulerUpdate.runSummary` for why the event stream cannot carry
+            // this.
+            liveSummary[runID] = summary
         case .runStalled(let runID, _):
             // This used to `break`, on the reasoning that `markStalled` had
             // already written `.stalled` to the store and `RunningStrip` reads
@@ -1630,19 +1686,39 @@ public final class AppModel {
     ///
     /// Its one caller is `lastLine(of:)` above. It said "`CardView`'s running
     /// strip" until the strip became a component two screens draw.
-    static func describe(_ event: StreamEvent) -> String? {
+    ///
+    /// ⚠️ **It has no terminal arm, and that is a decision rather than an omission.** The
+    /// stream-json version rendered `"■ done / finished with issues — …"` from `.result`, and
+    /// `RunEvent` has no case that can produce it — the stop reason arrives as a *response*, not
+    /// a notification. It is deliberately **not** restored through `liveSummary` either: this
+    /// reads `liveLog`, and a strip exists to say what a run *in flight* is doing, while a
+    /// finished run's state is already drawn from `run.state` by `RunningStrip` and `RunRow`. The
+    /// panel keeps the fact, in the `.turnEnded` row. Restoring the arm here would have the strip
+    /// narrating runs that have ended.
+    ///
+    /// Exhaustive with no `default`: a ninth `RunEvent` case must be decided about here rather
+    /// than fall silently into whichever arm somebody wrote first.
+    static func describe(_ event: RunEvent) -> String? {
         switch event {
-        case .systemInit(let info):
-            "▸ \(info.model ?? "claude") in \(info.cwd ?? "?")"
-        case .assistantText(let text):
+        case .session(let info):
+            "▸ \(info.model ?? "claude") in \(info.cwd)"
+        case .agentText(let text):
             text.split(separator: "\n").first.map(String.init)
-        case .assistantToolUse(let name, _, let preview):
-            "⚙ \(name) \(preview.prefix(120))"
-        case .toolResult(_, let isError, let preview):
-            isError ? "✗ \(preview.prefix(120))" : nil
-        case .result(let result):
-            "■ \(result.isClean ? "done" : "finished with issues") — \(result.text?.prefix(200) ?? "")"
-        case .system, .partial, .unknown, .malformed:
+        case .agentThought:
+            // A strip shows what the agent is *doing*, and thinking is not yet doing.
+            nil
+        case .toolCall(let call):
+            "⚙ \(call.claudeToolName ?? call.kind?.rawValue ?? "tool") \(call.title?.prefix(120) ?? "")"
+        case .plan(let steps):
+            "▤ \(steps.count) steps"
+        case .usage:
+            // A running figure, drawn as a figure elsewhere. A strip line per frame would say
+            // nothing about what the run is doing.
+            nil
+        case .modeChanged(let mode):
+            "⇄ \(mode)"
+        case .unreadable:
+            // Its own row in the log. Collapsing it to a line would mean guessing what it said.
             nil
         }
     }

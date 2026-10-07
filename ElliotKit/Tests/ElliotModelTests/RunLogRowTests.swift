@@ -51,6 +51,11 @@ private func orphans(_ rows: [RunLogRow]) -> [ToolOutcome] {
     }
 }
 
+/// The ACP names below are unreachable from every fixture in this file — each
+/// one is decoded from `stream-json`, which has no frame that could produce
+/// one — so they are here to keep the switch exhaustive and for nothing else.
+/// The museum fold is unchanged, and every expectation in this suite still
+/// reads the same six words it did before.
 private func kinds(_ rows: [RunLogRow]) -> [String] {
     rows.map {
         switch $0 {
@@ -61,6 +66,12 @@ private func kinds(_ rows: [RunLogRow]) -> [String] {
         case .orphanResult: "orphan"
         case .terminal: "terminal"
         case .unreadable: "unreadable"
+        case .agentSession: "acp-session"
+        case .thought: "thought"
+        case .toolCall: "call"
+        case .plan: "plan"
+        case .modeChanged: "mode"
+        case .turnEnded: "turn"
         }
     }
 }

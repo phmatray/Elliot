@@ -63,7 +63,7 @@ private struct Fixture {
             .deletingLastPathComponent()  // ElliotKit
             .deletingLastPathComponent()  // repository root
         let gh = GHClient(config: ToolConfig(
-            claudePath: "", ghPath: root.appendingPathComponent("Scripts/fake-gh.sh").path,
+            ghPath: root.appendingPathComponent("Scripts/fake-gh.sh").path,
             gitPath: "",
             environment: [
                 "FAKE_GH_MODE": "ok",
@@ -554,7 +554,7 @@ struct SchedulerAdmissionTests {
     private func scheduler(maxConcurrent: Int = 2) throws -> RunScheduler {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:]
         )
         return RunScheduler(
@@ -608,35 +608,40 @@ struct SchedulerAdmissionTests {
         #expect(!(await scheduler.canStart(run(.implementIssue, repo: UUID()))))
     }
 
+    /// ⚠️ **Two of these five moved, and both moves are behaviour rather than retyping.**
+    /// `wasTerminated` is gone — `ChildProcess` set it, and under ACP a cancel is either the
+    /// agent's own `stopReason` or Elliot's own knowledge, never the process's — so cancellation
+    /// is driven by `cancelRequested` here. And a run with no terminal line reads `.failed`
+    /// rather than taking its verdict from the exit code: an absent `session/prompt` response
+    /// means the turn never finished, whatever the adapter exited with.
+    /// `NonExecutionFoldTests` drives the whole of that fold, case by case; this keeps the four
+    /// shapes this suite has always asserted alongside the admission rules they sit with.
     @Test("A refused tool makes a zero-exit run something other than a success")
     func runStateFromOutcome() {
-        let clean = RunResult(
-            subtype: "success", isError: false, text: "done", numTurns: 3, durationMS: 1,
-            totalCostUSD: 0.1, sessionID: nil, stopReason: nil, terminalReason: "completed",
-            permissionDenials: [], errors: []
-        )
+        let clean = TurnSummary(stopReason: "end_turn", text: "done", isError: false)
         #expect(RunScheduler.state(for: .init(
-            exitCode: 0, wasTerminated: false, result: clean, stderr: ""
-        )) == .succeeded)
+            exitCode: 0, summary: clean, agentSessionID: "sess-1", stderr: ""
+        ), cancelRequested: false) == .succeeded)
 
         var denied = clean
-        denied.permissionDenials = [PermissionDenial(toolName: "Bash", toolUseID: "tu_1")]
+        denied.denials = ["Bash"]
+        denied.nonExecutionKinds = [.permissionRule]
         #expect(RunScheduler.state(for: .init(
-            exitCode: 0, wasTerminated: false, result: denied, stderr: ""
-        )) == .completedWithDenials)
+            exitCode: 0, summary: denied, agentSessionID: "sess-1", stderr: ""
+        ), cancelRequested: false) == .completedWithDenials)
 
         var errored = clean
         errored.isError = true
-        errored.subtype = "error_max_turns"
+        errored.stopReason = "refusal"
         #expect(RunScheduler.state(for: .init(
-            exitCode: 0, wasTerminated: false, result: errored, stderr: ""
-        )) == .failed)
+            exitCode: 0, summary: errored, agentSessionID: "sess-1", stderr: ""
+        ), cancelRequested: false) == .failed)
 
         #expect(RunScheduler.state(for: .init(
-            exitCode: 143, wasTerminated: true, result: nil, stderr: ""
-        )) == .cancelled)
+            exitCode: 143, summary: nil, agentSessionID: nil, stderr: ""
+        ), cancelRequested: true) == .cancelled)
 
-        #expect(RunScheduler.state(for: nil) == .failed)
+        #expect(RunScheduler.state(for: nil, cancelRequested: false) == .failed)
     }
 }
 

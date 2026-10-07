@@ -2,6 +2,22 @@ import Foundation
 
 /// A long-running child whose stdout is consumed line by line as it arrives.
 ///
+/// ⚠️ **No production consumer since Stage 1 of #379.** `ClaudeRunner` was its only caller, and it
+/// was deleted with the CLI runner; the sole remaining construction site is
+/// `StreamingProcessDrainTests`. It is kept anyway because
+/// `DrainDuplicationTests.commentsAreNotDuplicated` reads this file against `ProcessRunner.swift`
+/// — that intersection is #146's runnable receipt — and because `ACPTransport` is modelled on it.
+/// Deleting it means re-pointing that gate at `ACPTransport.swift` and deciding what becomes of
+/// `StreamingProcessDrainTests`, which is a change with its own argument and not a tidy-up to fold
+/// into this one.
+///
+/// Filed as **#384**, *"Delete StreamingProcess and re-point the #146 gate at ACPTransport"*, so
+/// this note routes to work rather than saying somebody should. Measured there, with the gate's own
+/// normalisation: `ProcessRunner` ∩ `StreamingProcess` and `ProcessRunner` ∩ `ACPTransport` are
+/// **both empty today**, so re-pointing costs no cleanup — but a zero is the passing state, not
+/// evidence the new pair is the one whose duplication is worth fearing. That judgement, and the
+/// fate of `StreamingProcessDrainTests`, are what #384 is for.
+///
 /// Cancellation is a plain `terminate()` (SIGTERM) — and that already reaches
 /// the whole process group. Measured directly (`bash -c 'sleep 300 & sleep
 /// 300'`, and this package's own `fake-claude.sh` in `FAKE_CLAUDE_MODE=hang`,

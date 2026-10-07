@@ -12,7 +12,7 @@ struct AnalysisSchedulingTests {
     private func makeScheduler() throws -> (RunScheduler, Repo) {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
         let scheduler = RunScheduler(

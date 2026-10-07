@@ -19,9 +19,21 @@ public final class ACPTransport: Transport, Sendable {
     private struct MessageSink: ChildOutputSink {
         var buffer = LineBuffer()
         var stderr = Data()
+        /// The run log's raw mirror. Called while `ChildProcess` holds the drain lock, which is
+        /// the whole invariant. A mirror handed a chunk to deal with later can write into a log
+        /// file already closed, or append after the final drain — the tail-dropping bug #146
+        /// catalogues three receipts for (`22bb230`, `3b1c226`/#18, `36b6da6`/#105), each of which
+        /// was fixed in one spawner and not the other.
+        ///
+        /// Its position is the other half of the shape: called **before** any line is yielded,
+        /// exactly as `StreamingProcess`'s `LineSink` does (`StreamingProcess.swift:36-41`), so
+        /// the durable sink gets the raw bytes before anything is parsed and a decoding bug can
+        /// never lose a message.
+        let mirror: (@Sendable (Data) -> Void)?
         let continuation: AsyncStream<Data>.Continuation
 
         mutating func receiveStdout(_ chunk: Data) {
+            mirror?(chunk)
             for line in buffer.append(chunk) where !line.isEmpty {
                 continuation.yield(line)
             }
@@ -66,7 +78,10 @@ public final class ACPTransport: Transport, Sendable {
     /// pre-empted by a close arriving on a different task.
     private let stdinQueue = DispatchQueue(label: "dev.phmatray.elliot.acp-transport.stdin")
 
-    public init(_ agent: ACPAgentProcess) throws {
+    public init(
+        _ agent: ACPAgentProcess,
+        stdoutMirror: (@Sendable (Data) -> Void)? = nil
+    ) throws {
         var continuation: AsyncStream<Data>.Continuation!
         messages = AsyncStream(bufferingPolicy: .unbounded) { continuation = $0 }
 
@@ -76,7 +91,7 @@ public final class ACPTransport: Transport, Sendable {
             cwd: agent.cwd,
             environment: agent.environment,
             stdin: .pipe,
-            sink: MessageSink(continuation: continuation!)
+            sink: MessageSink(mirror: stdoutMirror, continuation: continuation!)
         )
     }
 
@@ -160,5 +175,25 @@ public final class ACPTransport: Transport, Sendable {
     /// deferred by the branch review, not fixed in this pass.
     public func collectedStderr() -> String {
         child.withSink { String(decoding: $0.stderr, as: UTF8.self) }
+    }
+
+    /// How many times `LineBuffer` hit its 32 MB cap, read through the drain lock the same way
+    /// `collectedStderr()` is.
+    ///
+    /// ⛔ **Events, not frames, and the name is the claim.** `LineBuffer.append`
+    /// (`LineBuffer.swift:34-37`) increments once **per chunk** for as long as `pending` stays over
+    /// the limit, so one oversized line arriving in 64 KB reads reports hundreds. The only thing a
+    /// non-zero answer supports is the binary claim: **something in this log is truncated.**
+    ///
+    /// ⚠️ A truncated line is **corrupted, not dropped** — it still decodes, or fails to, as half a
+    /// message. `LineBuffer` counted these and nothing anywhere read the count until this method
+    /// existed (a #380 deferred minor). Stage 1 is what makes it load-bearing rather than
+    /// cosmetic: Stage 0 exchanged small frames, and a `{type:"diff", path, oldText, newText}` for
+    /// a whole file is exactly the frame that reaches the cap. Carrying it into
+    /// `TurnSummary.truncationEvents` is what stops a reader inferring a fold bug from mangled
+    /// content — and it is what keeps `messages`' own "`.unbounded`, so nothing is dropped" claim
+    /// honest about the one thing that *is* silently damaged.
+    public func truncationEvents() -> Int {
+        child.withSink { $0.buffer.truncatedLineCount }
     }
 }

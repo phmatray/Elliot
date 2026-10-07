@@ -56,9 +56,9 @@ struct HeldMergeDrainTests {
         func count() -> Int { moves }
     }
 
-    private func toolConfig(claude: String) -> ToolConfig {
+    private func toolConfig() -> ToolConfig {
         ToolConfig(
-            claudePath: claude, ghPath: "/usr/bin/false", gitPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false", gitPath: "/usr/bin/false",
             environment: [:])
     }
 
@@ -78,7 +78,7 @@ struct HeldMergeDrainTests {
             ).path
         }
         return GHClient(config: ToolConfig(
-            claudePath: "", ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
+            ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
             gitPath: "", environment: environment))
     }
 
@@ -153,10 +153,12 @@ struct HeldMergeDrainTests {
         // own comment states, and `seedHeldMerge` resolves two.
         _ = TestHome.root
         let store = try BoardStore.inMemory()
-        // `/usr/bin/true` spawns and exits at once, so a run still `.queued` after
-        // the sweep is the witness of a merge nothing released. This is the same
+        // The adapter is unresolved, so `AgentRun.start` refuses at once and the
+        // run leaves `.queued` either way: what is asserted is that it stopped
+        // being queued, never that it succeeded. A run still `.queued` after the
+        // sweep is the witness of a merge nothing released. This is the same
         // witness `admissionAdmitsAFreshDemandingMerge` uses.
-        let config = toolConfig(claude: "/usr/bin/true")
+        let config = toolConfig()
         let scheduler = RunScheduler(
             store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
         let (_, _, runID) = try await seedHeldMerge(
@@ -185,7 +187,7 @@ struct HeldMergeDrainTests {
     func aRefreshedHeldMergeAsksOnce() async throws {
         _ = TestHome.root
         let store = try BoardStore.inMemory()
-        let config = toolConfig(claude: "/usr/bin/true")
+        let config = toolConfig()
         let scheduler = RunScheduler(
             store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
         _ = try await seedHeldMerge(store: store, scheduler: scheduler, stale: true)
@@ -213,7 +215,7 @@ struct HeldMergeDrainTests {
     func aFailedReadAsksNothing() async throws {
         _ = TestHome.root
         let store = try BoardStore.inMemory()
-        let config = toolConfig(claude: "/usr/bin/true")
+        let config = toolConfig()
         let scheduler = RunScheduler(
             store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
         let (repo, _, runID) = try await seedHeldMerge(

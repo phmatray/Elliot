@@ -22,6 +22,18 @@ public protocol Transport: Sendable {
 
     /// Whether the transport is currently connected/running
     var isConnected: Bool { get async }
+
+    /// Ends the transport's agent, escalating if it ignores the request.
+    ///
+    /// ⛔ Vendored addition (#381). Upstream declared `send`, `messages`, `close` and
+    /// `isConnected` and no way to end a child, so `Client` — which holds `any Transport` —
+    /// could not escalate through the abstraction it was given: an agent that ignores its
+    /// stdin closing simply survives. `close()` asks; this insists.
+    ///
+    /// Deliberately **not** `async`: the escalation is a signal plus a scheduled follow-up, and
+    /// the one caller that most needs it is a `deinit`, which cannot await anything. An `async`
+    /// backstop would be a backstop with no caller.
+    func terminate(hardKillAfter grace: Duration)
 }
 
 /// Events emitted by transports for lifecycle management

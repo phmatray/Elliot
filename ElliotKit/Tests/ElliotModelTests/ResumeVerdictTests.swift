@@ -74,4 +74,21 @@ struct ResumeVerdictTests {
             resumedFrom: previous,
             result: sessionGoneResult(errors: ["I saw: No conversation found"])) == .ran)
     }
+
+    // MARK: - Under ACP
+
+    @Test("a fork the agent refused is a gone session")
+    func aRefusedForkIsSessionGone() {
+        #expect(ResumeVerdict.of(resumedFrom: UUID(), sessionResumeFailed: true) == .sessionGone)
+    }
+
+    @Test("a run that was never a resume is never sessionGone, whatever else failed")
+    func anUnresumedRunIsAlwaysRan() {
+        #expect(ResumeVerdict.of(resumedFrom: nil, sessionResumeFailed: true) == .ran)
+    }
+
+    @Test("a resumed run that actually ran is ran, however badly it ended")
+    func aResumedRunThatRanIsRan() {
+        #expect(ResumeVerdict.of(resumedFrom: UUID(), sessionResumeFailed: false) == .ran)
+    }
 }

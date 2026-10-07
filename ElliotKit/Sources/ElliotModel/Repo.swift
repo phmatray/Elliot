@@ -171,10 +171,30 @@ public extension PermissionMode {
     /// be reporting on. `bypassPermissions` grants tool calls without asking,
     /// which is the whole of its name and the one mode this project has
     /// actually run, so under it that call is granted in silence and the run
-    /// can end "success" having moved a card. What the cap is *for* is making
-    /// that measurable instead: a refused tool puts its name in
+    /// can end "success" having moved a card. What the cap is *for* is refusing
+    /// that call in the first place, and that half is intact: under every mode
+    /// this returns, `PermissionPolicy` declines each request rather than
+    /// granting it.
+    ///
+    /// ⛔ **The other half — that the refusal is then visible on the card — no
+    /// longer holds under ACP, and this comment asserted it until the final
+    /// review traced it.** It used to read: *"a refused tool puts its name in
     /// `permissionDenials`, and `RunScheduler.state(for:)` then ends the run
-    /// `.completedWithDenials` rather than `.succeeded`.
+    /// `.completedWithDenials`."* Under the CLI that was true, because Claude
+    /// Code was both the authority and the reporter: it refused the call and
+    /// wrote `permission_denials` into its own result JSON. Under ACP the two
+    /// come apart. **Elliot** is the authority — `PermissionPolicy` answers the
+    /// request — but `permissionDenials` is fed only by the *adapter's*
+    /// `_meta.claudeCode.nonExecutionKind` frames. `PermissionPolicy.refusals()`
+    /// reaches the log file and nothing else: `AgentLog.events` skips that
+    /// method, so it reaches neither the card nor the panel.
+    ///
+    /// So a run in which Elliot itself declined every tool call can still be
+    /// filed `.succeeded`. Whether the adapter mirrors a client-side denial back
+    /// as a `permission-rule` frame is **UNMEASURED** — the design records it as
+    /// such, and one probe would settle it. Carrying the ledger into
+    /// `AgentRunOutcome` is the fix, and it changes run-verdict semantics, so it
+    /// is tracked rather than smuggled in here.
     ///
     /// ⚠️ An allow-list of **names**, and not a measured ranking. Apart from
     /// `bypassPermissions`, no mode here has ever been run by this project and

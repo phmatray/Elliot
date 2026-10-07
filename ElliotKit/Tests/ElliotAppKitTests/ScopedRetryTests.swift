@@ -55,7 +55,7 @@ struct ScopedRetryTests {
         let argv = FileManager.default.temporaryDirectory
             .appendingPathComponent("argv-\(UUID().uuidString).txt").path
         let config = ToolConfig(
-            claudePath: "", ghPath: Paths.fakeGH, gitPath: "",
+            ghPath: Paths.fakeGH, gitPath: "",
             environment: [
                 "FAKE_GH_MODE": "ok",
                 "FAKE_GH_ISSUES": Paths.fixture("issues-basic.json"),

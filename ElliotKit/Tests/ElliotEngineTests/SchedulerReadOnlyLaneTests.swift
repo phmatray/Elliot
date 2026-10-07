@@ -24,7 +24,7 @@ struct SchedulerReadOnlyLaneTests {
     private func scheduler(_ limits: SchedulerLimits) throws -> RunScheduler {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:]
         )
         return RunScheduler(

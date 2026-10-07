@@ -83,7 +83,7 @@ struct AutoDevProposalTests {
         _ = TestHome.root
         let store = try BoardStore.inMemory()
         let gh = GHClient(config: ToolConfig(
-            claudePath: "", ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
+            ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
             gitPath: "",
             environment: [
                 "FAKE_GH_MODE": "ok",
@@ -277,7 +277,7 @@ struct MergeAdmissionTests {
 
     private func toolConfig() -> ToolConfig {
         ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:])
     }
 
@@ -292,7 +292,7 @@ struct MergeAdmissionTests {
     /// `headRefOid` `a1b2c3`, matching `greenStatus(...)` below.
     private func workingGH() -> GHClient {
         GHClient(config: ToolConfig(
-            claudePath: "", ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
+            ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
             gitPath: "",
             environment: [
                 "FAKE_GH_MODE": "ok",
@@ -604,7 +604,7 @@ struct RunQueueReadingTests {
     private func scheduler() throws -> RunScheduler {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:])
         return RunScheduler(
             store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
@@ -633,7 +633,7 @@ struct RunQueueReadingTests {
     func queueSnapshotCarriesARealRefusal() async throws {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:])
         let scheduler = RunScheduler(
             store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
@@ -697,9 +697,25 @@ struct RoundTriggeringTests {
         // doc comment names outright.
         _ = TestHome.root
         let store = try BoardStore.inMemory()
+        // ⚠️ **`/usr/bin/true` no longer stands in for an agent, and could not.** It spawned,
+        // printed nothing and exited 0, which under stream-json's fold meant `.succeeded` — the
+        // old tail read the exit code when there was no terminal line. Under ACP a child that
+        // never speaks JSON-RPC is a handshake that never happened, so there is no summary and the
+        // run reads `.failed`, which is the deliberate change `state(for:cancelRequested:)`
+        // records. To keep exercising `finish()`'s path this has to be a child that really holds a
+        // conversation.
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
-            gitPath: "/usr/bin/false", environment: [:])
+            adapterExecutable: "/usr/bin/env",
+            adapterArguments: [
+                "python3", repositoryRoot.appendingPathComponent("Scripts/fake-acp.py").path,
+            ],
+            ghPath: "/usr/bin/false",
+            gitPath: "/usr/bin/false",
+            environment: [
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "FAKE_ACP_FIXTURE": repositoryRoot
+                    .appendingPathComponent("Fixtures/acp/fake-create-issue.json").path,
+            ])
         let scheduler = RunScheduler(
             store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
         let trigger = CountingTrigger()
@@ -733,7 +749,7 @@ struct RoundTriggeringTests {
         await scheduler.launch(runID: run.id)
 
         // Bounded, and waiting on a condition rather than on a duration: the
-        // child is `/usr/bin/true`, so this is milliseconds in practice.
+        // double replays five frames and exits, so this is milliseconds in practice.
         try await withTimeout(.seconds(20)) {
             while trigger.triggers == 0 { try await Task.sleep(for: .milliseconds(20)) }
         }
@@ -742,21 +758,23 @@ struct RoundTriggeringTests {
         #expect(saved?.state.isTerminal == true)
         // Confirm this is really `finish()`'s path, not `start()`'s
         // spawn-failure `catch` — the exact confusion fix round 1 found.
-        // `state(for:)` only ever produces `.succeeded` from a *real*
-        // `ClaudeRunOutcome`; the catch block always writes `.failed` with a
+        // `state(for:cancelRequested:)` only ever produces `.succeeded` from a
+        // real terminal line; the catch block always writes `.failed` with a
         // nil `exitCode` and an `.elliot`-sourced closing remark, never this
-        // shape. `/usr/bin/true` exits 0 and prints nothing, so a genuine run
-        // is `.succeeded` with `exitCode == 0`.
+        // shape.
         #expect(saved?.state == .succeeded)
         #expect(saved?.exitCode == 0)
         #expect(saved?.closing?.source != .elliot)
+        // The turn really ended, rather than the child merely exiting: this is the fact that
+        // distinguishes the two under ACP, where an exit code says nothing on its own.
+        #expect(saved?.stopReason == "end_turn")
     }
 
     @Test("No trigger registered is not an error — the scheduler is unchanged without one")
     func noTriggerIsFine() async throws {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:])
         let scheduler = RunScheduler(
             store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
@@ -765,18 +783,22 @@ struct RoundTriggeringTests {
     }
 
     /// The arm the plan's own placement missed: `start` never reaches `finish`
-    /// when the spawn itself fails (`ClaudeRun.start` throws before a child
+    /// when the spawn itself fails (`AgentRun.start` throws before a child
     /// exists), so a trigger hooked only at the end of `finish` would leave a
     /// session waiting out the full stall window for a fact that was knowable
-    /// synchronously. `claudePath` names a file that does not exist, so
-    /// `ChildProcess.init`'s `isExecutableFile` guard throws before any process
-    /// is spawned — this exercises `start`'s `catch` block, not `consume`/`finish`.
+    /// synchronously. `adapterExecutable` is left at its `""` default, which
+    /// `AgentRun.start` refuses with `adapterNotResolved` before any process is
+    /// spawned — this exercises `start`'s `catch` block, not `consume`/`finish`.
+    ///
+    /// ⚠️ The refusal used to come one layer lower, from `ChildProcess.init`'s
+    /// `isExecutableFile` guard against a `claudePath` naming no file. Both are
+    /// pre-spawn, so the arm under test is the same one; it is named here
+    /// because "which guard fires" is the thing this comment exists to state.
     @Test("A run whose spawn fails still tells the registered round trigger")
     func failedSpawnTriggersARound() async throws {
         _ = TestHome.root
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/nonexistent/definitely-not-a-binary-\(UUID().uuidString)",
             ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:])
         let scheduler = RunScheduler(
@@ -832,7 +854,7 @@ struct RoundTriggeringTests {
     func unreadableRepositoryTriggersARound() async throws {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:])
         let scheduler = RunScheduler(
             store: store, toolConfig: config, verifier: Verifier(gh: .init(config: config)))
@@ -963,7 +985,7 @@ struct PRWatcherForSessionsTests {
     func tickTriggersARound() async throws {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:])
         let board = BoardService(store: store, launcher: FakeLauncher())
         let watcher = PRWatcher(store: store, gh: .init(config: config), mover: board)
@@ -987,7 +1009,7 @@ struct PRWatcherForSessionsTests {
         }
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:])
         let board = BoardService(store: store, launcher: FakeLauncher())
         let watcher = PRWatcher(store: store, gh: .init(config: config), mover: board)
@@ -1048,7 +1070,7 @@ struct PRWatcherForSessionsTests {
             """.write(toFile: prsPath, atomically: true, encoding: .utf8)
 
         let config = ToolConfig(
-            claudePath: "", ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
+            ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
             gitPath: "",
             environment: [
                 "FAKE_GH_PRS": prsPath,
@@ -1093,7 +1115,7 @@ struct AutoDevStartTests {
         _ = TestHome.root
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:])
         // The board launches through a **fake**, and the real scheduler is here
         // only to answer `RunQueueReading`. This suite is about what `start`
@@ -1360,7 +1382,7 @@ struct AutoDevRoundTests {
         let launcher = FakeLauncher()
         let queue = FakeQueue()
         let gh = GHClient(config: ToolConfig(
-            claudePath: "", ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
+            ghPath: repositoryRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
             gitPath: "",
             environment: [
                 "FAKE_GH_MODE": "ok",
@@ -2188,7 +2210,7 @@ struct AutoDevDrivingTests {
         _ = TestHome.root
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:])
         let launcher = FakeLauncher()
         let scheduler = RunScheduler(

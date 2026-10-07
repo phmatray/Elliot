@@ -26,7 +26,7 @@ struct RunSilenceSchedulerTests {
     private func fixture() throws -> Fixture {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/true", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:]
         )
         return Fixture(
