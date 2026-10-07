@@ -2,6 +2,59 @@
 
 # Elliot
 
+<!-- portfolio-badges:start -->
+<!-- Identity -->
+[![phmatray - Elliot](https://img.shields.io/static/v1?label=phmatray&message=Elliot&color=blue&logo=github)](https://github.com/phmatray/Elliot)
+![Top language](https://img.shields.io/github/languages/top/phmatray/Elliot)
+[![Stars](https://img.shields.io/github/stars/phmatray/Elliot?style=social)](https://github.com/phmatray/Elliot/stargazers)
+[![Forks](https://img.shields.io/github/forks/phmatray/Elliot?style=social)](https://github.com/phmatray/Elliot/network/members)
+
+<!-- Activity -->
+[![Issues](https://img.shields.io/github/issues/phmatray/Elliot)](https://github.com/phmatray/Elliot/issues)
+[![Pull requests](https://img.shields.io/github/issues-pr/phmatray/Elliot)](https://github.com/phmatray/Elliot/pulls)
+[![Last commit](https://img.shields.io/github/last-commit/phmatray/Elliot)](https://github.com/phmatray/Elliot/commits)
+<!-- portfolio-badges:end -->
+
+<!-- portfolio-toc:start -->
+
+## Table of Contents
+
+- [Getting Started](#getting-started)
+- [The board](#the-board)
+- [Where stories come from](#where-stories-come-from)
+- [Build and run](#build-and-run)
+- [Layout](#layout)
+- [Repositories](#repositories)
+- [Notifications](#notifications)
+- [Decisions worth knowing](#decisions-worth-knowing)
+- [Testing](#testing)
+- [Status](#status)
+- [Tech Stack](#tech-stack)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
+<!-- portfolio-toc:end -->
+
+<!-- portfolio-getstarted:start -->
+
+## Getting Started
+
+### Prerequisites
+
+- [Swift toolchain](https://www.swift.org/install/)
+
+### Run
+
+```bash
+git clone https://github.com/phmatray/Elliot.git
+cd Elliot
+swift build
+swift run
+```
+
+<!-- portfolio-getstarted:end -->
+
 <img src="docs/elliot-icon.png" width="128" alt="Elliot's mark: three interlocking chevron cards, each pointed on the right and notched on the left, on a plate that runs from violet to crimson.">
 
 A native macOS Kanban board where **moving a card is the act of execution**.
@@ -488,3 +541,37 @@ fake `claude` — no real repository has been read yet. The import's two
 properties a screenshot cannot show — a second ⌘R changing nothing, and a
 deleted card staying deleted — are covered at the unit level but have not yet
 been watched by hand against a live repository.
+
+---
+
+<!-- portfolio-techstack:start -->
+
+## Tech Stack
+
+- **Swift**
+
+<!-- portfolio-techstack:end -->
+
+<!-- portfolio-roadmap:start -->
+
+## Roadmap
+
+Planned work and known limitations are tracked in the [open issues](https://github.com/phmatray/Elliot/issues). Contributions toward them are welcome.
+
+<!-- portfolio-roadmap:end -->
+
+<!-- portfolio-sections:start -->
+
+## Contributing
+
+Contributions are welcome. Open an issue first to discuss any significant change.
+
+1. Fork the repository and create your branch (`git checkout -b feat/my-feature`)
+2. Commit your changes (`git commit -m 'feat: ...'`)
+3. Push the branch and open a Pull Request
+
+## License
+
+No license has been declared for this repository yet. Until one is added, default copyright applies — see [choosealicense.com](https://choosealicense.com/).
+
+<!-- portfolio-sections:end -->
