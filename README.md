@@ -1,3 +1,5 @@
+![Elliot banner](.github/banner.png)
+
 # Elliot
 
 <!-- portfolio-badges:start -->
