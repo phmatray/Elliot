@@ -3,21 +3,36 @@ import Foundation
 /// The most Elliot may spend, per run and per day.
 ///
 /// On this board a drag spawns an unattended agent under `bypassPermissions`,
-/// and until this existed there was no upper bound on what a gesture cost. The
-/// stream decoder already recognised `error_max_budget_usd` — Claude Code knows
-/// how to stop on a budget — and Elliot simply never set one. Raising the worker
-/// count without this multiplies the speed of a meter with no brake.
+/// and until this existed there was no upper bound on what a gesture cost.
+/// Raising the worker count without this multiplies the speed of a meter with no
+/// brake.
+///
+/// ⚠️ The sentence that stood here — *"the stream decoder already recognised
+/// `error_max_budget_usd`, Claude Code knows how to stop on a budget, and Elliot
+/// simply never set one"* — was the argument for building this, and Stage 1 of
+/// #379 retired the mechanism it rested on. It is dropped rather than reworded
+/// because it justified a brake the agent applied; the brake is Elliot's now,
+/// and `perRunUSD` below says what that does and does not buy.
 ///
 /// Both halves are optional and default to off, because a ceiling nobody chose
 /// is a ceiling that will stop a legitimate `merge-pr` at 3 a.m. and look like a
 /// bug.
 public struct SpendCeiling: Codable, Sendable, Equatable {
-    /// Handed to Claude Code as `--max-budget-usd`, so the run stops itself.
-    /// This is the only half that can bound a *single* runaway run: nothing on
-    /// our side can interrupt a process mid-turn.
+    /// The only half that speaks to a *single* runaway run — but it buys the
+    /// verdict rather than the stop.
+    ///
+    /// ⛔ This said *"Handed to Claude Code as `--max-budget-usd`, so the run
+    /// stops itself"* until Stage 1 of #379. There is no CLI and no such flag
+    /// now: Elliot watches the cost the agent reports and sends `session/cancel`
+    /// itself. On the recordings that exist, cost arrives once per turn, on the
+    /// last frame before the reply, so the cancel is late by construction and
+    /// what survives is that the run is marked failed instead of reading as a
+    /// success. The measurement — four recordings, the frame indices, and what
+    /// is still unmeasured — is on `AgentInvocation.maxBudgetUSD`; it is cited
+    /// here rather than restated so the two cannot drift.
     public var perRunUSD: Double?
 
-    /// Enforced by us, at admission. Claude Code cannot know what its siblings
+    /// Enforced by us, at admission. The agent cannot know what its siblings
     /// have already spent today.
     public var perDayUSD: Double?
 

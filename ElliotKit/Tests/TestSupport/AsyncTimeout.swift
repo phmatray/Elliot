@@ -23,8 +23,9 @@ public struct TimedOut: Error, CustomStringConvertible {
 /// For those waits, the guard that actually works is a deadline that ends the *source* rather than
 /// the wait: kill the child (or `Client`'s transport) from a concurrently-running task, which makes
 /// the awaited call fail on its own rather than being raced out of existence. See `armKiller` in
-/// `ACPSessionTests.swift` for the shape, and its doc comment for why the flag it sets is checked
-/// rather than `transport.isConnected` read immediately after `terminate()` is called.
+/// `ArmedKiller.swift`, beside this file, for the shape, and its doc comment for why the flag it
+/// sets is checked rather than `transport.isConnected` read immediately after `terminate()` is
+/// called.
 public func withTimeout<T: Sendable>(
     _ duration: Duration = .seconds(10),
     operation: @escaping @Sendable () async throws -> T

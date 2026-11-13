@@ -171,10 +171,24 @@ public struct PreflightService: Sendable {
     ///   A plugin check per pack, rather than one hardcoded name — which is what
     ///   made "the method Elliot drives" a property of the build instead of a
     ///   property of the repository.
+    /// - Parameter overrides: the `ELLIOT_<TOOL>_PATH` variables in force. A parameter with a
+    ///   default rather than a `ProcessInfo` read buried in the body, for `labelsCheck(policy:)`'s
+    ///   reason: a suite cannot mutate the process environment without breaking every other suite
+    ///   running beside it, and the rows below now *report* on an override rather than only obeying
+    ///   one.
     public func globalChecks(
-        layout: RepoTreeLayout = .portfolio, packs: [MethodPack]
+        layout: RepoTreeLayout = .portfolio,
+        packs: [MethodPack],
+        overrides: ToolOverrides = .fromProcessEnvironment()
     ) async -> [CheckResult] {
         var results: [CheckResult] = []
+
+        // ⛔ Started first and awaited last. The handshake is a spawn plus two round trips —
+        // measured at 2.41 s warm and 8.72 s cold (`AdapterHandshake`'s doc comment carries the
+        // table) — and `globalChecks` is awaited inline by `AppModel.start()`, so running it
+        // *beside* the tool probes rather than after them is the difference between a launch that
+        // pays for it and one that hides it.
+        async let adapter = probeAdapter()
 
         results.append(CheckResult(
             id: "env.loginShell",
@@ -186,10 +200,14 @@ public struct PreflightService: Sendable {
             command: "/bin/zsh -lic 'env -0'"
         ))
 
-        let locator = ToolLocator(environment: environment, overrides: .fromProcessEnvironment())
-        for (tool, path) in [
-            ("claude", config.claudePath), ("gh", config.ghPath), ("git", config.gitPath),
-        ] {
+        let locator = ToolLocator(environment: environment, overrides: overrides)
+        // ⛔ **No `claude` row.** Since #381's task 15 nothing spawns that binary: a card's run is
+        // an ACP adapter, and the adapter resolves the CLI vendored inside its own npm dependency
+        // (`@anthropic-ai/claude-agent-sdk`) rather than the `claude` on this PATH. Reporting the
+        // version of a binary that no longer runs is a confident claim about the wrong thing —
+        // which is worse than saying nothing, because it reads as having been checked. The four
+        // rows that replace it are below, and they describe what really spawns.
+        for (tool, path) in [("gh", config.ghPath), ("git", config.gitPath)] {
             let resolution = await locator.locate(tool)
             // ⛔ An override that names an unusable path is its own row, ahead of
             // everything else: "not found — put it on your PATH" is the wrong
@@ -236,6 +254,20 @@ public struct PreflightService: Sendable {
                         + "again — or name one with \(ToolOverrides.variableName(for: tool))."
             ))
         }
+
+        // What the adapter is reached *through*. Both resolved by `ACPAgentLocator`, which is the
+        // same resolution `AppModel` performs at launch to build `ToolConfig.adapterExecutable` —
+        // so a red row here and an empty adapter argv are the same fact, said once each.
+        let agentLocator = ACPAgentLocator(environment: environment, overrides: overrides)
+        results.append(Self.nodeCheck(ACPAgentLocator.nodeVerdict(await agentLocator.resolveNode())))
+        results.append(Self.npxCheck(await agentLocator.resolveNpx()))
+        if let claudeOverride = overrides["claude"] {
+            results.append(Self.retiredClaudeOverrideCheck(claudeOverride))
+        }
+
+        let probe = await adapter
+        results.append(Self.adapterCheck(probe))
+        results.append(Self.commandsCheck(probe, packs: packs))
 
         let authenticated = await gh.isAuthenticated()
         let login = authenticated ? try? await gh.login() : nil
@@ -312,6 +344,352 @@ public struct PreflightService: Sendable {
             command: "ls -1 \(layout.root)",
             fixHint: present.count == expected.count
                 ? nil : "Set the tree root on the Repositories page.")
+    }
+
+    // MARK: - The binary that actually runs
+
+    /// Spawns the adapter in a scratch directory, asks who it is, and ends it.
+    ///
+    /// The directory is thrown away rather than being a real checkout: no `session/prompt` is ever
+    /// sent so nothing executes, but `session/new` takes a working directory and there is no reason
+    /// to hand an unattended agent one of Philippe's.
+    private func probeAdapter() async -> AdapterProbe {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("elliot-preflight-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        return await AdapterHandshake.probe(agent: ACPAgentProcess(
+            executable: config.adapterExecutable,
+            arguments: config.adapterArguments,
+            cwd: scratch.path,
+            environment: config.environment
+        ))
+    }
+
+    /// The `node` row — **five renderings, because `nodeVerdict` has five answers.**
+    ///
+    /// ⛔ The plan prescribed two failing sentences, *"Not found."* and *"Found X, but the adapter
+    /// needs 22 or newer."*, for a question with three losing answers. A `.found` tool whose
+    /// `version` is nil would have rendered as `"Found " + nothing`, and a reader running Node 26
+    /// whose `--version` probe happened to fail would have been told their Node was too old.
+    /// **Elliot never established that**, and the two unreadable cases are `.warn` rather than
+    /// `.fail` for the same reason: on this screen a `.fail` means *cards cannot be dragged*, and
+    /// nothing here has shown that anything is wrong.
+    ///
+    /// `static` and pure, so the whole matrix is assertable without a toolchain on disk.
+    public static func nodeCheck(_ verdict: ACPAgentLocator.NodeVerdict) -> CheckResult {
+        let floor = ACPAgentLocator.minimumNodeMajor
+        switch verdict {
+        case .ok(let tool, _):
+            return CheckResult(
+                id: "tool.node", title: "Node", status: .pass,
+                detail: [tool.resolvedPath, tool.version].compactMap { $0 }.joined(separator: " — ")
+                    + Self.overrideSuffix(tool),
+                command: "node --version"
+            )
+        case .tooOld(let tool, let found):
+            return CheckResult(
+                id: "tool.node", title: "Node", status: .fail,
+                detail: "Found \(found) at \(tool.resolvedPath), but the adapter needs "
+                    + "\(floor) or newer.",
+                command: "node --version",
+                fixHint: "Install Node \(floor) or newer, then relaunch Elliot — or name one with "
+                    + ToolOverrides.variableName(for: "node") + "."
+            )
+        case .unreadable(let tool, let reported):
+            // Two sentences for two different silences — `--version` failed outright, or it
+            // succeeded and said something that is not a version — sharing one conclusion, which
+            // is the only thing Elliot has actually established.
+            let what = reported.map { "which answered \"\($0)\" — not a version." }
+                ?? "but `node --version` could not be run."
+            return CheckResult(
+                id: "tool.node", title: "Node", status: .warn,
+                detail: "Found \(tool.resolvedPath), \(what) Elliot has no reading of this "
+                    + "toolchain, so it cannot say whether it meets the floor of \(floor).",
+                command: "\(tool.path) --version",
+                fixHint: "Run `\(tool.path) --version` and see what it says."
+            )
+        case .overrideUnusable(let variable, let value):
+            return Self.unusableOverrideCheck(id: "tool.node", title: "Node", variable: variable, value: value)
+        case .missing:
+            return CheckResult(
+                id: "tool.node", title: "Node", status: .fail,
+                detail: "Not found. The ACP adapter runs on Node \(floor) or newer, and an app "
+                    + "launched from the Finder does not inherit your shell PATH.",
+                command: "command -v node",
+                fixHint: "Install Node \(floor) or newer and put it on your login shell's PATH, "
+                    + "then relaunch Elliot — or name one with "
+                    + ToolOverrides.variableName(for: "node") + "."
+            )
+        }
+    }
+
+    /// The `npx` row — three renderings, not five: nothing reads npx's version, so there is no
+    /// floor for it to be under and nothing for Elliot to fail to read.
+    public static func npxCheck(_ resolution: ToolResolution) -> CheckResult {
+        switch resolution {
+        case .found(let tool):
+            return CheckResult(
+                id: "tool.npx", title: "npx", status: .pass,
+                detail: [tool.resolvedPath, tool.version].compactMap { $0 }.joined(separator: " — ")
+                    + Self.overrideSuffix(tool),
+                command: "npx --version"
+            )
+        case .overrideUnusable(let variable, let value):
+            return Self.unusableOverrideCheck(id: "tool.npx", title: "npx", variable: variable, value: value)
+        case .notFound:
+            return CheckResult(
+                id: "tool.npx", title: "npx", status: .fail,
+                detail: "Not found. It ships with Node.",
+                command: "command -v npx",
+                fixHint: "Install Node, then relaunch Elliot — or name npx with "
+                    + ToolOverrides.variableName(for: "npx") + "."
+            )
+        }
+    }
+
+    /// ⛔ **`ELLIOT_CLAUDE_PATH` stopped selecting anything, and it has to be named where it died.**
+    /// Otherwise an operator who set it reads a green Preflight and gets a binary they did not
+    /// choose — which is #238's failure shape wearing the clothes of the fix for it.
+    ///
+    /// Only built when the variable is actually set: a row nagging every reader about a variable
+    /// they never used is a row people learn to skim.
+    ///
+    /// ⚠️ **The escape hatch is named and its status is stated, not implied.** `CLAUDE_CODE_EXECUTABLE`
+    /// is what the adapter documents; whether pointing it at a locally installed CLI works has
+    /// **not been measured**, and saying so is the difference between a hint and a claim. ⛔ Elliot
+    /// does not silently repoint the variable at the adapter either: substituting a different
+    /// meaning for something the reader set is the very thing this row exists to report.
+    public static func retiredClaudeOverrideCheck(_ value: String) -> CheckResult {
+        CheckResult(
+            id: "tool.claudeOverride",
+            title: "ELLIOT_CLAUDE_PATH",
+            status: .warn,
+            detail: "Set to \(value), and it no longer selects the CLI: the adapter runs the copy "
+                + "vendored inside @anthropic-ai/claude-agent-sdk. The documented escape hatch is "
+                + "CLAUDE_CODE_EXECUTABLE, and whether pointing it at a local install works is "
+                + "unmeasured.",
+            command: "printenv ELLIOT_CLAUDE_PATH",
+            fixHint: "Unset it, or set CLAUDE_CODE_EXECUTABLE instead and check what actually ran."
+        )
+    }
+
+    /// What the adapter calls itself, beside what Elliot pinned.
+    ///
+    /// ⚠️ **A drift is a `.warn`, never a `.pass`** — decision 10. Every fact this design rests on
+    /// was measured against `\(ACPAgentLocator.adapterVersion)`, and a pin that has silently
+    /// stopped being what runs is worse than no pin at all.
+    ///
+    /// ⚠️ A deadline that expired is also a `.warn` and not a `.fail`: *"it did not answer within
+    /// N seconds"* is a true statement about Elliot's patience, not a finding about the adapter.
+    /// Only an adapter that answered *something wrong* — a spawn error, a JSON-RPC error — fails,
+    /// and its own words are what the row shows.
+    ///
+    /// ⛔ **An adapter that opened a session cannot fail this row, whatever else it did or did not
+    /// say.** `agentInfo` is optional on the wire, so *no identity* and *no adapter* are different
+    /// facts, and this row is the one that must not confuse them: it renders the single verdict
+    /// this screen reserves for *cards cannot be dragged*. The defect it is written against is
+    /// measured — `AdapterProbe.quietCommands` used to be an `AdapterProbe.Failure.error`, so an
+    /// adapter that spawned, answered and opened a session came out as
+    /// `.fail  "The adapter opened a session and advertised no commands within 2 seconds."` under
+    /// *"Nothing will run until it does."* Both halves false, on the screen whose job is to be
+    /// believed, in exactly the case this row exists for: an adapter that is not the pinned one.
+    ///
+    /// ⛔ **And the converse, which the fix for that defect did not state and therefore lost.** The
+    /// guard order used to be `namedItself` first, so an adapter that answered `initialize` — naming
+    /// itself and matching the pin — and then *failed or hung on `session/new`* fell straight
+    /// through to the version comparison and rendered a green `.pass`. Reachable by construction,
+    /// not hypothetically: `AdapterProbe.probe` assigns `agentName`/`agentVersion` the moment
+    /// `initialize` returns and only *then* calls `newSession`, so a JSON-RPC error or a 30-second
+    /// hang lands in exactly that quadrant. Measured before this change, with a probe carrying
+    /// `namedItself: true, sessionOpened: false, failure: .error(…)`:
+    /// `status=pass  detail="@agentclientprotocol/claude-agent-acp 0.66.0 — pinned at 0.66.0."`
+    ///
+    /// So the over-failing defect above was fixed into an **under-failing** one, which is worse:
+    /// this row renders the single verdict the screen reserves for *cards cannot be dragged*, and it
+    /// was saying the opposite about an adapter under which nothing could run. `sessionOpened` is
+    /// therefore consulted **first** — it is the field whose own doc comment says
+    /// ⛔ *"This, not `namedItself`, is what settles would a run work"*, and honouring that on one
+    /// path out of two is how the claim and the code came apart.
+    public static func adapterCheck(_ probe: AdapterProbe) -> CheckResult {
+        let pinned = ACPAgentLocator.adapterVersion
+        // ⛔ Ahead of the identity guard, because a session that never opened settles this row
+        // whatever the adapter called itself. An identity is a claim; an opened session is the
+        // measurement.
+        guard probe.sessionOpened else {
+            switch probe.failure {
+            case .silent(let deadline):
+                return CheckResult(
+                    id: "agent.adapter", title: "ACP adapter", status: .warn,
+                    detail: "The adapter did not answer within \(Self.seconds(deadline)) seconds, "
+                        + "so Elliot ended it. Nothing was established about it either way.",
+                    command: "npx --yes \(ACPAgentLocator.adapterPackage)",
+                    fixHint: "Run that command in a terminal and see how far it gets."
+                )
+            case .error(let message):
+                return CheckResult(
+                    id: "agent.adapter", title: "ACP adapter", status: .fail,
+                    // Verbatim. Elliot paraphrasing a JSON-RPC error is Elliot inventing one.
+                    detail: message,
+                    command: "npx --yes \(ACPAgentLocator.adapterPackage)",
+                    fixHint: "Every card that moves spawns this. Nothing will run until it does."
+                )
+            case nil:
+                // Unreachable by construction: `probe` leaves `failure` nil only once it has
+                // reached `session/new`, and reaching it sets `sessionOpened`, which the guard
+                // enclosing this switch has already caught. Said out loud rather than folded into
+                // one of the arms — inventing a cause nobody established is the failure mode this
+                // whole row is written against.
+                return CheckResult(
+                    id: "agent.adapter", title: "ACP adapter", status: .warn,
+                    detail: "Could not be established: the handshake reported neither an identity "
+                        + "nor a reason.",
+                    command: "npx --yes \(ACPAgentLocator.adapterPackage)"
+                )
+            }
+        }
+
+        // Past the guard the session is open, so nothing below may fail this row — the ⛔ above.
+        // Two successful round trips are evidence about the adapter, and `agentInfo` is optional on
+        // the wire, so *no identity* is a legal answer rather than a missing adapter.
+        guard probe.namedItself else {
+            return CheckResult(
+                id: "agent.adapter", title: "ACP adapter", status: .warn,
+                detail: "The adapter answered and opened a session, and named neither itself nor a "
+                    + "version. agentInfo is optional in the protocol, so this is a legal answer — "
+                    + "but Elliot has no identity to check against its pin of \(pinned).",
+                command: "npx --yes \(ACPAgentLocator.adapterPackage)"
+            )
+        }
+
+        let named = [probe.agentName, probe.agentVersion].compactMap { $0 }.joined(separator: " ")
+        guard probe.agentVersion == pinned else {
+            return CheckResult(
+                id: "agent.adapter", title: "ACP adapter", status: .warn,
+                detail: "\(named) — but Elliot pins \(pinned), which is the version every fixture "
+                    + "in this design was measured against.",
+                command: "npx --yes \(ACPAgentLocator.adapterPackage)",
+                fixHint: "Raising the pin is a code change that re-takes those measurements."
+            )
+        }
+        return CheckResult(
+            id: "agent.adapter", title: "ACP adapter", status: .pass,
+            detail: "\(named) — pinned at \(pinned).",
+            command: "npx --yes \(ACPAgentLocator.adapterPackage)"
+        )
+    }
+
+    /// Does the agent Elliot is about to drive actually offer the commands it dispatches?
+    ///
+    /// ⛔ **Not the same question as the `~/.claude/plugins/cache` walk, which stays.** That one
+    /// answers *is the plugin installed on this machine*; this one answers *does the agent
+    /// advertise it*, which is what a failed drag actually turns on. The design says the walk "is
+    /// complemented, not replaced" by asserting the commands are advertised — this is where that
+    /// sentence stops being a slogan.
+    ///
+    /// ⛔ **`nil` commands is a `.warn`, never a list of missing ones.** *"The adapter advertises
+    /// none"* and *"nobody could ask"* are different facts, and reporting the first on the evidence
+    /// of the second is `isBlocking([])`'s two-valued answer wearing a new hat.
+    ///
+    /// The expected set is derived from `packs`, not hardcoded: it is the same `/<plugin>:<skill>`
+    /// list the `plugin.<pack.id>` rows are built from, so a repository that chose another method
+    /// cannot be judged against ai-migration-kit's commands.
+    public static func commandsCheck(_ probe: AdapterProbe, packs: [MethodPack]) -> CheckResult {
+        let expected = Self.dispatchedCommands(packs)
+        guard let advertised = probe.commands else {
+            return CheckResult(
+                id: "agent.commands", title: "Agent commands", status: .warn,
+                detail: "Could not be established: \(Self.sentence(probe)) So Elliot cannot "
+                    + "say whether the commands it dispatches are offered.",
+                command: "python3 Scripts/probe/acp_probe.py"
+            )
+        }
+        let present = Set(advertised)
+        let missing = expected.filter { !present.contains($0) }
+        guard missing.isEmpty else {
+            return CheckResult(
+                id: "agent.commands", title: "Agent commands", status: .fail,
+                detail: "Missing: \(missing.joined(separator: ", ")). "
+                    + "\(advertised.count) commands advertised, and a card that reaches one of "
+                    + "these will spawn an agent that cannot run it.",
+                command: "python3 Scripts/probe/acp_probe.py",
+                fixHint: "Install the plugin these come from in Claude Code, then relaunch Elliot."
+            )
+        }
+        return CheckResult(
+            id: "agent.commands", title: "Agent commands", status: .pass,
+            detail: expected.isEmpty
+                ? "\(advertised.count) advertised. No method registered here dispatches a plugin "
+                    + "command, so there is nothing in particular to look for."
+                : "\(advertised.count) advertised, including \(expected.joined(separator: ", ")).",
+            command: "python3 Scripts/probe/acp_probe.py"
+        )
+    }
+
+    /// The `<plugin>:<skill>` commands the machine's methods dispatch, as the adapter names them.
+    ///
+    /// Sorted and de-duplicated, for `requiredSkills`' reason: `steps` is a dictionary and has no
+    /// order, and a detail string that reshuffled between sweeps reads as something changing.
+    public static func dispatchedCommands(_ packs: [MethodPack]) -> [String] {
+        var found: Set<String> = []
+        for pack in packs {
+            guard case .required(let plugin) = pack.plugin else { continue }
+            for skill in Self.requiredSkills(of: pack) { found.insert("\(plugin):\(skill)") }
+        }
+        return found.sorted()
+    }
+
+    /// One sentence for why the commands are unknown, so `commandsCheck` explains an absence rather
+    /// than asserting a finding.
+    ///
+    /// ⚠️ **Four reasons, not three, and the two silent ones are genuinely different.** The window
+    /// closing on an open session is Elliot's patience running out — a wait it really made, so the
+    /// number is quotable. The notification stream finishing first is the adapter having gone away
+    /// after `session/new`, where Elliot waited no measurable time at all: quoting the window there
+    /// would put a wait that never happened into a sentence a reader is meant to believe.
+    private static func sentence(_ probe: AdapterProbe) -> String {
+        switch probe.failure {
+        case .silent(let deadline):
+            "the adapter did not answer within \(Self.seconds(deadline)) seconds."
+        case .error(let message):
+            message.hasSuffix(".") ? message : message + "."
+        case nil:
+            if let window = probe.quietCommands {
+                "the adapter opened a session and advertised nothing within "
+                    + "\(Self.seconds(window)) seconds."
+            } else {
+                "the adapter opened a session and then advertised nothing, without saying why."
+            }
+        }
+    }
+
+    private static func seconds(_ duration: Duration) -> Int {
+        Int(duration.components.seconds)
+    }
+
+    /// ` — set by ELLIOT_<TOOL>_PATH` when one is in force, and empty otherwise. A change to which
+    /// binary runs must be visible on the screen that reports which binary runs (#238).
+    private static func overrideSuffix(_ tool: LocatedTool) -> String {
+        tool.foundVia == "user override"
+            ? " — set by \(ToolOverrides.variableName(for: tool.name))" : ""
+    }
+
+    /// ⛔ An override that names an unusable path is its own finding, and never "not found — put it
+    /// on your PATH": sending someone who mistyped a path off to install software they already have
+    /// is how a diagnostic wastes the time it exists to save (#238). One implementation, so the
+    /// three tools that can carry an override cannot word it three ways.
+    private static func unusableOverrideCheck(
+        id: String, title: String, variable: String, value: String
+    ) -> CheckResult {
+        CheckResult(
+            id: id, title: title, status: .fail,
+            detail: "\(variable) is set to \(value), which is not an executable file. Elliot will "
+                + "not fall back to your PATH — it would run a different binary than the one you "
+                + "named.",
+            command: "ls -l \(value)",
+            fixHint: "Point \(variable) at an executable, or unset it to use your PATH, then "
+                + "relaunch Elliot."
+        )
     }
 
     /// The newest installed version of a plugin, and whether it carries the
@@ -393,6 +771,8 @@ public struct PreflightService: Sendable {
             command: "git -C \(repo.path) rev-parse --git-common-dir",
             fixHint: isMain ? nil : "Register the main checkout instead."
         ))
+
+        if let terms = Self.runTermsCheck(repo) { results.append(terms) }
 
         // Which method this repository runs, in three values rather than two.
         // `.unknown` is the one that blocks: we do not know what to run, and
@@ -493,6 +873,36 @@ public struct PreflightService: Sendable {
         }
 
         return results
+    }
+
+    /// The extra allowed tools that ACP cannot grant, met on a screen instead of in a failed run.
+    ///
+    /// ⛔ **A `.fail`, deliberately, and it really does freeze this repository's board.** That is
+    /// not this row overreaching — it is the row telling the truth about a repository where *every*
+    /// drag already refuses: `AgentRun.start` throws `unmappableAllowedTools` before it constructs
+    /// an `AgentSession`, so nothing spawns and every card fails the instant it moves. Since #249 a
+    /// `.fail` means "cards cannot be dragged in this repository", which is exactly what is the
+    /// case. A `.warn` here would draw a board that looks movable and is not.
+    ///
+    /// ⚠️ The adapter advertises five config options — `mode`, `model`, `effort`, `fast`, `agent`
+    /// — and **none for allowed tools** (`Fixtures/acp/session-new-commands.json`). So this is not
+    /// a gap Elliot can close by spelling something differently; dropping the grant silently would
+    /// let a run meet a refusal for a tool the operator had explicitly allowed.
+    ///
+    /// `nil` when there is nothing to say. A repository that allows nothing extra — the common
+    /// case, and every repository until #333 gave the column a writer — grows no row at all.
+    ///
+    /// The remedy names the same screen `AgentInvocationError.unmappableAllowedTools` names, so the
+    /// operator who meets this before a drag and the one who meets it after are sent to one place.
+    public static func runTermsCheck(_ repo: Repo) -> CheckResult? {
+        guard !repo.extraAllowedTools.isEmpty else { return nil }
+        return CheckResult(
+            id: "repo.runTerms", title: "Run terms", status: .fail,
+            detail: "\(repo.extraAllowedTools.joined(separator: ", ")) cannot be granted: the ACP "
+                + "adapter advertises no config option for allowed tools. Every run in this "
+                + "repository will refuse to start rather than drop the grant silently.",
+            fixHint: "Clear the extra allowed tools in Preflight ▸ this repository ▸ Run terms."
+        )
     }
 
     /// Whether this repository has the labels Elliot's skills apply.

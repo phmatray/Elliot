@@ -2,6 +2,11 @@ import Foundation
 
 /// One decoded line of `claude -p --output-format stream-json` output.
 ///
+/// ⚠️ **Archive reader only since Stage 1 of #379.** Nothing writes this format any more —
+/// `AgentRun` writes JSON-RPC — but the `runs/*.jsonl` already on disk are stream-json and are
+/// read by `RunsPane` and by the MCP `logPath` resource. A read-only decoder for a format
+/// nothing produces is not a second mechanism; a second *writer* would be.
+///
 /// Deliberately shallow. Only `type`, `subtype`, `session_id`, `is_error` and
 /// `result` are treated as contract; everything else is best-effort. Any line
 /// that does not fit becomes `.unknown` or `.malformed` — both of which are

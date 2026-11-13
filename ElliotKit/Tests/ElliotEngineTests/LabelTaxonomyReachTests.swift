@@ -43,7 +43,7 @@ struct LabelTaxonomyReachTests {
         PreflightService(
             environment: LoginShellEnvironment(variables: [:], capturedVia: "test"),
             config: ToolConfig(
-                claudePath: "/usr/bin/false", ghPath: Paths.fakeGH, gitPath: "/usr/bin/false",
+                ghPath: Paths.fakeGH, gitPath: "/usr/bin/false",
                 environment: ["FAKE_GH_LABELS": Paths.fixture("labels.json")]
             )
         )
@@ -121,10 +121,10 @@ struct LabelTaxonomyReachTests {
         let scheduler = RunScheduler(
             store: store,
             toolConfig: ToolConfig(
-                claudePath: "/usr/bin/false", ghPath: "/usr/bin/false", gitPath: "/usr/bin/false",
+                ghPath: "/usr/bin/false", gitPath: "/usr/bin/false",
                 environment: [:]),
             verifier: Verifier(gh: .init(config: ToolConfig(
-                claudePath: "/usr/bin/false", ghPath: "/usr/bin/false", gitPath: "/usr/bin/false",
+                ghPath: "/usr/bin/false", gitPath: "/usr/bin/false",
                 environment: [:])))
         )
         let board = BoardService(store: store, launcher: scheduler)
@@ -150,10 +150,10 @@ struct LabelTaxonomyReachTests {
         let scheduler = RunScheduler(
             store: store,
             toolConfig: ToolConfig(
-                claudePath: "/usr/bin/false", ghPath: "/usr/bin/false", gitPath: "/usr/bin/false",
+                ghPath: "/usr/bin/false", gitPath: "/usr/bin/false",
                 environment: [:]),
             verifier: Verifier(gh: .init(config: ToolConfig(
-                claudePath: "/usr/bin/false", ghPath: "/usr/bin/false", gitPath: "/usr/bin/false",
+                ghPath: "/usr/bin/false", gitPath: "/usr/bin/false",
                 environment: [:])))
         )
         let board = BoardService(store: store, launcher: scheduler)

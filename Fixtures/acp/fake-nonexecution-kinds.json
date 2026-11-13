@@ -1,0 +1,69 @@
+[
+  {
+    "sessionUpdate": "agent_message_chunk",
+    "content": { "type": "text", "text": "Four tool calls, four reasons none of them ran." }
+  },
+  {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "tc-bash",
+    "title": "echo hello",
+    "kind": "execute",
+    "status": "pending",
+    "content": [],
+    "_meta": { "claudeCode": { "toolName": "Bash" } }
+  },
+  {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "tc-bash",
+    "status": "failed",
+    "content": [
+      { "type": "content", "content": { "type": "text", "text": "probe: denied on purpose" } }
+    ],
+    "_meta": { "claudeCode": { "toolName": "Bash", "nonExecutionKind": "permission-rule" } }
+  },
+  {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "tc-edit",
+    "title": "Edit",
+    "kind": "edit",
+    "status": "pending",
+    "content": [],
+    "_meta": { "claudeCode": { "toolName": "Edit" } }
+  },
+  {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "tc-edit",
+    "status": "failed",
+    "_meta": { "claudeCode": { "toolName": "Edit", "nonExecutionKind": "interrupted" } }
+  },
+  {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "tc-read",
+    "title": "Read",
+    "kind": "read",
+    "status": "pending",
+    "content": [],
+    "_meta": { "claudeCode": { "toolName": "Read" } }
+  },
+  {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "tc-read",
+    "status": "failed",
+    "_meta": { "claudeCode": { "toolName": "Read", "nonExecutionKind": "cancelled" } }
+  },
+  {
+    "sessionUpdate": "tool_call",
+    "toolCallId": "tc-write",
+    "title": "Write",
+    "kind": "edit",
+    "status": "pending",
+    "content": [],
+    "_meta": { "claudeCode": { "toolName": "Write" } }
+  },
+  {
+    "sessionUpdate": "tool_call_update",
+    "toolCallId": "tc-write",
+    "status": "failed",
+    "_meta": { "claudeCode": { "toolName": "Write", "nonExecutionKind": "user-rejected" } }
+  }
+]

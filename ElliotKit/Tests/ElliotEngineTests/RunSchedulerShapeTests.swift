@@ -272,13 +272,13 @@ struct RunSchedulerShapeTests {
         )
     }
 
-    /// The body of `private func finish(run: SkillRun, outcome: ClaudeRunOutcome?) async {`
+    /// The body of `private func finish(run: SkillRun, outcome: AgentRunOutcome?) async {`
     /// up to the next declaration at the same indentation.
     private func finishBody() -> String {
         let code = Self.code
         guard
             let begin = code.range(
-                of: "private func finish(run: SkillRun, outcome: ClaudeRunOutcome?) async {")
+                of: "private func finish(run: SkillRun, outcome: AgentRunOutcome?) async {")
         else { return "" }
         let rest = code[begin.upperBound...]
         guard let end = rest.range(of: "\n    private func ") ?? rest.range(of: "\n    static func ")

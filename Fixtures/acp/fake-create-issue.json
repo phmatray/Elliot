@@ -1,0 +1,17 @@
+[
+  {"sessionUpdate": "agent_message_chunk",
+   "content": {"type": "text", "text": "Filing the issue."},
+   "messageId": "msg_ci_1"},
+  {"sessionUpdate": "tool_call", "toolCallId": "tc-gh", "title": "gh issue create",
+   "kind": "execute", "status": "pending", "content": [],
+   "_meta": {"claudeCode": {"toolName": "Bash"}}},
+  {"sessionUpdate": "tool_call_update", "toolCallId": "tc-gh", "status": "completed",
+   "content": [{"type": "content", "content": {"type": "text",
+    "text": "https://github.com/phmatray/Elliot/issues/47"}}]},
+  {"sessionUpdate": "agent_message_chunk",
+   "content": {"type": "text",
+    "text": "Opened https://github.com/phmatray/Elliot/issues/47"},
+   "messageId": "msg_ci_2"},
+  {"sessionUpdate": "usage_update", "used": 33261, "size": 1000000,
+   "cost": {"amount": 0.1834, "currency": "USD"}}
+]

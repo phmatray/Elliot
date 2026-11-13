@@ -1,0 +1,9 @@
+[
+  {"sessionUpdate": "agent_message_chunk",
+   "content": {"type": "text", "text": "before the strange one"},
+   "messageId": "msg_fake_1"},
+  {"sessionUpdate": "quantum_entanglement_update", "spookiness": "distant"},
+  {"sessionUpdate": "agent_message_chunk",
+   "content": {"type": "text", "text": "after the strange one"},
+   "messageId": "msg_fake_2"}
+]

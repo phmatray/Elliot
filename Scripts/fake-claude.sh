@@ -1,9 +1,27 @@
 #!/bin/bash
 # A stand-in for the `claude` binary, driven entirely by environment variables.
 #
-# This is the seam the runner is tested through: it replays a recorded NDJSON
+# ⚠️ NO SWIFT TEST DRIVES THIS ANY MORE, AND IT STAYS ANYWAY. Stage 1 of #379 moved every
+# spawning suite onto `Scripts/fake-acp.py`, and deleting `ClaudeRunnerTests.swift` removed
+# the last line of Swift that named this file. What still reads it:
+#
+#   - `.github/workflows/ci.yml` asserts `test -x Scripts/fake-claude.sh` on every pull
+#     request. Deleting the script turns that step red — so this is not a dormant file,
+#     it is a file with a live non-Swift reader.
+#   - Four Swift comments cite it to explain how their own doubles are shaped
+#     (`TestSupport/TestHome.swift`, `RunLogRowTests`, `AppraisalPromptBuilderTests`,
+#     `GitHubImportFromFakeGHTests`), and `Scripts/fake-acp.py` describes itself by
+#     contrast with it throughout.
+#   - `RunLogRowTests` decodes the stream-json fixtures this script replays, which the
+#     archive fold still reads. Removing the script belongs to the same follow-up as
+#     removing the stream-json archive reader, and that is explicitly NOT this stage.
+#
+# So: still useful by hand for replaying a stream-json fixture, no longer the seam any
+# test spawns through. Do not delete it as dead code without doing the archive reader too.
+#
+# This was the seam the CLI runner was tested through: it replays a recorded NDJSON
 # stream at a controlled pace, and can be told to hang or to trap signals, so
-# the idle timeout and the cancellation ladder are exercised without spending
+# the idle timeout and the cancellation ladder were exercised without spending
 # minutes or tokens on a real agent run.
 #
 #   FAKE_CLAUDE_FIXTURE    path to an .ndjson file to replay line by line

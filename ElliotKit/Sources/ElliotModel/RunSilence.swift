@@ -77,11 +77,13 @@ public extension SkillRun {
 /// Pure, and told the time rather than reading it, so `swift test` can drive a
 /// silence and a recovery through it without spawning anything, sleeping for
 /// anything, or asserting a duration. What used to live here was a `Date` and a
-/// `Bool` in two separate boxes inside `ClaudeRun.start`, mutated from two
-/// closures: the announce latch was *set* by the watchdog and *cleared* by the
-/// output mirror, and because the clearing said nothing to anybody it was
-/// invisible from outside the process. Making the latch a value that answers
-/// with a `RunSilence?` is what makes the clearing announceable at all.
+/// `Bool` in two separate boxes inside `ClaudeRun.start` — the CLI runner,
+/// deleted in Stage 1 of #379; `AgentRun.start` is its successor and was born
+/// with this value already extracted — mutated from two closures: the announce
+/// latch was *set* by the watchdog and *cleared* by the output mirror, and
+/// because the clearing said nothing to anybody it was invisible from outside
+/// the process. Making the latch a value that answers with a `RunSilence?` is
+/// what makes the clearing announceable at all.
 public struct IdleWatch: Sendable, Hashable {
     /// When the child last wrote something.
     public private(set) var lastOutput: Date

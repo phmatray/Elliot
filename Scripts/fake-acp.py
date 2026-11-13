@@ -7,10 +7,123 @@ prompt request with a stop reason.
 
 Env:
   FAKE_ACP_FIXTURE      JSON array of `update` objects to replay. Required for a useful turn.
-  FAKE_ACP_MODE         ok | hang | crash | permission          (default: ok)
+  FAKE_ACP_MODE         ok | hang | crash | permission | deaf | deaf-after-fixture  (default: ok)
   FAKE_ACP_READY        path touched once trap-protected
   FAKE_ACP_ARGV_OUT     path to write argv to, one element per line
+  FAKE_ACP_PROMPT_OUT   path to write session/prompt's text content to (see below)
+  FAKE_ACP_SESSION_OUT  path to write the session-opening call's params to, as JSON (see below)
+  FAKE_ACP_SPAWN_LOG    file to APPEND the prompt's first line to, once per turn (see below)
+  FAKE_ACP_STORIES      JSON file to drop at the ELLIOT_OUTPUT= path named in the prompt
+  FAKE_ACP_TOUCH        path, relative to cwd, to write to — proves a read-only run wrote
   FAKE_ACP_STOP_REASON  default: end_turn
+  FAKE_ACP_DELAY_MS     pause before every line written                (default: 0, no pause)
+  FAKE_ACP_STDERR       text to emit on stderr at start-up
+  FAKE_ACP_EXIT_AFTER_REPLY  exit 0 the instant session/prompt is answered
+  FAKE_ACP_FORKABLE     the one sessionId session/fork will fork; unset = every fork is refused
+  FAKE_ACP_FORK_UNREADABLE  answer session/fork with a result that will not decode (see below)
+  FAKE_ACP_FORK_DIES    exit at session/fork without answering it at all (see below)
+  FAKE_ACP_COMMANDS     JSON file of AvailableCommand objects to advertise after session/new
+  FAKE_ACP_AGENT_VERSION  what initialize reports as agentInfo.version    (default: 0.0.1)
+  FAKE_ACP_NO_AGENT_INFO  omit agentInfo from initialize entirely (see below)
+  FAKE_ACP_EXIT_AFTER_SESSION  exit 0 the instant session/new is answered (see below)
+
+FAKE_ACP_NO_AGENT_INFO makes this double answer `initialize` with NO `agentInfo` at all — which is
+legal, not malformed: `InitializeResponse.agentInfo` is declared `AgentInfo?` in ACPModel, so an
+adapter may answer perfectly and never name itself. It exists because a client that reads "no
+identity" as "no adapter" renders a healthy, anonymous adapter as a failure — measured, and it was
+Preflight's `agent.adapter` row printing a sentence about *commands* under a hint saying nothing
+would run, for an adapter that had just spawned, answered and opened a session. Every other knob
+here leaves agentInfo in place, so that case had no witness.
+
+FAKE_ACP_EXIT_AFTER_SESSION is FAKE_ACP_EXIT_AFTER_REPLY one door earlier, and it exists for one
+distinction: an adapter that opens a session and then goes away advertises nothing after waiting no
+measurable time, while an adapter that stays and says nothing advertises nothing after a client's
+whole window. A client that reported the first as "advertised nothing within 2 seconds" would be
+quoting a wait it never made. Without this knob that difference was a GREEN break — measured — since
+every other route to "no commands" here leaves the child alive.
+
+FAKE_ACP_AGENT_VERSION exists for exactly one judgement: Preflight's `agent.adapter` row is a
+`.warn` when the version the adapter reports differs from the pin and a `.pass` when it matches
+(decision 10). With this double hardcoded at `0.0.1` only the warning side could ever be reached,
+so a break that made the row warn UNCONDITIONALLY left the suite green — measured. The pin is what
+every fixture in this design was recorded against; a row that had stopped noticing a drift, or one
+that cried drift at the very version it pins, are both worth a test.
+
+FAKE_ACP_COMMANDS drives Preflight's `agent.commands` row. The frame it produces is a
+`session/update` notification carrying `available_commands_update`, sent AFTER the `session/new`
+reply — which is where the real adapter puts it: measured on Fixtures/acp/session-new-commands.json,
+it is message index 2 of 3, following the session/new response and carrying 123 commands. Ordering
+it before the reply would make a client that reads the notification off `session/new`'s own response
+pass a test it should fail.
+
+⛔ Unset means the double advertises NOTHING, and that is a case worth having rather than a gap:
+"the adapter advertises no commands" and "nobody could ask" are different facts, and a client that
+reports the first on the evidence of the second is the two-valued answer this repository keeps
+paying for. With this unset, `session/new` succeeds and no notification ever arrives — which is
+exactly the shape a client must render as *could not be established* rather than as *all missing*.
+
+FAKE_ACP_STDERR is the counterpart of fake-claude.sh's FAKE_CLAUDE_STDERR, and it exists for one
+path in particular: MODE=crash exits without a word, so a test asserting that a died-mid-turn run
+still carries a *reason* would be asserting on an empty string. This is where a failed `npx`
+resolution or a Node stack trace lands for real. Written before the trap and before any stdout, so
+it is present however early the double is killed.
+
+FAKE_ACP_EXIT_AFTER_REPLY makes the double flush its `session/prompt` response and exit in the same
+breath, instead of looping back to block on stdin until the client closes it. It exists to widen a
+window rather than to simulate anything: Elliot writes `elliot/terminal` **after** `waitForExit()`
+has returned, so a log writer closed from whichever of "the prompt returned" and "the child exited"
+happens first would lose that line. With this set the child is gone before Elliot has written a
+byte of its own record, so the ordering is exercised rather than reasoned about.
+
+FAKE_ACP_PROMPT_OUT and FAKE_ACP_SESSION_OUT exist because ACP moved two things off argv and onto
+the wire, and FAKE_ACP_ARGV_OUT can no longer see either. Under `claude -p` the prompt was `-p
+<text>` and every extra directory was an `--add-dir` pair, so a test could read both out of the
+child's argv; under ACP the prompt is `session/prompt`'s content and the directories are
+`session/new`'s `additionalDirectories`, and the adapter's argv is the same three tokens for every
+run. Without these two knobs, two guarantees this repository holds by test would silently stop
+being checked:
+
+  * **The first digit run of an `implement-issue` prompt is the issue number**, because the skill
+    resolves its argument with `grep -oE '[0-9]+' | head -1`. That is asserted against
+    FAKE_ACP_PROMPT_OUT.
+  * **A run is granted the artifact directory it is about to be told to write**, which was
+    `--add-dir <path>` on the recorded argv. That is asserted against FAKE_ACP_SESSION_OUT, and it
+    is the *stronger* of the two forms: argv proved what Elliot spelled, this proves what the agent
+    was handed.
+
+FAKE_ACP_SESSION_OUT records whichever call opened the session — `session/new` **or**
+`session/fork` — because a resumed run takes the second door and never the first, and the fork's
+anchor (`--resume <id>` on the old argv) is exactly the value a resume test needs to read. Each
+overwrites the file, so what it holds is the door this run actually went through.
+
+All are written once, when the message arrives, and only when the variable is set.
+
+FAKE_ACP_SPAWN_LOG, FAKE_ACP_STORIES and FAKE_ACP_TOUCH are `fake-claude.sh`'s three prompt-driven
+behaviours, ported. Each of them read the prompt out of argv (`-p <text>`) at start-up; here the
+prompt only exists once `session/prompt` arrives, so all three happen there.
+
+⚠️ **That moves SPAWN_LOG's meaning slightly, and in the useful direction.** It was "one line per
+process"; it is now "one line per turn actually asked for". A child that spawned and never got as
+far as prompting writes nothing — which is the honest reading, since the concurrency defect it
+exists to catch (two agents each merging to `main` for one run) requires a prompt to have been
+sent. As before, the line is the prompt's **first** line, appended: O_APPEND writes under PIPE_BUF
+are atomic, so two doubles running at once cannot interleave halves of a line.
+
+FAKE_ACP_STORIES parses `ELLIOT_OUTPUT=` to **end of line**, never to the first whitespace: Elliot's
+real default home is `~/Library/Application Support/Elliot`, and a path that stops at the first
+space silently loses everything after "Application". `AnalysisPromptBuilder.outputPath(in:)` parses
+the same way, and `fake-claude.sh` carried the same warning.
+
+FAKE_ACP_DELAY_MS is what lets a test reach a client's idle watchdog, and it is the counterpart
+of `fake-claude.sh`'s FAKE_CLAUDE_DELAY_MS — the knob `ClaudeRunnerTests.silenceAndRecoveryAlternate`
+rode on, before Stage 1 of #379 deleted that suite. Three suites read this one now: `ACPRunnerTests`,
+`EndToEndTests` and `RunsPaneLiveTests`.
+A client that announces a silence and then withdraws it can only be exercised by a turn
+that genuinely goes quiet and genuinely talks again, and this double otherwise writes its whole
+conversation as fast as the pipe takes it. ⚠️ It is a pause per *line*, not a total: the gaps are
+what a test needs, so the pause is what is configured, and no test may assert on how long the run
+took.
+
 
 MODE=permission genuinely gates on the client's answer: it fires `session/request_permission`
 and then BLOCKS on stdin for the matching response before doing anything else — a double that
@@ -27,20 +140,107 @@ handled — and the drop is announced on stderr (never stdout, which stays clean
 what was dropped and which id it was waiting for, so a client that sends a second request mid-wait
 sees a diagnosable line instead of silence.
 
+MODE=deaf answers the handshake normally, never answers `session/prompt` — and, the point,
+**does not exit when its stdin closes**: it blocks on a sleep instead of returning from the main
+loop. MODE=hang cannot stand in for it, and the difference is the whole reason this mode exists.
+`read_message` returns None on EOF and the main loop `break`s, so under MODE=hang closing stdin ends
+this double on its own — which means a test asserting "the child is gone after a cancel" passes with
+the SIGTERM→SIGKILL backstop deleted, because the kill was never needed. Under MODE=deaf nothing but
+that backstop ends it. The SIGTERM trap is installed before any of this, exactly as it is for every
+other mode, so the escalation's first rung is enough and no child outlives the suite.
+
+MODE=deaf-after-fixture replays the fixture and *then* goes deaf: every `session/update` frame is
+written and `session/prompt` is never answered. Neither of the two modes above can stand in for it,
+and the gap is the reason it exists. MODE=deaf returns *before* `for update in fixture()`, so a
+client whose behaviour is driven by a frame — the spend brake, which can only fire on a
+`usage_update` reporting a cost — has nothing to fire on under it. MODE=ok does emit the frame, but
+replies to `session/prompt` in the same breath, so whatever the client does in response is racing
+that client's own teardown: measured, a `session/cancel` sent from Elliot's brake under MODE=ok
+reached this double in 2 of 15 runs. The reason is that answering the prompt lets Elliot's turn task
+close this double's stdin (its `session.end()` → transport `close()`), so the brake's notification is
+written into a pipe that has already gone and the write fails — instrumented at Elliot's send site,
+19 of 20 MODE=ok samples threw `stdinClosed` while this process was still very much alive. (It is
+NOT Elliot standing its own cancel deadline down, which is what this paragraph used to say: measured
+at the same site, that task was not even cancelled in 19 of those 20 samples.) Here the frame lands
+and the turn stays open, so stdin stays open, the only thing that can end the turn is the client,
+and what the client did is observable rather than intermittent.
+
+⚠️ Unlike MODE=deaf this one DOES take the EOF exit in the main loop. Nothing that uses it tests a
+SIGTERM backstop, so sleeping through stdin closing would only give this double a way to outlive a
+wedged test — the property MODE=deaf holds deliberately is a liability here rather than a stricter
+version of the same thing.
+
+`session/cancel` stays a no-op — it is a notification and there is nothing to answer — but its
+arrival is announced on stderr, the same way a dropped message is: this double's protocol behaviour
+is unchanged, and a client that believes it sent one can tell whether it did. ⚠️ That announcement
+is the *receipt*, not the effect: this double never lets a `session/cancel` end a turn, so nothing
+here covers an agent answering its in-flight requests and coming back with `stopReason: cancelled`.
+A test wanting that stop reason asks for it with FAKE_ACP_STOP_REASON, which exercises the plumbing
+and not the agent.
+
 `session/prompt` is refused (a JSON-RPC error, never an empty-looking success) for any
 `sessionId` that was never returned by a `session/new` on this connection — including one sent
 before `session/new` has happened at all. A plausible success here would hide a client bug behind
 a turn that looks like it worked, the same instinct as `fake-gh.sh` exiting 64 on an unexpected
 subcommand rather than returning an empty list.
+
+`session/fork` follows that same discipline: it forks exactly one session id, the one named by
+FAKE_ACP_FORKABLE, and answers a JSON-RPC error for anything else — which, with the variable
+unset, is every fork. The fork returns a session id DIFFERENT from `session/new`'s
+(FORK_SESSION_ID below), because a double that handed back the same string could not tell a client
+that adopted the fork's answer from one that quietly opened a new session instead. Its arrival is
+announced on stderr, exactly as `session/cancel`'s is and for the same reason: without a receipt, a
+client that never called it and one that called it and was refused look identical from the outside.
+
+⚠️ **The refusal here is measured; the successful reply's payload is this double's own invention.**
+`Scripts/probe/acp_fork.py` drove the real adapter (@agentclientprotocol/claude-agent-acp 0.66.0) on
+2026-08-16, and what it saw was: a fork of a live session returns a **new** session id, and a turn on
+it carries the parent's context (a nonce planted in the parent turn came back from the fork). A fork
+of a well-formed session id that never existed answers **`-32002 "Resource not found: <uuid>"`**,
+which is the code this double uses for the same case. A fork of a *junk* string answers something
+else entirely — `-32603 Internal error`, whose details read `--resume requires a valid session ID …
+is not a UUID` — i.e. argument validation, not a missing session; this double does not model that
+second shape, because every id Elliot forks from is one an agent issued.
+
+FAKE_ACP_FORK_UNREADABLE and FAKE_ACP_FORK_DIES exist to drive the two ways a fork can fail
+WITHOUT the agent having answered, which is the distinction the runner narrows on. UNREADABLE
+answers `result: {}` — successful-looking, undecodable — so the client throws a bare
+`DecodingError`; DIES exits without answering, so the client's pending request is failed with
+`ClientError.connectionClosed`. Neither is `ClientError.agentError`, so neither may set
+`sessionResumeFailed`, and between them they cover both sides of `AgentRun.isForkRefusal`'s type
+test: an error that is not a `ClientError` at all, and one that is a `ClientError` of the wrong
+case. That second one had no double until the narrowing was found to be unpinned.
+
+⛔ What is still invented is the **successful** reply's body: the real adapter's fork response was
+not recorded field by field, so `modes`/`configOptions` below are copied from this file's own
+`session/new` rather than from a recording. Tests riding on it can therefore claim things about
+*Elliot's* side — that a fork is what a resumed run asks for, that the id it answers with is the one
+adopted, and that a refusal ends the run instead of silently opening a fresh session — and nothing
+about the adapter's payload. Same posture as `session/cancel` above, which exercises the plumbing
+and not the agent.
 """
 import json
 import os
 import signal
 import sys
+import time
 
 MODE = os.environ.get("FAKE_ACP_MODE", "ok")
 STOP_REASON = os.environ.get("FAKE_ACP_STOP_REASON", "end_turn")
+DELAY_MS = int(os.environ.get("FAKE_ACP_DELAY_MS", "0"))
+EXIT_AFTER_REPLY = bool(os.environ.get("FAKE_ACP_EXIT_AFTER_REPLY"))
+FORKABLE = os.environ.get("FAKE_ACP_FORKABLE")
+FORK_UNREADABLE = bool(os.environ.get("FAKE_ACP_FORK_UNREADABLE"))
+FORK_DIES = bool(os.environ.get("FAKE_ACP_FORK_DIES"))
 SESSION_ID = "sess-fake-0001"
+# Deliberately not SESSION_ID: see the module docstring — the same string back would make a client
+# that adopted the fork's answer indistinguishable from one that opened a new session instead.
+FORK_SESSION_ID = "sess-fake-fork-0002"
+
+# Before the trap and before a single byte of stdout: a crash reason that arrives only if the
+# double survives long enough to write it is not a crash reason.
+if stderr_text := os.environ.get("FAKE_ACP_STDERR"):
+    print(stderr_text, file=sys.stderr, flush=True)
 
 # Trap first, before anything else can fail: a child that outlives its parent holding the
 # runner's stdout pipe open is how a test suite stops terminating.
@@ -56,6 +256,11 @@ if path := os.environ.get("FAKE_ACP_READY"):
 
 
 def write(message):
+    # Before the write, not after: what a client's watchdog measures is the gap since the last
+    # byte it saw, so the pause has to be on this side of the flush to become one. Zero by
+    # default, which is every other test in the tree — this costs them a comparison.
+    if DELAY_MS:
+        time.sleep(DELAY_MS / 1000)
     sys.stdout.write(json.dumps(message) + "\n")
     sys.stdout.flush()
 
@@ -221,21 +426,138 @@ def wait_for_response(stdin_iter, expected_id):
               file=sys.stderr, flush=True)
 
 
+def record_session_call(message):
+    """Write a session-opening call's params to FAKE_ACP_SESSION_OUT, if it is set.
+
+    One function for both doors — `session/new` and `session/fork` — because a test that reads
+    this file wants "what was this session opened with", and a run takes exactly one of the two.
+    """
+    path = os.environ.get("FAKE_ACP_SESSION_OUT")
+    if not path:
+        return
+    with open(path, "w") as fh:
+        json.dump(message.get("params") or {}, fh)
+
+
+def act_on_prompt(text):
+    """`fake-claude.sh`'s three prompt-driven side effects, performed where the prompt now is.
+
+    Each is inert unless its variable is set, so the ordinary turn pays three environment reads.
+    """
+    if path := os.environ.get("FAKE_ACP_PROMPT_OUT"):
+        with open(path, "w") as fh:
+            fh.write(text)
+
+    if path := os.environ.get("FAKE_ACP_SPAWN_LOG"):
+        first = text.split("\n", 1)[0]
+        # Append, one short line, in a single write: see the module docstring on atomicity.
+        with open(path, "a") as fh:
+            fh.write(first + "\n")
+
+    if stories := os.environ.get("FAKE_ACP_STORIES"):
+        # To end of line, never to the first whitespace — see the module docstring.
+        for line in text.split("\n"):
+            marker = "ELLIOT_OUTPUT="
+            if (index := line.find(marker)) == -1:
+                continue
+            out = line[index + len(marker):].rstrip(" \t")
+            if out:
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                with open(stories) as src, open(out, "w") as dst:
+                    dst.write(src.read())
+            break
+
+    if path := os.environ.get("FAKE_ACP_TOUCH"):
+        # Relative to the process's own cwd, which the client sets from the run's — that is the
+        # whole point: it proves a read-only run wrote inside the checkout it was told to read.
+        with open(path, "w") as fh:
+            fh.write("touched by fake-acp\n")
+
+
 def handle(message, stdin_iter):
     method, request_id = message.get("method"), message.get("id")
 
     if method == "initialize":
-        reply(request_id, {
+        answer = {
             "protocolVersion": 1,
             "agentCapabilities": AGENT_CAPABILITIES,
-            "agentInfo": {"name": "fake-acp", "version": "0.0.1"},
             "authMethods": [],
             "_meta": INITIALIZE_META,
-        })
+        }
+        # Omitted, never sent as null: the field is absent on the wire for an adapter that does not
+        # name itself, and a client decoding `null` and a client decoding a missing key are not
+        # guaranteed to take the same path.
+        if not os.environ.get("FAKE_ACP_NO_AGENT_INFO"):
+            answer["agentInfo"] = {
+                "name": "fake-acp",
+                "version": os.environ.get("FAKE_ACP_AGENT_VERSION", "0.0.1"),
+            }
+        reply(request_id, answer)
     elif method == "session/new":
+        # The whole params object, not just the directories: `cwd` is the other half of what
+        # `--add-dir` used to make visible, and a test asserting on one usually wants the other in
+        # the same breath.
+        record_session_call(message)
         known_sessions.add(SESSION_ID)
         reply(request_id, {
             "sessionId": SESSION_ID,
+            "modes": {"currentModeId": "default", "availableModes": AVAILABLE_MODES},
+            "configOptions": CONFIG_OPTIONS,
+        })
+        if os.environ.get("FAKE_ACP_EXIT_AFTER_SESSION"):
+            # Before the commands notification, deliberately: this is the adapter that opened a
+            # session and went away without advertising anything. `reply` already flushed, so the
+            # client reads the session before it sees EOF.
+            sys.exit(0)
+        # AFTER the reply, never inside it: the real adapter advertises its commands as a separate
+        # notification once the session exists. See the module docstring for the recording.
+        if path := os.environ.get("FAKE_ACP_COMMANDS"):
+            with open(path) as fh:
+                notify({"sessionUpdate": "available_commands_update",
+                        "availableCommands": json.load(fh)})
+    elif method == "session/fork":
+        params = message.get("params") or {}
+        sid = params.get("sessionId")
+        # The other door onto a session, recorded through the same knob: a resumed run never
+        # reaches `session/new`, so a test reading only that file would find nothing and could not
+        # tell "the fork carried the wrong anchor" from "no fork happened".
+        record_session_call(message)
+        # The receipt, on stderr and never stdout: a client that never asked and a client that
+        # asked and was refused are otherwise identical from the outside. Printed before the
+        # answer, so it is present even for the refusal.
+        print(f"fake-acp: session/fork for {sid!r} — forkable is {FORKABLE!r}",
+              file=sys.stderr, flush=True)
+        if FORK_DIES:
+            # Exit without answering at all. The client's read loop sees `transport.messages`
+            # finish and `handleTermination` fails every pending request with
+            # `ClientError.connectionClosed` — a `ClientError` that is NOT `.agentError`, which is
+            # the case the type filter alone could never reach and the one that made deleting the
+            # narrowing guard a green break. Deterministic, not a race: the process is gone before
+            # anything else can be written, so the only way this request can resolve is through
+            # termination.
+            sys.exit(0)
+        if FORK_UNREADABLE:
+            # A *successful-looking* answer whose body cannot be read: `ForkSessionResponse`
+            # requires `sessionId`, so the client's decode throws rather than the agent refusing.
+            # ⛔ That distinction is the reason this knob exists, and it is not decoration: an
+            # agent that ANSWERS "no such session" has established that the transcript is gone,
+            # while a reply nobody can read establishes only that nobody could ask. A client that
+            # treats them alike reports a missing transcript on evidence it does not have.
+            reply(request_id, {})
+            return
+        if not FORKABLE or sid != FORKABLE:
+            # Unknown, or this double was given nothing to fork: refuse rather than hand back a
+            # plausible session for a transcript that does not exist — the same instinct as
+            # session/prompt below. The code and wording are the real adapter's, measured by
+            # Scripts/probe/acp_fork.py; see the module docstring.
+            respond_error(request_id, -32002, f"Resource not found: {sid}")
+            return
+        known_sessions.add(FORK_SESSION_ID)
+        # `models` is absent here as it is from session/new, matching the 0.66.0 recording — and
+        # ForkSessionResponse declares no such field at all, so the model can only be read off
+        # configOptions on this path.
+        reply(request_id, {
+            "sessionId": FORK_SESSION_ID,
             "modes": {"currentModeId": "default", "availableModes": AVAILABLE_MODES},
             "configOptions": CONFIG_OPTIONS,
         })
@@ -249,12 +571,23 @@ def handle(message, stdin_iter):
     elif method == "session/prompt":
         params = message.get("params") or {}
         sid = params.get("sessionId")
+        # Before the sessionId check, deliberately: a test asserting on what was *sent* wants the
+        # answer even when this double refuses the turn, and a refusal that also swallowed the
+        # evidence would make a wrong sessionId look like a missing prompt.
+        #
+        # `prompt`, which is what `SessionPromptRequest` puts on the wire — not `content`, which is
+        # what the Swift call site's parameter happens to be called.
+        blocks = params.get("prompt") or []
+        act_on_prompt("".join(
+            b.get("text", "") for b in blocks
+            if isinstance(b, dict) and b.get("type") == "text"
+        ))
         if sid not in known_sessions:
             # Unknown session, or session/new never happened on this connection at all: refuse
             # rather than answer a plausible-looking turn for a session that does not exist.
             respond_error(request_id, -32602, f"unknown sessionId: {sid!r}")
             return
-        if MODE == "hang":
+        if MODE in ("hang", "deaf"):
             return                      # never answer; the caller's timeout is the test
         if MODE == "crash":
             sys.exit(9)
@@ -281,9 +614,24 @@ def handle(message, stdin_iter):
                 return
         for update in fixture():
             notify(update)
+        if MODE == "deaf-after-fixture":
+            # The fixture is spoken and the turn is left open on purpose: from here only the client
+            # can end it, so what the client does about a frame is observable instead of racing the
+            # reply below. See the module docstring for the measurement that made this necessary.
+            return
         reply(request_id, {"stopReason": STOP_REASON})
+        if EXIT_AFTER_REPLY:
+            # `reply` already flushed, so the response is in the pipe and the client will read it
+            # before it sees EOF. What goes away is the wait for the client's own stdin close.
+            sys.exit(0)
     elif method == "session/cancel":
-        pass                            # a notification; nothing to answer
+        # A notification: nothing to answer, and deliberately nothing to change either — this
+        # double never lets a cancel end a turn. Announced on stderr (never stdout, which stays
+        # clean JSON-RPC) so the *receipt* is observable: without this, a client that sent no
+        # cancel at all and one that sent a perfectly good one look identical from the outside.
+        sid = (message.get("params") or {}).get("sessionId")
+        print(f"fake-acp: session/cancel for {sid!r} — noted, and deliberately a no-op",
+              file=sys.stderr, flush=True)
     elif request_id is not None:
         respond_error(request_id, -32601, f"fake-acp does not implement {method}")
 
@@ -292,5 +640,12 @@ STDIN = iter(sys.stdin)
 while True:
     incoming = read_message(STDIN)      # ends when the client closes stdin — that is the exit
     if incoming is None:
+        if MODE == "deaf":
+            # ⛔ The one mode that does NOT take the exit above, and that is its entire point:
+            # a client's SIGTERM→SIGKILL backstop can only be tested against a child that the
+            # polite ask does not end. The trap installed at the top of this file still applies,
+            # so the first rung is enough to reap this.
+            while True:
+                time.sleep(60)
         break
     handle(incoming, STDIN)

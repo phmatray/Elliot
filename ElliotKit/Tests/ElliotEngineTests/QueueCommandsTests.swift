@@ -11,19 +11,20 @@ import Testing
 ///
 /// Nothing here spawns a process: the runs are real rows in an in-memory store,
 /// admitted through `launch` and held by a writer cap of one, so `pump()` makes
-/// the same decisions it makes in production without a `claude` in sight.
+/// the same decisions it makes in production without an agent in sight.
 @Suite("Queue commands")
 struct QueueCommandsTests {
 
     private let now = Date(timeIntervalSince1970: 1_770_000_000)
 
     /// A scheduler whose writer cap is one, and `count` real queued runs in one
-    /// repository. The first will not start either — `/usr/bin/true` is not a
-    /// valid `claude` and `start` would fail — so all `count` stay pending.
+    /// repository. The first will not start either — `adapterExecutable` is left
+    /// at its `""` default, which `AgentRun.start` refuses with
+    /// `adapterNotResolved` — so all `count` stay pending.
     private func seeded(count: Int, cap: Int = 1) async throws -> (RunScheduler, BoardStore, [UUID]) {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/nonexistent/claude", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:]
         )
         let repo = Repo(
@@ -79,7 +80,7 @@ struct QueueCommandsTests {
 
         await scheduler.resume()
         #expect(await scheduler.paused == false)
-        // The spawn fails — there is no `claude` at that path — so both runs are
+        // The spawn fails — the adapter is unresolved — so both runs are
         // consumed by `pump()` and end failed rather than sitting in the queue.
         // What matters is that resuming acted at all, without a second nudge.
         #expect(await scheduler.queueSnapshot().count < 2)

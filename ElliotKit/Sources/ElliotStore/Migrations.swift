@@ -487,6 +487,35 @@ enum Migrations {
             }
         }
 
+        // v17, additive: what the **agent** named its own session, and how its
+        // turn ended.
+        //
+        // Two nullable TEXT columns, no default and no backfill, exactly as v11
+        // (`resultSource`) and v13 (`resumedFrom`) did — and for the same reason
+        // v13 gives: nothing before this build ever ran under ACP, so `nil` is
+        // the truth about these rows rather than a default standing in for an
+        // unknown. Inferring one from `argv` or from the log would write a guess
+        // nothing afterwards could tell from a measurement.
+        //
+        // ⛔ `Optional`, never a non-optional with a default. Swift's synthesised
+        // decoder emits `decode(_:forKey:)` and ignores default values, so a
+        // non-optional field would throw `keyNotFound` on every row written
+        // before this migration — in exactly the window `BoardStore.openReadOnly`
+        // exists to serve, where the MCP helper reads a database whose migrations
+        // it is behind. `@DefaultsToEmpty` is not the tool here either: its
+        // `wrappedValue` is hardcoded `[String]`.
+        //
+        // ⚠️ If another branch's `v17` reaches `main` first, **this one
+        // renumbers** — nine of the sixteen migrations above record having made
+        // that trade. No `RenamedMigration` entry: this name has never reached a
+        // database anywhere.
+        migrator.registerMigration("v17_acpSession") { db in
+            try db.alter(table: "skillRun") { t in
+                t.add(column: "agentSessionID", .text)
+                t.add(column: "stopReason", .text)
+            }
+        }
+
         return migrator
     }
 

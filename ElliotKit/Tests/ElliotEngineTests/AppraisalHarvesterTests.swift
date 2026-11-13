@@ -347,11 +347,15 @@ struct SchedulerFinishRoutingTests {
     }
 
     private static var finishBody: String {
-        body(after: "private func finish(run: SkillRun, outcome: ClaudeRunOutcome?) async {")
+        body(after: "private func finish(run: SkillRun, outcome: AgentRunOutcome?) async {")
     }
 
     private static var startBody: String {
         body(after: "private func start(_ run: SkillRun) async {")
+    }
+
+    private static var cancelBody: String {
+        body(after: "public func cancel(runID: UUID) async {")
     }
 
     @Test("finish routes on the kind, not on a boolean")
@@ -426,6 +430,121 @@ struct SchedulerFinishRoutingTests {
             skip a verification, it verifies without knowing the resume failed.
             """
         )
+    }
+
+    /// The same leak, one dictionary over, and the reason this gate is written rather than trusted
+    /// to prose: `cancelRequested` is exactly `treeBaselines`' shape — a per-run entry with one
+    /// erasure — and it arrived with the switchover to ACP, where the process no longer carries a
+    /// `wasTerminated` flag and Elliot's own memory is the only thing that can tell a cancel from
+    /// a crash.
+    ///
+    /// ⛔ **Two insert sites would be the defect, not one.** `cancel(runID:)` has three branches
+    /// and only the **live** one reaches `finish`: a queued run goes through `discardQueued` and
+    /// returns, an orphan row is written `.cancelled` in place and returns. An insert at the top of
+    /// that method leaks one entry per queued-or-orphan cancel for the life of the process — and
+    /// leaks it *silently*, since nothing downstream reads a set it never gets to.
+    ///
+    /// ⚠️ **The count alone did not enforce that, and said it did.** This test shipped asserting
+    /// only `inserts == 1`; code review hoisted the insert to the top of `cancel(runID:)` — the
+    /// exact defect the ⛔ above describes — and the whole suite stayed green, because a *relocated*
+    /// single site still counts one. A count catches an addition and can never catch a move. The
+    /// assertions below are positional for that reason: the insert must come after **both** early
+    /// branches and immediately before the ask.
+    @Test("A requested cancel is recorded at one site and erased unconditionally")
+    func cancelRequestedIsErasedOnce() {
+        let code = Self.code
+        let inserts = code.components(separatedBy: "cancelRequested.insert").count - 1
+        let removals = code.components(separatedBy: "cancelRequested.remove(").count - 1
+        #expect(
+            inserts == 1,
+            """
+            cancelRequested is inserted at \(inserts) sites, not the 1 on `cancel`'s live branch. \
+            Only that branch reaches `finish`, which is the only erasure.
+            """
+        )
+        #expect(removals == 1, "cancelRequested is erased at \(removals) sites, not the 1 in `finish`")
+
+        let cancel = Self.cancelBody
+        #expect(
+            !cancel.isEmpty,
+            "cancel(runID:) moved or was reworded — this test's parser needs updating, not deleting"
+        )
+        // The four landmarks of the three branches, in source order: the queued branch's
+        // `discardQueued`, the orphan branch's write, then the live branch's record and ask. Two
+        // separate `guard`s rather than one, so a failure names which branch the insert jumped in
+        // front of.
+        guard let queuedBranch = cancel.range(of: "await discardQueued(runID)"),
+              let orphanBranch = cancel.range(of: "run.state = .cancelled")
+        else {
+            Issue.record(
+                """
+                cancel(runID:) no longer has both early branches this test locates by — \
+                parser or invariant moved
+                """
+            )
+            return
+        }
+        guard let insert = cancel.range(of: "cancelRequested.insert"),
+              let ask = cancel.range(of: "agentRun.cancel()")
+        else {
+            Issue.record("cancel(runID:) no longer records the request before asking the agent")
+            return
+        }
+        #expect(
+            queuedBranch.upperBound < insert.lowerBound,
+            """
+            The cancel request is recorded before the queued branch, which returns through \
+            `discardQueued` and never reaches `finish`. Every cancel of a queued run then leaves \
+            an entry behind for the lifetime of the process.
+            """
+        )
+        #expect(
+            orphanBranch.upperBound < insert.lowerBound,
+            """
+            The cancel request is recorded before the orphan branch, which writes `.cancelled` in \
+            place and returns without reaching `finish`. Same leak, other branch.
+            """
+        )
+        #expect(
+            insert.upperBound < ask.lowerBound,
+            """
+            The request is recorded after `agentRun.cancel()` rather than before it. The runner \
+            may finish inside that call, and `finish` would then read a set the ask had not yet \
+            been written into — a cancelled run folding to `.failed`.
+            """
+        )
+
+        let body = Self.finishBody
+        #expect(
+            !body.isEmpty,
+            "finish(run:outcome:) moved or was reworded — this test's parser needs updating, not deleting"
+        )
+        guard let removal = body.range(of: "cancelRequested.remove("),
+              let routing = body.range(of: "switch updated.kind {")
+        else {
+            Issue.record(
+                """
+                finish no longer erases the cancel request above a `switch updated.kind` \
+                — parser or invariant moved
+                """
+            )
+            return
+        }
+        #expect(
+            removal.lowerBound < routing.lowerBound,
+            """
+            The cancel request is erased inside a branch of the routing rather than above it. \
+            Every kind that does not take that branch then leaves its entry behind for the \
+            lifetime of the process.
+            """
+        )
+        // And it is erased before the state is decided, because `state(for:cancelRequested:)` is
+        // what consumes it: an erasure *after* the fold would hand every cancelled run `false`.
+        guard let fold = body.range(of: "Self.state(for: outcome, cancelRequested:") else {
+            Issue.record("finish no longer folds the outcome through `state(for:cancelRequested:)`")
+            return
+        }
+        #expect(removal.lowerBound < fold.lowerBound)
     }
 
     @Test("The tree baseline is erased once, above the routing")

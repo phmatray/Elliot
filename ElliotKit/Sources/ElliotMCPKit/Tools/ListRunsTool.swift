@@ -38,9 +38,12 @@ struct ListRunsTool: BoardTool {
                 is still alive, and it is yours to decide whether to keep waiting or \
                 board_cancel_run it.
 
-                `logPath` is a file of NDJSON — one Claude Code stream-json event per line, \
-                exactly as the CLI emitted it. The same content is readable as the resource \
-                `elliot://run/{id}/log`. `stderrPath` is where the process's stderr went.
+                `logPath` is a file of NDJSON — one JSON object per line. Runs from Stage 1 \
+                onward are the JSON-RPC the ACP adapter **sent** — responses and notifications \
+                — plus Elliot's own `elliot/session` and `elliot/terminal` records; older runs \
+                are Claude Code stream-json. The first line tells you which. The same content \
+                is readable as the resource `elliot://run/{id}/log`. `stderrPath` is where the \
+                process's stderr went.
 
                 An analysis run has no card. It carries `analysisID` and `angle` instead — \
                 `bugs`, `quickWins`, `features`, `techDebt`, `tests` or `docsAndDX` — which is \

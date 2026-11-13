@@ -54,9 +54,9 @@ struct GitHubImportFromFakeGHTests {
         var repo: Repo
     }
 
-    /// A `GHClient` pointed at the fake, with `claudePath` and `gitPath` left
-    /// empty on purpose: if the import ever reaches for either, the test should
-    /// fail loudly rather than quietly use a real tool.
+    /// A `GHClient` pointed at the fake, with `gitPath` left empty on purpose:
+    /// if the import ever reaches for git, the test should fail loudly rather
+    /// than quietly use a real tool.
     private func fakeClient(
         issues: String?,
         prs: String?,
@@ -68,7 +68,7 @@ struct GitHubImportFromFakeGHTests {
         if let prs { environment["FAKE_GH_PRS"] = Paths.fixture(prs) }
         if let argvOut { environment["FAKE_GH_ARGV_OUT"] = argvOut }
         return GHClient(config: ToolConfig(
-            claudePath: "", ghPath: Paths.fakeGH, gitPath: "", environment: environment))
+            ghPath: Paths.fakeGH, gitPath: "", environment: environment))
     }
 
     private func stack(
@@ -377,7 +377,7 @@ struct GitHubImportFromFakeGHTests {
         try await store.saveRepo(healthy)
 
         let config = ToolConfig(
-            claudePath: "", ghPath: Paths.fakeGH, gitPath: "",
+            ghPath: Paths.fakeGH, gitPath: "",
             environment: [
                 "FAKE_GH_ISSUES": Paths.fixture("issues-basic.json"),
                 "FAKE_GH_PRS": Paths.fixture("prs-basic.json"),

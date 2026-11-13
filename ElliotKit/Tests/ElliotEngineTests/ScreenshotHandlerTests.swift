@@ -64,7 +64,7 @@ struct ScreenshotHandlerTests {
         _ = TestHome.root
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
         let launcher = NeverLaunches()
@@ -192,7 +192,7 @@ struct ScreenshotHandlerTests {
         let launcher = NeverLaunches()
         let board = BoardService(store: store, launcher: launcher)
         let config = ToolConfig(
-            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
         let handler = MCPRequestHandler(

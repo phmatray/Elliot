@@ -82,10 +82,19 @@ public enum VerifiedOutcome: Codable, Sendable, Hashable {
     case unverified(reason: String)
 }
 
-/// One invocation of `claude -p`.
+/// One turn of one ACP session.
+///
+/// ⚠️ *"One invocation of `claude -p`"* until the switchover. Two sentences in this type were
+/// written against that CLI and are corrected below rather than left for a later task: a reader
+/// reasoning from a retired premise is the failure #186 exists to record, and these were made
+/// false by the very commit that would have been deferring them.
 public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
-    /// Also passed as `--session-id`, so the CLI transcript path is known
-    /// before the process emits anything.
+    /// Elliot's own id for the run, and the key `StoreLocation.runLogURL(runID:)` is built from.
+    ///
+    /// ⚠️ **Not the agent's session id.** It was also passed as `claude -p --session-id`, so the
+    /// two were one value and the CLI's transcript path was known before the process emitted a
+    /// byte. Under ACP the agent names its own session at `session/new` — which is what
+    /// `agentSessionID` below holds, and what a resume forks.
     public var id: UUID
     /// The card this run works on. `nil` for an analysis run, which has no card
     /// — exactly one of `cardID` and `analysisID` is set.
@@ -98,9 +107,27 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     /// scheduler's dedupe key is `(repoID, angle)`.
     public var analysisAngle: AnalysisAngle?
     public var kind: SkillKind
-    /// The exact `-p` argument.
+    /// The exact text of the turn's `session/prompt`.
+    ///
+    /// ⚠️ It read *"the exact `-p` argument"* until the ACP switchover, which is now no argument
+    /// at all: the prompt travels as JSON-RPC on the adapter's stdin, not on argv. The *text* is
+    /// unchanged, which is why nothing else about this field moved.
     public var prompt: String
-    /// The full argv, kept so a run can be reproduced by hand.
+    /// The adapter's argv — `npx --yes @agentclientprotocol/claude-agent-acp@<pin>`, or an
+    /// interpreter and a script under test.
+    ///
+    /// ⛔ **It no longer reproduces a run, and this said it did.** It read *"the full argv, kept so
+    /// a run can be reproduced by hand"*, true while `claude -p` carried `--permission-mode`, one
+    /// `--add-dir` per extra directory and the prompt itself. `AgentInvocation.displayArgv` renders
+    /// the **same three tokens for every run**, so a `bypassPermissions` `implement-issue` and a
+    /// `plan` `merge-pr` are indistinguishable here. What the row still tells you is which adapter
+    /// answered — a real thing, and the only per-machine fact in the column.
+    ///
+    /// The per-run grant did not vanish, it moved: `RunSessionInfo.mode` is written to the log as
+    /// `elliot/session` the instant `session/new` returns, and `AgentLog.sessionInfo(inLogAt:)`
+    /// reads it back. A per-run *column* beside `agentSessionID` and `stopReason` is the durable
+    /// fix and is deliberately not taken inside this stage — see `displayArgv`'s own comment,
+    /// which carries the argument and the reason a `mode=…` token must not be appended here.
     public var argv: [String]
     public var cwd: String
     /// The last attempt that actually created a session.
@@ -177,6 +204,30 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
     /// dangerous is `BoardService.makeRun`, which takes this undefaulted for
     /// exactly that reason; this initialiser is not it.
     public var requiresVerifiedGreen: Bool?
+    /// The session id the **agent** returned from `session/new`.
+    ///
+    /// Not `id`. Under `claude -p` Elliot passed `--session-id` and the two were
+    /// one value; under ACP the agent names its own session. `resumedFrom` still
+    /// points at a *run*, and `RunScheduler` reads this column off that run to
+    /// fork from (Task 13) — so the chain `ResumeChain` walks is unchanged, and
+    /// only what it hands the runner is different.
+    ///
+    /// ⚠️ `Optional`, for the reason `resumedFrom` above gives at length: a
+    /// non-optional `String` would be decoded with `decode(_:forKey:)` rather
+    /// than `decodeIfPresent` — a default value does not change that — and would
+    /// throw `keyNotFound` on every run recorded before v17, in exactly the
+    /// window `BoardStore.openReadOnly` exists to serve. `MigrationsTests` pins
+    /// it.
+    public var agentSessionID: String?
+    /// How the turn ended, verbatim: `end_turn`, `max_tokens`,
+    /// `max_turn_requests`, `refusal`, `cancelled` — or `elliot/max_budget` when
+    /// Elliot's own brake stopped it, or `nil` when the response never arrived
+    /// at all, which is what a run that died mid-turn looks like.
+    ///
+    /// Stored as the raw string rather than a Swift enum: `StopReason` is the
+    /// vendored library's and this column outlives it, and an unrecognised value
+    /// must survive being written down.
+    public var stopReason: String?
     public var createdAt: Date
 
     public init(
@@ -203,6 +254,12 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         verifiedOutcome: VerifiedOutcome? = nil,
         analysisReport: AnalysisRunReport? = nil,
         requiresVerifiedGreen: Bool? = nil,
+        // ⛔ Both defaulted, and position alone does not do the work: `createdAt`
+        // below has no default, so an undefaulted parameter inserted before it
+        // would not be skippable and every existing call site would fail to
+        // compile. Defaulted, only a writer that has something to say passes them.
+        agentSessionID: String? = nil,
+        stopReason: String? = nil,
         createdAt: Date
     ) {
         self.id = id
@@ -229,6 +286,8 @@ public struct SkillRun: Identifiable, Codable, Sendable, Hashable {
         self.verifiedOutcome = verifiedOutcome
         self.analysisReport = analysisReport
         self.requiresVerifiedGreen = requiresVerifiedGreen
+        self.agentSessionID = agentSessionID
+        self.stopReason = stopReason
         self.createdAt = createdAt
     }
 }

@@ -23,7 +23,7 @@ struct SchedulerConcurrentPumpTests {
     func blockedQueue(count: Int) async throws -> (RunScheduler, BoardStore, [UUID]) {
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/nonexistent/claude", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: [:]
         )
         let repo = Repo(
@@ -118,18 +118,23 @@ struct SchedulerConcurrentPumpTests {
         }
     }
 
-    /// A scheduler that really spawns, against the fake `claude`, recording one
-    /// line per child in `spawnLog`.
+    /// A scheduler that really spawns, against the fake ACP agent, recording one
+    /// line per turn in `spawnLog`.
     ///
     /// The repository path is a directory that genuinely exists. `Process` sets
     /// the child's working directory on the spawn, so a `path` pointing at
-    /// nothing makes `ClaudeRun.start` throw — the run would be marked `.failed`
+    /// nothing makes `AgentRun.start` throw — the run would be marked `.failed`
     /// without ever spawning, and a double-spawn test would then read an empty
     /// log and "pass" for the one reason it must not.
     ///
     /// `PATH` is set for the same class of reason: `ToolConfig.environment`
     /// *replaces* the child's environment rather than extending it, and the
-    /// fake's spawn-log block shells out to `head`.
+    /// double is reached through `/usr/bin/env python3`.
+    ///
+    /// ⚠️ **`FAKE_ACP_SPAWN_LOG` counts turns, not processes**, because the prompt that names the
+    /// run only exists once `session/prompt` arrives — under `claude -p` it was `-p <text>` on
+    /// argv and could be logged at start-up. That is the honest reading for this test: the defect
+    /// it exists to catch is two agents each *doing* one run's work, which needs a prompt.
     func spawningScheduler(
         spawnLog: String, cap: Int
     ) async throws -> (RunScheduler, BoardStore, Repo, URL) {
@@ -141,13 +146,14 @@ struct SchedulerConcurrentPumpTests {
 
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: root.appendingPathComponent("Scripts/fake-claude.sh").path,
+            adapterExecutable: "/usr/bin/env",
+            adapterArguments: ["python3", root.appendingPathComponent("Scripts/fake-acp.py").path],
             ghPath: "/usr/bin/true", gitPath: "/usr/bin/true",
             environment: [
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-                "FAKE_CLAUDE_SPAWN_LOG": spawnLog,
-                "FAKE_CLAUDE_FIXTURE": root
-                    .appendingPathComponent("Fixtures/stream-json/create-issue-success.ndjson").path,
+                "FAKE_ACP_SPAWN_LOG": spawnLog,
+                "FAKE_ACP_FIXTURE": root
+                    .appendingPathComponent("Fixtures/acp/fake-create-issue.json").path,
             ]
         )
         let repo = Repo(
@@ -333,9 +339,21 @@ struct SchedulerConcurrentPumpTests {
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
         // The repository path exists, so the only reason the spawn can fail is
-        // the one under test: there is no `claude` at that path.
+        // the one under test: `adapterExecutable` is left at its `""` default,
+        // which `AgentRun.start` refuses with `adapterNotResolved` before it
+        // spawns anything. It used to be a `claudePath` naming no binary; the
+        // refusal moved earlier when the CLI runner died, and the claim this
+        // test makes — a failed spawn releases the claim — is unchanged.
+        //
+        // ⚠️ Measured, so nobody reads more into it: this test does **not** pin
+        // *which* guard refuses. Deleting `AgentRun.start`'s `adapterNotResolved`
+        // guard leaves it green, because `ChildProcess` then refuses the empty
+        // path one layer lower and the spawn still fails. The single test that
+        // goes red is `EndToEndTests`' "A repository whose adapter never resolved
+        // fails by name, not by a blank path", which is the right place for it —
+        // what the guard buys is the sentence, not the failure.
         let config = ToolConfig(
-            claudePath: "/nonexistent/claude", ghPath: "/usr/bin/true",
+            ghPath: "/usr/bin/true",
             gitPath: "/usr/bin/true", environment: ["PATH": "/usr/bin:/bin"]
         )
         let scheduler = RunScheduler(

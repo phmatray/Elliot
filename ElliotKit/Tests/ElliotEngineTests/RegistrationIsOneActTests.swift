@@ -27,7 +27,6 @@ struct RegistrationIsOneActTests {
 
     private static func config() -> ToolConfig {
         ToolConfig(
-            claudePath: "/usr/bin/true",
             ghPath: repoRoot.appendingPathComponent("Scripts/fake-gh.sh").path,
             gitPath: "/usr/bin/true",
             environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]

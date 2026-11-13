@@ -17,10 +17,16 @@ private enum TestPaths {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
 
-    static let fakeClaude = repoRoot.appendingPathComponent("Scripts/fake-claude.sh").path
+    static let fakeACP = repoRoot.appendingPathComponent("Scripts/fake-acp.py").path
 
-    static func streamFixture(_ name: String) -> String {
-        repoRoot.appendingPathComponent("Fixtures/stream-json/\(name)").path
+    /// The double is a Python script, so the executable is an interpreter and the script
+    /// is an argument — the same shape the real adapter has, where the executable is `npx`
+    /// and the package is an argument.
+    static let adapterExecutable = "/usr/bin/env"
+    static var adapterArguments: [String] { ["python3", fakeACP] }
+
+    static func acpFixture(_ name: String) -> String {
+        repoRoot.appendingPathComponent("Fixtures/acp/\(name)").path
     }
 
     static func appraisalFixture(_ name: String) -> String {
@@ -72,7 +78,7 @@ struct AppraisalEndToEndTests {
 
     /// - Parameters:
     ///   - artifact: the JSON the fake tool drops at the path the prompt
-    ///     announced. `nil` leaves `FAKE_CLAUDE_STORIES` unset, which is the
+    ///     announced. `nil` leaves `FAKE_ACP_STORIES` unset, which is the
     ///     shape of a run that talked and wrote nothing.
     ///   - gitPath: defaults to a binary that always fails, matching every other
     ///     end-to-end stack. `GitClient.porcelainStatus` swallows a failing
@@ -132,17 +138,18 @@ struct AppraisalEndToEndTests {
         }
 
         var environment = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
-        environment["FAKE_CLAUDE_FIXTURE"] = TestPaths.streamFixture("analyze-success.ndjson")
+        environment["FAKE_ACP_FIXTURE"] = TestPaths.acpFixture("fake-simple-turn.json")
         if let artifact {
             // Named for the analysis, but what it does is copy a file to the
             // path the prompt announced after `ELLIOT_OUTPUT=` — which is the
             // appraisal's contract too, because the marker is shared.
-            environment["FAKE_CLAUDE_STORIES"] = artifact
+            environment["FAKE_ACP_STORIES"] = artifact
         }
         environment.merge(extraEnv) { _, new in new }
 
         let config = ToolConfig(
-            claudePath: TestPaths.fakeClaude,
+            adapterExecutable: TestPaths.adapterExecutable,
+            adapterArguments: TestPaths.adapterArguments,
             ghPath: "/usr/bin/false",
             gitPath: gitPath,
             environment: environment
@@ -253,7 +260,7 @@ struct AppraisalEndToEndTests {
         .enabled(if: gitFixtureIsAvailable))
     func theSentinelFires() async throws {
         let stack = try await makeStack(
-            extraEnv: ["FAKE_CLAUDE_TOUCH": "meddled.txt"], gitPath: gitFixturePath
+            extraEnv: ["FAKE_ACP_TOUCH": "meddled.txt"], gitPath: gitFixturePath
         )
         defer { stack.cleanUp() }
         try await initGit(at: stack.repo.path)
@@ -301,42 +308,43 @@ struct AppraisalEndToEndTests {
         #expect(card.appraisedAt != nil)
     }
 
+    /// ⚠️ **This was `theArgvIsTightened`, and neither fact is on argv any more.** The permission
+    /// mode is a `session/set_config_option` (recorded by Elliot in its own `elliot/session` log
+    /// line) and the directories are `session/new`'s `cwd` and `additionalDirectories`. Both are
+    /// still asserted against **what the agent was actually handed**, which was the whole point of
+    /// the old form: `AppraisalInvocationTests` pins the pure function, and this is the only thing
+    /// that proves the scheduler passes it through.
     @Test("The spawn really carries the tighter mode and the artifact directory")
-    func theArgvIsTightened() async throws {
-        let argvOut = TestHome.scratch("appraisal-argv").path
-        let stack = try await makeStack(extraEnv: ["FAKE_CLAUDE_ARGV_OUT": argvOut])
+    func theSpawnIsTightened() async throws {
+        let sessionOut = TestHome.scratch("appraisal-session")
+            .appendingPathComponent("session-\(UUID().uuidString).json")
+        try FileManager.default.createDirectory(
+            at: sessionOut.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let stack = try await makeStack(extraEnv: ["FAKE_ACP_SESSION_OUT": sessionOut.path])
         defer { stack.cleanUp() }
-        defer { try? FileManager.default.removeItem(atPath: argvOut) }
+        defer { try? FileManager.default.removeItem(at: sessionOut) }
 
         let started = try await stack.service.appraise(cardID: stack.card.id)
-        _ = try await withTimeout(.seconds(40)) { try await stack.awaitRun(id: started.id) }
+        let run = try await withTimeout(.seconds(40)) { try await stack.awaitRun(id: started.id) }
 
-        let argv = try String(contentsOfFile: argvOut, encoding: .utf8)
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map(String.init)
+        let session = try #require(
+            AgentLog.sessionInfo(inLogAt: URL(fileURLWithPath: run.logPath)))
+        #expect(session.mode == "acceptEdits")
+        // The half that matters most: the repository's own mode is `bypassPermissions`, and an
+        // appraisal must not inherit it — under the default the MCP self-call is granted in
+        // silence and the run ends "success" having driven the board.
+        #expect(session.mode != "bypassPermissions")
 
-        // Asserted against what the process was actually given, not against
-        // `ClaudeInvocation` — the unit test already pins that, and this is the
-        // only thing that proves the scheduler passes it through.
-        //
-        // Through `argumentValues`, not `argv[index + 1]`: a `--permission-mode`
-        // or `--add-dir` that ever arrived last would have trapped here, and a
-        // trapped binary prints no `Test run with N tests` line at all. The
-        // comparison is also stronger than the indexing it replaces — it pins
-        // the number of occurrences as well as their values.
-        #expect(argumentValues(after: "--permission-mode", in: argv) == ["acceptEdits"])
-        #expect(!argv.contains("bypassPermissions"))
-
-        #expect(
-            argumentValues(after: "--add-dir", in: argv) == [
-                stack.repo.path,
-                StoreLocation.appraisalRunDirectory(runID: started.id).path,
-            ])
+        let asked = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: sessionOut)) as? [String: Any]
+        #expect(asked?["cwd"] as? String == stack.repo.path)
+        #expect(asked?["additionalDirectories"] as? [String]
+            == [StoreLocation.appraisalRunDirectory(runID: started.id).path])
     }
 
     @Test("A run that writes no artifact leaves the card unappraised, and says so")
     func noArtifactLeavesTheCardAlone() async throws {
-        // No `FAKE_CLAUDE_STORIES`, so the fake tool replays its stream and
+        // No `FAKE_ACP_STORIES`, so the fake tool replays its stream and
         // drops nothing — the shape of a run that talked and wrote nothing.
         let stack = try await makeStack(artifact: nil)
         defer { stack.cleanUp() }
@@ -383,7 +391,7 @@ struct AppraisalEndToEndTests {
         // drain is a lane that does not exist.
         //
         // The writer is seeded rather than dragged. One `ToolConfig` serves the
-        // whole stack, so `FAKE_CLAUDE_MODE=hang` would hang the appraisal too
+        // whole stack, so `FAKE_ACP_MODE=hang` would hang the appraisal too
         // and the test would prove the opposite of its name;
         // `testOnlyMarkInFlight` puts a writer in the set `refusal` reads
         // without spawning anything, which is exactly the state under test.

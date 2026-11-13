@@ -48,7 +48,7 @@ struct ReharvestActionTests {
             board: BoardService(store: store, launcher: launcher),
             gh: GHClient(
                 config: ToolConfig(
-                    claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+                    ghPath: "/usr/bin/false",
                     gitPath: "/usr/bin/false", environment: [:])),
             gate: OpenGate()
         )

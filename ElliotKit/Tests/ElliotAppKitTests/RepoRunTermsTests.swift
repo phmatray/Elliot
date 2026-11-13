@@ -7,12 +7,18 @@ import Testing
 
 /// The writer `permissionMode` and `extraAllowedTools` never had.
 ///
-/// Both are **v1** columns. `RunScheduler` reads them at spawn,
-/// `ClaudeInvocation.arguments()` emits both flags, `board_list_repos` reports
-/// the mode — and nothing anywhere assigned either one, so every registration
-/// took `bypassPermissions` and `[]` for ever. `Repo.permissionMode`'s own doc
-/// comment said a single repository could be tightened without touching the
-/// others; it could not.
+/// Both are **v1** columns. `RunScheduler` reads them at spawn and
+/// `board_list_repos` reports the mode — and until #333 nothing anywhere
+/// assigned either one, so every registration took `bypassPermissions` and `[]`
+/// for ever. `Repo.permissionMode`'s own doc comment said a single repository
+/// could be tightened without touching the others; it could not.
+///
+/// ⚠️ What they turn into changed under them in Stage 1 of #379, and the two
+/// parted company: `ClaudeInvocation.arguments()` used to emit a flag for each,
+/// but `permissionMode` is now an ACP `session/set_config_option` and
+/// `extraAllowedTools` has no ACP equivalent at all — a non-empty list is
+/// refused by `AgentRun.start` rather than granted. This suite is about the
+/// writer, which is why it still holds either way.
 @Suite("Repository run terms")
 struct RepoRunTermsTests {
 

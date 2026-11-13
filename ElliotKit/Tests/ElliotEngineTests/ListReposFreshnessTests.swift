@@ -83,7 +83,7 @@ struct ListReposFreshnessTests {
 
     private static func handler(store: BoardStore) throws -> MCPRequestHandler {
         let config = ToolConfig(
-            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false", gitPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false", gitPath: "/usr/bin/false",
             environment: ["PATH": "/usr/bin:/bin"]
         )
         let scheduler = RunScheduler(

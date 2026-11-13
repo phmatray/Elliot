@@ -84,7 +84,6 @@ struct PreflightTests {
         PreflightService(
             environment: LoginShellEnvironment(variables: [:], capturedVia: "test"),
             config: ToolConfig(
-                claudePath: "/usr/bin/false",
                 ghPath: Paths.fakeGH,
                 gitPath: "/usr/bin/false",
                 environment: environment
@@ -336,6 +335,374 @@ struct PreflightTests {
         _ = await service().apply(fix, repo: repo, board: board)
 
         #expect(try await store.cards(repoID: repo.id).count == 1)
+    }
+
+    // MARK: - The rows that describe the binary that actually runs (#381, task 16)
+
+    /// A scratch `PATH` holding nothing but stub `node`/`npx` executables, so these tests say the
+    /// same thing on a machine with Node 26 and on one with none at all.
+    ///
+    /// Copied in shape from `ACPAgentLocatorTests.scratchToolchain` — parameterised by the `node`
+    /// stub's script **body** rather than a version string, because "answers nothing" and
+    /// "answers v20" are the two different failures this row has to tell apart.
+    private func scratchToolchain(nodeBody: String) throws -> (
+        env: LoginShellEnvironment, directory: String, remove: () -> Void
+    ) {
+        let dir = "/private/tmp/preflight-acp-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try stub("node", body: nodeBody, at: dir)
+        try stub("npx", body: "echo \"10.9.0\"", at: dir)
+        return (LoginShellEnvironment(variables: ["PATH": dir], capturedVia: "test"), dir, {
+            try? FileManager.default.removeItem(atPath: dir)
+        })
+    }
+
+    private func stub(_ name: String, body: String, at directory: String) throws {
+        let path = (directory as NSString).appendingPathComponent(name)
+        try Data("#!/bin/sh\n\(body)\n".utf8).write(to: URL(fileURLWithPath: path))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+    }
+
+    /// A service whose adapter is `Scripts/fake-acp.py` — a real child, a real handshake, no
+    /// network and no `npx`.
+    private func adapterService(
+        environment: LoginShellEnvironment = LoginShellEnvironment(
+            variables: [:], capturedVia: "test"),
+        childEnvironment: [String: String] = [:]
+    ) -> PreflightService {
+        PreflightService(
+            environment: environment,
+            config: ToolConfig(
+                adapterExecutable: "/usr/bin/env",
+                adapterArguments: [
+                    "python3", Paths.repoRoot.appendingPathComponent("Scripts/fake-acp.py").path,
+                ],
+                ghPath: Paths.fakeGH,
+                gitPath: "/usr/bin/git",
+                environment: childEnvironment.merging(
+                    ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"], uniquingKeysWith: { a, _ in a })
+            )
+        )
+    }
+
+    @Test("the claude row is gone, and the adapter rows have taken its place")
+    func theClaudeRowIsRetired() async {
+        let ids = Set(await adapterService().globalChecks(packs: []).map(\.id))
+        #expect(!ids.contains("tool.claude"))
+        #expect(ids.isSuperset(of: ["tool.node", "tool.npx", "agent.adapter", "agent.commands"]))
+    }
+
+    @Test("an adapter answering a version other than the pin is a warning, not a pass")
+    func aVersionDriftIsAWarning() async {
+        // `fake-acp.py` answers `agentInfo` `fake-acp 0.0.1`, which is not the pin — so this is
+        // the drift case without anything having to be stubbed for it.
+        let results = await adapterService().globalChecks(packs: [])
+        guard let adapter = results.first(where: { $0.id == "agent.adapter" }) else {
+            Issue.record("expected an agent.adapter row")
+            return
+        }
+        // ⚠️ A pin that has silently stopped being what runs is worse than no pin (decision 10),
+        // so this is neither a pass nor a failure: the adapter answered, and it is not the one
+        // every fixture in this design was measured against.
+        #expect(adapter.status == .warn)
+        #expect(adapter.detail.contains("0.0.1"))
+        #expect(adapter.detail.contains(ACPAgentLocator.adapterVersion))
+    }
+
+    /// The other side of decision 10, and it was **unpinned until a break-test found it**: writing
+    /// `guard false, probe.agentVersion == pinned` makes the row warn *unconditionally*, which the
+    /// drift test above cannot see because it asserts a warn. Nothing constructed an adapter
+    /// answering exactly the pinned version, so half the judgement had no witness.
+    @Test("an adapter answering the pinned version passes, and says what the pin is")
+    func thePinnedVersionPasses() async {
+        let results = await adapterService(
+            childEnvironment: ["FAKE_ACP_AGENT_VERSION": ACPAgentLocator.adapterVersion]
+        ).globalChecks(packs: [])
+        guard let adapter = results.first(where: { $0.id == "agent.adapter" }) else {
+            Issue.record("expected an agent.adapter row")
+            return
+        }
+        #expect(adapter.status == .pass)
+        #expect(adapter.detail.contains(ACPAgentLocator.adapterVersion))
+        // The pin is shown beside the identity, not merely agreed with in silence — a reader has
+        // to be able to see *what* it matched.
+        #expect(adapter.detail.contains("pinned at"))
+    }
+
+    /// ⛔ **An adapter that does not name itself is not a broken adapter, and the row must not say
+    /// it is.** `InitializeResponse.agentInfo` is `AgentInfo?` — absent is legal — so `answered`
+    /// can be false for an adapter that spawned, answered `initialize` and opened a session. This
+    /// double does exactly that, and advertises nothing, which is the pair of facts that used to
+    /// collide: the *commands* window's expiry was written into `AdapterProbe.failure`, the field
+    /// `adapterCheck` prints verbatim, so `agent.adapter` rendered
+    /// `status=.fail  detail="The adapter opened a session and advertised no commands within 2
+    /// seconds."  hint="Every card that moves spawns this. Nothing will run until it does."` —
+    /// a failure about the wrong question, under a hint that is false, for a working adapter.
+    @Test("an anonymous adapter that opened a session is not reported as a failed adapter")
+    func anAnonymousAdapterIsNotAFailedAdapter() async {
+        let results = await adapterService(childEnvironment: ["FAKE_ACP_NO_AGENT_INFO": "1"])
+            .globalChecks(packs: PreflightService.packsInUse([]))
+        guard let adapter = results.first(where: { $0.id == "agent.adapter" }) else {
+            Issue.record("expected an agent.adapter row")
+            return
+        }
+        // It spawned, answered and opened a session — so runs would work, and the one verdict this
+        // screen reserves for "cards cannot be dragged" is the wrong one.
+        #expect(adapter.status != .fail)
+        // The commands question belongs to the other row, and its answer must not appear here at
+        // all — neither as the detail nor as the reason.
+        #expect(!adapter.detail.lowercased().contains("command"))
+        #expect(adapter.fixHint?.contains("Nothing will run") != true)
+        // And the row still has to say what it *did* establish: no identity to check against a pin.
+        #expect(adapter.detail.lowercased().contains("agentinfo"))
+
+        // The commands row is where the silence is reported, unchanged and still a warning.
+        guard let advertised = results.first(where: { $0.id == "agent.commands" }) else {
+            Issue.record("expected an agent.commands row")
+            return
+        }
+        #expect(advertised.status == .warn)
+        #expect(advertised.detail.lowercased().contains("could not be established"))
+    }
+
+    /// The same judgement as the test above, asserted on the value rather than through a child —
+    /// so a future probe that reassembles these fields differently still cannot make this row fail
+    /// on an adapter that opened a session.
+    @Test("a session that opened outranks every other reason the adapter row could fail")
+    func anOpenedSessionOutranksEveryFailure() {
+        for failure: AdapterProbe.Failure? in [
+            nil, .silent(.seconds(30)), .error("Resource not found: 9f3a"),
+        ] {
+            let row = PreflightService.adapterCheck(AdapterProbe(
+                sessionOpened: true, failure: failure,
+                quietCommands: AdapterHandshake.commandsWindow))
+            #expect(row.status != .fail)
+            #expect(row.fixHint?.contains("Nothing will run") != true)
+        }
+        // ⛔ And with no session, the two verdicts stay exactly as decision 10 set them: a spawn or
+        // JSON-RPC error is a `.fail` in the adapter's own words, a deadline is only a `.warn`.
+        let spawnFailed = PreflightService.adapterCheck(
+            AdapterProbe(failure: .error("posix_spawn(2) failed: No such file or directory")))
+        #expect(spawnFailed.status == .fail)
+        #expect(spawnFailed.detail == "posix_spawn(2) failed: No such file or directory")
+        #expect(PreflightService.adapterCheck(
+            AdapterProbe(failure: .silent(.seconds(30)))).status == .warn)
+    }
+
+    /// ⛔ The quadrant no test covered, and the one the row was silently wrong about: an adapter that
+    /// **named itself and matched the pin** and then never opened a session.
+    ///
+    /// Every "no session" probe above is also *anonymous*, so all of them entered through the
+    /// identity guard and never reached the version comparison. This one has an identity, and until
+    /// the guard order was fixed it fell straight through to `.pass`:
+    /// `status=pass  detail="@agentclientprotocol/claude-agent-acp 0.66.0 — pinned at 0.66.0."`
+    /// — a green row, under the one verdict this screen reserves for *cards cannot be dragged*,
+    /// about an adapter under which no card could run.
+    ///
+    /// It is reachable by construction rather than contrived: `AdapterProbe.probe` assigns the
+    /// identity the moment `initialize` returns and only *then* calls `newSession`
+    /// (`AdapterProbe.swift:234-245`), so every JSON-RPC error and every hang on `session/new`
+    /// lands here holding a perfectly good `agentInfo`.
+    @Test("An adapter that named itself and never opened a session does not pass")
+    func namingItselfDoesNotOutrankAFailedSession() {
+        let pinned = ACPAgentLocator.adapterVersion
+
+        let errored = PreflightService.adapterCheck(AdapterProbe(
+            agentName: "@agentclientprotocol/claude-agent-acp", agentVersion: pinned,
+            sessionOpened: false, failure: .error("Resource not found: 9f3a")))
+        #expect(errored.status == .fail)
+        // The adapter's own words, not Elliot's paraphrase of them.
+        #expect(errored.detail == "Resource not found: 9f3a")
+
+        // A deadline is still only a `.warn` — that is a statement about Elliot's patience, not a
+        // finding about the adapter — but it must not be a `.pass` either.
+        let silent = PreflightService.adapterCheck(AdapterProbe(
+            agentName: "@agentclientprotocol/claude-agent-acp", agentVersion: pinned,
+            sessionOpened: false, failure: .silent(.seconds(30))))
+        #expect(silent.status == .warn)
+        #expect(silent.status != .pass)
+    }
+
+    @Test("Node below 22 fails by name and says the number it found")
+    func oldNodeFails() async throws {
+        let (env, _, remove) = try scratchToolchain(nodeBody: "echo \"v20.11.1\"")
+        defer { remove() }
+
+        let results = await adapterService(environment: env).globalChecks(packs: [])
+        guard let node = results.first(where: { $0.id == "tool.node" }) else {
+            Issue.record("expected a tool.node row")
+            return
+        }
+        #expect(node.status == .fail)
+        #expect(node.detail.contains("v20.11.1"))
+        #expect(node.detail.contains("\(ACPAgentLocator.minimumNodeMajor)"))
+    }
+
+    /// ⛔ The three-valued answer task 5 refused to collapse, one layer up.
+    ///
+    /// `resolveNode()` has three outcomes, not two: found-and-readable, found-but-unreadable, and
+    /// not-found. The plan prescribed only two fail renderings — *"Not found."* and *"Found X, but
+    /// the adapter needs 22 or newer."* — and a `.found` tool whose `version` is nil would have
+    /// rendered as `"Found " + nothing`. **Elliot never established that a Node it could not read
+    /// is old, and saying so is worse than refusing.**
+    @Test("a node whose version cannot be read is not reported as too old")
+    func unreadableNodeIsNotCalledOld() async throws {
+        let (env, directory, remove) = try scratchToolchain(nodeBody: "exit 1")
+        defer { remove() }
+
+        let results = await adapterService(environment: env).globalChecks(packs: [])
+        guard let node = results.first(where: { $0.id == "tool.node" }) else {
+            Issue.record("expected a tool.node row")
+            return
+        }
+        // Not a pass — nothing was established — and not a `.fail` either, which on this screen
+        // means "cards cannot be dragged" for a toolchain that may be perfectly fine.
+        #expect(node.status == .warn)
+        #expect(node.detail.contains((directory as NSString).appendingPathComponent("node")))
+        // ⛔ The sentence the two-valued rendering would have produced.
+        #expect(!node.detail.contains("22 or newer"))
+        #expect(!node.detail.contains("Found ,"))
+    }
+
+    @Test("the adapter names the commands it advertises, and the three Elliot dispatches")
+    func advertisedCommandsAreNamed() async throws {
+        let commands = "/private/tmp/preflight-commands-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: commands) }
+        try Data(
+            """
+            [{"name": "ai-migration-kit:create-issue", "description": "x"},
+             {"name": "ai-migration-kit:implement-issue", "description": "y"},
+             {"name": "ai-migration-kit:merge-pr", "description": "z"},
+             {"name": "superpowers:brainstorming", "description": "w"}]
+            """.utf8
+        ).write(to: URL(fileURLWithPath: commands))
+
+        // The packs `AppModel` passes on a machine with nothing registered — which folds the
+        // default in, so the three commands looked for are the ones this board dispatches.
+        let results = await adapterService(childEnvironment: ["FAKE_ACP_COMMANDS": commands])
+            .globalChecks(packs: PreflightService.packsInUse([]))
+        guard let advertised = results.first(where: { $0.id == "agent.commands" }) else {
+            Issue.record("expected an agent.commands row")
+            return
+        }
+        #expect(advertised.status == .pass)
+        #expect(advertised.detail.contains("4"))
+        #expect(advertised.detail.contains("ai-migration-kit:merge-pr"))
+    }
+
+    /// ⛔ *"The adapter advertises none"* and *"nobody could ask"* are different facts, and a row
+    /// that listed all three as missing would be reporting the first on the evidence of the
+    /// second — `isBlocking([])`'s two-valued answer, one screen over.
+    @Test("commands that were never established are not reported as missing")
+    func unestablishedCommandsAreNotMissing() async {
+        // No `FAKE_ACP_COMMANDS`, so the double opens a session and advertises nothing at all —
+        // which is what an adapter that never sends the notification looks like from here.
+        //
+        // ⚠️ **`packsInUse([])`, not `[]`, and the difference is the whole test.** With no packs
+        // there is nothing to look for, so collapsing nil into `[]` renders a confident *pass* —
+        // red, but not the rendering this test is named for. With the default pack folded in, the
+        // same collapse produces `Missing: ai-migration-kit:create-issue, …`: three commands
+        // reported absent on the evidence of a question nobody got to ask. Measured by breaking it
+        // both ways.
+        let results = await adapterService().globalChecks(packs: PreflightService.packsInUse([]))
+        guard let advertised = results.first(where: { $0.id == "agent.commands" }) else {
+            Issue.record("expected an agent.commands row")
+            return
+        }
+        #expect(advertised.status == .warn)
+        #expect(advertised.detail.lowercased().contains("could not be established"))
+        #expect(!advertised.detail.contains("Missing:"))
+        #expect(!advertised.detail.contains("ai-migration-kit:create-issue"))
+        // The reason, which is Elliot's own window running out — a wait it really made, so the
+        // number is quotable. This is the sentence that used to arrive dressed as the *adapter's*
+        // failure, on the *adapter's* row.
+        let seconds = Int(AdapterHandshake.commandsWindow.components.seconds)
+        #expect(advertised.detail.contains("within \(seconds) seconds"))
+    }
+
+    /// ⛔ The other silence, and it must not borrow the first one's number. An adapter that opens a
+    /// session and goes away advertised nothing after no measurable wait; printing *"within 2
+    /// seconds"* there would put a wait Elliot never made on the screen whose job is to be believed.
+    @Test("an adapter that goes away is not reported as having kept Elliot waiting")
+    func aDepartedAdapterQuotesNoWindow() async {
+        let results = await adapterService(childEnvironment: ["FAKE_ACP_EXIT_AFTER_SESSION": "1"])
+            .globalChecks(packs: PreflightService.packsInUse([]))
+        guard let advertised = results.first(where: { $0.id == "agent.commands" }) else {
+            Issue.record("expected an agent.commands row")
+            return
+        }
+        #expect(advertised.status == .warn)
+        #expect(advertised.detail.lowercased().contains("could not be established"))
+        #expect(!advertised.detail.contains("within"))
+        #expect(!advertised.detail.contains("Missing:"))
+    }
+
+    /// ⛔ An operator who set `ELLIOT_CLAUDE_PATH` and reads a green Preflight gets a binary they
+    /// did not choose: the adapter runs the CLI vendored inside its own npm dependency.
+    @Test("ELLIOT_CLAUDE_PATH is named where it stopped meaning anything")
+    func theClaudeOverrideIsNamedWhereItDies() async {
+        let results = await adapterService().globalChecks(
+            packs: [], overrides: ToolOverrides(["claude": "/usr/bin/true"]))
+        guard let row = results.first(where: { $0.id == "tool.claudeOverride" }) else {
+            Issue.record("expected a row naming ELLIOT_CLAUDE_PATH")
+            return
+        }
+        #expect(row.status == .warn)
+        #expect(row.detail.contains("CLAUDE_CODE_EXECUTABLE"))
+        // ⚠️ Whether pointing that at a local install works is UNMEASURED, and the row says so
+        // rather than implying somebody checked.
+        #expect(row.detail.lowercased().contains("unmeasured"))
+    }
+
+    @Test("no ELLIOT_CLAUDE_PATH, no row about it")
+    func theClaudeOverrideRowIsSilentWhenUnset() async {
+        let results = await adapterService().globalChecks(packs: [], overrides: ToolOverrides())
+        #expect(!results.contains { $0.id == "tool.claudeOverride" })
+    }
+
+    // MARK: - Run terms, met before a drag rather than after
+
+    private func checkout() async throws -> (path: String, remove: () -> Void) {
+        let path = "/private/tmp/preflight-runterms-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+        _ = try await ProcessRunner.run(
+            executable: "/usr/bin/git",
+            arguments: ["-C", path, "init", "--initial-branch=main"],
+            environment: ["PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory(),
+                          "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"],
+            timeout: .seconds(30)
+        )
+        return (path, { try? FileManager.default.removeItem(atPath: path) })
+    }
+
+    @Test("a repository with extra allowed tools warns before a drag, not after")
+    func runTermsWarn() async throws {
+        // Ties to task 6's refusal: `AgentRun.start` throws `unmappableAllowedTools` before it
+        // spawns anything, so *every* run in this repository refuses to start. Meeting that on a
+        // screen beats meeting it as a failed card.
+        let (path, remove) = try await checkout()
+        defer { remove() }
+        var subject = Repo(path: path, nameWithOwner: "phmatray/sandbox", displayName: "sandbox")
+        subject.extraAllowedTools = ["Bash(git push:*)"]
+
+        let results = await adapterService().repoChecks(subject)
+        guard let terms = results.first(where: { $0.id == "repo.runTerms" }) else {
+            Issue.record("expected a repo.runTerms row")
+            return
+        }
+        #expect(terms.status == .fail)
+        #expect(terms.detail.contains("Bash(git push:*)"))
+        #expect(terms.fixHint?.contains("Run terms") == true)
+    }
+
+    @Test("a repository that allows nothing extra grows no row at all")
+    func runTermsIsSilentWhenEmpty() async throws {
+        let (path, remove) = try await checkout()
+        defer { remove() }
+        let subject = Repo(path: path, nameWithOwner: "phmatray/sandbox", displayName: "sandbox")
+
+        let results = await adapterService().repoChecks(subject)
+        #expect(!results.contains { $0.id == "repo.runTerms" })
     }
 
     @Test("A label that already existed is not reported as created")

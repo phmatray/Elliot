@@ -68,7 +68,34 @@ import Foundation
 /// **9** — `RepoDTO` carries `extraAllowedTools` (#333). Until then a
 /// repository's run terms could not be *written* at all, so every row reported
 /// the same defaults and half a reply looked exactly like the whole of one.
-public let elliotProtocolVersion = 9
+///
+/// **10 (Stage 1 of #379).** The wire's shapes are unchanged; what changed is
+/// what the app does with a move. An old helper in an old bundle talks to an
+/// app that no longer spawns `claude -p` at all — it spawns a Node adapter and
+/// speaks JSON-RPC — and a bundle mismatch must fail at `hello` rather than
+/// halfway through a move. `IPCServer` answers `.protocolMismatch` on the spot
+/// (`IPCServer.swift:95-101`).
+///
+/// ⚠️ **That sentence was forward-looking for four commits, and is now a
+/// reading of the tree.** This is the one bump so far where the number moved
+/// ahead of the behaviour it fences: raising it first is what stopped a bundle
+/// assembled mid-stage from pairing a 9 helper with a 10 app. Task 15 landed
+/// the switchover — `RunScheduler.start` calls `AgentRun.start`, `ElliotEngine`
+/// imports the ACP runner, and nothing spawns `ToolConfig.claudePath` any more.
+/// The tag is recorded rather than deleted because the *interval* is the fact:
+/// every build between the bump and Task 15 spoke wire 10 while spawning
+/// `claude -p`, and a bug report from one of them is not describing this tree.
+///
+/// This is the first bump for a behaviour change rather than a field, and it
+/// is worth saying so plainly: `RunDTO` does **not** gain `agentSessionID` or
+/// `stopReason` here (Task 12 adds them to `SkillRun`, and nothing crosses
+/// `ElliotIPC`), so an agent reading `board_list_runs` still cannot see how a
+/// turn ended; and `resultText`/`resultSource` keep meaning exactly what they
+/// meant, because `ClosingRemark.of` is untouched. Whether the helper should
+/// report `stopReason` is a real question and the answer here is *not in this
+/// stage* — adding a field would be an eleventh version, and this bump exists
+/// so that decision is not forced now.
+public let elliotProtocolVersion = 10
 
 /// The build that answered, for `hello` and for the MCP server's own version.
 ///
@@ -958,7 +985,11 @@ public struct RunDTO: Codable, Sendable, Hashable {
     /// is an absence of a record and not a fourth kind.
     public var resultSource: String?
     public var permissionDenials: [String]
-    /// NDJSON, one Claude Code `stream-json` event per line.
+    /// NDJSON, one JSON object per line. Runs from Stage 1 of #379 onward are the JSON-RPC the
+    /// ACP adapter **sent** — responses and notifications — plus Elliot's own `elliot/session`
+    /// and `elliot/terminal` records; older runs are Claude Code stream-json. The first line
+    /// tells you which. Not "as exchanged with": the mirror is on `receiveStdout`, so Elliot's
+    /// own requests go to the child's stdin and are never written down.
     public var logPath: String
     public var stderrPath: String
     /// When to look again, in seconds. `nil` once the run is terminal: there is

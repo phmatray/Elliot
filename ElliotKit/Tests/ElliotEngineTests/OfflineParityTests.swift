@@ -337,7 +337,7 @@ private struct ParityBoard {
         _ = TestHome.root
         let store = try BoardStore.inMemory()
         let config = ToolConfig(
-            claudePath: "/usr/bin/false", ghPath: "/usr/bin/false",
+            ghPath: "/usr/bin/false",
             gitPath: "/usr/bin/false", environment: [:]
         )
         let launcher = NoLaunch()

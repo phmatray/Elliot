@@ -32,7 +32,6 @@ struct PreflightSweepTests {
         PreflightService(
             environment: LoginShellEnvironment(variables: [:], capturedVia: "test"),
             config: ToolConfig(
-                claudePath: "/usr/bin/false",
                 ghPath: Paths.fakeGH,
                 gitPath: "/usr/bin/git",
                 environment: ["FAKE_GH_ARGV_OUT": argv, "PATH": "/usr/bin:/bin"]
