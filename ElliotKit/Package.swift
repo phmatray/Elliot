@@ -113,7 +113,7 @@ let package = Package(
         .library(name: "ElliotAppKit", targets: ["ElliotAppKit"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.11.1"),
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.12.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
     ],
     targets: [
